@@ -11,6 +11,30 @@ bedrock = boto3.client('bedrock-runtime')
 metrics = Metrics()
 tracer = Tracer()
 
+# Manual classification via S3 key prefix: raw/{TYPE}/{uuid}/{file}.
+# TYPE must be UPPER_SNAKE_CASE. The uuid segment (lowercase + hyphens)
+# never matches, so auto-classification paths (raw/{uuid}/{file}) fall through
+# to Bedrock as before.
+_MANUAL_TYPE_RE = re.compile(r'^[A-Z][A-Z0-9_]{0,63}$')
+
+
+def extract_manual_classification(key):
+    """Return the manual document type encoded in the S3 key, or None.
+
+    Expects keys shaped like `raw/{TYPE}/...`. Returns the TYPE segment when
+    it matches UPPER_SNAKE_CASE; otherwise returns None so the caller falls
+    back to Bedrock-based classification.
+    """
+    if not key:
+        return None
+    parts = key.split('/')
+    if len(parts) < 3 or parts[0] != 'raw':
+        return None
+    candidate = parts[1]
+    if _MANUAL_TYPE_RE.match(candidate):
+        return candidate
+    return None
+
 
 def parse_chunk_metadata(event):
     if 'chunkMetadata' in event:
@@ -98,6 +122,25 @@ def handler(event, context):
     tracer.put_annotation(key="documentId", value=event["documentId"])
     metrics.add_dimension(name="invoke_type", value=invoke_type)
     content_type = event["contentType"]
+
+    # Manual classification short-circuit: if the S3 key encodes the type
+    # (raw/{TYPE}/...), skip the Bedrock call for the classification step
+    # and return the type directly. Extraction still runs normally because
+    # its prompt uses `classificationResult` which will be populated below.
+    if invoke_type == 'classification' and content_type == 'file':
+        content_location = event.get('content', {}).get('location')
+        if content_location == 's3':
+            manual_type = extract_manual_classification(
+                event.get('content', {}).get('key', '')
+            )
+            if manual_type:
+                tracer.put_annotation(key="classification_mode", value="manual")
+                metrics.add_metric(
+                    name="ManualClassificationBypass",
+                    unit=MetricUnit.Count,
+                    value=1,
+                )
+                return {"documentClassification": manual_type}
 
     chunk_metadata = parse_chunk_metadata(event)
     if chunk_metadata:

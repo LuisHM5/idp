@@ -13,6 +13,11 @@ const s3 = new S3Client({});
 const BUCKET = process.env.DOCUMENT_BUCKET;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf"]);
 
+// Tipo documental manual: UPPER_SNAKE_CASE. Debe empezar con letra.
+// No se valida contra el catalogo aqui para no acoplar el upload al catalogo;
+// si el tipo no existe en el catalogo, el enrichment lo tratara como OTRO.
+const DOCUMENT_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 /**
  * Extract file extension from filename (lowercase).
  */
@@ -44,7 +49,7 @@ export async function handler(event) {
     return errorResponse(400, "INVALID_JSON", "Request body is not valid JSON");
   }
 
-  const { fileName, contentBase64, metadata } = body;
+  const { fileName, contentBase64, metadata, documentType } = body;
 
   // Validate required fields
   if (!fileName) {
@@ -56,6 +61,22 @@ export async function handler(event) {
       "MISSING_FIELD",
       "Field 'contentBase64' is required"
     );
+  }
+
+  // Optional manual classification via documentType.
+  // If provided, the document is placed under raw/{TYPE}/{uuid}/ and the
+  // classification step short-circuits without calling Bedrock.
+  // If omitted, Bedrock auto-classifies from content.
+  let manualType = null;
+  if (documentType !== undefined && documentType !== null && documentType !== "") {
+    if (typeof documentType !== "string" || !DOCUMENT_TYPE_PATTERN.test(documentType)) {
+      return errorResponse(
+        400,
+        "INVALID_DOCUMENT_TYPE",
+        "Field 'documentType' must match ^[A-Z][A-Z0-9_]{0,63}$ (UPPER_SNAKE_CASE)"
+      );
+    }
+    manualType = documentType;
   }
 
   // Validate file extension
@@ -90,7 +111,9 @@ export async function handler(event) {
 
   // Generate document ID and S3 key
   const documentId = randomUUID();
-  const key = `raw/${documentId}/${fileName}`;
+  const key = manualType
+    ? `raw/${manualType}/${documentId}/${fileName}`
+    : `raw/${documentId}/${fileName}`;
 
   // Upload to S3
   try {
@@ -115,6 +138,8 @@ export async function handler(event) {
       documentId,
       bucket: BUCKET,
       key,
+      documentType: manualType,
+      classificationMode: manualType ? "manual" : "auto",
       uploadedAt: new Date().toISOString(),
     }),
   };

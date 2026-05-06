@@ -31,12 +31,29 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
 
   let mod;
-  try {
-    mod = require(resolve(__dirname, "../dist/prompt-generator.js"));
-  } catch (e) {
-    console.error("❌ No se encontró dist/prompt-generator.js");
+  const candidates = [
+    resolve(__dirname, "../dist/src/prompt-generator.js"),
+    resolve(__dirname, "../dist/prompt-generator.js"),
+  ];
+  let loaded = null;
+  for (const candidate of candidates) {
+    try {
+      mod = require(candidate);
+      loaded = candidate;
+      break;
+    } catch {
+      /* try next */
+    }
+  }
+  if (!mod) {
+    console.error("❌ No se encontró prompt-generator compilado.");
+    console.error("   Probado:");
+    for (const c of candidates) console.error(`     - ${c}`);
     console.error("   Ejecuta primero: pnpm build\n");
     process.exit(1);
+  }
+  if (process.env.DEBUG_PREVIEW) {
+    console.error(`(loaded from ${loaded})`);
   }
 
   const showClassification = !args.extraction;

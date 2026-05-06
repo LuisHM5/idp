@@ -15,20 +15,28 @@ export function generateClassificationPrompt(
 ): string {
   const typesList = catalog
     .filter((t) => t.typeId !== "OTRO")
-    .map((t) => `- ${t.typeId}`)
+    .map((t) => {
+      const desc = t.description ? `: ${t.description}` : "";
+      return `- ${t.typeId}${desc}`;
+    })
     .join("\n");
 
-  return `You are a document classifier. Analyze the attached document and classify it into exactly one category.
+  return `You are a document classifier for Mexican official documents. Analyze the attached document and classify it into exactly one category.
 
-Allowed categories:
+Allowed categories (read each description carefully and pick the one that best matches the visual and textual evidence in the document):
 ${typesList}
-- OTRO
+- OTRO: cualquier documento que no encaje claramente en los anteriores
+
+Decision guidance:
+- Read the full description of every category before choosing.
+- Prefer the most specific category that matches. Do not default to INE just because you see a photo ID.
+- Use OTRO only when no category clearly applies, not as a tiebreaker.
+- Base the decision on concrete evidence: headings, logos, issuing institution names, document layout, and unique identifiers visible in the document.
 
 Rules:
 - Return ONLY a raw JSON object, nothing else.
 - Do NOT wrap in markdown code blocks.
 - Do NOT add any explanation or text before or after the JSON.
-- If the document is unclear or doesn't match any category, use OTRO.
 
 Return exactly this format:
 {"documentClassification":"CATEGORY_HERE"}

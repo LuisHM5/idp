@@ -1,0 +1,80 @@
+{
+  "CARTA_NOM35": {
+    "description": "Carta/constancia de cumplimiento de la NOM-035-STPS-2018 (factores de riesgo psicosocial en el trabajo), emitida por la empresa o por el proveedor encargado de aplicar la evaluacion",
+    "extraction_fields": [
+      "NOMBRE_COMPLETO_TRABAJADOR",
+      "NOMBRES_TRABAJADOR",
+      "APELLIDO_PATERNO_TRABAJADOR",
+      "APELLIDO_MATERNO_TRABAJADOR",
+      "FECHA_CARTA",
+      "FECHA_APLICACION",
+      "PERIODO_VIGENCIA",
+      "NOMBRE_EMPRESA",
+      "RFC_EMPRESA",
+      "LOGO_EMPRESA_PRESENTE",
+      "SELLO_EMPRESA_PRESENTE",
+      "NOMBRE_RESPONSABLE",
+      "CARGO_RESPONSABLE",
+      "TIPO_RESPONSABLE",
+      "FIRMA_RESPONSABLE_PRESENTE",
+      "REFERENCIA_NOM035"
+    ],
+    "extraction_hints": {
+      "NOMBRE_COMPLETO_TRABAJADOR": "Nombre completo (nombres + apellido paterno + apellido materno) de la persona trabajadora evaluada, usualmente en el cuerpo de la carta como 'Se hace constar que el/la C. <nombre>'",
+      "NOMBRES_TRABAJADOR": "Solo el/los nombre(s) del trabajador, sin apellidos",
+      "APELLIDO_PATERNO_TRABAJADOR": "Primer apellido del trabajador",
+      "APELLIDO_MATERNO_TRABAJADOR": "Segundo apellido del trabajador",
+      "FECHA_CARTA": "Fecha de emision de la carta, usualmente al inicio o al pie ('Ciudad, a DD de mes de YYYY'). Normalizar a DD/MM/YYYY",
+      "FECHA_APLICACION": "Fecha en que se aplico el cuestionario/evaluacion NOM-035 al trabajador, puede aparecer como 'aplicado el' o 'con fecha'. Normalizar a DD/MM/YYYY",
+      "PERIODO_VIGENCIA": "Periodo de vigencia de la constancia si se indica, por ejemplo 'vigencia un año' o un rango de fechas",
+      "NOMBRE_EMPRESA": "Razon social o nombre comercial de la empresa emisora, usualmente en el encabezado junto al logo o en el cuerpo como 'la empresa <nombre>'",
+      "RFC_EMPRESA": "RFC de la empresa emisora, 12 caracteres (persona moral) o 13 (persona fisica). Aparece en el encabezado, pie o junto a los datos fiscales",
+      "LOGO_EMPRESA_PRESENTE": "Indicar SI o NO segun si en el encabezado aparece un logotipo/imagen corporativa de la empresa. Devolver exclusivamente 'SI' o 'NO'",
+      "SELLO_EMPRESA_PRESENTE": "Indicar SI o NO segun si al pie aparece un sello/estampa de la empresa (circular o rectangular, tinta). Devolver exclusivamente 'SI' o 'NO'",
+      "NOMBRE_RESPONSABLE": "Nombre completo de la persona responsable que firma la carta (representante de la empresa o del proveedor encargado de aplicar la NOM-035)",
+      "CARGO_RESPONSABLE": "Cargo o puesto del responsable, por ejemplo 'Representante Legal', 'Gerente de RH', 'Psicologo responsable', 'Consultor NOM-035'",
+      "TIPO_RESPONSABLE": "Indicar si es 'EMPRESA' (interno, area de RH/direccion) o 'PROVEEDOR' (externo, consultor o despacho que aplico la evaluacion)",
+      "FIRMA_RESPONSABLE_PRESENTE": "Indicar SI o NO segun si debajo del nombre del responsable se observa una firma manuscrita o digital visible. Devolver exclusivamente 'SI' o 'NO'",
+      "REFERENCIA_NOM035": "Texto o referencia explicita a la NOM-035-STPS-2018 o 'NOM-035' dentro del documento, devolver la cadena encontrada o vacio si no aparece"
+    },
+    "required_fields": [
+      "NOMBRE_COMPLETO_TRABAJADOR",
+      "FECHA_CARTA",
+      "NOMBRE_EMPRESA",
+      "RFC_EMPRESA",
+      "NOMBRE_RESPONSABLE",
+      "FIRMA_RESPONSABLE_PRESENTE",
+      "SELLO_EMPRESA_PRESENTE"
+    ],
+    "validation_rules": [
+      {
+        "field": "RFC_EMPRESA",
+        "rule_type": "regex",
+        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "message": "RFC de la empresa no cumple el formato valido (12 o 13 caracteres)"
+      },
+      {
+        "field": "FIRMA_RESPONSABLE_PRESENTE",
+        "rule_type": "boolean_true",
+        "message": "La firma del responsable debe estar presente en la carta"
+      },
+      {
+        "field": "SELLO_EMPRESA_PRESENTE",
+        "rule_type": "boolean_true",
+        "message": "El sello de la empresa debe estar presente en la carta"
+      },
+      {
+        "field": "LOGO_EMPRESA_PRESENTE",
+        "rule_type": "boolean_true",
+        "message": "El logotipo de la empresa debe aparecer en el encabezado"
+      },
+      {
+        "field": "FECHA_CARTA",
+        "rule_type": "date_max_age",
+        "pattern": "1",
+        "message": "La carta NOM-35 tiene mas de 1 año de emision, se considera no vigente"
+      }
+    ],
+    "validator_module": "validators.internal_formats"
+  }
+}

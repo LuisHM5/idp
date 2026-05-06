@@ -3,7 +3,7 @@
   "_comment": "Document type catalog. Add new types here without touching code.",
   "types": {
     "INE": {
-      "description": "Credencial para votar del INE",
+      "description": "Credencial para votar emitida por el INE (Instituto Nacional Electoral, antes IFE). Marcadores visuales unicos: texto 'INSTITUTO NACIONAL ELECTORAL' o 'IFE' en el frente, escudo nacional mexicano, fondo claro con franjas de color (verde/rojo/morado segun modelo), foto del titular, 'CLAVE DE ELECTOR' de 18 caracteres alfanumericos (no confundir con CURP), seccion electoral y distrito, codigo de barras y zona MRZ en el reverso. NO dice 'CEDULA PROFESIONAL' ni 'SEP' ni 'PASAPORTE'",
       "extraction_fields": [
         "NOMBRE_COMPLETO",
         "NOMBRE",
@@ -48,7 +48,7 @@
       "validator_module": "validators.identification"
     },
     "PASAPORTE": {
-      "description": "Pasaporte mexicano",
+      "description": "Pasaporte mexicano emitido por la Secretaria de Relaciones Exteriores (SRE). Marcadores visuales unicos: libreta con portada guinda/verde que dice 'ESTADOS UNIDOS MEXICANOS / PASAPORTE / PASSPORT' y escudo nacional. Pagina de datos con encabezados bilingues ('Surname/Apellido', 'Given names/Nombres', 'Nationality/Nacionalidad', 'Date of birth', 'Date of expiry'), numero de pasaporte alfanumerico y zona MRZ (dos lineas de texto con '<<<' al pie de la pagina). NO es una credencial plastica tipo INE ni una cedula",
       "extraction_fields": [
         "NOMBRE_COMPLETO",
         "NOMBRE",
@@ -90,7 +90,7 @@
       "validator_module": "validators.identification"
     },
     "CEDULA_PROFESIONAL": {
-      "description": "Cedula profesional",
+      "description": "Cedula profesional emitida por la SEP (Secretaria de Educacion Publica) / Direccion General de Profesiones. Marcadores visuales unicos: texto 'CEDULA PROFESIONAL' o 'CEDULA PARA EL EJERCICIO PROFESIONAL' prominente, logo de la SEP o texto 'Secretaria de Educacion Publica', numero de cedula de 7 u 8 digitos, nombre de la profesion u oficio autorizado ('LICENCIADO EN...', 'INGENIERO...', 'MEDICO CIRUJANO', etc.), institucion educativa que otorgo el titulo, fecha de expedicion. La version digital/nueva es una hoja con QR. NO dice 'INSTITUTO NACIONAL ELECTORAL', NO tiene clave de elector ni seccion electoral",
       "extraction_fields": [
         "NOMBRE_COMPLETO",
         "NOMBRE",
@@ -131,7 +131,7 @@
       "validator_module": "validators.identification"
     },
     "CONSTANCIA_SITUACION_FISCAL": {
-      "description": "Constancia de situacion fiscal del SAT",
+      "description": "Constancia de situacion fiscal emitida por el SAT (Servicio de Administracion Tributaria). Marcadores unicos: logo del SAT, texto 'Constancia de Situacion Fiscal' en el encabezado, RFC prominente de 12 o 13 caracteres, secciones 'Datos de Identificacion del Contribuyente', 'Datos del domicilio registrado', 'Regimenes' y 'Obligaciones'. Es un PDF generado con cadena original, sello digital y QR al pie. NO es una credencial con foto, NO es una factura",
       "extraction_fields": [
         "RFC",
         "CURP",
@@ -179,7 +179,7 @@
       "validator_module": "validators.fiscal"
     },
     "FORMATO_INTERNO_ALTA": {
-      "description": "Formato interno de alta",
+      "description": "Formato interno de la empresa para dar de ALTA a un empleado, cliente o registro. Marcadores unicos: titulo 'Formato de alta' / 'Solicitud de alta' / 'Alta de...', folio consecutivo interno, area o departamento solicitante, firma del solicitante al pie. Es un formulario corporativo interno (no un documento oficial de gobierno), frecuentemente con logo de la empresa en el encabezado. El titulo menciona explicitamente 'alta' (no 'baja' ni 'cambio de datos')",
       "extraction_fields": [
         "TIPO_FORMATO",
         "FOLIO_INTERNO",
@@ -228,7 +228,7 @@
       "validator_module": "validators.internal_formats"
     },
     "FORMATO_INTERNO_BAJA": {
-      "description": "Formato interno de baja",
+      "description": "Formato interno de la empresa para dar de BAJA a un empleado, cliente o registro. Marcadores unicos: titulo 'Formato de baja' / 'Solicitud de baja' / 'Baja de...', folio consecutivo, motivo de baja, area solicitante, firma. El titulo menciona explicitamente 'baja' (no 'alta' ni 'cambio de datos')",
       "extraction_fields": [
         "TIPO_FORMATO",
         "FOLIO_INTERNO",
@@ -275,7 +275,7 @@
       "validator_module": "validators.internal_formats"
     },
     "FORMATO_INTERNO_CAMBIO_DATOS": {
-      "description": "Formato interno de cambio de datos",
+      "description": "Formato interno de la empresa para CAMBIO / ACTUALIZACION / MODIFICACION de datos de un registro existente. Marcadores unicos: titulo 'Cambio de datos' / 'Actualizacion de datos' / 'Modificacion de...', incluye tipicamente un bloque 'Datos anteriores' y otro 'Datos nuevos', folio y firma. El titulo menciona explicitamente 'cambio', 'actualizacion' o 'modificacion' (no 'alta' ni 'baja')",
       "extraction_fields": [
         "TIPO_FORMATO",
         "FOLIO_INTERNO",
@@ -329,7 +329,7 @@
       "validator_module": null
     },
     "CURP": {
-      "description": "Constancia de CURP emitida por RENAPO",
+      "description": "Constancia de CURP emitida por RENAPO (Registro Nacional de Poblacion) / Secretaria de Gobernacion. Marcadores unicos: encabezado con la clave CURP de 18 caracteres prominente y su codigo de barras, texto 'Clave Unica de Registro de Poblacion', estatus ('CURP Certificada'), nombre del titular y entidad de registro. Es una hoja simple, NO es una credencial con foto (sin foto del titular), NO es cedula profesional ni CSF",
       "extraction_fields": [
         "CURP",
         "NOMBRE_COMPLETO",
@@ -359,7 +359,7 @@
       "validator_module": "validators.identification"
     },
     "FACTURA": {
-      "description": "Factura CFDI (PDF o XML)",
+      "description": "Factura CFDI 4.0 del SAT en representacion impresa (PDF) o XML. Marcadores unicos: texto 'Factura', 'CFDI' o 'Comprobante Fiscal Digital por Internet', 'Folio Fiscal' o 'UUID' con 36 caracteres (8-4-4-4-12), RFC del emisor y receptor, desglose de Subtotal/IVA/Total, cadena original del complemento de certificacion ('||1.1|...||') y sello digital del SAT. NO es una constancia de situacion fiscal, NO es una poliza",
       "extraction_fields": [
         "RFC_EMISOR",
         "NOMBRE_EMISOR",
@@ -417,7 +417,7 @@
       "validator_module": "validators.fiscal"
     },
     "POLIZA_SEGURO": {
-      "description": "Poliza de seguro (auto, vida, gastos medicos, etc.)",
+      "description": "Poliza de seguro de una aseguradora comercial (GNP, AXA, Qualitas, MetLife, Mapfre, HDI, Inbursa, etc.). Marcadores unicos: logo de la aseguradora en el encabezado, texto 'Poliza' con numero de poliza, ramo del seguro (auto, vida, gastos medicos, danos, etc.), vigencia con fecha inicio y fin, suma asegurada, primas y coberturas listadas. NO es una factura ni un CFDI",
       "extraction_fields": [
         "NUMERO_POLIZA",
         "ASEGURADORA",
