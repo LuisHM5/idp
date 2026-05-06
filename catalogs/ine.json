@@ -1,0 +1,48 @@
+{
+  "INE": {
+    "description": "Credencial INE/IFE: CLAVE DE ELECTOR (18 alfanum), seccion y distrito electoral, escudo nacional, codigo de barras y MRZ al reverso",
+    "extraction_fields": [
+      "NOMBRE_COMPLETO",
+      "NOMBRE",
+      "APELLIDO_PATERNO",
+      "APELLIDO_MATERNO",
+      "FECHA_NACIMIENTO",
+      "CURP",
+      "NUMERO_DOCUMENTO",
+      "VIGENCIA",
+      "DOMICILIO",
+      "TIPO_DOCUMENTO"
+    ],
+    "extraction_hints": {
+      "NOMBRE_COMPLETO": "Nombre completo del titular, usualmente en la parte frontal superior de la credencial",
+      "NOMBRE": "Solo el/los nombre(s) sin apellidos; separalos del NOMBRE_COMPLETO impreso",
+      "APELLIDO_PATERNO": "Primer apellido, extraido del NOMBRE_COMPLETO o de la MRZ al reverso",
+      "APELLIDO_MATERNO": "Segundo apellido, extraido del NOMBRE_COMPLETO o de la MRZ al reverso",
+      "CURP": "Clave CURP de 18 caracteres, ubicada en el reverso de la credencial debajo del codigo de barras",
+      "NUMERO_DOCUMENTO": "Clave de elector o numero de credencial, cadena alfanumerica en el frente",
+      "VIGENCIA": "Año de vigencia en formato YYYY, ubicado en el frente junto a la foto, indica hasta cuando es valida",
+      "FECHA_NACIMIENTO": "Fecha de nacimiento en formato DD/MM/YYYY, en el frente de la credencial",
+      "DOMICILIO": "Direccion completa del titular, en el frente debajo del nombre"
+    },
+    "required_fields": [
+      "NOMBRE_COMPLETO",
+      "CURP",
+      "NUMERO_DOCUMENTO",
+      "VIGENCIA"
+    ],
+    "validation_rules": [
+      {
+        "field": "CURP",
+        "rule_type": "regex",
+        "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+        "message": "CURP no cumple el patron oficial de 18 caracteres"
+      },
+      {
+        "field": "VIGENCIA",
+        "rule_type": "date_expiry",
+        "message": "El documento esta vencido"
+      }
+    ],
+    "validator_module": "validators.identification"
+  }
+}

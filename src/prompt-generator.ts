@@ -9,6 +9,10 @@ import { DOCUMENT_CATALOG, DocumentTypeEntry, loadCatalog } from "./document-cat
 
 /**
  * Generate the classification prompt listing all known document types.
+ *
+ * SIZE CONSTRAINT: This prompt ends up in a Lambda env var; total env vars
+ * per Lambda must stay under ~4KB. Keep descriptions terse and focused on
+ * unique discriminators, not exhaustive detail.
  */
 export function generateClassificationPrompt(
   catalog: DocumentTypeEntry[] = DOCUMENT_CATALOG
@@ -21,27 +25,21 @@ export function generateClassificationPrompt(
     })
     .join("\n");
 
-  return `You are a document classifier for Mexican official documents. Analyze the attached document and classify it into exactly one category.
+  return `Clasifica el documento adjunto en UNA categoria mexicana oficial.
 
-Allowed categories (read each description carefully and pick the one that best matches the visual and textual evidence in the document):
+Categorias (lee la descripcion completa y elige la que mejor coincida con la evidencia visual y textual):
 ${typesList}
-- OTRO: cualquier documento que no encaje claramente en los anteriores
+- OTRO: no encaja claramente en ninguna
 
-Decision guidance:
-- Read the full description of every category before choosing.
-- Prefer the most specific category that matches. Do not default to INE just because you see a photo ID.
-- Use OTRO only when no category clearly applies, not as a tiebreaker.
-- Base the decision on concrete evidence: headings, logos, issuing institution names, document layout, and unique identifiers visible in the document.
+Guia:
+- Usa marcas concretas: encabezados, logos, emisor, identificadores.
+- Prefiere la categoria mas especifica; no caigas a INE solo por ver foto+ID.
+- OTRO solo si ninguna aplica claramente.
 
-Rules:
-- Return ONLY a raw JSON object, nothing else.
-- Do NOT wrap in markdown code blocks.
-- Do NOT add any explanation or text before or after the JSON.
+Responde SOLO JSON crudo, sin markdown:
+{"documentClassification":"CATEGORIA"}
 
-Return exactly this format:
-{"documentClassification":"CATEGORY_HERE"}
-
-Attached document:
+Documento:
 
 `;
 }
@@ -64,11 +62,14 @@ export function generateProcessingPrompt(
 ${typeSections}
 OTRO: any relevant entities
 
-Rules:
-- ONLY raw JSON, no markdown, no explanation.
-- Types UPPERCASE with underscores. Values exact from document.
-- Do NOT invent missing data.
-- FIRMA_PRESENTE: "SI" or "NO".
+Reglas ESTRICTAS:
+- Transcribe EXACTO carácter por carácter como aparece; NO corrijas, NO completes abreviaturas (si ves "Mtz" devuelve "Mtz", NO "Martinez").
+- NO inventes datos faltantes; si no es legible usa "".
+- Para INE: separa APELLIDO_PATERNO, APELLIDO_MATERNO y NOMBRE en campos distintos. Si solo ves "NOMBRE_COMPLETO", intenta separar usando la CURP y MRZ del reverso como referencia.
+- Verifica que las 4 primeras letras del CURP coincidan con primera letra apellido paterno, primera vocal interna de apellido paterno, primera letra apellido materno, primera letra del nombre. Si hay discrepancia, RELEE el nombre antes de responder.
+- FIRMA_PRESENTE: "SI" o "NO".
+- Valores en MAYÚSCULAS cuando el documento los muestra así.
+- SOLO JSON crudo, sin markdown, sin explicación.
 
 {"documentClassification":"TYPE","result":{"entities":[{"type":"FIELD","value":"VALUE"}]}}
 
