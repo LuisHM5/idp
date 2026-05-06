@@ -1,0 +1,70 @@
+/**
+ * Prompt Generator - Dynamically builds Bedrock prompts from the Document Catalog.
+ *
+ * IMPORTANT: The processing prompt is stored as a Lambda env var (4KB limit).
+ * Hints are kept short and only for required fields to stay under the limit.
+ */
+
+import { DOCUMENT_CATALOG, DocumentTypeEntry, loadCatalog } from "./document-catalog";
+
+/**
+ * Generate the classification prompt listing all known document types.
+ */
+export function generateClassificationPrompt(
+  catalog: DocumentTypeEntry[] = DOCUMENT_CATALOG
+): string {
+  const typesList = catalog
+    .filter((t) => t.typeId !== "OTRO")
+    .map((t) => `- ${t.typeId}`)
+    .join("\n");
+
+  return `You are a document classifier. Analyze the attached document and classify it into exactly one category.
+
+Allowed categories:
+${typesList}
+- OTRO
+
+Rules:
+- Return ONLY a raw JSON object, nothing else.
+- Do NOT wrap in markdown code blocks.
+- Do NOT add any explanation or text before or after the JSON.
+- If the document is unclear or doesn't match any category, use OTRO.
+
+Return exactly this format:
+{"documentClassification":"CATEGORY_HERE"}
+
+Attached document:
+
+`;
+}
+
+/**
+ * Generate the processing/extraction prompt.
+ * MUST stay under 3KB to fit in Lambda 4KB env var limit with other vars.
+ * No hints in prompt - they're in the catalog for documentation only.
+ */
+export function generateProcessingPrompt(
+  catalog: DocumentTypeEntry[] = DOCUMENT_CATALOG
+): string {
+  const typeSections = catalog
+    .filter((t) => t.extractionFields.length > 0)
+    .map((t) => `${t.typeId}: ${t.extractionFields.join(", ")}`)
+    .join("\n");
+
+  return `Document classified as [ACTUAL_CLASSIFICATION]. Extract fields by type:
+
+${typeSections}
+OTRO: any relevant entities
+
+Rules:
+- ONLY raw JSON, no markdown, no explanation.
+- Types UPPERCASE with underscores. Values exact from document.
+- Do NOT invent missing data.
+- FIRMA_PRESENTE: "SI" or "NO".
+
+{"documentClassification":"TYPE","result":{"entities":[{"type":"FIELD","value":"VALUE"}]}}
+
+Document:
+
+`;
+}

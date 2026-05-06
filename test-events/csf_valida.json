@@ -1,0 +1,20 @@
+{
+  "documentId": "test-csf-001",
+  "classificationResult": {
+    "documentClassification": "CONSTANCIA_SITUACION_FISCAL"
+  },
+  "processingResult": {
+    "result": {
+      "entities": [
+        { "type": "RFC", "value": "XAXX010101000" },
+        { "type": "CURP", "value": "XAXX010101HDFRRX09" },
+        { "type": "NOMBRE_O_RAZON_SOCIAL", "value": "Empresa Demo SA de CV" },
+        { "type": "REGIMEN_FISCAL", "value": "601 - General de Ley" },
+        { "type": "CODIGO_POSTAL", "value": "06600" },
+        { "type": "FECHA_EMISION", "value": "2025-01-15" },
+        { "type": "ESTATUS_EN_PADRON", "value": "ACTIVO" },
+        { "type": "ACTIVIDAD_ECONOMICA", "value": "Comercio al por menor" }
+      ]
+    }
+  }
+}

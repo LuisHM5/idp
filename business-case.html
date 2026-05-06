@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Business Case - Sistema de Validación y Extracción Inteligente de Documentos</title>
+    <style>
+        @page { size: A4; margin: 0; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            line-height: 1.4;
+            color: #333;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .page {
+            width: 210mm;
+            min-height: 297mm;
+            padding: 20mm;
+            margin: 10mm auto;
+            background: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            position: relative;
+            box-sizing: border-box;
+        }
+        .confidential {
+            position: absolute;
+            top: 10mm;
+            right: 10mm;
+            color: #990000;
+            font-weight: bold;
+            font-size: 10pt;
+            border: 1px solid #990000;
+            padding: 2px 5px;
+        }
+        .header-main {
+            border-bottom: 3px solid #990000;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        h1 { color: #990000; margin: 0; font-size: 24pt; }
+        h2 { color: #990000; border-bottom: 1px solid #ccc; margin-top: 25px; font-size: 16pt; }
+        h3 { color: #555; margin-top: 15px; font-size: 13pt; }
+        .brand { font-weight: bold; color: #990000; font-size: 18pt; }
+        
+        .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        .meta-table th { background: #f2f2f2; text-align: left; padding: 8px; border: 1px solid #ddd; width: 25%; }
+        .meta-table td { padding: 8px; border: 1px solid #ddd; }
+
+        .data-table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 10pt; }
+        .data-table th { background: #990000; color: white; padding: 10px; border: 1px solid #770000; }
+        .data-table td { padding: 8px; border: 1px solid #ddd; vertical-align: top; }
+        .data-table tr:nth-child(even) { background: #f9f9f9; }
+
+        .highlight { background-color: #ffff00; font-weight: bold; }
+
+        /* Gráficos de Alto Impacto CSS */
+        .chart-container { margin: 20px 0; padding: 15px; border: 1px solid #eee; background: #fafafa; border-radius: 5px; }
+        .chart-title { font-weight: bold; margin-bottom: 10px; color: #333; text-align: center; }
+        .bar-wrapper { margin-bottom: 15px; }
+        .bar-label { display: flex; justify-content: space-between; font-size: 9pt; margin-bottom: 5px; }
+        .bar-background { background: #ddd; height: 18px; border-radius: 3px; overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2); }
+        .bar-fill { background: linear-gradient(90deg, #990000, #ff3333); height: 100%; display: flex; align-items: center; justify-content: flex-end; padding-right: 5px; color: white; font-size: 8pt; font-weight: bold; transition: width 1s; }
+        .bar-fill.gray { background: #555; }
+
+        .footer-signatures { margin-top: 40px; width: 100%; }
+        .firma-celda { border-top: 1px solid #333; padding-top: 10px; text-align: center; font-size: 9pt; width: 30%; }
+    </style>
+</head>
+<body>
+
+<!-- PÁGINA 1 -->
+<div class="page">
+    <div class="confidential">CONFIDENCIAL</div>
+    <div class="header-main">
+        <h1>Business Case</h1>
+        <div class="brand">alsuper</div>
+    </div>
+
+    <table class="meta-table">
+        <tr>
+            <th>Nombre de proyecto</th>
+            <td>Sistema de Validación y Extracción Inteligente de Documentos</td>
+            <th>Fecha de elaboración</th>
+            <td>05 de Mayo de 2026</td>
+        </tr>
+        <tr>
+            <th>Versión</th>
+            <td>V1.0</td>
+            <th>Departamento Solicitante</th>
+            <td>Administración / Operaciones</td>
+        </tr>
+        <tr>
+            <th>Solicitado por:</th>
+            <td colspan="3">[PENDIENTE PARA REVISIÓN]</td>
+        </tr>
+    </table>
+
+    <h2>RESUMEN EJECUTIVO</h2>
+    <p>Este proyecto propone la implementación de una solución automatizada basada en Inteligencia Artificial (Amazon Bedrock) para la validación y extracción de datos de documentos clave como INEs, constancias fiscales y facturas. Actualmente, este proceso es realizado manualmente por más de 50 colaboradores, lo que genera cuellos de botella operativos, errores de captura y retrasos en trámites y pagos. Con una inversión operativa mínima (desde $10 USD mensuales) y un tiempo de desarrollo de apenas un mes, el proyecto busca recuperar cientos de horas de capacidad instalada, permitiendo que el equipo se enfoque en gestión estratégica y no en tareas mecánicas de tecleo.</p>
+
+    <h2>ANTECEDENTES Y OBJETIVOS</h2>
+    <h3>Antecedentes</h3>
+    <p>Hoy en día, el flujo de revisión documental en Alsuper es un proceso 100% manual. Diversas áreas del negocio detienen su operación primaria para validar la autenticidad y capturar datos de documentos oficiales. Esta dependencia del factor humano ha derivado en falta de enfoque por fatiga visual, provocando errores en RFCs y datos fiscales que impactan directamente en el flujo de facturación y cumplimiento legal.</p>
+    
+    <h3>Objetivos</h3>
+    <ul>
+        <li><strong>Automatización:</strong> Eliminar el chequeo manual en documentos oficiales y formatos internos.</li>
+        <li><strong>Precisión:</strong> Reducir a cero el error humano en la captura de información crítica (RFC, Nombres, Direcciones).</li>
+        <li><strong>Velocidad:</strong> Acelerar el procesamiento de trámites y facturas mediante integración directa a sistemas internos.</li>
+        <li><strong>Eficiencia:</strong> Devolver tiempo productivo a más de 50 colaboradores para tareas administrativas de alto nivel.</li>
+    </ul>
+
+    <h2>SOLUCIÓN</h2>
+    <p>Se implementará una arquitectura *serverless* en AWS utilizando <strong>Amazon Bedrock</strong> como motor de visión e inteligencia. El sistema recibirá imágenes o PDFs, extraerá los campos requeridos con una precisión superior a la humana y depositará los datos directamente en los flujos y sistemas de Alsuper. Esto crea una vía rápida para los trámites, eliminando correos de notificación y pasos intermedios de validación física.</p>
+
+    <h2>PROCESO / FLUJO ACTUAL</h2>
+    <p>El flujo actual es un modelo de "trabajo bruto" masivo: el documento llega físicamente o por correo, un colaborador debe abrirlo, verificar visualmente su vigencia, capturar los datos campo por campo en el sistema interno y, a menudo, avisar a otra área que el proceso está listo. Este ciclo se repite miles de veces al mes, disperso en múltiples departamentos, lo que hace imposible la trazabilidad y estandarización.</p>
+</div>
+
+<!-- PÁGINA 2 -->
+<div class="page">
+    <div class="header-main">
+        <h1>Business Case (Cont.)</h1>
+        <div class="brand">alsuper</div>
+    </div>
+
+    <h2>ANÁLISIS FINANCIERO</h2>
+    <h3>Inversión y Costos Operativos (Proyección Mensual)</h3>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Volumen Mensual</th>
+                <th>Costo Estiman (USD)</th>
+                <th>Costo por Página</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1,000 páginas</td>
+                <td>~$10.00</td>
+                <td>$0.010</td>
+            </tr>
+            <tr>
+                <td>5,000 páginas</td>
+                <td>~$29.00</td>
+                <td>$0.006</td>
+            </tr>
+            <tr>
+                <td>10,000 páginas</td>
+                <td>~$52.00</td>
+                <td>$0.005</td>
+            </tr>
+            <tr>
+                <td>50,000 páginas</td>
+                <td>~$250.00</td>
+                <td>$0.005</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><em>*Costos basados en consumo de servicios AWS (Bedrock, KMS, Step Functions). Desarrollo estimado en 1 mes.</em></p>
+
+    <h2>ANÁLISIS COSTO-BENEFICIO</h2>
+    <div class="chart-container">
+        <div class="chart-title">Impacto en la Capacidad Operativa (Horas/Mes)</div>
+        <div class="bar-wrapper">
+            <div class="bar-label"><span>Proceso Manual Actual (50+ personas)</span><span class="highlight">[PENDIENTE] hrs</span></div>
+            <div class="bar-background"><div class="bar-fill gray" style="width: 100%;">100% Gasto</div></div>
+        </div>
+        <div class="bar-wrapper">
+            <div class="bar-label"><span>Con Solución IA (Ahorro estimado del 80%)</span><span>-80% Tiempo</span></div>
+            <div class="bar-background"><div class="bar-fill" style="width: 20%;">20% Esfuerzo</div></div>
+        </div>
+    </div>
+    <p>El beneficio principal reside en la <strong>Recuperación de Capacidad</strong>. Si estimamos que 50 personas pierden solo 1 hora al día en estas tareas, estamos hablando de un ahorro potencial de más de 1,000 horas mensuales, lo cual supera por mucho el costo de la tecnología (~$200 USD mensuales para volúmenes altos).</p>
+
+    <h2>RETORNO DE INVERSIÓN</h2>
+    <p>Dada la baja inversión inicial y el costo operativo marginal por página, el proyecto alcanza su <strong>punto de equilibrio en el primer mes de operación</strong>. El ROI es masivo al contrastar el costo de la plataforma contra la nómina administrativa dedicada hoy al "tecleo" manual.</p>
+</div>
+
+<!-- PÁGINA 3 -->
+<div class="page">
+    <div class="header-main">
+        <h1>Análisis de Riesgos y Alternativas</h1>
+        <div class="brand">alsuper</div>
+    </div>
+
+    <h2>EVALUACIÓN DE ALTERNATIVAS</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Criterio</th>
+                <th>Solución Propuesta (AWS IA)</th>
+                <th>Software Externo</th>
+                <th>Status Quo (Seguir Igual)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Costo</strong></td>
+                <td>Extremadamente bajo ($10-$250 USD)</td>
+                <td>Alto (Licenciamiento costoso)</td>
+                <td>Oculto pero muy alto (Nómina)</td>
+            </tr>
+            <tr>
+                <td><strong>Flexibilidad</strong></td>
+                <td>Total (A medida de Alsuper)</td>
+                <td>Limitada al estándar del software</td>
+                <td>Nula</td>
+            </tr>
+            <tr>
+                <td><strong>Riesgo de Error</strong></td>
+                <td>Mínimo (Validación por IA)</td>
+                <td>Bajo</td>
+                <td>Muy Alto (Fatiga humana)</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h2>KPI´s DE ÉXITO (A 6 MESES)</h2>
+    <div class="chart-container">
+        <div class="chart-title">Metas de Eficiencia y Calidad</div>
+        <div class="bar-wrapper">
+            <div class="bar-label"><span>Reducción de Tiempo en Captura</span><span>Meta: 80%</span></div>
+            <div class="bar-background"><div class="bar-fill" style="width: 80%;">80%</div></div>
+        </div>
+        <div class="bar-wrapper">
+            <div class="bar-label"><span>Documentos Validados Automáticamente</span><span>Meta: 100%</span></div>
+            <div class="bar-background"><div class="bar-fill" style="width: 100%;">100%</div></div>
+        </div>
+    </div>
+
+    <h2>ANÁLISIS DE SUPUESTOS Y RIESGOS</h2>
+    <table class="data-table">
+        <tr>
+            <th style="width: 70%;">CRITERIO</th>
+            <th style="width: 15%; text-align: center;">SI</th>
+            <th style="width: 15%; text-align: center;">NO</th>
+        </tr>
+        <tr><td>¿Reduce el riesgo operativo para la organización?</td><td style="text-align:center;">X</td><td></td></tr>
+        <tr><td>¿Reduce el riesgo de incumplimiento (Errores Fiscales)?</td><td style="text-align:center;">X</td><td></td></tr>
+        <tr><td>¿Reduce el riesgo financiero (Retraso en Facturas)?</td><td style="text-align:center;">X</td><td></td></tr>
+        <tr><td>¿Reduce el riesgo reputacional con proveedores?</td><td style="text-align:center;">X</td><td></td></tr>
+    </table>
+
+    <table class="footer-signatures" style="margin-top: 100px;">
+        <tr>
+            <td class="firma-celda">__________________________________<br>Líder de Proyecto</td>
+            <td style="width: 5%;"></td>
+            <td class="firma-celda">__________________________________<br>Gerente General</td>
+            <td style="width: 5%;"></td>
+            <td class="firma-celda">__________________________________<br>Sponsor de Área</td>
+        </tr>
+    </table>
+</div>
+
+</body>
+</html>

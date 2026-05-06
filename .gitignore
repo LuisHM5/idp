@@ -1,0 +1,39 @@
+# Build output
+dist/
+*.js
+*.d.ts
+*.js.map
+
+# Keep .mjs files (scripts and custom validators are source, not build output)
+!scripts/*.mjs
+!src/**/*.mjs
+
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+
+# CDK
+cdk.out/
+cdk.context.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Test docs
+test-docs/**
+
+**/node_modules
+**/dist
+**/cdk.*

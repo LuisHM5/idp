@@ -1,0 +1,354 @@
+# Document Validator
+
+Sistema extensible de validación y extracción inteligente de documentos mexicanos usando Amazon Bedrock + validación determinística configurable.
+
+---
+
+## Cómo Funciona
+
+```
+┌─────────┐     ┌───────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌─────────────┐
+│  Upload │────▶│    S3     │────▶│  Bedrock          │────▶│  Lambda          │────▶│ EventBridge │
+│  (API)  │     │  raw/     │     │  Clasificación +  │     │  Validación      │     │ Notificación│
+└─────────┘     └───────────┘     │  Extracción       │     │  Determinística  │     └─────────────┘
+                                  └──────────────────┘     └──────────────────┘
+```
+
+1. **Upload**: Documento llega via API Gateway (base64 JSON) → se guarda en S3
+2. **Clasificación**: Bedrock identifica el tipo (INE, CSF, PASAPORTE, etc.)
+3. **Extracción**: Bedrock extrae campos específicos usando `extraction_hints` como guía
+4. **Validación**: Lambda Python aplica reglas determinísticas (regex, fechas, presencia)
+5. **Custom**: Opcionalmente ejecuta scripts Node.js para lógica avanzada
+6. **Resultado**: Emite evento a EventBridge con status APROBADO/RECHAZADO/REQUIERE_REVISION
+
+### ¿Cómo sabe Bedrock dónde buscar cada campo?
+
+El prompt de extracción incluye **extraction_hints** por campo:
+
+```
+Si es INE, extrae:
+NOMBRE_COMPLETO, CURP, VIGENCIA, ...
+
+Pistas para localizar campos en INE:
+  - NOMBRE_COMPLETO: Nombre completo del titular, en la parte frontal superior
+  - CURP: Clave de 18 caracteres, en el reverso debajo del código de barras
+  - VIGENCIA: Año en formato YYYY, junto a la foto en el frente
+```
+
+Estos hints se configuran en el JSON sin tocar código.
+
+---
+
+## Requisitos
+
+- Node.js 20+
+- pnpm 10+
+- AWS CLI configurado
+- AWS CDK (`npm install -g aws-cdk`)
+
+---
+
+## Instalación
+
+```bash
+cd documents-validator
+pnpm install
+```
+
+---
+
+## Build y Deploy
+
+```bash
+# Compilar TypeScript
+pnpm build
+
+# Ver qué se va a desplegar (diff contra lo actual)
+pnpm diff
+
+# Desplegar
+pnpm deploy
+
+# Desplegar con DynamoDB catalog habilitado (hot-reload)
+# Editar src/index.ts: enableDynamoCatalog: true
+pnpm build && pnpm deploy
+```
+
+---
+
+## Scripts Disponibles
+
+| Comando | Descripción |
+|---------|-------------|
+| `pnpm build` | Compilar TypeScript |
+| `pnpm deploy` | Desplegar stack a AWS |
+| `pnpm diff` | Ver cambios pendientes vs AWS |
+| `pnpm synth` | Generar CloudFormation template |
+| `pnpm list-types` | Listar tipos del JSON config local |
+| `pnpm preview-prompts` | Ver los prompts que recibirá Bedrock |
+| `pnpm add-type` | Agregar tipo documental al JSON |
+| `pnpm add-validator` | Crear custom validator Node.js |
+| `pnpm db-put-type` | Insertar tipo en DynamoDB (hot-reload) |
+| `pnpm db-list-types` | Listar tipos en DynamoDB |
+
+---
+
+## Agregar un Nuevo Tipo Documental
+
+### Opción A: JSON config (requiere redeploy)
+
+```bash
+pnpm add-type \
+  --type ACTA_NACIMIENTO \
+  --description "Acta de nacimiento" \
+  --fields "NOMBRE_COMPLETO,CURP,FECHA_NACIMIENTO,ENTIDAD,MUNICIPIO,NUMERO_ACTA" \
+  --required "NOMBRE_COMPLETO,CURP" \
+  --rules '[{"field":"CURP","rule_type":"regex","pattern":"^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$","message":"CURP invalido"}]'
+
+# Luego redesplegar
+pnpm build && pnpm deploy
+```
+
+Para ver ayuda completa: `pnpm add-type --help`
+
+### Opción B: DynamoDB (efecto inmediato, sin redeploy)
+
+```bash
+pnpm db-put-type \
+  --type ACTA_NACIMIENTO \
+  --description "Acta de nacimiento" \
+  --fields "NOMBRE_COMPLETO,CURP,FECHA_NACIMIENTO,ENTIDAD,MUNICIPIO" \
+  --required "NOMBRE_COMPLETO,CURP" \
+  --rules '[{"field":"CURP","rule_type":"regex","pattern":"^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$"}]' \
+  --hints '{"CURP":"CURP de 18 caracteres, usualmente en la parte inferior del acta"}'
+```
+
+Para ver ayuda: `pnpm db-put-type --help`
+
+Para listar lo que hay en DynamoDB: `pnpm db-list-types`
+
+### Opción C: Editar el JSON directamente
+
+Archivo: `src/document-processing/resources/enrichment-lambda/config/document_types.json`
+
+```json
+{
+  "types": {
+    "MI_NUEVO_TIPO": {
+      "description": "Descripción del documento",
+      "extraction_fields": ["CAMPO1", "CAMPO2", "CAMPO3"],
+      "extraction_hints": {
+        "CAMPO1": "Dónde encontrar este campo en el documento",
+        "CAMPO2": "Formato esperado y ubicación visual"
+      },
+      "required_fields": ["CAMPO1"],
+      "validation_rules": [
+        {"field": "CAMPO1", "rule_type": "regex", "pattern": "^[A-Z]+$", "message": "Error personalizado"}
+      ],
+      "validator_module": null,
+      "custom_validator": null
+    }
+  }
+}
+```
+
+---
+
+## Agregar Extraction Hints
+
+Los hints le dicen a Bedrock **dónde y cómo** encontrar cada campo en el documento.
+
+Editar directamente en el JSON config:
+
+```json
+"extraction_hints": {
+  "RFC": "RFC de 12 o 13 caracteres, aparece en la parte superior junto a 'RFC:'",
+  "VIGENCIA": "Fecha de vencimiento en formato DD/MM/YYYY, parte inferior derecha",
+  "FIRMA_PRESENTE": "Responder SI si hay firma manuscrita visible en la parte inferior, NO si no"
+}
+```
+
+O al agregar un tipo via CLI:
+
+```bash
+pnpm db-put-type --type MI_TIPO --fields "RFC,NOMBRE" \
+  --hints '{"RFC":"RFC prominente en la parte superior del documento"}'
+```
+
+---
+
+## Agregar Validación Custom (Node.js)
+
+Para lógica que va más allá de regex/fechas/presencia (APIs externas, cálculos, cruces):
+
+```bash
+# Crear el template
+pnpm add-validator --name validate_rfc_sat
+
+# O crear y asociar a un tipo en un solo paso
+pnpm add-validator --name validate_rfc_sat --type CONSTANCIA_SITUACION_FISCAL
+```
+
+Editar el archivo generado en `custom_validators/validate_rfc_sat.mjs`:
+
+```javascript
+export async function validate(entityMap, context) {
+  const rfc = entityMap["RFC"];
+  if (!rfc) return [];
+
+  // Tu lógica custom aquí (APIs, cálculos, etc.)
+  const isValid = rfc.length >= 12;
+
+  return [{
+    field: "RFC",
+    rule: "custom:validate_rfc_sat",
+    valid: isValid,
+    message: isValid ? "RFC verificado" : "RFC inválido"
+  }];
+}
+```
+
+Luego redesplegar: `pnpm build && pnpm deploy`
+
+---
+
+## Tipos de Reglas de Validación
+
+| rule_type | Qué hace | Requiere `pattern` | Ejemplo |
+|-----------|----------|-------------------|---------|
+| `regex` | Valida campo contra expresión regular | Sí | RFC, CURP, código postal |
+| `date_expiry` | Verifica que la fecha sea futura | No | VIGENCIA |
+| `presence` | Verifica que el campo exista y no esté vacío | No | Campos obligatorios |
+| `boolean_true` | Verifica valor afirmativo (SI, TRUE, 1, PRESENTE) | No | FIRMA_PRESENTE |
+
+### Patrones Regex Comunes
+
+| Campo | Patrón | Descripción |
+|-------|--------|-------------|
+| RFC persona física | `^[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}$` | 13 caracteres |
+| RFC persona moral | `^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$` | 12 caracteres |
+| RFC ambos | `^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$` | 12 o 13 caracteres |
+| CURP | `^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$` | 18 caracteres |
+| Código postal | `^\d{5}$` | 5 dígitos |
+| Email | `^[\w.-]+@[\w.-]+\.\w+$` | Formato email |
+
+---
+
+## Estructura del Proyecto
+
+```
+documents-validator/
+├── src/
+│   ├── index.ts                         # CDK Stack (infraestructura)
+│   ├── document-catalog.ts              # Lee JSON config para generar prompts
+│   ├── prompt-generator.ts              # Genera prompts Bedrock con hints
+│   └── document-processing/resources/
+│       ├── enrichment-lambda/
+│       │   ├── handler.py               # Motor de validación (NO modificar)
+│       │   ├── document_catalog.py      # Carga config JSON + DynamoDB
+│       │   ├── config/
+│       │   │   ├── document_types.json  # ← CATÁLOGO PRINCIPAL (editar aquí)
+│       │   │   └── schema.json          # JSON Schema para autocompletado
+│       │   ├── validators/
+│       │   │   ├── base.py              # Utilidades compartidas (regex, fechas)
+│       │   │   ├── identification.py    # INE, Pasaporte, Cédula
+│       │   │   ├── fiscal.py            # Constancia Situación Fiscal
+│       │   │   └── internal_formats.py  # Formatos internos
+│       │   └── custom_validators/
+│       │       ├── README.md            # Guía de custom validators
+│       │       └── example_curp_checkdigit.mjs  # Ejemplo funcional
+│       └── upload-lambda/
+│           ├── index.mjs                # API de upload
+│           └── package.json
+├── scripts/
+│   ├── add-document-type.mjs            # CLI: agregar tipo al JSON
+│   ├── add-custom-validator.mjs         # CLI: crear custom validator
+│   ├── db-put-type.mjs                  # CLI: insertar tipo en DynamoDB
+│   ├── db-list-types.mjs               # CLI: listar tipos en DynamoDB
+│   ├── list-types.mjs                   # CLI: listar tipos del JSON local
+│   └── preview-prompts.mjs             # CLI: ver prompts generados
+├── package.json
+└── tsconfig.json
+```
+
+---
+
+## Configuración del Stack
+
+En `src/index.ts`:
+
+```typescript
+new BedrockDocumentProcessingStack(app, "DocValidator", {
+  // Habilitar DynamoDB para hot-reload de tipos (sin redeploy)
+  enableDynamoCatalog: true,
+
+  // Recargar catálogo en cada invocación (para cambios inmediatos en DynamoDB)
+  forceReloadCatalog: true,
+});
+```
+
+---
+
+## Prioridad de Carga del Catálogo
+
+Cuando la Lambda se ejecuta, carga tipos en este orden (último gana):
+
+1. **JSON local** (`config/document_types.json`) — siempre disponible, desplegado con la Lambda
+2. **DynamoDB** (si `CATALOG_TABLE` está configurado) — sobreescribe tipos del JSON
+
+Esto permite:
+- Tener una base estable en JSON (versionada en git)
+- Hacer cambios rápidos en DynamoDB sin redeploy
+- DynamoDB gana si hay conflicto de type_id
+
+---
+
+## Flujo de Trabajo Recomendado
+
+### Para desarrollo normal:
+1. Editar `config/document_types.json` (o usar `pnpm add-type`)
+2. `pnpm build`
+3. `pnpm preview-prompts` (verificar que los prompts se ven bien)
+4. `pnpm deploy`
+
+### Para cambios urgentes en producción:
+1. `pnpm db-put-type --type NUEVO_TIPO --fields "..." --required "..."`
+2. Listo — efecto inmediato
+
+### Para validación custom:
+1. `pnpm add-validator --name mi_validador --type MI_TIPO`
+2. Editar `custom_validators/mi_validador.mjs`
+3. `pnpm build && pnpm deploy`
+
+---
+
+## Resultado de Validación (Canonical Result)
+
+Cada documento procesado produce:
+
+```json
+{
+  "documentId": "550e8400-e29b-41d4-a716-446655440000",
+  "documentClassification": "INE",
+  "extractedEntities": {
+    "NOMBRE_COMPLETO": "Juan Pérez López",
+    "CURP": "PELJ850101HDFRPN09",
+    "VIGENCIA": "2029"
+  },
+  "validation": {
+    "status": "APROBADO",
+    "checks": [
+      {"field": "CURP", "rule": "regex", "valid": true, "message": "CURP matches pattern"},
+      {"field": "VIGENCIA", "rule": "date_expiry", "valid": true, "message": "Document has not expired"},
+      {"field": "NOMBRE_COMPLETO", "rule": "presence", "valid": true, "message": "Required field present"}
+    ],
+    "summary": "All 3 checks passed"
+  },
+  "processedAt": "2025-05-05T10:30:00Z"
+}
+```
+
+Status posibles:
+- **APROBADO**: Todas las validaciones pasaron
+- **RECHAZADO**: Al menos una validación falló
+- **REQUIERE_REVISION**: No se aplicaron reglas (tipo desconocido o sin reglas)

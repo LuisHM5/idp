@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Document Types Catalog",
+  "description": "Configuración del catálogo de tipos documentales para el sistema de validación.",
+  "type": "object",
+  "required": ["types"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "types": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/DocumentType"
+      }
+    }
+  },
+  "definitions": {
+    "DocumentType": {
+      "type": "object",
+      "required": ["extraction_fields", "required_fields", "validation_rules"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Descripción legible del tipo documental"
+        },
+        "extraction_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Campos que Bedrock debe extraer de este tipo de documento"
+        },
+        "extraction_hints": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Pistas por campo que le dicen a Bedrock DONDE encontrar cada dato en el documento (ubicacion, formato esperado, contexto visual)"
+        },
+        "required_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Campos obligatorios (se valida presencia)"
+        },
+        "validation_rules": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ValidationRule" },
+          "description": "Reglas de validación determinística"
+        },
+        "validator_module": {
+          "type": ["string", "null"],
+          "description": "Módulo Python de validación (ej: validators.identification)",
+          "examples": ["validators.identification", "validators.fiscal", "validators.internal_formats"]
+        },
+        "custom_validator": {
+          "type": ["string", "null"],
+          "description": "Nombre del script Node.js custom (sin .mjs) en custom_validators/",
+          "examples": ["validate_rfc_sat", "validate_domicilio"]
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Si es false, el tipo se ignora"
+        }
+      }
+    },
+    "ValidationRule": {
+      "type": "object",
+      "required": ["field", "rule_type"],
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Nombre del campo a validar (debe coincidir con extraction_fields)"
+        },
+        "rule_type": {
+          "type": "string",
+          "enum": ["regex", "date_expiry", "presence", "boolean_true"],
+          "description": "Tipo de regla: regex (patrón), date_expiry (fecha futura), presence (no vacío), boolean_true (valor afirmativo)"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Expresión regular (solo para rule_type: regex)"
+        },
+        "message": {
+          "type": "string",
+          "description": "Mensaje de error personalizado cuando la validación falla"
+        }
+      },
+      "if": { "properties": { "rule_type": { "const": "regex" } } },
+      "then": { "required": ["pattern"] }
+    }
+  }
+}

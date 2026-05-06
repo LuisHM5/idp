@@ -1,0 +1,37 @@
+{
+  "name": "documents-validator",
+  "version": "1.0.0",
+  "description": "Sistema extensible de validacion documental con Amazon Bedrock",
+  "main": "dist/document-validation-stack.js",
+  "scripts": {
+    "build": "node scripts/patch-construct.mjs && tsc",
+    "synth": "npx cdk synth",
+    "deploy": "npx cdk deploy --require-approval never",
+    "diff": "npx cdk diff",
+    "destroy": "npx cdk destroy",
+    "destroy:full": "node scripts/destroy-full.mjs",
+    "add-type": "node scripts/add-document-type.mjs",
+    "add-validator": "node scripts/add-custom-validator.mjs",
+    "db-put-type": "node scripts/db-put-type.mjs",
+    "db-sync": "node scripts/db-sync-type.mjs",
+    "db-list-types": "node scripts/db-list-types.mjs",
+    "list-types": "node scripts/list-types.mjs",
+    "preview-prompts": "node scripts/preview-prompts.mjs",
+    "test-local": "node scripts/test-local.mjs",
+    "test-e2e": "node scripts/test-e2e.mjs",
+    "track": "node scripts/track-execution.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.20.0",
+  "dependencies": {
+    "@cdklabs/cdk-appmod-catalog-blueprints": "^1.17.0",
+    "aws-cdk-lib": "^2.252.0",
+    "constructs": "10.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "ts-node": "^10.9.2"
+  }
+}

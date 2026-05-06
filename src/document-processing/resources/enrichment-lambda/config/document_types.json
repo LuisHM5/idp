@@ -1,0 +1,469 @@
+{
+  "$schema": "./schema.json",
+  "_comment": "Document type catalog. Add new types here without touching code.",
+  "types": {
+    "INE": {
+      "description": "Credencial para votar del INE",
+      "extraction_fields": [
+        "NOMBRE_COMPLETO",
+        "NOMBRE",
+        "APELLIDO_PATERNO",
+        "APELLIDO_MATERNO",
+        "FECHA_NACIMIENTO",
+        "CURP",
+        "NUMERO_DOCUMENTO",
+        "VIGENCIA",
+        "DOMICILIO",
+        "TIPO_DOCUMENTO"
+      ],
+      "extraction_hints": {
+        "NOMBRE_COMPLETO": "Nombre completo del titular, usualmente en la parte frontal superior de la credencial",
+        "CURP": "Clave CURP de 18 caracteres, ubicada en el reverso de la credencial debajo del codigo de barras",
+        "NUMERO_DOCUMENTO": "Clave de elector o numero de credencial, cadena alfanumerica en el frente",
+        "VIGENCIA": "Año de vigencia en formato YYYY, ubicado en el frente junto a la foto, indica hasta cuando es valida",
+        "FECHA_NACIMIENTO": "Fecha de nacimiento en formato DD/MM/YYYY, en el frente de la credencial",
+        "DOMICILIO": "Direccion completa del titular, en el frente debajo del nombre",
+        "APELLIDO_PATERNO": "Primer apellido, parte del nombre completo",
+        "APELLIDO_MATERNO": "Segundo apellido, parte del nombre completo"
+      },
+      "required_fields": [
+        "NOMBRE_COMPLETO",
+        "CURP",
+        "NUMERO_DOCUMENTO",
+        "VIGENCIA"
+      ],
+      "validation_rules": [
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial de 18 caracteres"
+        },
+        {
+          "field": "VIGENCIA",
+          "rule_type": "date_expiry",
+          "message": "El documento esta vencido"
+        }
+      ],
+      "validator_module": "validators.identification"
+    },
+    "PASAPORTE": {
+      "description": "Pasaporte mexicano",
+      "extraction_fields": [
+        "NOMBRE_COMPLETO",
+        "NOMBRE",
+        "APELLIDO_PATERNO",
+        "APELLIDO_MATERNO",
+        "FECHA_NACIMIENTO",
+        "CURP",
+        "NUMERO_DOCUMENTO",
+        "VIGENCIA",
+        "DOMICILIO",
+        "TIPO_DOCUMENTO"
+      ],
+      "extraction_hints": {
+        "NOMBRE_COMPLETO": "Nombre completo como aparece en la pagina de datos del pasaporte",
+        "CURP": "CURP de 18 caracteres, en la pagina de datos o en la zona MRZ (Machine Readable Zone) al fondo",
+        "NUMERO_DOCUMENTO": "Numero de pasaporte, cadena alfanumerica en la esquina superior derecha de la pagina de datos",
+        "VIGENCIA": "Fecha de expiracion en formato DD/MM/YYYY o YYYY-MM-DD, campo 'Date of expiry' en la pagina de datos",
+        "FECHA_NACIMIENTO": "Fecha de nacimiento, campo 'Date of birth' en la pagina de datos"
+      },
+      "required_fields": [
+        "NOMBRE_COMPLETO",
+        "CURP",
+        "NUMERO_DOCUMENTO",
+        "VIGENCIA"
+      ],
+      "validation_rules": [
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial"
+        },
+        {
+          "field": "VIGENCIA",
+          "rule_type": "date_expiry",
+          "message": "El documento esta vencido"
+        }
+      ],
+      "validator_module": "validators.identification"
+    },
+    "CEDULA_PROFESIONAL": {
+      "description": "Cedula profesional",
+      "extraction_fields": [
+        "NOMBRE_COMPLETO",
+        "NOMBRE",
+        "APELLIDO_PATERNO",
+        "APELLIDO_MATERNO",
+        "FECHA_NACIMIENTO",
+        "CURP",
+        "NUMERO_DOCUMENTO",
+        "VIGENCIA",
+        "DOMICILIO",
+        "TIPO_DOCUMENTO"
+      ],
+      "extraction_hints": {
+        "NOMBRE_COMPLETO": "Nombre del profesionista como aparece en la cedula",
+        "CURP": "CURP de 18 caracteres, generalmente en la parte inferior",
+        "NUMERO_DOCUMENTO": "Numero de cedula profesional, cadena numerica prominente",
+        "VIGENCIA": "Fecha de vigencia o expedicion, puede no tener fecha de vencimiento (usar fecha de expedicion si no hay vigencia)"
+      },
+      "required_fields": [
+        "NOMBRE_COMPLETO",
+        "CURP",
+        "NUMERO_DOCUMENTO",
+        "VIGENCIA"
+      ],
+      "validation_rules": [
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial"
+        },
+        {
+          "field": "VIGENCIA",
+          "rule_type": "date_expiry",
+          "message": "El documento esta vencido"
+        }
+      ],
+      "validator_module": "validators.identification"
+    },
+    "CONSTANCIA_SITUACION_FISCAL": {
+      "description": "Constancia de situacion fiscal del SAT",
+      "extraction_fields": [
+        "RFC",
+        "CURP",
+        "NOMBRE_O_RAZON_SOCIAL",
+        "REGIMEN_FISCAL",
+        "CODIGO_POSTAL",
+        "FECHA_EMISION",
+        "ESTATUS_EN_PADRON",
+        "ACTIVIDAD_ECONOMICA"
+      ],
+      "extraction_hints": {
+        "RFC": "Registro Federal de Contribuyentes, 12 o 13 caracteres alfanumericos, aparece prominente en la parte superior del documento junto a 'RFC:'",
+        "CURP": "CURP de 18 caracteres, aparece debajo del RFC en la seccion de datos de identificacion",
+        "NOMBRE_O_RAZON_SOCIAL": "Nombre completo de la persona fisica o razon social de la empresa, campo 'Nombre, denominacion o razon social'",
+        "REGIMEN_FISCAL": "Regimen fiscal en el que esta inscrito, seccion 'Regimenes' del documento, puede haber multiples",
+        "CODIGO_POSTAL": "Codigo postal del domicilio fiscal, 5 digitos, en la seccion de ubicacion",
+        "FECHA_EMISION": "Fecha en que se genero la constancia, usualmente en la parte superior o inferior del documento",
+        "ESTATUS_EN_PADRON": "Estado del contribuyente: ACTIVO, SUSPENDIDO, etc. Campo 'Estatus en el padron'",
+        "ACTIVIDAD_ECONOMICA": "Actividad economica principal registrada ante el SAT"
+      },
+      "required_fields": [
+        "RFC",
+        "NOMBRE_O_RAZON_SOCIAL"
+      ],
+      "validation_rules": [
+        {
+          "field": "RFC",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC no cumple el formato valido"
+        },
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial"
+        },
+        {
+          "field": "FECHA_EMISION",
+          "rule_type": "date_max_age",
+          "pattern": "5",
+          "message": "La constancia tiene mas de 5 años de emision, se considera vencida"
+        }
+      ],
+      "validator_module": "validators.fiscal"
+    },
+    "FORMATO_INTERNO_ALTA": {
+      "description": "Formato interno de alta",
+      "extraction_fields": [
+        "TIPO_FORMATO",
+        "FOLIO_INTERNO",
+        "NOMBRE_SOLICITANTE",
+        "RFC",
+        "CURP",
+        "FECHA_SOLICITUD",
+        "AREA",
+        "FIRMA_PRESENTE",
+        "CAMPOS_OBLIGATORIOS_COMPLETOS",
+        "VERSION_FORMATO"
+      ],
+      "extraction_hints": {
+        "FOLIO_INTERNO": "Numero de folio o consecutivo del formato, usualmente en la esquina superior derecha",
+        "NOMBRE_SOLICITANTE": "Nombre de quien llena o solicita el formato",
+        "FECHA_SOLICITUD": "Fecha en que se lleno el formato, buscar campo 'Fecha' o 'Fecha de solicitud'",
+        "FIRMA_PRESENTE": "Indica SI o NO si hay una firma manuscrita o electronica visible en el documento. Buscar en la parte inferior",
+        "AREA": "Area o departamento que solicita, campo 'Area' o 'Departamento'",
+        "VERSION_FORMATO": "Version del formato, usualmente en el pie de pagina o encabezado como 'V1.0', 'Rev. 2', etc."
+      },
+      "required_fields": [
+        "FOLIO_INTERNO",
+        "NOMBRE_SOLICITANTE",
+        "FECHA_SOLICITUD",
+        "FIRMA_PRESENTE"
+      ],
+      "validation_rules": [
+        {
+          "field": "FIRMA_PRESENTE",
+          "rule_type": "boolean_true",
+          "message": "La firma debe estar presente"
+        },
+        {
+          "field": "RFC",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC no cumple el formato valido"
+        },
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial"
+        }
+      ],
+      "validator_module": "validators.internal_formats"
+    },
+    "FORMATO_INTERNO_BAJA": {
+      "description": "Formato interno de baja",
+      "extraction_fields": [
+        "TIPO_FORMATO",
+        "FOLIO_INTERNO",
+        "NOMBRE_SOLICITANTE",
+        "RFC",
+        "CURP",
+        "FECHA_SOLICITUD",
+        "AREA",
+        "FIRMA_PRESENTE",
+        "CAMPOS_OBLIGATORIOS_COMPLETOS",
+        "VERSION_FORMATO"
+      ],
+      "extraction_hints": {
+        "FOLIO_INTERNO": "Numero de folio o consecutivo, esquina superior derecha",
+        "NOMBRE_SOLICITANTE": "Nombre de quien solicita la baja",
+        "FECHA_SOLICITUD": "Fecha del formato, campo 'Fecha'",
+        "FIRMA_PRESENTE": "SI o NO segun si hay firma visible en la parte inferior del documento"
+      },
+      "required_fields": [
+        "FOLIO_INTERNO",
+        "NOMBRE_SOLICITANTE",
+        "FECHA_SOLICITUD",
+        "FIRMA_PRESENTE"
+      ],
+      "validation_rules": [
+        {
+          "field": "FIRMA_PRESENTE",
+          "rule_type": "boolean_true",
+          "message": "La firma debe estar presente"
+        },
+        {
+          "field": "RFC",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC no cumple el formato valido"
+        },
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial"
+        }
+      ],
+      "validator_module": "validators.internal_formats"
+    },
+    "FORMATO_INTERNO_CAMBIO_DATOS": {
+      "description": "Formato interno de cambio de datos",
+      "extraction_fields": [
+        "TIPO_FORMATO",
+        "FOLIO_INTERNO",
+        "NOMBRE_SOLICITANTE",
+        "RFC",
+        "CURP",
+        "FECHA_SOLICITUD",
+        "AREA",
+        "FIRMA_PRESENTE",
+        "CAMPOS_OBLIGATORIOS_COMPLETOS",
+        "VERSION_FORMATO"
+      ],
+      "extraction_hints": {
+        "FOLIO_INTERNO": "Numero de folio o consecutivo, esquina superior derecha",
+        "NOMBRE_SOLICITANTE": "Nombre de quien solicita el cambio",
+        "FECHA_SOLICITUD": "Fecha del formato, campo 'Fecha'",
+        "FIRMA_PRESENTE": "SI o NO segun si hay firma visible en la parte inferior del documento"
+      },
+      "required_fields": [
+        "FOLIO_INTERNO",
+        "NOMBRE_SOLICITANTE",
+        "FECHA_SOLICITUD",
+        "FIRMA_PRESENTE"
+      ],
+      "validation_rules": [
+        {
+          "field": "FIRMA_PRESENTE",
+          "rule_type": "boolean_true",
+          "message": "La firma debe estar presente"
+        },
+        {
+          "field": "RFC",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC no cumple el formato valido"
+        },
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial"
+        }
+      ],
+      "validator_module": "validators.internal_formats"
+    },
+    "OTRO": {
+      "description": "Documento no clasificado",
+      "extraction_fields": [],
+      "required_fields": [],
+      "validation_rules": [],
+      "validator_module": null
+    },
+    "CURP": {
+      "description": "Constancia de CURP emitida por RENAPO",
+      "extraction_fields": [
+        "CURP",
+        "NOMBRE_COMPLETO",
+        "ENTIDAD_REGISTRO",
+        "STATUS_CURP",
+        "FECHA_EMISION"
+      ],
+      "extraction_hints": {
+        "CURP": "Clave CURP de 18 caracteres, prominente en la parte superior del documento",
+        "NOMBRE_COMPLETO": "Nombre completo del titular, aparece en una sola linea",
+        "ENTIDAD_REGISTRO": "Entidad de registro, campo 'Entidad de registro'",
+        "STATUS_CURP": "Estatus de la CURP, por ejemplo 'CURP Certificada'",
+        "FECHA_EMISION": "Fecha de emision del documento, formato 'Ciudad de México, a DD de mes de YYYY'"
+      },
+      "required_fields": [
+        "CURP",
+        "NOMBRE_COMPLETO"
+      ],
+      "validation_rules": [
+        {
+          "field": "CURP",
+          "rule_type": "regex",
+          "pattern": "^[A-Z][AEIOU][A-Z]{2}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "message": "CURP no cumple el patron oficial de 18 caracteres"
+        }
+      ],
+      "validator_module": "validators.identification"
+    },
+    "FACTURA": {
+      "description": "Factura CFDI (PDF o XML)",
+      "extraction_fields": [
+        "RFC_EMISOR",
+        "NOMBRE_EMISOR",
+        "RFC_RECEPTOR",
+        "NOMBRE_RECEPTOR",
+        "FOLIO",
+        "SERIE",
+        "FECHA_EMISION",
+        "SUBTOTAL",
+        "IVA",
+        "TOTAL",
+        "MONEDA",
+        "FORMA_PAGO",
+        "METODO_PAGO",
+        "USO_CFDI",
+        "UUID",
+        "REGIMEN_FISCAL_EMISOR",
+        "CODIGO_POSTAL_EMISOR"
+      ],
+      "extraction_hints": {
+        "RFC_EMISOR": "RFC del emisor, 12 o 13 caracteres, parte superior del CFDI",
+        "RFC_RECEPTOR": "RFC del receptor/cliente, campo Receptor",
+        "UUID": "Folio fiscal UUID de 36 caracteres con guiones, sello digital o timbre fiscal",
+        "FOLIO": "Numero de folio de la factura, parte superior",
+        "TOTAL": "Monto total con IVA incluido, campo Total",
+        "FECHA_EMISION": "Fecha de emision del CFDI, formato YYYY-MM-DDTHH:MM:SS"
+      },
+      "required_fields": [
+        "RFC_EMISOR",
+        "RFC_RECEPTOR",
+        "TOTAL",
+        "UUID",
+        "FECHA_EMISION"
+      ],
+      "validation_rules": [
+        {
+          "field": "RFC_EMISOR",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC emisor invalido"
+        },
+        {
+          "field": "RFC_RECEPTOR",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC receptor invalido"
+        },
+        {
+          "field": "UUID",
+          "rule_type": "regex",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "message": "UUID fiscal invalido"
+        }
+      ],
+      "validator_module": "validators.fiscal"
+    },
+    "POLIZA_SEGURO": {
+      "description": "Poliza de seguro (auto, vida, gastos medicos, etc.)",
+      "extraction_fields": [
+        "NUMERO_POLIZA",
+        "ASEGURADORA",
+        "NOMBRE_ASEGURADO",
+        "RFC_ASEGURADO",
+        "TIPO_SEGURO",
+        "VIGENCIA_INICIO",
+        "VIGENCIA_FIN",
+        "SUMA_ASEGURADA",
+        "PRIMA_TOTAL",
+        "FORMA_PAGO",
+        "MONEDA",
+        "COBERTURAS",
+        "DEDUCIBLE",
+        "BENEFICIARIOS",
+        "AGENTE"
+      ],
+      "extraction_hints": {
+        "NUMERO_POLIZA": "Numero de poliza, prominente en la parte superior del documento",
+        "ASEGURADORA": "Nombre de la compania aseguradora, logo o encabezado",
+        "NOMBRE_ASEGURADO": "Nombre completo del titular/asegurado",
+        "VIGENCIA_INICIO": "Fecha de inicio de vigencia, formato DD/MM/YYYY o similar",
+        "VIGENCIA_FIN": "Fecha de fin de vigencia, formato DD/MM/YYYY o similar",
+        "SUMA_ASEGURADA": "Monto de la suma asegurada, campo Suma Asegurada",
+        "PRIMA_TOTAL": "Monto total de la prima a pagar"
+      },
+      "required_fields": [
+        "NUMERO_POLIZA",
+        "ASEGURADORA",
+        "NOMBRE_ASEGURADO",
+        "VIGENCIA_FIN"
+      ],
+      "validation_rules": [
+        {
+          "field": "VIGENCIA_FIN",
+          "rule_type": "date_expiry",
+          "message": "La poliza esta vencida"
+        },
+        {
+          "field": "RFC_ASEGURADO",
+          "rule_type": "regex",
+          "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+          "message": "RFC asegurado invalido"
+        }
+      ],
+      "validator_module": "validators.fiscal"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "documentId": "test-ine-001",
+  "classificationResult": {
+    "documentClassification": "INE"
+  },
+  "processingResult": {
+    "result": {
+      "entities": [
+        { "type": "NOMBRE_COMPLETO", "value": "Juan Pérez López" },
+        { "type": "NOMBRE", "value": "Juan" },
+        { "type": "APELLIDO_PATERNO", "value": "Pérez" },
+        { "type": "APELLIDO_MATERNO", "value": "López" },
+        { "type": "CURP", "value": "PELJ850101HDFRPN09" },
+        { "type": "NUMERO_DOCUMENTO", "value": "1234567890123" },
+        { "type": "VIGENCIA", "value": "2029-12-31" },
+        { "type": "FECHA_NACIMIENTO", "value": "01/01/1985" },
+        { "type": "DOMICILIO", "value": "Calle Falsa 123, Col. Centro, CDMX" },
+        { "type": "TIPO_DOCUMENTO", "value": "INE" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "documentId": "test-ine-vencida-001",
+  "classificationResult": {
+    "documentClassification": "INE"
+  },
+  "processingResult": {
+    "result": {
+      "entities": [
+        { "type": "NOMBRE_COMPLETO", "value": "María García" },
+        { "type": "CURP", "value": "GAHM900215MDFRRL08" },
+        { "type": "NUMERO_DOCUMENTO", "value": "9876543210" },
+        { "type": "VIGENCIA", "value": "2020-01-01" }
+      ]
+    }
+  }
+}

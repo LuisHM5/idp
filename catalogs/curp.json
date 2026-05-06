@@ -1,0 +1,29 @@
+{
+  "CURP": {
+    "description": "Constancia de CURP emitida por RENAPO",
+    "extraction_fields": [
+      "CURP",
+      "NOMBRE_COMPLETO",
+      "ENTIDAD_REGISTRO",
+      "STATUS_CURP",
+      "FECHA_EMISION"
+    ],
+    "extraction_hints": {
+      "CURP": "Clave CURP de 18 caracteres, prominente en la parte superior del documento",
+      "NOMBRE_COMPLETO": "Nombre completo del titular, aparece en una sola linea",
+      "ENTIDAD_REGISTRO": "Entidad de registro, campo 'Entidad de registro'",
+      "STATUS_CURP": "Estatus de la CURP, por ejemplo 'CURP Certificada'",
+      "FECHA_EMISION": "Fecha de emision del documento, formato 'Ciudad de México, a DD de mes de YYYY'"
+    },
+    "required_fields": ["CURP", "NOMBRE_COMPLETO"],
+    "validation_rules": [
+      {
+        "field": "CURP",
+        "rule_type": "regex",
+        "pattern": "^[A-Z][AEIOU][A-Z]{2}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+        "message": "CURP no cumple el patron oficial de 18 caracteres"
+      }
+    ],
+    "validator_module": "validators.identification"
+  }
+}
