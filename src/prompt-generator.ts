@@ -65,8 +65,9 @@ OTRO: any relevant entities
 Reglas ESTRICTAS:
 - Transcribe EXACTO carácter por carácter como aparece; NO corrijas, NO completes abreviaturas (si ves "Mtz" devuelve "Mtz", NO "Martinez").
 - NO inventes datos faltantes; si no es legible usa "".
-- Para INE: separa APELLIDO_PATERNO, APELLIDO_MATERNO y NOMBRE en campos distintos. Si solo ves "NOMBRE_COMPLETO", intenta separar usando la CURP y MRZ del reverso como referencia.
-- Verifica que las 4 primeras letras del CURP coincidan con primera letra apellido paterno, primera vocal interna de apellido paterno, primera letra apellido materno, primera letra del nombre. Si hay discrepancia, RELEE el nombre antes de responder.
+- INE anverso: debajo del rótulo "NOMBRE" hay TRES líneas apiladas en orden FIJO → línea 1 = APELLIDO_PATERNO, línea 2 = APELLIDO_MATERNO, línea 3 = NOMBRE(S). Ej "HERNANDEZ / LARA / LUIS" → paterno=HERNANDEZ, materno=LARA, nombre=LUIS. NUNCA pongas un apellido en el campo NOMBRE ni un nombre de pila en APELLIDO_PATERNO. Si el OCR las trae pegadas ("HERNANDEZLARALUIS"), sepáralas usando saltos de línea, mayúsculas y la CURP.
+- NOMBRE_COMPLETO = APELLIDO_PATERNO + " " + APELLIDO_MATERNO + " " + NOMBRE (ese orden).
+- Verifica que las 4 primeras letras del CURP coincidan con: 1ª letra apellido paterno, 1ª vocal interna apellido paterno, 1ª letra apellido materno (o "X" si no hay), 1ª letra del nombre. Si hay discrepancia, RELEE antes de responder.
 - FIRMA_PRESENTE: "SI" o "NO".
 - Valores en MAYÚSCULAS cuando el documento los muestra así.
 - SOLO JSON crudo, sin markdown, sin explicación.

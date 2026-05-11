@@ -3,13 +3,14 @@
   "_comment": "Document type catalog. Add new types here without touching code.",
   "types": {
     "INE": {
-      "description": "Credencial INE/IFE: CLAVE DE ELECTOR (18 alfanum), seccion y distrito electoral, escudo nacional, codigo de barras y MRZ al reverso",
+      "description": "Credencial para Votar INE/IFE (Instituto Nacional Electoral). Anverso: fotografia del titular, escudo nacional mexicano, leyendas 'INSTITUTO NACIONAL ELECTORAL' y 'CREDENCIAL PARA VOTAR'. Campos impresos: NOMBRE (tres lineas apiladas), DOMICILIO, CLAVE DE ELECTOR (18 alfanumericos), CURP, ESTADO / MUNICIPIO / LOCALIDAD / SECCION, FECHA DE NACIMIENTO, SEXO, AÑO DE REGISTRO, VIGENCIA. Reverso: banda MRZ de 3 lineas (formato ICAO con '<<<'), codigo QR y codigo de barras.",
       "extraction_fields": [
-        "NOMBRE_COMPLETO",
-        "NOMBRE",
         "APELLIDO_PATERNO",
         "APELLIDO_MATERNO",
+        "NOMBRE",
+        "NOMBRE_COMPLETO",
         "FECHA_NACIMIENTO",
+        "SEXO",
         "CURP",
         "NUMERO_DOCUMENTO",
         "VIGENCIA",
@@ -17,16 +18,20 @@
         "TIPO_DOCUMENTO"
       ],
       "extraction_hints": {
-        "NOMBRE_COMPLETO": "Nombre completo del titular, usualmente en la parte frontal superior de la credencial",
-        "CURP": "Clave CURP de 18 caracteres, ubicada en el reverso de la credencial debajo del codigo de barras",
-        "NUMERO_DOCUMENTO": "Clave de elector o numero de credencial, cadena alfanumerica en el frente",
-        "VIGENCIA": "Año de vigencia en formato YYYY, ubicado en el frente junto a la foto, indica hasta cuando es valida",
-        "FECHA_NACIMIENTO": "Fecha de nacimiento en formato DD/MM/YYYY, en el frente de la credencial",
-        "DOMICILIO": "Direccion completa del titular, en el frente debajo del nombre",
-        "APELLIDO_PATERNO": "Primer apellido, parte del nombre completo",
-        "APELLIDO_MATERNO": "Segundo apellido, parte del nombre completo"
+        "APELLIDO_PATERNO": "PRIMERA linea impresa DEBAJO del rotulo 'NOMBRE' en el anverso. La INE imprime el nombre en TRES lineas apiladas en orden fijo: (1) APELLIDO_PATERNO, (2) APELLIDO_MATERNO, (3) NOMBRE(S). Ejemplo: 'LUIS / MARTINEZ / LINA' => APELLIDO_PATERNO = 'LARA'. Debe coincidir con la 1a letra del CURP.",
+        "APELLIDO_MATERNO": "SEGUNDA linea debajo de 'NOMBRE' (entre apellido paterno y nombre de pila). Ejemplo 'LARA / MARTINEZ / LINA' => APELLIDO_MATERNO = 'MARTINEZ'. La 3a letra del CURP debe coincidir con su primera letra. Si la persona no tiene apellido materno, puede ir vacio y la posicion 3 del CURP sera 'X'.",
+        "NOMBRE": "TERCERA (y ULTIMA) linea debajo de 'NOMBRE' en el anverso. Son UNICAMENTE los nombres de pila, SIN apellidos. Ejemplo 'LARA / MARTINEZ / LINA' => NOMBRE = 'LINA'. La 4a letra del CURP debe coincidir con su primera letra. NUNCA pongas aqui la primera ni la segunda linea (esas son apellidos).",
+        "NOMBRE_COMPLETO": "Concatenacion en orden natural INE: APELLIDO_PATERNO + ' ' + APELLIDO_MATERNO + ' ' + NOMBRE. Si las tres lineas vienen pegadas ('LARAMARTINEZLINA'), separalas usando cambios de linea del OCR, mayusculas o la CURP antes de concatenar.",
+        "CURP": "Clave Unica de Registro de Poblacion, 18 caracteres alfanumericos, etiquetada 'CURP' en el anverso (debajo del DOMICILIO) y en el reverso (arriba del codigo de barras/MRZ). Posiciones 1-4 = inicial AP + vocal interna AP + inicial AM + inicial N; 5-10 = AAMMDD; 11 = H/M; 12-13 = entidad; 14-16 = consonantes internas; 17 = homoclave; 18 = digito verificador.",
+        "NUMERO_DOCUMENTO": "CLAVE DE ELECTOR (no es la CURP): 18 caracteres alfanumericos, etiqueta 'CLAVE DE ELECTOR' en el anverso a la derecha del domicilio. Formato tipico: 6 letras + 8 digitos + 1 letra (sexo) + 3 digitos.",
+        "VIGENCIA": "Año de expiracion en 4 digitos (YYYY), junto a la etiqueta 'VIGENCIA' o 'VIGENCIA HASTA' en el anverso. Si aparecen dos años (ej. '2019 2029'), devuelve el SEGUNDO (año de expiracion).",
+        "FECHA_NACIMIENTO": "Etiqueta 'FECHA DE NACIMIENTO' en el anverso, formato DD/MM/YYYY. Debe coincidir con las posiciones 5-10 del CURP (AAMMDD).",
+        "SEXO": "Etiqueta 'SEXO' en el anverso. Valores validos: 'H' (hombre) o 'M' (mujer). Debe coincidir con la posicion 11 del CURP.",
+        "DOMICILIO": "Etiqueta 'DOMICILIO' en el anverso (debajo del bloque NOMBRE). Direccion completa multi-linea: calle y numero, colonia, codigo postal, estado y municipio."
       },
       "required_fields": [
+        "APELLIDO_PATERNO",
+        "NOMBRE",
         "NOMBRE_COMPLETO",
         "CURP",
         "NUMERO_DOCUMENTO",
@@ -36,8 +41,20 @@
         {
           "field": "CURP",
           "rule_type": "regex",
-          "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+          "pattern": "^[A-Z][AEIOUX][A-Z]{2}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
           "message": "CURP no cumple el patron oficial de 18 caracteres"
+        },
+        {
+          "field": "NUMERO_DOCUMENTO",
+          "rule_type": "regex",
+          "pattern": "^[A-Z0-9]{18}$",
+          "message": "Clave de Elector debe tener 18 caracteres alfanumericos"
+        },
+        {
+          "field": "SEXO",
+          "rule_type": "regex",
+          "pattern": "^[HM]$",
+          "message": "SEXO debe ser 'H' o 'M'"
         },
         {
           "field": "VIGENCIA",
