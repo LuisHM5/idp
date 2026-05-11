@@ -94,6 +94,26 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       catalogTable.grantReadData(enrichmentFn);
     }
 
+    // Textract AnalyzeID fallback: cuando Bedrock falla el OCR en documentos
+    // de identidad (INE/Pasaporte), el enrichment llama a Textract para
+    // reextraer con un modelo especializado. AnalyzeID no soporta restricciones
+    // a nivel de recurso; S3 se restringe al bucket del pipeline cuando sea
+    // accesible (el construct lo crea internamente como private).
+    enrichmentFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["textract:AnalyzeID"],
+        resources: ["*"],
+      })
+    );
+    enrichmentFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["s3:GetObject", "s3:ListBucket"],
+        resources: ["*"],
+      })
+    );
+
     // Main document processing pipeline
     const pipeline = new BedrockDocumentProcessing(this, "BedrockDocumentProcessing", {
       classificationBedrockModel: {
