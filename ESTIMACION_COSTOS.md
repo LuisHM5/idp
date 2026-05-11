@@ -22,41 +22,7 @@ La **región mx-central-1 cuesta ~5% más** que us-east-1 en la mayoría de serv
 
 ---
 
-## Datos reales facturados (abril 2026)
 
-Consulta directa a Cost Explorer para la cuenta donde está desplegado el stack (cuenta 865783518729, perfil `alsuper`):
-
-| Servicio                                | Costo abril 2026 | Observación                              |
-|-----------------------------------------|-----------------:|------------------------------------------|
-| Claude Haiku 4.5 (Bedrock Edition)      |        $40.2251 | 30.97M input tokens + 1.12M output      |
-| Amazon Bedrock (Titan Embeddings)       |         $0.0004 | 18.8K tokens Titan V2                    |
-| AmazonCloudWatch                        |         $3.1514 | Logs + métricas observabilidad           |
-| AWS Secrets Manager                     |         $0.2261 | Secrets de configuración                 |
-| AWS Lambda                              |         $0.0371 | Upload + Enrichment Lambdas              |
-| Amazon S3                               |         $0.0280 | Almacenamiento documentos                |
-| AWS Key Management Service              |         $0.0023 | CMKs y requests de cifrado               |
-| AWS Step Functions                      |     $0.00000001 | Transiciones de estado                   |
-| Amazon SQS                              |         $0.0000 | Free tier                                |
-| EventBridge (CloudWatch Events)         |         $0.0000 | Free tier                                |
-| **Subtotal Documents Validator**        |    **~$43.67**  |                                          |
-
-Tarifa efectiva facturada de Claude Haiku 4.5 vía cross-region inference (us-east-1):
-
-- **Input:** `$1.10` por 1M tokens → $34.06 / 30.96M tokens
-- **Output:** `$5.50` por 1M tokens → $6.15 / 1.12M tokens
-
-Este es un **10% más caro** que el precio público estándar ($1.00 / $5.00) debido al premium del perfil de inferencia cross-region.
-
-### Volumen procesado en abril
-
-A 3,300 input + 250 output tokens promedio por página:
-
-```
-Páginas procesadas ≈ 30.96M input tokens / 3,300 tokens-por-página ≈ 9,385 páginas
-Costo por página (abril, real) ≈ $43.67 / 9,385 ≈ $0.00465/página
-```
-
----
 
 ## Precios unitarios por servicio (Price List API)
 
