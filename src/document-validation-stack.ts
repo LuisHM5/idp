@@ -86,6 +86,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       environment: {
         ...(catalogTable && { CATALOG_TABLE: "document-validation-catalog" }),
         CATALOG_FORCE_RELOAD: forceReload ? "true" : "false",
+        // Model used by the Textract+Bedrock re-extraction fallback when a
+        // catalog entry sets extraction_strategy. Defaults to the classifier
+        // model when unset; override here to use a stronger vision model
+        // (e.g. sonnet) only for recovery without affecting the main pipeline.
+        BEDROCK_EXTRACTOR_MODEL_ID:
+          process.env.BEDROCK_EXTRACTOR_MODEL_ID || bedrockModel,
       },
     });
 
@@ -94,16 +100,32 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       catalogTable.grantReadData(enrichmentFn);
     }
 
-    // Textract AnalyzeID fallback: cuando Bedrock falla el OCR en documentos
-    // de identidad (INE/Pasaporte), el enrichment llama a Textract para
-    // reextraer con un modelo especializado. AnalyzeID no soporta restricciones
-    // a nivel de recurso; S3 se restringe al bucket del pipeline cuando sea
-    // accesible (el construct lo crea internamente como private).
+    // Textract AnalyzeID + DetectDocumentText fallback: cuando Bedrock falla el
+    // OCR (sobre todo en fotos), el enrichment llama a Textract para reextraer
+    // con un motor OCR especializado y entregarle el texto normalizado a
+    // Bedrock Converse. AnalyzeID y DetectDocumentText no soportan ARN a nivel
+    // de recurso, por eso Resources: ["*"].
     enrichmentFn.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
-        actions: ["textract:AnalyzeID"],
+        actions: ["textract:AnalyzeID", "textract:DetectDocumentText"],
         resources: ["*"],
+      })
+    );
+    // El extractor hibrido llama Bedrock Converse desde el enrichment Lambda.
+    // Misma politica amplia que aplicamos abajo a las lambdas internas del
+    // pipeline para soportar inference-profile ARNs cross-region.
+    enrichmentFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+        ],
+        resources: [
+          `arn:aws:bedrock:*::foundation-model/*`,
+          `arn:aws:bedrock:*:${this.account}:inference-profile/*`,
+        ],
       })
     );
     enrichmentFn.addToRolePolicy(

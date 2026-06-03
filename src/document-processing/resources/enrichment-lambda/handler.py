@@ -5,30 +5,45 @@ and extraction. It:
 1. Reads classificationResult and processingResult from the event
 2. Loads document type config from JSON file or DynamoDB (no code changes needed)
 3. Runs deterministic validation checks via the appropriate validator module
-4. Optionally runs custom Node.js validators for advanced logic
-5. Returns a Canonical_Result with status and detailed checks
+4. Optionally re-extracts from the raw S3 object using a stronger
+   Textract + Bedrock strategy when the catalog asks for it or when the
+   initial processingResult fails structural checks (missing required
+   fields or regex mismatches). Recovers CURP/RFC/Clave de Elector
+   errors caused by weak vision OCR on photos.
+5. Optionally runs custom Node.js validators for advanced logic
+6. Returns a Canonical_Result with status and detailed checks
 
 EXTENSIBILITY:
 - Add new document types: edit config/document_types.json OR insert in DynamoDB
+- Enable Textract fallback for a type: set `extraction_strategy` in its catalog
+  entry (`textract_bedrock` or `textract_analyze_id`)
 - Add custom validation logic: create a .mjs file in custom_validators/
-- No code changes required for either path.
+- No handler edits required for any of the above.
 """
 
 import importlib
 import json
 import logging
+import mimetypes
 import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
-from document_catalog import CheckResult, get_type_entry, reload_catalog
+from document_catalog import (
+    CheckResult,
+    TypeRegistryEntry,
+    get_type_entry,
+    reload_catalog,
+)
+from extractors import get_extractor
 
 logger = logging.getLogger(__name__)
 
 _CUSTOM_VALIDATORS_DIR = Path(__file__).parent / "custom_validators"
 _FORCE_RELOAD = os.environ.get("CATALOG_FORCE_RELOAD", "false").lower() == "true"
+_STRUCTURAL_RULES = frozenset({"regex", "presence"})
 
 
 def entities_to_map(entities: List[Dict[str, str]]) -> Dict[str, str]:
@@ -93,9 +108,14 @@ def build_canonical_result(
 def run_python_validation(
     entity_map: Dict[str, str], classification: str
 ) -> List[CheckResult]:
-    """Run Python-based validation via the catalog's validator_module."""
-    type_entry = get_type_entry(classification)
+    """Back-compat wrapper: resolve the type entry and delegate."""
+    return _run_validation(entity_map, get_type_entry(classification))
 
+
+def _run_validation(
+    entity_map: Dict[str, str], type_entry: TypeRegistryEntry
+) -> List[CheckResult]:
+    """Run Python-based validation via the catalog's validator_module."""
     if not type_entry.validator_module:
         return []
 
@@ -114,6 +134,105 @@ def run_python_validation(
                 message=f"Validator module load error: {e}",
             )
         ]
+
+
+def _failure_count(checks: List[CheckResult]) -> int:
+    """Number of failing checks in the list."""
+    return sum(1 for c in checks if not c.valid)
+
+
+def _has_structural_failure(checks: List[CheckResult]) -> bool:
+    """True if any regex or presence check failed.
+
+    Structural failures (missing required field, bad CURP/RFC pattern) are
+    exactly the ones Textract re-extraction can fix. Date expiry failures
+    are NOT structural — re-OCR cannot make an expired document not expired,
+    so we do not burn a Textract call on them.
+    """
+    return any(not c.valid and c.rule in _STRUCTURAL_RULES for c in checks)
+
+
+def _extract_s3_pointer(event: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """Pull the source bucket/key out of the Step Functions state, tolerantly.
+
+    The Bedrock invoke Lambda (patched) reads `event['content']['bucket']`
+    and `event['content']['key']`, and that same state flows into the
+    enrichment step. Returns None when neither shape is present.
+    """
+    content = event.get("content") or {}
+    if isinstance(content, dict):
+        bucket = content.get("bucket")
+        key = content.get("key")
+        if bucket and key:
+            return str(bucket), str(key)
+
+    # Some pipelines nest under `source` or pass the uri directly.
+    source = event.get("source") or {}
+    if isinstance(source, dict):
+        bucket = source.get("bucket") or source.get("Bucket")
+        key = source.get("key") or source.get("Key")
+        if bucket and key:
+            return str(bucket), str(key)
+
+    return None
+
+
+def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str]:
+    """Download the raw document from S3 and return its bytes + MIME type."""
+    import boto3  # defer boto3 import; Lambda runtime provides it
+
+    response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+    body = response["Body"].read()
+    content_type = response.get("ContentType") or mimetypes.guess_type(key)[0] or ""
+    return body, content_type
+
+
+def _try_reextract(
+    event: Dict[str, Any],
+    type_entry: TypeRegistryEntry,
+) -> Optional[Tuple[List[Dict[str, str]], Dict[str, Any]]]:
+    """Attempt Textract-backed re-extraction for this document.
+
+    Returns (new_entities, metadata) on success, None when anything prevents
+    the fallback from running (missing S3 pointer, unsupported strategy,
+    provider error). Caller decides whether to swap based on validation delta.
+    """
+    extractor = get_extractor(type_entry.extraction_strategy)
+    if extractor is None:
+        return None
+
+    pointer = _extract_s3_pointer(event)
+    if pointer is None:
+        logger.info(
+            "Re-extraction skipped for %s: no S3 pointer in event",
+            type_entry.type_id,
+        )
+        return None
+
+    bucket, key = pointer
+    try:
+        document_bytes, content_type = _fetch_document(bucket, key)
+    except Exception as e:
+        logger.error("Failed to fetch s3://%s/%s for re-extraction: %s", bucket, key, e)
+        return None
+
+    try:
+        result = extractor.extract(document_bytes, content_type, type_entry)
+    except Exception as e:
+        logger.error(
+            "Extractor '%s' failed for %s: %s",
+            extractor.strategy_name,
+            type_entry.type_id,
+            e,
+        )
+        return None
+
+    metadata = {
+        "strategy": result.strategy,
+        "source": {"bucket": bucket, "key": key},
+        "fields_recovered": sum(1 for e in result.entities if e.get("value")),
+    }
+    return result.entities, metadata
 
 
 def run_custom_node_validator(
@@ -215,9 +334,14 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     Expected event structure from Step Functions:
     {
         "documentId": "...",
+        "content": {"location": "s3", "bucket": "...", "key": "raw/..."},
         "classificationResult": {"documentClassification": "INE"},
         "processingResult": {"result": {"entities": [...]}}
     }
+
+    The `content` block is populated upstream by the Bedrock invoke Lambda
+    and is what the re-extraction fallback uses to fetch the raw document
+    from S3. If it is missing, re-extraction is silently skipped.
     """
     try:
         # Force reload catalog if configured (useful for DynamoDB hot-reload)
@@ -229,29 +353,49 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         processing_result = event.get("processingResult", {})
 
         classification = classification_result.get("documentClassification", "OTRO")
-        entities = processing_result.get("result", {}).get("entities", [])
+        type_entry = get_type_entry(classification)
 
-        # Convert entities list to map
+        entities = processing_result.get("result", {}).get("entities", [])
         entity_map = entities_to_map(entities)
 
-        # 1. Run Python-based validation (regex, dates, required fields)
-        checks = run_python_validation(entity_map, classification)
+        # 1. First pass validation against the Bedrock-native extraction
+        checks = _run_validation(entity_map, type_entry)
+        reextraction_meta: Optional[Dict[str, Any]] = None
 
-        # 2. Run custom Node.js validator if configured
-        type_entry = get_type_entry(classification)
+        # 2. Re-extract with Textract-based strategy when catalog opts in AND
+        #    the initial pass has structural problems. Skips when the initial
+        #    pass is already clean (saves a Textract + Bedrock roundtrip).
+        if type_entry.extraction_strategy and _has_structural_failure(checks):
+            reextracted = _try_reextract(event, type_entry)
+            if reextracted is not None:
+                new_entities, reextraction_meta = reextracted
+                # Re-validate against the fresh entities
+                new_entity_map = entities_to_map(new_entities)
+                new_checks = _run_validation(new_entity_map, type_entry)
+                # Swap only if re-extraction actually reduced failures
+                if _failure_count(new_checks) < _failure_count(checks):
+                    entity_map = new_entity_map
+                    entities = new_entities
+                    checks = new_checks
+                    reextraction_meta["applied"] = True
+                else:
+                    reextraction_meta["applied"] = False
+
+        # 3. Run custom Node.js validator if configured
         if type_entry.custom_validator:
             custom_checks = run_custom_node_validator(
                 type_entry.custom_validator, entity_map, document_id, classification
             )
             checks.extend(custom_checks)
 
-        # Determine status
         status = determine_status(checks)
 
-        # Build and return canonical result
-        return build_canonical_result(
+        result = build_canonical_result(
             document_id, classification, entity_map, checks, status
         )
+        if reextraction_meta:
+            result["validation"]["reextraction"] = reextraction_meta
+        return result
 
     except Exception as e:
         logger.error(f"Unexpected error in enrichment handler: {e}")

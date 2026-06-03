@@ -45,6 +45,20 @@ class TypeRegistryEntry:
     validator_module: Optional[str] = None
     custom_validator: Optional[str] = None  # Node.js custom script name
     description: str = ""
+    # Per-field hints telling the extractor WHERE the data lives in the document.
+    # Used by both Bedrock prompts (at synth time) and the fallback extractor.
+    extraction_hints: Dict[str, str] = field(default_factory=dict)
+    # Strategy for re-extracting from the raw S3 object when the default
+    # Bedrock-native extraction fails validation. Options:
+    #   None | "" → no fallback, trust the initial processingResult as-is
+    #   "textract_bedrock" → Textract DetectDocumentText + Bedrock LLM using
+    #       extraction_hints as schema (best for photos of any document type)
+    #   "textract_analyze_id" → Textract AnalyzeID mapped through field aliases
+    #       (only meaningful for identity documents: INE, PASAPORTE, etc.)
+    extraction_strategy: Optional[str] = None
+    # Optional per-type overrides for AnalyzeID → catalog field mapping.
+    # If empty, extractors fall back to the built-in alias table.
+    field_aliases: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -94,6 +108,9 @@ def _parse_entry(type_id: str, data: Dict[str, Any]) -> TypeRegistryEntry:
         validator_module=data.get("validator_module"),
         custom_validator=data.get("custom_validator"),
         description=data.get("description", ""),
+        extraction_hints=data.get("extraction_hints", {}) or {},
+        extraction_strategy=data.get("extraction_strategy"),
+        field_aliases=data.get("field_aliases", {}) or {},
     )
 
 
