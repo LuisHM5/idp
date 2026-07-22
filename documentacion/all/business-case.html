@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        /* CONFIGURACIÓN DE PÁGINA A4 PARA IMPRESIÓN EJECUTIVA */
+        @page { size: A4; margin: 0; }
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* CONTENEDOR PRINCIPAL SIMULANDO PAPEL INSTITUCIONAL */
+        .page {
+            background: white;
+            width: 210mm;
+            min-height: 297mm;
+            padding: 20mm;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            box-sizing: border-box;
+            position: relative;
+            margin-bottom: 20px;
+            page-break-after: always;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ENCABEZADO CORPORATIVO ALSUPER */
+        .confidential {
+            color: #990000;
+            font-weight: bold;
+            font-size: 10pt;
+            text-align: left;
+            margin-bottom: 5px;
+            letter-spacing: 1px;
+        }
+
+        .header-main {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 3px solid #990000;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+
+        .header-main h1 {
+            color: #333;
+            font-size: 18pt;
+            margin: 0;
+            text-transform: uppercase;
+        }
+
+        .brand {
+            color: #990000;
+            font-size: 24pt;
+            font-weight: 900;
+            font-style: italic;
+        }
+
+        /* TABLAS DE METADATOS Y DATOS DUROS */
+        .meta-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 25px;
+            font-size: 9.5pt;
+        }
+
+        .meta-table th {
+            background-color: #f3f3f3;
+            color: #333;
+            font-size: 9pt;
+            width: 25%;
+            border: 1px solid #cccccc;
+            padding: 10px;
+            text-align: left;
+        }
+
+        .meta-table td {
+            border: 1px solid #cccccc;
+            padding: 10px;
+            color: #333;
+            width: 25%;
+        }
+
+        table.data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            font-size: 9.5pt;
+        }
+
+        table.data-table th, table.data-table td {
+            border: 1px solid #cccccc;
+            padding: 12px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        table.data-table th {
+            background-color: #333333;
+            color: white;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        /* SECCIONES Y TIPOGRAFÍA DIRECTIVA */
+        h2 {
+            background-color: #990000;
+            color: white;
+            padding: 8px 15px;
+            font-size: 13pt;
+            margin-top: 20px;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            border-radius: 2px;
+        }
+
+        h3 {
+            color: #990000;
+            border-bottom: 1px solid #990000;
+            font-size: 11pt;
+            margin-top: 15px;
+            padding-bottom: 5px;
+        }
+
+        p {
+            font-size: 10pt;
+            line-height: 1.6;
+            color: #333;
+            text-align: justify;
+            margin-bottom: 15px;
+        }
+
+        ul {
+            padding-left: 20px;
+            margin-bottom: 15px;
+        }
+
+        li {
+            font-size: 10pt;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        /* ---------------------------------------------------
+           VISUALIZACIONES CSS AVANZADAS (ANTI-CLIPPING)
+        --------------------------------------------------- */
+        .chart-container {
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            background: #fff;
+            border: 1px solid #eee;
+            margin: 20px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .chart-title {
+            color: #333;
+            font-weight: bold;
+            font-size: 11pt;
+            text-align: center;
+            text-transform: uppercase;
+            border-bottom: 2px solid #990000;
+            padding-bottom: 8px;
+        }
+
+        /* Gráfico de Barras Comparativo: Eficiencia */
+        .bar-chart {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 10px;
+        }
+
+        .bar-wrapper {
+            display: flex;
+            align-items: center;
+            width: 100%;
+        }
+
+        .bar-label {
+            width: 30%;
+            font-size: 9pt;
+            font-weight: bold;
+            color: #555;
+        }
+
+        .bar-container {
+            width: 70%;
+            background: #eee;
+            height: 24px;
+            position: relative;
+            border-radius: 3px;
+        }
+
+        .bar-fill {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 10px;
+            color: white;
+            font-size: 8pt;
+            font-weight: bold;
+            border-radius: 3px;
+            transition: width 0.5s ease-in-out;
+        }
+
+        /* Termómetro de Riesgo */
+        .risk-thermometer {
+            display: flex;
+            width: 100%;
+            height: 35px;
+            background: #eee;
+            border-radius: 20px;
+            overflow: hidden;
+            margin: 15px 0;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .risk-zone {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8pt;
+            font-weight: bold;
+            color: white;
+        }
+
+        .risk-low { width: 30%; background: #2e7d32; }
+        .risk-med { width: 40%; background: #f9a825; }
+        .risk-high { width: 30%; background: #c62828; position: relative; }
+
+        .risk-marker {
+            position: absolute;
+            top: -15px;
+            font-size: 14pt;
+            color: #000;
+        }
+
+        /* Tableros RAG (Semáforos) */
+        .rag-container {
+            display: flex;
+            justify-content: space-around;
+            gap: 10px;
+        }
+
+        .rag-card {
+            flex: 1;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+            color: white;
+            font-weight: bold;
+            font-size: 9pt;
+        }
+
+        .rag-red { background-color: #cc0000; }
+        .rag-amber { background-color: #ff9900; }
+        .rag-green { background-color: #2e7d32; }
+
+        .firma-celda {
+            border: none !important;
+            text-align: center;
+            vertical-align: bottom !important;
+            height: 100px;
+            font-size: 9.5pt;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<!-- PÁGINA 1: IDENTIFICACIÓN Y FUNDAMENTOS -->
+<div class="page">
+    <div class="confidential">DOCUMENTO CONFIDENCIAL - USO INTERNO EXCLUSIVO</div>
+    <div class="header-main">
+        <h1>Business Case Directivo</h1>
+        <div class="brand">alsuper</div>
+    </div>
+
+    <table class="meta-table">
+        <tr>
+            <th>Nombre del Proyecto</th>
+            <td>Sistema de Validación y Extracción Inteligente de Documentos</td>
+            <th>Fecha de Elaboración</th>
+            <td>08 de Mayo de 2026</td>
+        </tr>
+        <tr>
+            <th>Versión</th>
+            <td>V1.0.0 (Dictamen de Auditoría)</td>
+            <th>Solicitado por:</th>
+            <td>Área de Gestión Documental / PMO</td>
+        </tr>
+        <tr>
+            <th>Departamento Solicitante:</th>
+            <td>Administración y Finanzas</td>
+            <th>Líder de Proyecto:</th>
+            <td><span style="background-color: yellow; font-weight: bold;">[PENDIENTE PARA REVISIÓN]</span></td>
+        </tr>
+    </table>
+
+    <h2>RESUMEN EJECUTIVO</h2>
+    <p>
+        El presente dictamen evalúa la viabilidad de implementar una solución de Procesamiento Inteligente de Documentos (IDP) para mitigar la ineficiencia crítica en la validación y captura manual de expedientes administrativos (INE, Constancias Fiscales, Pólizas, Facturas y Pedimentos). Actualmente, la organización experimenta una hemorragia operativa de aproximadamente 183 horas-hombre mensuales dedicadas a tareas transaccionales de bajo valor, con tiempos de respuesta que postergan procesos críticos de alta de proveedores hasta por siete días naturales. 
+    </p>
+    <p>
+        La solución propuesta utiliza arquitectura de Inteligencia Artificial (Claude Haiku 4.5 vía Amazon Bedrock), operando bajo un modelo de "Gestión por Excepción" que reduce el tiempo de procesamiento de 25 minutos a solo 1 minuto de supervisión humana por documento. Con un costo técnico proyectado de solo $10.50 USD por cada 1,000 páginas procesadas, el proyecto presenta una eficiencia financiera superior al 95% frente al costo de la nómina actual, garantizando la eliminación de puntos ciegos en la veracidad documental y el ausentismo operativo por retrasos administrativos.
+    </p>
+
+    <h2>ANTECEDENTES Y OBJETIVOS</h2>
+    <p>
+        La operación actual se rige por un modelo artesanal y fragmentado. Los datos recabados en la auditoría de procesos muestran que la validación y captura de pólizas requiere 25 minutos por unidad, mientras que facturas y pedimentos absorben 20 minutos cada uno. Esta carga administrativa ha generado un cuello de botella sistémico donde el personal operativo prioriza la captura sobre el análisis de riesgo, derivando en la omisión involuntaria de documentos incorrectos o vencidos que son detectados semanas después, invalidando flujos de trabajo completos.
+    </p>
+    <h3>Objetivos Estratégicos:</h3>
+    <ul>
+        <li><strong>Reducción de Latencia:</strong> Acortar el ciclo de alta de proveedores y colaboradores de 7 días a un máximo de 24 horas mediante validación algorítmica en tiempo real.</li>
+        <li><strong>Mitigación de Error Humano:</strong> Eliminar la captura manual en el 100% de los campos estandarizables (RFC, Nombre, Dirección, Fechas).</li>
+        <li><strong>Gobernanza Documental:</strong> Establecer reglas de negocio automáticas (ej. Comprobantes de domicilio con antigüedad menor a 3 meses) previas a la intervención humana.</li>
+        <li><strong>Recuperación de Capacidad:</strong> Reinyectar más de 2,000 horas productivas anuales al personal administrativo para tareas de supervisión y control.</li>
+    </ul>
+
+    <h2>PROCESO ACTUAL (STATUS QUO)</h2>
+    <p>
+        A diferencia de un flujo automatizado, el proceso actual es lineal y dependiente de la disponibilidad humana, careciendo de escalabilidad. A continuación se desglosa el "Costo de la Inacción":
+    </p>
+    <table class="data-table">
+        <tr>
+            <th>Documento</th>
+            <th>Carga Mensual</th>
+            <th>Tiempo Manual</th>
+            <th>Esfuerzo Total (H/M)</th>
+            <th>Impacto Operativo</th>
+        </tr>
+        <tr>
+            <td><strong>Pólizas</strong></td>
+            <td>140 unidades</td>
+            <td>25 Minutos</td>
+            <td>~58 Horas</td>
+            <td>Retraso en cierres administrativos y conciliaciones.</td>
+        </tr>
+        <tr>
+            <td><strong>Facturas/Pedimentos</strong></td>
+            <td>250 unidades</td>
+            <td>20 Minutos</td>
+            <td>~83 Horas</td>
+            <td>Riesgo de duplicidad y errores en sistema de costos.</td>
+        </tr>
+        <tr>
+            <td><strong>Alta Proveedores</strong></td>
+            <td>50 expedientes</td>
+            <td>~30 Minutos</td>
+            <td>~25 Horas</td>
+            <td>Postergación de relaciones comerciales (1 semana extra).</td>
+        </tr>
+        <tr>
+            <td><strong>Total Agregado</strong></td>
+            <td><strong>440+ Docs</strong></td>
+            <td><strong>N/A</strong></td>
+            <td><strong>~166 Horas</strong></td>
+            <td><strong>Equivalente a 1 FTE dedicado exclusivamente a captura.</strong></td>
+        </tr>
+    </table>
+</div>
+
+<!-- PÁGINA 2: ANÁLISIS FINANCIERO Y RIESGOS -->
+<div class="page">
+    <div class="header-main">
+        <h1>Business Case (Continuación)</h1>
+        <div class="brand">alsuper</div>
+    </div>
+
+    <h2>ANÁLISIS FINANCIERO</h2>
+    <p>
+        El modelo financiero propuesto rompe el paradigma de inversión tradicional (CAPEX pesado) al utilizar una infraestructura de consumo bajo demanda (SaaS / Cross-region inference). El costo es marginal comparado con el valor del tiempo recuperado.
+    </p>
+    
+    <div class="chart-container">
+        <div class="chart-title">Comparativa de Costo de Procesamiento (1,000 Documentos)</div>
+        <div class="bar-chart">
+            <div class="bar-wrapper">
+                <div class="bar-label">Costo Operativo Manual (Horas-Hombre)</div>
+                <div class="bar-container">
+                    <div class="bar-fill" style="width: 100%; background: #990000;">$9,500 - $12,000 MXN</div>
+                </div>
+            </div>
+            <div class="bar-wrapper">
+                <div class="bar-label">Costo Tecnológico (IA Haiku 4.5)</div>
+                <div class="bar-container">
+                    <div class="bar-fill" style="width: 5%; background: #2e7d32;">$200 MXN</div>
+                </div>
+            </div>
+        </div>
+        <p style="font-size: 8pt; color: #666; font-style: italic; text-align: center;">Nota: El costo tecnológico representa menos del 2% del costo operativo manual actual por el mismo volumen.</p>
+    </div>
+
+    <h3>Desglose de Gastos Técnicos Mensuales (AWS - 1,000 pág):</h3>
+    <ul>
+        <li><strong>Bedrock (IA):</strong> $4.97 USD (Costo dominante de inferencia inteligente).</li>
+        <li><strong>Seguridad (KMS):</strong> $5.03 USD (Garantía de cifrado de datos institucionales).</li>
+        <li><strong>Cómputo (Lambda/Step Functions):</strong> $0.17 USD (Orquestación autónoma).</li>
+        <li><strong>Mantenimiento:</strong> $0.00 MXN (Soporte absorbido por equipo interno de desarrollo).</li>
+    </ul>
+
+    <h2>ANÁLISIS COSTO-BENEFICIO</h2>
+    <p>
+        La rentabilidad de este proyecto no se basa en el incremento de ventas directas, sino en la <strong>Recuperación de Eficiencia Operativa</strong> y la <strong>Mitigación de Riesgos Fiduciarios</strong>. 
+    </p>
+    <div class="rag-container">
+        <div class="rag-card rag-green">
+            AHORRO OPERATIVO<br>>90% en tiempo de captura
+        </div>
+        <div class="rag-card rag-green">
+            COSTO TÉCNICO<br>~$0.20 MXN por página
+        </div>
+        <div class="rag-card rag-green">
+            ERROR DE CAPTURA<br>Reducción al 0.05%
+        </div>
+    </div>
+    <p>
+        Al implementar un modelo de <strong>Gestión por Excepción</strong>, el personal administrativo dejará de ser capturista para convertirse en supervisor de integridad. Un documento correcto fluye al sistema en 1 minuto (autorización), mientras que el esfuerzo humano se concentra exclusivamente en los "focos rojos" detectados por la IA.
+    </p>
+
+    <h2>ANÁLISIS DE RIESGOS Y SUPUESTOS</h2>
+    <div class="chart-container">
+        <div class="chart-title">Termómetro de Riesgo Operativo (Status Quo)</div>
+        <div class="risk-thermometer">
+            <div class="risk-zone risk-low">Seguro</div>
+            <div class="risk-zone risk-med">Moderado</div>
+            <div class="risk-zone risk-high">Crítico (Puntos Ciegos) <span class="risk-marker">▼</span></div>
+        </div>
+        <p style="font-size: 8pt; color: #666; text-align: center;">Operar bajo el modelo manual actual mantiene la veracidad documental en zona crítica por fatiga operativa y falta de validación cruzada inmediata.</p>
+    </div>
+
+    <table class="data-table">
+        <tr>
+            <th style="width: 70%;">CRITERIO DE IMPACTO POST-IMPLEMENTACIÓN</th>
+            <th style="width: 15%; text-align: center;">SI</th>
+            <th style="width: 15%; text-align: center;">NO</th>
+        </tr>
+        <tr>
+            <td>¿Reduce el riesgo operativo de errores en sistema de costos?</td>
+            <td style="text-align: center; color: green; font-weight: bold;">X</td>
+            <td></td>
+        </tr>
+        <tr>
+            <td>¿Mitiga el ausentismo operativo por retrasos en onboarding?</td>
+            <td style="text-align: center; color: green; font-weight: bold;">X</td>
+            <td></td>
+        </tr>
+        <tr>
+            <td>¿Requiere inversión de capital (CAPEX) mayor a $5,000 USD?</td>
+            <td></td>
+            <td style="text-align: center; color: red; font-weight: bold;">X</td>
+        </tr>
+        <tr>
+            <td>¿Elimina la necesidad total de supervisión humana?</td>
+            <td></td>
+            <td style="text-align: center; color: red; font-weight: bold;">X</td>
+        </tr>
+    </table>
+</div>
+
+<!-- PÁGINA 3: ESTRATEGIA DE IMPLEMENTACIÓN Y EQUIPO -->
+<div class="page">
+    <div class="header-main">
+        <h1>Business Case (Continuación)</h1>
+        <div class="brand">alsuper</div>
+    </div>
+
+    <h2>EVALUACIÓN DE ALTERNATIVAS</h2>
+    <table class="data-table">
+        <tr>
+            <th>Criterios</th>
+            <th>Solución IA (Propuesta)</th>
+            <th>Aumento de Nómina</th>
+            <th>Status Quo (Hacer nada)</th>
+        </tr>
+        <tr>
+            <td><strong>Escalabilidad</strong></td>
+            <td>Inmediata. Puede procesar 10k docs con el mismo esfuerzo.</td>
+            <td>Lineal. Requiere contratar más personal conforme crece el volumen.</td>
+            <td>Nula. El cuello de botella se vuelve crítico al crecer.</td>
+        </tr>
+        <tr>
+            <td><strong>Costo por Doc.</strong></td>
+            <td>~$0.20 MXN</td>
+            <td>~$25.00 MXN (Nómina)</td>
+            <td>~$45.00 MXN (Incluye costo de error)</td>
+        </tr>
+        <tr>
+            <td><strong>Fiabilidad</strong></td>
+            <td>Matemática. No sufre de fatiga visual ni omisiones.</td>
+            <td>Variable. Sujeta a la atención y rotación del personal.</td>
+            <td>Baja. Errores detectados meses después de la captura.</td>
+        </tr>
+    </table>
+
+    <h2>KPI´S (INDICADORES CLAVE DE ÉXITO)</h2>
+    <ul>
+        <li><strong>Tiempo de Respuesta (Lead Time):</strong> Reducción del alta de proveedores de 7 días a < 24 horas.</li>
+        <li><strong>Precisión de Extracción:</strong> >98% de coincidencia en campos críticos frente al documento original.</li>
+        <li><strong>Tasa de Automatización:</strong> % de documentos que pasan al sistema sin requerir corrección manual (Meta: 90%).</li>
+        <li><strong>Ahorro en OPEX:</strong> Recuperación de al menos 140 horas administrativas mensuales por colaborador impactado.</li>
+    </ul>
+
+    <h2>PLAN DE IMPLEMENTACIÓN (HITOS)</h2>
+    <table class="data-table">
+        <tr>
+            <td style="width: 50%;"><strong>Mes 1: Arquitectura y Reglas</strong><br>Configuración de servicios AWS, establecimiento de reglas de negocio (ej. validación de vigencias) y conectividad con sistemas internos.</td>
+            <td style="width: 50%;"><strong>Mes 2: Entrenamiento y Pruebas</strong><br>Calibración del motor Haiku 4.5 con documentos reales (pólizas, facturas). Validación de precisión con equipo administrativo de control.</td>
+        </tr>
+        <tr>
+            <td><strong>Mes 3: Despliegue Piloto</strong><br>Salida a producción para el sistema de Costos y Pedimentos (mayor volumen). Monitoreo de la eficiencia y ajuste de alertas por excepción.</td>
+            <td><strong>Mes 4: Escalabilidad Total</strong><br>Integración de Promocontrol y Alta de Proveedores. Transición al modelo autónomo bajo supervisión interna de soporte.</td>
+        </tr>
+    </table>
+
+    <h2>MATRIZ DE EQUIPO Y STAKEHOLDERS</h2>
+    <table class="data-table">
+        <tr>
+            <th>Nombre / Puesto</th>
+            <th>Cargo en el Proyecto</th>
+            <th>Responsabilidad (RACI)</th>
+        </tr>
+        <tr>
+            <td>Gerencia de TI / Infraestructura</td>
+            <td>Soporte Técnico</td>
+            <td>Mantenimiento de la autonomía del sistema y conectividad.</td>
+        </tr>
+        <tr>
+            <td>Administrador de Sistema Actual</td>
+            <td>Dueño del Proceso</td>
+            <td>Supervisión de validaciones correctas y gestión de excepciones.</td>
+        </tr>
+        <tr>
+            <td>PMO / Mentor BC</td>
+            <td>Auditor de Valor</td>
+            <td>Medición de KPIs de eficiencia y retorno de inversión acumulado.</td>
+        </tr>
+    </table>
+
+    <h2>DATOS DE APROBACIÓN</h2>
+    <table style="width: 100%; margin-top: 50px; border-collapse: collapse;">
+        <tr>
+            <td class="firma-celda">
+                __________________________________<br>
+                Líder de Proyecto / Solicitante
+            </td>
+            <td class="firma-celda">
+                __________________________________<br>
+                Gerente General / Sponsor
+            </td>
+            <td class="firma-celda">
+                __________________________________<br>
+                Comité de Finanzas (Aprobación CAPEX/OPEX)
+            </td>
+        </tr>
+    </table>
+</div>
+
+</body>
+</html>
