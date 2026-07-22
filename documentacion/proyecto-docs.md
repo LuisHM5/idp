@@ -4,7 +4,7 @@
 
 ### Descripción
 
-Implementación de una solución automatizada para la validación, análisis y extracción de información clave a partir de documentos empresariales (INE, constancias fiscales, formatos internos, entre otros), utilizando tecnologías de procesamiento inteligente de documentos.
+Implementación de una solución automatizada para la validación, análisis y extracción de información clave a partir de documentos empresariales (INE, constancias fiscales, formatos internos, NOM35, pedimentos, entre otros), utilizando tecnologías de procesamiento inteligente de documentos.
 
 ### Objetivo General
 
