@@ -2,6 +2,44 @@
 
 Sistema extensible de validación y extracción inteligente de documentos mexicanos usando Amazon Bedrock + validación determinística configurable.
 
+> 📘 **Guía completa de despliegue y operación** (subir, actualizar, eliminar total/parcial, catálogos, reglas, troubleshooting): [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md)
+
+---
+
+## Pipeline de Pedimentos / Expedientes Aduanales
+
+Los tipos del catálogo aduanal (`catalogs/full-pedimentos-docs.json`) se procesan con un pipeline dedicado (`pipeline/` dentro de la enrichment lambda) diseñado para PDFs multi-documento, escaneados o digitales:
+
+```
+PDF → texto por página (pypdf layout / Textract solo páginas escaneadas)
+    → segmentación (Bedrock clasifica rangos de páginas por tipo)
+    → extracción por documento (schema del catálogo: escalares + arrays)
+    → recuperación determinística (referencias de pedimento por regex)
+    → motor de reglas dinámico (fórmulas, sumas, regex, cross-documento)
+    → resolución por campo y por documento + checks de expediente
+```
+
+Características clave:
+
+- **Costo-eficiente**: el texto nativo del PDF es gratis; Textract solo se usa en páginas sin capa de texto. Un expediente de 86 páginas cuesta ~$0.35 USD (~$0.02 un CFDI de 1 página).
+- **Anti-invención**: el LLM copia valores textuales o devuelve `null`; la normalización (montos, fechas, número de pedimento 15 dígitos, UUIDs con guiones Unicode) es determinística y nunca sustituye el valor extraído (`extractedValue` vs `normalizedValue`).
+- **Estados por campo**: `VALIDATED`, `INVALID`, `LOW_CONFIDENCE`, `NOT_FOUND`, `NOT_APPLICABLE`, `REVIEW_REQUIRED` — con confianza combinada (OCR × LLM).
+- **Estados por documento/expediente**: `APPROVED`, `REJECTED`, `PARTIALLY_APPROVED`, `REVIEW_REQUIRED`, `PROCESSING_ERROR`.
+- **Reglas dinámicas** (JSON, sin redeploy): `regex`, `regex_each`, `presence`, `minimum_items`, `custom_formula`, `cfdi_total`, `sum_array`, `cross_document_match`, `cross_document_amount`, `date_expiry`, `date_max_age`, `negative_keyword`, `expected_value_by_app`, `page_ranges_no_overlap`, `boolean_true`.
+- **Checks de expediente**: mismo pedimento en todos los documentos (match por consecutivo de 7 dígitos), RFC del importador esperado (ignora RFCs genéricos `XEXX`/`XAXX`), CFDIs duplicados (distingue copias legítimas de doble cobro), conciliación de gastos y de valores contra facturas extranjeras.
+
+### Tests
+
+```bash
+pnpm test:unit          # motor de reglas + normalizadores, offline (pytest)
+pnpm test:pedimentos    # pipeline real contra test-docs/pedimentos docs/docs (AWS: Textract + Bedrock)
+pnpm test:pedimentos -- --file B2401416 --save /tmp/resultados
+```
+
+Las expectativas (ground truth) viven en `tests/integration/expected_pedimentos.json`. Un run completo de los 8 documentos cuesta ~$1 USD y tarda ~15 min.
+
+> `catalogs/full-pedimentos-docs.json` es la fuente de verdad del catálogo aduanal; `pnpm build` (o `pnpm sync-catalogs`) lo copia a `config/customs_catalog.json` dentro de la Lambda.
+
 ---
 
 ## Cómo Funciona
@@ -64,14 +102,14 @@ pnpm install
 pnpm build
 
 # Ver qué se va a desplegar (diff contra lo actual)
-pnpm diff
+pnpm run diff
 
 # Desplegar
-pnpm deploy
+pnpm run deploy
 
 # Desplegar con DynamoDB catalog habilitado (hot-reload)
 # Editar src/index.ts: enableDynamoCatalog: true
-pnpm build && pnpm deploy
+pnpm build && pnpm run deploy
 ```
 
 ---
@@ -80,16 +118,25 @@ pnpm build && pnpm deploy
 
 | Comando | Descripción |
 |---------|-------------|
-| `pnpm build` | Compilar TypeScript |
-| `pnpm deploy` | Desplegar stack a AWS |
-| `pnpm diff` | Ver cambios pendientes vs AWS |
+| `pnpm build` | Sincronizar catálogos + parchear blueprint + compilar TypeScript |
+| `pnpm run deploy` | Desplegar stack a AWS |
+| `pnpm run diff` | Ver cambios pendientes vs AWS |
 | `pnpm synth` | Generar CloudFormation template |
+| `pnpm run destroy` / `pnpm run destroy:full` | Eliminar stack (full = también la tabla DynamoDB) |
+| `pnpm setup:python` | Crear `.venv` con dependencias de test |
+| `pnpm test:unit` | Tests offline del motor de reglas (pytest) |
+| `pnpm test:pedimentos` | Pipeline real contra los docs de pedimentos (AWS) |
+| `pnpm test-e2e --file doc.pdf` | Probar el stack desplegado end-to-end |
+| `pnpm sync-catalogs` | Copiar `catalogs/full-pedimentos-docs.json` → Lambda config |
+| `pnpm db-sync-customs` | Subir catálogo de pedimentos a DynamoDB (hot-reload) |
+| `pnpm db-sync --file catalogs/x.json` | Subir cualquier catálogo a DynamoDB (`--dry-run` para validar) |
+| `pnpm db-put-type` | Insertar tipo en DynamoDB por CLI (hot-reload) |
+| `pnpm db-list-types` | Listar tipos en DynamoDB |
+| `pnpm db-delete-type --type X [--disable]` | Borrar/deshabilitar un tipo en DynamoDB (`--all` vacía la tabla) |
 | `pnpm list-types` | Listar tipos del JSON config local |
 | `pnpm preview-prompts` | Ver los prompts que recibirá Bedrock |
 | `pnpm add-type` | Agregar tipo documental al JSON |
 | `pnpm add-validator` | Crear custom validator Node.js |
-| `pnpm db-put-type` | Insertar tipo en DynamoDB (hot-reload) |
-| `pnpm db-list-types` | Listar tipos en DynamoDB |
 
 ---
 
@@ -106,7 +153,7 @@ pnpm add-type \
   --rules '[{"field":"CURP","rule_type":"regex","pattern":"^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$","message":"CURP invalido"}]'
 
 # Luego redesplegar
-pnpm build && pnpm deploy
+pnpm build && pnpm run deploy
 ```
 
 Para ver ayuda completa: `pnpm add-type --help`
@@ -208,7 +255,7 @@ export async function validate(entityMap, context) {
 }
 ```
 
-Luego redesplegar: `pnpm build && pnpm deploy`
+Luego redesplegar: `pnpm build && pnpm run deploy`
 
 ---
 
@@ -309,7 +356,7 @@ Esto permite:
 1. Editar `config/document_types.json` (o usar `pnpm add-type`)
 2. `pnpm build`
 3. `pnpm preview-prompts` (verificar que los prompts se ven bien)
-4. `pnpm deploy`
+4. `pnpm run deploy`
 
 ### Para cambios urgentes en producción:
 1. `pnpm db-put-type --type NUEVO_TIPO --fields "..." --required "..."`
@@ -318,7 +365,7 @@ Esto permite:
 ### Para validación custom:
 1. `pnpm add-validator --name mi_validador --type MI_TIPO`
 2. Editar `custom_validators/mi_validador.mjs`
-3. `pnpm build && pnpm deploy`
+3. `pnpm build && pnpm run deploy`
 
 ---
 

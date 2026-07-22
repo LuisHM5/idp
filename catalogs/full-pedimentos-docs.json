@@ -766,7 +766,8 @@
       "extraction_hints": {
         "LINEA_CAPTURA": "Extraer completa, sin espacios agregados por OCR.",
         "IMPORTE_TOTAL": "No confundir con una contribución individual.",
-        "CONTRIBUCIONES": "Extraer el desglose cuando esté disponible."
+        "CONTRIBUCIONES": "Extraer el desglose cuando esté disponible.",
+        "RFC_IMPORTADOR": "RFC del importador que paga las contribuciones. NO usar el RFC del banco, de la cuenta destino ni del concentrador de pagos. Si el comprobante no lo indica expresamente, dejar null."
       },
       "required_fields": ["NUMERO_PEDIMENTO", "FECHA_PAGO", "IMPORTE_TOTAL"],
       "validation_rules": [

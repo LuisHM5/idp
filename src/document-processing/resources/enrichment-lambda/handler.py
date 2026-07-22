@@ -35,6 +35,7 @@ from document_catalog import (
     CheckResult,
     TypeRegistryEntry,
     get_type_entry,
+    is_customs_type,
     reload_catalog,
 )
 from extractors import get_extractor
@@ -328,6 +329,63 @@ process.stdout.write(JSON.stringify(result));
         ]
 
 
+_EXPEDIENTE_STATUS_MAP = {
+    "APPROVED": "APROBADO",
+    "REJECTED": "RECHAZADO",
+    "PARTIALLY_APPROVED": "REQUIERE_REVISION",
+    "REVIEW_REQUIRED": "REQUIERE_REVISION",
+    "PROCESSING_ERROR": "REQUIERE_REVISION",
+}
+
+
+def _run_expediente(
+    event: Dict[str, Any], document_id: str, classification: str
+) -> Optional[Dict[str, Any]]:
+    """Run the expediente pipeline against the raw S3 object.
+
+    Returns None when the S3 pointer is missing (caller falls back to the
+    legacy single-document flow with the upstream extraction).
+    """
+    pointer = _extract_s3_pointer(event)
+    if pointer is None:
+        logger.warning("expediente pipeline skipped: no S3 pointer in event")
+        return None
+
+    bucket, key = pointer
+    try:
+        document_bytes, _ = _fetch_document(bucket, key)
+    except Exception as e:
+        logger.error("failed to fetch s3://%s/%s: %s", bucket, key, e)
+        return None
+
+    from pipeline.expediente import process_pdf  # deferred: pulls pypdf
+
+    expected_values = event.get("expectedValues") or {}
+    result = process_pdf(
+        document_bytes,
+        declared_type=classification if classification != "OTRO" else None,
+        expected_values=expected_values,
+        source_name=key,
+    )
+
+    # Legacy-compatible envelope so EventBridge consumers keep working,
+    # with the detailed expediente result attached.
+    main_docs = [d for d in result.get("documents", []) if d.get("documentType") != "OTRO"]
+    main = main_docs[0] if main_docs else None
+    return {
+        "documentId": document_id,
+        "documentClassification": classification,
+        "extractedEntities": (main or {}).get("extractedEntities", {}),
+        "validation": {
+            "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
+            "summary": f"expediente: {result.get('status')} ({len(result.get('documents', []))} documents)",
+            "checks": [],
+        },
+        "expediente": result,
+        "processedAt": result.get("processedAt"),
+    }
+
+
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     """Lambda handler entry point.
 
@@ -353,6 +411,17 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         processing_result = event.get("processingResult", {})
 
         classification = classification_result.get("documentClassification", "OTRO")
+
+        # Customs/pedimento types go through the full expediente pipeline:
+        # per-page text (native + Textract), segmentation, catalog-schema
+        # extraction with repeatable fields, and the dynamic rule engine
+        # (formulas, sums, cross-document checks). The Bedrock-native
+        # single-shot extraction upstream is not reliable for these documents.
+        if is_customs_type(classification) or event.get("expediente"):
+            expediente_result = _run_expediente(event, document_id, classification)
+            if expediente_result is not None:
+                return expediente_result
+
         type_entry = get_type_entry(classification)
 
         entities = processing_result.get("result", {}).get("entities", [])

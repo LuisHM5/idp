@@ -4,6 +4,7 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import {
   BedrockDocumentProcessing,
   EventbridgeBroker,
@@ -70,17 +71,48 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     }
 
     // Enrichment Lambda - Config-driven Python validation engine
+    //
+    // Bundling: requirements.txt (pypdf) must ship with the code. We try a
+    // local `pip install` first (fast, no Docker); if pip is unavailable the
+    // CDK falls back to the official Python bundling container.
+    const enrichmentDir = path.join(
+      __dirname,
+      "document-processing/resources/enrichment-lambda"
+    );
     const enrichmentFn = new lambda.Function(this, "EnrichmentLambda", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "handler.handler",
-      code: lambda.Code.fromAsset(
-        path.join(
-          __dirname,
-          "document-processing/resources/enrichment-lambda"
-        )
-      ),
-      timeout: cdk.Duration.seconds(60),
-      memorySize: 512,
+      code: lambda.Code.fromAsset(enrichmentDir, {
+        exclude: ["__pycache__", "**/__pycache__", "*.pyc"],
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          command: [
+            "bash",
+            "-c",
+            "pip install -r requirements.txt -t /asset-output --no-cache-dir --quiet && cp -au . /asset-output",
+          ],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              const { execSync } = require("child_process");
+              try {
+                execSync(
+                  `pip3 install -r "${enrichmentDir}/requirements.txt" -t "${outputDir}" --no-cache-dir --quiet` +
+                    ` && cp -r "${enrichmentDir}/." "${outputDir}/"` +
+                    ` && find "${outputDir}" -name __pycache__ -type d -exec rm -rf {} +`,
+                  { stdio: "pipe", shell: "/bin/bash" }
+                );
+                return true;
+              } catch {
+                return false; // fall back to Docker bundling
+              }
+            },
+          },
+        },
+      }),
+      // The expediente pipeline OCRs scanned pages via Textract and runs
+      // several Bedrock extraction calls: an 86-page expediente takes ~6 min.
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 1024,
       description:
         "Config-driven document validation (JSON + DynamoDB + custom Node.js)",
       environment: {
@@ -177,6 +209,18 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       }
     });
 
+    // The blueprint's QueuedS3Adapter creates the ingestion bucket internally
+    // (raw/ prefix triggers the workflow). Locate it in the construct tree so
+    // the Upload Lambda writes to the real bucket instead of a placeholder.
+    const documentBucket = pipeline.node
+      .findAll()
+      .find((c): c is s3.Bucket => c instanceof s3.Bucket);
+    if (!documentBucket) {
+      throw new Error(
+        "BedrockDocumentProcessing no longer exposes an S3 bucket in its construct tree; wire DOCUMENT_BUCKET explicitly."
+      );
+    }
+
     // Upload Lambda - Node.js document ingestion API
     const uploadFn = new lambda.Function(this, "UploadLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -188,9 +232,10 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       memorySize: 256,
       description: "Document upload via REST API",
       environment: {
-        DOCUMENT_BUCKET: "PLACEHOLDER_BUCKET",
+        DOCUMENT_BUCKET: documentBucket.bucketName,
       },
     });
+    documentBucket.grantPut(uploadFn);
 
     // API Gateway for document upload
     const api = new apigateway.RestApi(this, "DocumentUploadApi", {

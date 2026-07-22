@@ -1,0 +1,137 @@
+{
+  "_comment": "Ground truth para los documentos de prueba de pedimentos. El runner (scripts/test-pedimentos.py) procesa cada PDF con el pipeline completo y verifica estas expectativas. 'type' acepta lista cuando la clasificación tiene más de una lectura válida de negocio.",
+  "importer_rfc": "OFU910626UQ0",
+  "files": {
+    "2607 0823 6001187.pdf": {
+      "description": "Pedimento de importación escaneado (27 páginas, sin capa de texto)",
+      "expect_documents": [
+        {
+          "type": ["PEDIMENTO_ADUANAL"],
+          "fields": {
+            "NUMERO_PEDIMENTO_NORMALIZADO": "260708236001187",
+            "RFC_IMPORTADOR_EXPORTADOR": "OFU910626UQ0"
+          },
+          "pedimento_consecutivo": "6001187",
+          "required_present": ["PATENTE", "TIPO_OPERACION", "CLAVE_PEDIMENTO", "TIPO_CAMBIO", "VALOR_ADUANA", "FECHA_PAGO", "TOTAL_PEDIMENTO"]
+        }
+      ]
+    },
+    "pedimento.pdf": {
+      "description": "Copia idéntica (mismo md5) del pedimento escaneado 2607 0823 6001187",
+      "expect_documents": [
+        {
+          "type": ["PEDIMENTO_ADUANAL"],
+          "fields": {
+            "NUMERO_PEDIMENTO_NORMALIZADO": "260708236001187"
+          },
+          "pedimento_consecutivo": "6001187"
+        }
+      ]
+    },
+    "OPERADORA P2607 0823 6001187.pdf": {
+      "description": "Copia OPERADORA del mismo pedimento escaneado",
+      "expect_documents": [
+        {
+          "type": ["PEDIMENTO_ADUANAL"],
+          "fields": {
+            "NUMERO_PEDIMENTO_NORMALIZADO": "260708236001187"
+          },
+          "pedimento_consecutivo": "6001187"
+        }
+      ]
+    },
+    "26 07 3435 6041248 CG.pdf": {
+      "description": "Expediente digital de 86 páginas: factura agencia + pedimento + COVE + acuses VUCEM + manifestación de valor",
+      "expect_documents": [
+        {
+          "type": ["FACTURA_AGENCIA_ADUANAL", "CUENTA_GASTOS_AGENTE_ADUANAL"],
+          "fields": {
+            "UUID": "6B2AF82F-7E4F-4606-90CA-E7F44BF2F011",
+            "EMISOR_RFC": "CGM200921LN5",
+            "RECEPTOR_RFC": "OFU910626UQ0"
+          },
+          "pedimento_consecutivo": "6041248"
+        },
+        {
+          "type": ["PEDIMENTO_ADUANAL"],
+          "pedimento_consecutivo": "6041248"
+        },
+        {
+          "type": ["ACUSE_VUCEM"]
+        }
+      ]
+    },
+    "B2401416.pdf": {
+      "description": "CFDI SENASICA por derechos de certificado fitosanitario (pago de derechos)",
+      "expect_documents": [
+        {
+          "type": ["CFDI_GASTO_TERCERO"],
+          "fields": {
+            "UUID": "A830CD1B-1294-5552-9464-709C123EB3E6",
+            "EMISOR_RFC": "SNS960412AH4",
+            "RECEPTOR_RFC": "OFU910626UQ0",
+            "TOTAL": 3356.0
+          },
+          "pedimento_consecutivo": "6001187"
+        }
+      ]
+    },
+    "FA0000010841.pdf": {
+      "description": "CFDI de servicios por logística (SERV EN COMERCIO EXTERIOR DE LA FRONTERA)",
+      "expect_documents": [
+        {
+          "type": ["FACTURA_LOGISTICA", "CFDI_GASTO_TERCERO"],
+          "fields": {
+            "UUID": "85B7EDBA-5542-414A-ABF5-281AF4B1CC1D",
+            "EMISOR_RFC": "SCE130527CD1",
+            "RECEPTOR_RFC": "OFU910626UQ0",
+            "SUBTOTAL": 8068.83,
+            "TOTAL": 9359.84
+          },
+          "pedimento_consecutivo": "6001187"
+        }
+      ]
+    },
+    "FAXCR0000023846.pdf": {
+      "description": "CFDI de transporte/logística refrigerada, referencia a pedimento 6001187",
+      "expect_documents": [
+        {
+          "type": ["FACTURA_LOGISTICA", "CFDI_GASTO_TERCERO"],
+          "fields": {
+            "UUID": "8D0907D3-C999-4BAF-9837-A07CE56AE419",
+            "EMISOR_RFC": "CHC840511844",
+            "RECEPTOR_RFC": "OFU910626UQ0",
+            "SUBTOTAL": 14550.0,
+            "TOTAL": 16878.0
+          },
+          "pedimento_consecutivo": "6001187"
+        }
+      ]
+    },
+    "FJuarez0000009338.pdf": {
+      "description": "CFDI gasto de tercero (Juárez), UUID con guiones Unicode en el PDF",
+      "expect_documents": [
+        {
+          "type": ["CFDI_GASTO_TERCERO", "FACTURA_LOGISTICA"],
+          "fields": {
+            "UUID": "1BE23B9C-331E-4DBB-977C-9439EDCFD41D",
+            "EMISOR_RFC": "LAF080718FS4",
+            "SUBTOTAL": 7068.96,
+            "TOTAL": 8200.0
+          }
+        }
+      ]
+    },
+    "VEOM500811DI9-A-22901-CFDI.pdf": {
+      "description": "CFDI de honorarios de agente aduanal persona física con cuenta de gastos",
+      "expect_documents": [
+        {
+          "type": ["FACTURA_AGENCIA_ADUANAL", "CUENTA_GASTOS_AGENTE_ADUANAL"],
+          "fields": {
+            "EMISOR_RFC|AGENTE_ADUANAL_RFC": "VEOM500811DI9"
+          }
+        }
+      ]
+    }
+  }
+}

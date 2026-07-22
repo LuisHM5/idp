@@ -28,11 +28,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ValidationRule:
-    """A single validation rule to apply to an extracted field."""
+    """A single validation rule to apply to an extracted field.
+
+    `params` keeps every extra key from the catalog JSON (formula, tolerance,
+    source, keywords, allow_empty, target_document_type, ...) so new rule
+    types can be added in config without touching this dataclass.
+    """
     field: str
-    rule_type: str  # "regex", "date_expiry", "presence", "boolean_true"
+    rule_type: str  # "regex", "custom_formula", "sum_array", "cross_document_match", ...
     pattern: Optional[str] = None
     message: str = ""
+    params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -59,6 +65,15 @@ class TypeRegistryEntry:
     # Optional per-type overrides for AnalyzeID → catalog field mapping.
     # If empty, extractors fall back to the built-in alias table.
     field_aliases: Dict[str, List[str]] = field(default_factory=dict)
+    # Repeatable (array) fields: name → list of sub-field names. Extracted as
+    # a list of objects; validated with *_each / sum_array / minimum_items.
+    repeatable_fields: Dict[str, List[str]] = field(default_factory=dict)
+    # Optional closed list of subtypes (DOCUMENT_SUBTYPE must be one of these).
+    allowed_subtypes: List[str] = field(default_factory=list)
+    # Routing hint for consumers (which business queue receives this doc).
+    business_destination: str = ""
+    # Minimum extraction confidence for a field to be VALIDATED (else LOW_CONFIDENCE).
+    min_confidence: float = 0.70
 
 
 @dataclass
@@ -85,24 +100,46 @@ _CATALOG_TABLE = os.environ.get("CATALOG_TABLE")  # DynamoDB table name (optiona
 _CATALOG_CACHE: Optional[Dict[str, TypeRegistryEntry]] = None
 
 
+_RULE_CORE_KEYS = {"field", "rule_type", "pattern", "message"}
+
+
 def _parse_rules(rules_data: List[Dict[str, Any]]) -> List[ValidationRule]:
-    """Parse validation rules from JSON config."""
+    """Parse validation rules from JSON config, keeping extra keys in params."""
     return [
         ValidationRule(
             field=r.get("field", ""),
             rule_type=r.get("rule_type", ""),
             pattern=r.get("pattern"),
             message=r.get("message", ""),
+            params={k: v for k, v in r.items() if k not in _RULE_CORE_KEYS},
         )
         for r in rules_data
     ]
 
 
-def _parse_entry(type_id: str, data: Dict[str, Any]) -> TypeRegistryEntry:
-    """Parse a single type entry from JSON config."""
+def _parse_entry(
+    type_id: str,
+    data: Dict[str, Any],
+    field_sets: Optional[Dict[str, List[str]]] = None,
+) -> TypeRegistryEntry:
+    """Parse a single type entry from JSON config.
+
+    `field_sets` resolves the customs-catalog `field_sets` mechanism: named
+    lists of shared fields (e.g. COMMON_CFDI_FIELDS) prepended to the type's
+    own extraction_fields.
+    """
+    fields: List[str] = []
+    for set_name in data.get("field_sets", []) or []:
+        for name in (field_sets or {}).get(set_name, []):
+            if name not in fields:
+                fields.append(name)
+    for name in data.get("extraction_fields", []) or []:
+        if name not in fields:
+            fields.append(name)
+
     return TypeRegistryEntry(
         type_id=type_id,
-        extraction_fields=data.get("extraction_fields", []),
+        extraction_fields=fields,
         required_fields=data.get("required_fields", []),
         validation_rules=_parse_rules(data.get("validation_rules", [])),
         validator_module=data.get("validator_module"),
@@ -111,21 +148,60 @@ def _parse_entry(type_id: str, data: Dict[str, Any]) -> TypeRegistryEntry:
         extraction_hints=data.get("extraction_hints", {}) or {},
         extraction_strategy=data.get("extraction_strategy"),
         field_aliases=data.get("field_aliases", {}) or {},
+        repeatable_fields=data.get("repeatable_fields", {}) or {},
+        allowed_subtypes=data.get("allowed_subtypes", []) or [],
+        business_destination=data.get("business_destination", ""),
+        min_confidence=float(data.get("min_confidence", 0.70)),
     )
 
 
-def _load_from_json() -> Dict[str, TypeRegistryEntry]:
-    """Load catalog from local JSON config file."""
-    if not _CONFIG_FILE.exists():
-        logger.warning(f"Config file not found: {_CONFIG_FILE}")
-        return {}
+_CROSS_DOC_RULES: List[Dict[str, Any]] = []
+_CUSTOMS_TYPE_IDS: set = set()
 
-    with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
+
+def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
+    """Load one catalog file. Supports two shapes:
+
+    - Classic: {"types": {TYPE_ID: {...}}}
+    - Customs: {"document_types": {TYPE_ID: {...}}, "_field_sets": {...},
+                "cross_document_validation_rules": [...]}
+    """
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    types_data = data.get("types") or data.get("document_types") or {}
+    field_sets = data.get("_field_sets", {}) or {}
+
     catalog: Dict[str, TypeRegistryEntry] = {}
-    for type_id, type_data in data.get("types", {}).items():
-        catalog[type_id] = _parse_entry(type_id, type_data)
+    for type_id, type_data in types_data.items():
+        catalog[type_id] = _parse_entry(type_id, type_data, field_sets)
+
+    if "document_types" in data:
+        _CUSTOMS_TYPE_IDS.update(catalog.keys())
+    for rule in data.get("cross_document_validation_rules", []) or []:
+        if rule not in _CROSS_DOC_RULES:
+            _CROSS_DOC_RULES.append(rule)
+
+    return catalog
+
+
+def _load_from_json() -> Dict[str, TypeRegistryEntry]:
+    """Load catalog from all local JSON config files.
+
+    `document_types.json` is the base; any other `*_catalog.json` in the
+    config dir (e.g. customs_catalog.json with the pedimento types) extends
+    or overrides it.
+    """
+    catalog: Dict[str, TypeRegistryEntry] = {}
+    files = [_CONFIG_FILE] + sorted(_CONFIG_DIR.glob("*_catalog.json"))
+    for path in files:
+        if not path.exists():
+            logger.warning(f"Config file not found: {path}")
+            continue
+        try:
+            catalog.update(_load_config_file(path))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"Failed to load catalog file {path}: {e}")
 
     logger.info(f"Loaded {len(catalog)} document types from JSON config")
     return catalog
@@ -204,6 +280,8 @@ def reload_catalog() -> None:
     """Force reload of the catalog (useful for testing or after DB updates)."""
     global _CATALOG_CACHE
     _CATALOG_CACHE = None
+    _CROSS_DOC_RULES.clear()
+    _CUSTOMS_TYPE_IDS.clear()
 
 
 # --- Public API ---
@@ -234,6 +312,18 @@ def get_type_entry(doc_type: str) -> TypeRegistryEntry:
 def get_all_types() -> Dict[str, TypeRegistryEntry]:
     """Get the full catalog (for prompt generation or introspection)."""
     return _load_catalog()
+
+
+def get_cross_document_rules() -> List[Dict[str, Any]]:
+    """Cross-document validation rules declared by loaded catalogs."""
+    _load_catalog()
+    return list(_CROSS_DOC_RULES)
+
+
+def is_customs_type(doc_type: str) -> bool:
+    """True when the type belongs to the customs (pedimentos) catalog."""
+    _load_catalog()
+    return doc_type in _CUSTOMS_TYPE_IDS
 
 
 # Expose DOCUMENT_CATALOG for backward compatibility

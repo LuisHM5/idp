@@ -83,52 +83,63 @@ Ejemplos:
 `);
 }
 
-function putType(typeId, config, table, region) {
+/**
+ * Generic JS → DynamoDB AttributeValue marshaller.
+ * Preserves EVERY key of the type config (rule params like formula/tolerance,
+ * repeatable_fields, allowed_subtypes, extraction_strategy, etc.) so the
+ * Python loader receives the same shape as the JSON catalog.
+ */
+function toAttr(value) {
+  if (value === null || value === undefined) return { NULL: true };
+  if (typeof value === "boolean") return { BOOL: value };
+  if (typeof value === "number") return { N: String(value) };
+  if (typeof value === "string") return value === "" ? { S: "" } : { S: value };
+  if (Array.isArray(value)) return { L: value.map(toAttr) };
+  if (typeof value === "object") {
+    const m = {};
+    for (const [k, v] of Object.entries(value)) m[k] = toAttr(v);
+    return { M: m };
+  }
+  return { S: String(value) };
+}
+
+/**
+ * Resolve the customs-catalog `field_sets` mechanism: shared field lists
+ * (e.g. COMMON_CFDI_FIELDS) get expanded into extraction_fields before the
+ * upload, because the DynamoDB loader has no access to `_field_sets`.
+ */
+function resolveFieldSets(config, fieldSets) {
+  if (!config.field_sets || !fieldSets) return config;
+  const fields = [];
+  for (const setName of config.field_sets) {
+    for (const f of fieldSets[setName] || []) {
+      if (!fields.includes(f)) fields.push(f);
+    }
+  }
+  for (const f of config.extraction_fields || []) {
+    if (!fields.includes(f)) fields.push(f);
+  }
+  const resolved = { ...config, extraction_fields: fields };
+  delete resolved.field_sets;
+  return resolved;
+}
+
+function putType(typeId, config, table, region, dryRun = false) {
   const item = {
     type_id: { S: typeId },
-    description: { S: config.description || "" },
-    extraction_fields: { L: (config.extraction_fields || []).map((f) => ({ S: f })) },
-    required_fields: { L: (config.required_fields || []).map((f) => ({ S: f })) },
     enabled: { BOOL: true },
   };
-
-  // Validation rules
-  if (config.validation_rules && config.validation_rules.length > 0) {
-    item.validation_rules = {
-      L: config.validation_rules.map((r) => {
-        const m = {
-          field: { S: r.field || "" },
-          rule_type: { S: r.rule_type || "" },
-        };
-        if (r.pattern) m.pattern = { S: r.pattern };
-        if (r.message) m.message = { S: r.message };
-        return { M: m };
-      }),
-    };
-  } else {
-    item.validation_rules = { L: [] };
-  }
-
-  // Extraction hints
-  if (config.extraction_hints && Object.keys(config.extraction_hints).length > 0) {
-    const hintsMap = {};
-    for (const [k, v] of Object.entries(config.extraction_hints)) {
-      hintsMap[k] = { S: v };
-    }
-    item.extraction_hints = { M: hintsMap };
-  }
-
-  // Validator module
-  if (config.validator_module) {
-    item.validator_module = { S: config.validator_module };
-  }
-
-  // Custom validator
-  if (config.custom_validator) {
-    item.custom_validator = { S: config.custom_validator };
+  for (const [key, value] of Object.entries(config)) {
+    if (key === "type_id" || key === "enabled") continue;
+    item[key] = toAttr(value);
   }
 
   const itemJson = JSON.stringify(item);
+
+  if (dryRun) {
+    console.log(`  🔎 [dry-run] ${typeId}: ${Object.keys(item).length} atributos, ${itemJson.length} bytes`);
+    return true;
+  }
 
   // Write to temp file to avoid shell escaping issues with quotes/commas
   const tmpFile = `/tmp/dynamodb-item-${typeId}-${Date.now()}.json`;
@@ -166,8 +177,17 @@ function main() {
     }
     try {
       const content = JSON.parse(readFileSync(args.file, "utf8"));
-      // Support both {TYPE: {...}} and {types: {TYPE: {...}}}
-      types = content.types || content;
+      // Supported shapes:
+      //   {TYPE: {...}}                              (catalogs/*.json clásicos)
+      //   {types: {TYPE: {...}}}                     (config local)
+      //   {document_types: {TYPE: {...}}, _field_sets: {...}}  (catálogo aduanal)
+      const raw = content.document_types || content.types || content;
+      const fieldSets = content._field_sets || {};
+      types = {};
+      for (const [tid, cfg] of Object.entries(raw)) {
+        if (tid.startsWith("_")) continue; // metadata keys, not types
+        types[tid] = resolveFieldSets(cfg, fieldSets);
+      }
     } catch (e) {
       console.error(`❌ JSON inválido en ${args.file}: ${e.message}`);
       process.exit(1);
@@ -205,7 +225,7 @@ function main() {
   let failed = 0;
 
   for (const typeId of typeIds) {
-    const ok = putType(typeId, types[typeId], table, region);
+    const ok = putType(typeId, types[typeId], table, region, !!args["dry-run"]);
     if (ok) {
       console.log(`  ✅ ${typeId} → sobrescrito/creado`);
       success++;

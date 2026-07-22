@@ -12,7 +12,7 @@
  * Opciones:
  *   --file       (requerido) Ruta al documento a subir (jpg, jpeg, png, pdf)
  *   --endpoint   URL del API Gateway (default: lee de CloudFormation output)
- *   --stack      Nombre del stack CDK para obtener endpoint (default: "BedrockDocumentProcessingStack")
+ *   --stack      Nombre del stack CDK para obtener endpoint (default: "DocumentValidationStack")
  *   --wait       Segundos a esperar por el resultado (default: 20)
  *   --region     AWS region (default: AWS_REGION env o "us-east-1")
  *   --no-wait    No esperar resultado, solo subir
@@ -49,7 +49,7 @@ Sube un documento al endpoint desplegado y muestra el resultado del pipeline com
 Opciones:
   --file       (requerido) Ruta al documento (jpg, jpeg, png, pdf)
   --endpoint   URL del API Gateway (si no se da, se obtiene del stack CDK)
-  --stack      Nombre del stack CDK (default: "BedrockDocumentProcessingStack")
+  --stack      Nombre del stack CDK (default: "DocumentValidationStack")
   --wait       Segundos a esperar resultado (default: 20)
   --region     AWS region
   --no-wait    Solo subir, no esperar resultado
@@ -95,7 +95,7 @@ async function main() {
   }
 
   const region = args.region || process.env.AWS_REGION || "us-east-1";
-  const stackName = args.stack || "BedrockDocumentProcessingStack";
+  const stackName = args.stack || "DocumentValidationStack";
   const waitSeconds = parseInt(args.wait || "20", 10);
 
   // Get endpoint
