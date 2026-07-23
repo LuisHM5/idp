@@ -79,6 +79,12 @@ class TypeRegistryEntry:
     # each result's tracking so you can tell which version processed a document,
     # including hot-reloaded DynamoDB overrides.
     schema_version: Optional[str] = None
+    # Target shapes for derived/structured outputs (e.g. LIQUIDACION_NORMALIZADA
+    # defaults). Consumed by post-extraction normalizers.
+    structured_fields: Dict[str, Any] = field(default_factory=dict)
+    # Per-form field mappings, including `cuadro_liquidacion_fields` used to
+    # normalize the customs liquidation table into LIQUIDACION_NORMALIZADA.
+    form_mapping: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -162,6 +168,8 @@ def _parse_entry(
         business_destination=data.get("business_destination", ""),
         min_confidence=float(data.get("min_confidence", 0.70)),
         schema_version=data.get("schema_version"),
+        structured_fields=data.get("structured_fields", {}) or {},
+        form_mapping=data.get("form_mapping", {}) or {},
     )
 
 

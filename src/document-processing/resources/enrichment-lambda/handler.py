@@ -446,6 +446,7 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
                     k: len(v) for k, v in entities.items() if isinstance(v, list)
                 },
                 **({"recoveredFields": d["recoveredFields"]} if d.get("recoveredFields") else {}),
+                **({"liquidacionNormalizada": d["liquidacionNormalizada"]} if d.get("liquidacionNormalizada") else {}),
             }
         )
     return {

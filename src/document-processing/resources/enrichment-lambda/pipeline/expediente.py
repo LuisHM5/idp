@@ -30,6 +30,7 @@ from document_catalog import (
 from validators import engine
 from validators.engine import RuleCheck, ValidationContext
 
+from .liquidacion import build_liquidacion_normalizada
 from .normalize import (
     find_pedimento_reference,
     normalize_pedimento,
@@ -155,6 +156,12 @@ def process_pdf(
             doc["_text"] = "\n".join(p.text for p in seg_pages)
             doc["extractionMeta"] = extracted.meta
             _recover_references(doc, entry)
+            # Deterministic customs liquidation normalization (config-driven):
+            # DTA/IGI/IVA/PRV/IEPS_* from CUADRO_LIQUIDACION.CONCEPTOS + CONTRIBUCIONES.
+            liq = build_liquidacion_normalizada(doc["_entities"], entry)
+            if liq is not None:
+                doc["_entities"]["LIQUIDACION_NORMALIZADA"] = liq
+                doc["liquidacionNormalizada"] = liq
         except Exception as e:
             logger.error("extraction failed for %s pages %d-%d: %s", seg.doc_type, seg.page_start, seg.page_end, e)
             doc["status"] = engine.DOC_ERROR

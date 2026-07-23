@@ -219,6 +219,18 @@ def extract_document(
             llm_conf = 0.85
         confidences[name] = round(max(0.0, min(1.0, llm_conf)) * seg_conf, 4)
 
+    # Nested/dotted repeatables (e.g. CUADRO_LIQUIDACION.CONCEPTOS,
+    # PARTIDAS.CONTRIBUCIONES_PARTIDA) are declared only in repeatable_fields,
+    # not extraction_fields, so the scalar loop above never materializes them.
+    # Bring them through here so their rows are not silently dropped.
+    for name in type_entry.repeatable_fields:
+        if name in entity_map:
+            continue
+        items = all_arrays.get(name) or []
+        entity_map[name] = [i for i in items if isinstance(i, dict)]
+        if entity_map[name]:
+            confidences[name] = round(seg_conf, 4)
+
     return ExtractedDoc(
         entity_map=entity_map,
         confidences=confidences,
