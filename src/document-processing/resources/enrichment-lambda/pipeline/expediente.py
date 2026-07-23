@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from document_catalog import (
     get_cross_document_rules,
+    get_schema_info,
     get_type_entry,
 )
 from validators import engine
@@ -41,6 +42,36 @@ from .segmenter import Segment, segment_pages
 from .text_extractor import extract_document
 
 logger = logging.getLogger(__name__)
+
+# Bump when extraction/validation logic changes in a way consumers should
+# notice (recorded in every result's tracking block).
+PIPELINE_VERSION = "1.0.0"
+
+
+def _tracking(
+    started_at: datetime,
+    started_monotonic: float,
+    model_id: Optional[str],
+) -> Dict[str, Any]:
+    """Provenance for a result: created/updated, processing window, schema/version.
+
+    `createdAt` and `updatedAt` mark this result record's lifecycle; they start
+    equal and consumers bump `updatedAt` whenever they mutate the result.
+    """
+    now = datetime.now(timezone.utc)
+    started_iso = started_at.isoformat()
+    return {
+        "createdAt": now.isoformat(),
+        "updatedAt": now.isoformat(),
+        "processingStartedAt": started_iso,
+        "processingCompletedAt": now.isoformat(),
+        "processingSeconds": round(time.time() - started_monotonic, 2),
+        "schema": {
+            "pipelineVersion": PIPELINE_VERSION,
+            "model": model_id or "default",
+            **get_schema_info(),
+        },
+    }
 
 # Fields (by doc type) that carry the pedimento reference for same_pedimento
 _PEDIMENTO_REF_FIELDS = (
@@ -67,17 +98,22 @@ def process_pdf(
 ) -> Dict[str, Any]:
     """Process a (possibly multi-document) PDF and return the full result."""
     started = time.time()
+    started_at = datetime.now(timezone.utc)
     processing_id = str(uuid.uuid4())
     expected_values = expected_values or {}
+
+    def _fail(message: str) -> Dict[str, Any]:
+        return _error_result(processing_id, source_name, message,
+                             _tracking(started_at, started, model_id))
 
     try:
         pages = load_pages(pdf_bytes)
     except Exception as e:
         logger.error("failed to read PDF: %s", e)
-        return _error_result(processing_id, source_name, f"unreadable PDF: {e}")
+        return _fail(f"unreadable PDF: {e}")
 
     if not pages:
-        return _error_result(processing_id, source_name, "PDF has no pages")
+        return _fail("PDF has no pages")
 
     segments = segment_pages(pages, declared_type=declared_type, model_id=model_id)
 
@@ -156,11 +192,13 @@ def process_pdf(
     statuses = [d.get("status") for d in documents if d.get("documentType") != "OTRO"]
     overall = _overall_status(statuses, cross_checks)
 
+    tracking = _tracking(started_at, started, model_id)
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
-        "processedAt": datetime.now(timezone.utc).isoformat(),
-        "processingSeconds": round(time.time() - started, 2),
+        "processedAt": tracking["processingCompletedAt"],
+        "processingSeconds": tracking["processingSeconds"],
+        "tracking": tracking,
         "pages": pages_summary(pages),
         "status": overall,
         "reviewRequired": overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),
@@ -428,11 +466,19 @@ def _cross_pedimento_values(rule: Dict[str, Any], documents: List[Dict[str, Any]
             "details": {"pedimentoValorDolares": val_dolares, "foreignInvoicesTotal": inv_total}}
 
 
-def _error_result(processing_id: str, source_name: str, message: str) -> Dict[str, Any]:
+def _error_result(
+    processing_id: str,
+    source_name: str,
+    message: str,
+    tracking: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    tracking = tracking or _tracking(datetime.now(timezone.utc), time.time(), None)
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
-        "processedAt": datetime.now(timezone.utc).isoformat(),
+        "processedAt": tracking["processingCompletedAt"],
+        "processingSeconds": tracking["processingSeconds"],
+        "tracking": tracking,
         "status": engine.DOC_ERROR,
         "reviewRequired": True,
         "documents": [],

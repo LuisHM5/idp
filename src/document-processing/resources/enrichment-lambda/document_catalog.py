@@ -14,6 +14,7 @@ To add custom programmatic validation:
 - Reference it in the type config as "custom_validator": "my_script"
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -98,6 +99,10 @@ _CONFIG_DIR = Path(__file__).parent / "config"
 _CONFIG_FILE = _CONFIG_DIR / "document_types.json"
 _CATALOG_TABLE = os.environ.get("CATALOG_TABLE")  # DynamoDB table name (optional)
 _CATALOG_CACHE: Optional[Dict[str, TypeRegistryEntry]] = None
+# Version of each loaded catalog file: declared `_schema_version` if present,
+# else a short content hash so the identifier is always deterministic and
+# changes whenever the schema does. Keyed by file stem (e.g. "customs_catalog").
+_SCHEMA_VERSIONS: Dict[str, str] = {}
 
 
 _RULE_CORE_KEYS = {"field", "rule_type", "pattern", "message"}
@@ -166,8 +171,15 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
     - Customs: {"document_types": {TYPE_ID: {...}}, "_field_sets": {...},
                 "cross_document_validation_rules": [...]}
     """
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    raw = path.read_bytes()
+    data = json.loads(raw)
+
+    # Declared version wins; otherwise a short content hash so the schema is
+    # always identifiable and the id changes whenever the file does.
+    declared = data.get("_schema_version") or data.get("version")
+    _SCHEMA_VERSIONS[path.stem] = str(declared) if declared else (
+        "sha256:" + hashlib.sha256(raw).hexdigest()[:12]
+    )
 
     types_data = data.get("types") or data.get("document_types") or {}
     field_sets = data.get("_field_sets", {}) or {}
@@ -282,6 +294,22 @@ def reload_catalog() -> None:
     _CATALOG_CACHE = None
     _CROSS_DOC_RULES.clear()
     _CUSTOMS_TYPE_IDS.clear()
+    _SCHEMA_VERSIONS.clear()
+
+
+def get_schema_info() -> Dict[str, Any]:
+    """Identify the catalog schema that processed a document.
+
+    Returns the per-file versions (declared `_schema_version` or content hash)
+    and the number of loaded types, so every result can record exactly which
+    schema version produced it.
+    """
+    catalog = _load_catalog()
+    return {
+        "catalogVersions": dict(_SCHEMA_VERSIONS),
+        "typeCount": len(catalog),
+        "source": "dynamodb+json" if _CATALOG_TABLE else "json",
+    }
 
 
 # --- Public API ---
