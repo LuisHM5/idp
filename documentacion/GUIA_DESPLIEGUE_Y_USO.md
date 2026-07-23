@@ -17,6 +17,10 @@ Guía operativa completa: subir, actualizar, eliminar (total o parcial), gestion
 > | Vaciar el catálogo DynamoDB | `pnpm db-delete-type --all` |
 > | Eliminar el stack (conserva tabla DynamoDB) | `pnpm run destroy` |
 > | Eliminar TODO (stack + tabla) | `pnpm run destroy:full` |
+> | **Procesar MIS documentos y solo revisar el resultado** | `pnpm procesar -- --dir /ruta/a/mis/docs --importer MI_RFC` |
+> | Subir un documento al stack (<4 MB) | `pnpm test-e2e --file doc.pdf --no-wait` |
+> | Subir un documento grande (≥4 MB) | `aws s3 cp doc.pdf s3://<bucket>/raw/$(uuidgen)/doc.pdf` |
+> | Ver el resultado de un documento subido | `pnpm resultado -- --id <documentId>` |
 > | Tests offline del motor de reglas | `pnpm test:unit` |
 > | Tests reales de pedimentos (usa AWS, ~$1) | `pnpm test:pedimentos` |
 > | Probar un documento contra el stack desplegado | `pnpm test-e2e --file mi_doc.pdf` |
@@ -89,6 +93,74 @@ pnpm track            # seguir la ejecución de Step Functions
 ```
 
 ## 4. Uso: enviar documentos y leer resultados
+
+### 4.A Flujo completo con un ejemplo real (`pedimentos.pdf`, 86 páginas, 5.8 MB)
+
+**Paso 1 — Subirlo.** Según el tamaño del archivo:
+
+```bash
+# Archivos < 4 MB → por el API (un solo comando):
+pnpm test-e2e --file "test-docs/pedimentos docs/docs/B2401416.pdf" --no-wait
+
+# Archivos ≥ 4 MB (como pedimentos.pdf) → directo a S3 (mismo trigger que usa el API):
+DOCID=$(uuidgen)
+aws s3 cp "test-docs/pedimentos docs/docs/pedimentos.pdf" \
+  "s3://documentvalidationstack-bedrockdocumentprocessingd-z3hhejbrhaem/raw/$DOCID/pedimentos.pdf"
+echo "Tu documentId: $DOCID"     # guárdalo para consultar el resultado
+```
+
+> El límite del API es ~4 MB reales (base64 + límite de payload de Lambda = 6 MB); por encima devuelve `HTTP 413`. La subida directa a `raw/` dispara exactamente el mismo pipeline.
+>
+> **Clasificación manual (opcional, más rápido/barato):** sube a `raw/{TIPO}/{uuid}/archivo.pdf` (p. ej. `raw/EXPEDIENTE_ADUANAL_MULTIDOCUMENTO/$DOCID/pedimentos.pdf`) y el paso de clasificación Bedrock se salta. Con el API: campo `documentType` en el body.
+
+**Paso 2 — Ver el avance (opcional):**
+
+```bash
+pnpm track --latest --follow      # muestra en vivo: Clasificación → Extracción → Enrichment
+```
+
+**Paso 3 — Ver el resultado final:**
+
+```bash
+pnpm resultado                          # la ejecución más reciente
+pnpm resultado -- --id $DOCID           # la tuya (con el prefijo del documentId basta)
+pnpm resultado -- --id $DOCID --wait    # espera si sigue procesando (86 pág ≈ 6-8 min)
+pnpm resultado -- --id $DOCID --save resultados/   # además guarda el JSON completo
+```
+
+La salida muestra: estado general del expediente, cada documento detectado con su rango de páginas/tipo/estado, los campos clave con confianza, los checks cruzados (mismo pedimento, RFC importador, UUIDs duplicados) y warnings. El JSON guardado trae el detalle completo de todos los campos (`extractedValue`/`normalizedValue`/`status`/`checks`).
+
+**Alternativa sin stack** (mismo pipeline, corre local con tus credenciales): `pnpm procesar -- --file "test-docs/pedimentos docs/docs/pedimentos.pdf" --importer TU_RFC`.
+
+### 4.0 Modo más simple: procesar documentos localmente (`pnpm procesar`)
+
+Para probar con tus propios documentos **sin pasar por el API** (usa el mismo pipeline que la Lambda, con tus credenciales AWS; no necesita el stack desplegado):
+
+```bash
+pnpm procesar                                        # toda la carpeta test-docs/pedimentos docs/docs
+pnpm procesar -- --file "mi expediente.pdf"          # un solo archivo
+pnpm procesar -- --dir ~/Descargas/expedientes       # tu carpeta completa
+pnpm procesar -- --dir ~/docs --importer OFU910626UQ0   # + checks cruzados de RFC importador
+pnpm procesar -- --out /tmp/salida                   # dónde dejar los resultados
+```
+
+Salida (tú solo validas el resultado final):
+
+- **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, arrays extraídos y checks fallidos.
+- **`resultados/<archivo>.json`**: resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`).
+- **`resultados/_resumen.md`**: tabla consolidada de toda la corrida para revisar de un vistazo.
+
+### 4.0.1 ¿Dónde está el JSON de reglas de extracción y validación?
+
+**`catalogs/full-pedimentos-docs.json`** — ahí viven TODOS los campos de extracción, hints, campos repetibles, reglas de validación y reglas cross-documento del caso pedimentos. Es la fuente de verdad y el archivo que se sube a DynamoDB:
+
+```bash
+pnpm db-sync-customs                 # súbelo a DynamoDB (hot-reload, sin redeploy)
+pnpm db-sync-customs -- --dry-run    # valida el marshalling sin subir nada
+pnpm db-list-types                   # confirma qué quedó en la tabla
+```
+
+No es obligatorio subirlo: la Lambda ya trae una copia empaquetada (`config/customs_catalog.json`, generada por `pnpm build`). DynamoDB solo sirve para **cambiar reglas al vuelo sin redeploy** — y si borras el tipo de DynamoDB (`pnpm db-delete-type --type X`), vuelve a aplicar la copia empaquetada.
 
 ### Enviar un documento (API REST)
 

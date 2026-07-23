@@ -9,6 +9,8 @@
     "setup:python": "python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt",
     "test:unit": ".venv/bin/python -m pytest tests/unit -q",
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",
+    "procesar": ".venv/bin/python scripts/procesar-docs.py",
+    "resultado": ".venv/bin/python scripts/ver-resultado.py",
     "db-sync-customs": "node scripts/db-sync-type.mjs --file catalogs/full-pedimentos-docs.json",
     "db-delete-type": "node scripts/db-delete-type.mjs",
     "synth": "npx cdk synth",

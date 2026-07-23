@@ -2,6 +2,8 @@
 
 Sistema extensible de validación y extracción inteligente de documentos mexicanos usando Amazon Bedrock + validación determinística configurable.
 
+> 🧭 **¿Cómo funciona? (explicación general con diagramas)**: [`documentacion/COMO_FUNCIONA.md`](documentacion/COMO_FUNCIONA.md)
+>
 > 📘 **Guía completa de despliegue y operación** (subir, actualizar, eliminar total/parcial, catálogos, reglas, troubleshooting): [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md)
 
 ---

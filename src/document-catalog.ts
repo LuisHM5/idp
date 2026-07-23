@@ -30,6 +30,12 @@ export interface DocumentTypeEntry {
   customValidator?: string | null;
   /** Per-field hints telling Bedrock where/how to find each field in the document */
   extractionHints?: Record<string, string>;
+  /**
+   * Customs (pedimentos) types are classified upstream but extracted by the
+   * enrichment Lambda's expediente pipeline, so they carry no extraction
+   * fields here (keeps the processing prompt inside the 4KB env var limit).
+   */
+  isCustoms?: boolean;
 }
 
 interface RawTypeConfig {
@@ -79,7 +85,7 @@ export function loadCatalog(): DocumentTypeEntry[] {
     fs.readFileSync(configPath, "utf-8")
   );
 
-  return Object.entries(raw.types).map(([typeId, config]) => ({
+  const entries: DocumentTypeEntry[] = Object.entries(raw.types).map(([typeId, config]) => ({
     typeId,
     description: config.description || "",
     extractionFields: config.extraction_fields || [],
@@ -93,6 +99,66 @@ export function loadCatalog(): DocumentTypeEntry[] {
     })),
     validatorModule: config.validator_module || null,
     customValidator: config.custom_validator || null,
+  }));
+
+  entries.push(...loadCustomsTypes(configPath));
+  return entries;
+}
+
+/**
+ * Short, discriminant classification labels for the customs catalog.
+ * The full descriptions live in customs_catalog.json; these terse versions
+ * exist because the classification prompt must fit a 4KB Lambda env var.
+ */
+const CUSTOMS_SHORT_DESCRIPTIONS: Record<string, string> = {
+  EXPEDIENTE_ADUANAL_MULTIDOCUMENTO:
+    "PDF con VARIOS documentos de una operacion de comercio exterior (pedimento + facturas + anexos)",
+  PEDIMENTO_ADUANAL:
+    "Pedimento SAT de importacion/exportacion: NUM. PEDIMENTO, T.OPER, CVE.PEDIM, cuadro de liquidacion; sin UUID",
+  FACTURA_AGENCIA_ADUANAL:
+    "CFDI de agencia/agente aduanal: honorarios de despacho, CAAAREM/COVE/precinto, gastos por cuenta de terceros",
+  CUENTA_GASTOS_AGENTE_ADUANAL:
+    "Cuenta de gastos del agente aduanal: honorarios netos + resumen de pagos por cuenta del importador",
+  CFDI_GASTO_TERCERO:
+    "CFDI de un tercero ligado a un pedimento: pago de derechos, muestreo, inspeccion (tiene UUID y sellos)",
+  FACTURA_LOGISTICA:
+    "CFDI de maniobras, almacenaje, acceso de vehiculos, muestreo o flete nacional referenciando un pedimento",
+  FACTURA_PROVEEDOR_EXTRANJERO:
+    "Commercial invoice del proveedor extranjero de la mercancia; sin UUID ni estructura CFDI",
+  FACTURA_FLETE_EXTRANJERO:
+    "Freight/trucking invoice extranjera: BOL, carrier, origin/destination; sin CFDI",
+  PERMISO_CERTIFICADO_SANITARIO:
+    "Permiso o certificado oficial SENASICA/COFEPRIS (fitosanitario, zoosanitario); sin UUID ni sellos CFDI",
+  COMPROBANTE_PAGO_ADUANAL:
+    "Comprobante de pago de contribuciones de comercio exterior con linea de captura o desglose de contribuciones",
+  DOCUMENTO_TRANSPORTE:
+    "Bill of Lading, guia aerea, carta porte o lista de empaque",
+  ACUSE_VUCEM:
+    "Acuse de la Ventanilla Digital (VUCEM): folio de solicitud, numero e-document, cadena original",
+};
+
+/**
+ * Load customs (pedimentos) types from customs_catalog.json for the
+ * CLASSIFICATION prompt only. extractionFields stays empty on purpose: the
+ * expediente pipeline in the enrichment Lambda performs the real extraction,
+ * and listing ~50 fields per type would blow the processing prompt's limit.
+ */
+function loadCustomsTypes(documentTypesPath: string): DocumentTypeEntry[] {
+  const customsPath = path.join(path.dirname(documentTypesPath), "customs_catalog.json");
+  if (!fs.existsSync(customsPath)) return [];
+
+  const raw = JSON.parse(fs.readFileSync(customsPath, "utf-8"));
+  const types: Record<string, { description?: string }> = raw.document_types || {};
+  return Object.keys(types).map((typeId) => ({
+    typeId,
+    description:
+      CUSTOMS_SHORT_DESCRIPTIONS[typeId] ||
+      (types[typeId].description || "").slice(0, 110),
+    extractionFields: [],
+    requiredFields: [],
+    validationRules: [],
+    validatorModule: null,
+    isCustoms: true,
   }));
 }
 

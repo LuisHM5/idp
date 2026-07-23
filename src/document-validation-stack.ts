@@ -221,6 +221,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       );
     }
 
+    // The adapter's bucket is SSE-KMS encrypted with its OWN key (not
+    // pipeline.encryptionKey). grantReadWrite wires s3:Get/PutObject AND the
+    // KMS decrypt/encrypt on the right key — the expediente pipeline reads
+    // raw documents and persists full results under results/ (Step Functions
+    // payloads only carry a compact summary).
+    documentBucket.grantReadWrite(enrichmentFn);
+
     // Upload Lambda - Node.js document ingestion API
     const uploadFn = new lambda.Function(this, "UploadLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,

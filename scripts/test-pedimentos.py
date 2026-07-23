@@ -118,7 +118,8 @@ def main() -> int:
     parser.add_argument("--docs", default=str(DOCS_DIR), help="docs directory")
     parser.add_argument("--save", help="directory to dump full result JSONs")
     parser.add_argument("--model", help="Bedrock model id override")
-    args = parser.parse_args()
+    # pnpm forwards a literal "--" separator; argparse must not choke on it
+    args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
 
     expected = json.loads(EXPECTED_FILE.read_text(encoding="utf-8"))
     importer_rfc = expected.get("importer_rfc")

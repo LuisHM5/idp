@@ -37,3 +37,5 @@ test-docs/**
 **/node_modules
 **/dist
 **/cdk.*
+# Resultados de procesamiento local
+resultados/

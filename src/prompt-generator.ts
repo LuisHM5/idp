@@ -5,7 +5,7 @@
  * Hints are kept short and only for required fields to stay under the limit.
  */
 
-import { DOCUMENT_CATALOG, DocumentTypeEntry, loadCatalog } from "./document-catalog";
+import { DOCUMENT_CATALOG, DocumentTypeEntry } from "./document-catalog";
 
 /**
  * Generate the classification prompt listing all known document types.
@@ -17,11 +17,19 @@ import { DOCUMENT_CATALOG, DocumentTypeEntry, loadCatalog } from "./document-cat
 export function generateClassificationPrompt(
   catalog: DocumentTypeEntry[] = DOCUMENT_CATALOG
 ): string {
+  // Cap per-type descriptions: the whole prompt lives in a 4KB Lambda env
+  // var alongside other variables, so verbose catalog descriptions (INE) get
+  // truncated at a sentence boundary when possible.
+  const MAX_DESC = 300;
   const typesList = catalog
     .filter((t) => t.typeId !== "OTRO")
     .map((t) => {
-      const desc = t.description ? `: ${t.description}` : "";
-      return `- ${t.typeId}${desc}`;
+      let desc = t.description || "";
+      if (desc.length > MAX_DESC) {
+        const cut = desc.lastIndexOf(". ", MAX_DESC);
+        desc = desc.slice(0, cut > 120 ? cut + 1 : MAX_DESC);
+      }
+      return `- ${t.typeId}${desc ? `: ${desc}` : ""}`;
     })
     .join("\n");
 

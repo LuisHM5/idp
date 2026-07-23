@@ -361,28 +361,104 @@ def _run_expediente(
     from pipeline.expediente import process_pdf  # deferred: pulls pypdf
 
     expected_values = event.get("expectedValues") or {}
+    # declared_type=None on purpose: the upstream classification is a single
+    # vision call and regularly confuses look-alikes (fee CFDI vs. the permit
+    # it pays for). The text-based segmenter re-classifies with deterministic
+    # markers and is the accuracy authority for customs documents.
     result = process_pdf(
         document_bytes,
-        declared_type=classification if classification != "OTRO" else None,
+        declared_type=None,
         expected_values=expected_values,
         source_name=key,
     )
 
+    # Persist the FULL result to S3: a large expediente (86 pages, 20+
+    # documents with per-field detail) exceeds Step Functions' 256KB
+    # state-payload limit, so the workflow only carries a compact summary
+    # plus this pointer.
+    result_key = f"results/{document_id}.json"
+    result_location: Optional[Dict[str, str]] = None
+    try:
+        import boto3
+
+        boto3.client("s3").put_object(
+            Bucket=bucket,
+            Key=result_key,
+            Body=json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"),
+            ContentType="application/json",
+        )
+        result_location = {"bucket": bucket, "key": result_key}
+    except Exception as e:
+        logger.error("failed to persist full result to s3://%s/%s: %s", bucket, result_key, e)
+
     # Legacy-compatible envelope so EventBridge consumers keep working,
-    # with the detailed expediente result attached.
+    # with a compact expediente summary attached.
     main_docs = [d for d in result.get("documents", []) if d.get("documentType") != "OTRO"]
     main = main_docs[0] if main_docs else None
+    # Report what the segmenter actually found, not the upstream vision guess
+    if len(main_docs) == 1:
+        final_classification = main["documentType"]
+    elif len(main_docs) > 1:
+        final_classification = "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
+    else:
+        final_classification = classification
     return {
         "documentId": document_id,
-        "documentClassification": classification,
-        "extractedEntities": (main or {}).get("extractedEntities", {}),
+        "documentClassification": final_classification,
+        "extractedEntities": _scalar_entities((main or {}).get("extractedEntities", {})),
         "validation": {
             "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
             "summary": f"expediente: {result.get('status')} ({len(result.get('documents', []))} documents)",
             "checks": [],
         },
-        "expediente": result,
+        "expediente": _compact_expediente(result),
+        "resultLocation": result_location,
         "processedAt": result.get("processedAt"),
+    }
+
+
+def _scalar_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+    """Entity map without repeatable arrays (kept small for the envelope)."""
+    return {k: v for k, v in entities.items() if not isinstance(v, (list, dict))}
+
+
+def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Summary of the expediente result that fits Step Functions payloads.
+
+    Per document: type, pages, status, confidence and scalar entities only;
+    arrays become item counts and per-field detail/checks stay in the full
+    S3 result (see `resultLocation`).
+    """
+    docs = []
+    for d in result.get("documents", []):
+        entities = d.get("extractedEntities", {})
+        docs.append(
+            {
+                "documentType": d.get("documentType"),
+                "documentSubtype": d.get("documentSubtype"),
+                "pageStart": d.get("pageStart"),
+                "pageEnd": d.get("pageEnd"),
+                "status": d.get("status"),
+                "confidence": d.get("confidence"),
+                "businessDestination": d.get("businessDestination"),
+                "extractedEntities": _scalar_entities(entities),
+                "arrayCounts": {
+                    k: len(v) for k, v in entities.items() if isinstance(v, list)
+                },
+                **({"recoveredFields": d["recoveredFields"]} if d.get("recoveredFields") else {}),
+            }
+        )
+    return {
+        "processingId": result.get("processingId"),
+        "sourceFile": result.get("sourceFile"),
+        "processedAt": result.get("processedAt"),
+        "processingSeconds": result.get("processingSeconds"),
+        "pages": result.get("pages"),
+        "status": result.get("status"),
+        "reviewRequired": result.get("reviewRequired"),
+        "documents": docs,
+        "crossDocumentChecks": result.get("crossDocumentChecks", []),
+        "warnings": result.get("warnings", []),
     }
 
 

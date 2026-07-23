@@ -17,6 +17,27 @@ tracer = Tracer()
 # to Bedrock as before.
 _MANUAL_TYPE_RE = re.compile(r'^[A-Z][A-Z0-9_]{0,63}$')
 
+# Files above this size cannot go through Bedrock vision (a ~5.8MB/86-page
+# PDF is ~200K tokens and exceeds the model's context window). Instead of
+# failing the workflow, classification returns LARGE_DOC_FALLBACK_TYPE (the
+# enrichment Lambda's expediente pipeline re-segments and classifies each
+# page range itself) and extraction returns empty entities.
+_MAX_BEDROCK_DOC_BYTES = int(os.environ.get('MAX_BEDROCK_DOC_BYTES', '3500000'))
+_LARGE_DOC_FALLBACK_TYPE = os.environ.get(
+    'LARGE_DOC_FALLBACK_TYPE', 'EXPEDIENTE_ADUANAL_MULTIDOCUMENTO'
+)
+
+
+def type_has_upstream_extraction(classification, prompt):
+    """True when the processing prompt defines fields for this type.
+
+    Customs/pedimento types are intentionally absent from the processing
+    prompt (their extraction happens in the enrichment Lambda's expediente
+    pipeline), so running the Bedrock extraction for them wastes a full
+    vision call whose output gets discarded anyway.
+    """
+    return f"{classification}:" in prompt
+
 
 def extract_manual_classification(key):
     """Return the manual document type encoded in the S3 key, or None.
@@ -153,6 +174,13 @@ def handler(event, context):
     prompt = os.environ['PROMPT']
     if 'classificationResult' in event:
         classification = event['classificationResult']['documentClassification']
+        # Extraction bypass: types without fields in the processing prompt
+        # (customs/pedimento catalog) are extracted downstream by the
+        # enrichment Lambda; skip the redundant Bedrock vision call.
+        if invoke_type != 'classification' and not type_has_upstream_extraction(classification, prompt):
+            tracer.put_annotation(key="extraction_mode", value="deferred_to_enrichment")
+            metrics.add_metric(name="ExtractionBypass", unit=MetricUnit.Count, value=1)
+            return {"documentClassification": classification, "result": {"entities": []}}
         prompt = prompt.replace("[ACTUAL_CLASSIFICATION]", classification)
 
     chunk_context = build_chunk_context_prompt(chunk_metadata)
@@ -177,6 +205,20 @@ def handler(event, context):
             media_type = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'pdf': 'application/pdf'}[ext]
             local_path = f"/tmp/{key.split('/')[-1]}"
             s3.download_file(bucket, key, local_path)
+
+            # Large-document guard: files this big blow Bedrock's context
+            # window ("prompt is too long"). Degrade gracefully instead of
+            # failing the workflow — the enrichment pipeline handles the
+            # heavy lifting for these.
+            if os.path.getsize(local_path) > _MAX_BEDROCK_DOC_BYTES:
+                tracer.put_annotation(key="large_doc_bypass", value="true")
+                metrics.add_metric(name="LargeDocumentBypass", unit=MetricUnit.Count, value=1)
+                if invoke_type == 'classification':
+                    return {"documentClassification": _LARGE_DOC_FALLBACK_TYPE}
+                classification = event.get('classificationResult', {}).get(
+                    'documentClassification', _LARGE_DOC_FALLBACK_TYPE
+                )
+                return {"documentClassification": classification, "result": {"entities": []}}
 
             with open(local_path, 'rb') as f:
                 file_data = base64.b64encode(f.read()).decode('utf-8')
