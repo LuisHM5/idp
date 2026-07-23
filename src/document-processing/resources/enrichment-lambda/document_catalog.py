@@ -75,6 +75,10 @@ class TypeRegistryEntry:
     business_destination: str = ""
     # Minimum extraction confidence for a field to be VALIDATED (else LOW_CONFIDENCE).
     min_confidence: float = 0.70
+    # Declared schema version for THIS type (from JSON or DynamoDB). Surfaced in
+    # each result's tracking so you can tell which version processed a document,
+    # including hot-reloaded DynamoDB overrides.
+    schema_version: Optional[str] = None
 
 
 @dataclass
@@ -157,6 +161,7 @@ def _parse_entry(
         allowed_subtypes=data.get("allowed_subtypes", []) or [],
         business_destination=data.get("business_destination", ""),
         min_confidence=float(data.get("min_confidence", 0.70)),
+        schema_version=data.get("schema_version"),
     )
 
 

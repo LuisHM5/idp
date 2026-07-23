@@ -11,6 +11,7 @@
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",
     "procesar": ".venv/bin/python scripts/procesar-docs.py",
     "resultado": ".venv/bin/python scripts/ver-resultado.py",
+    "enviar": "bash scripts/enviar-documento.sh",
     "db-sync-customs": "node scripts/db-sync-type.mjs --file catalogs/full-pedimentos-docs.json",
     "db-delete-type": "node scripts/db-delete-type.mjs",
     "synth": "npx cdk synth",

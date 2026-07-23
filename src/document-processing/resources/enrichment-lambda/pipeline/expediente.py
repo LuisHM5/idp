@@ -52,25 +52,37 @@ def _tracking(
     started_at: datetime,
     started_monotonic: float,
     model_id: Optional[str],
+    doc_types: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Provenance for a result: created/updated, processing window, schema/version.
 
     `createdAt` and `updatedAt` mark this result record's lifecycle; they start
     equal and consumers bump `updatedAt` whenever they mutate the result.
+
+    `typeVersions` reports the declared `schema_version` of each document type
+    that actually processed the file (including DynamoDB hot-reloaded overrides),
+    so a change to a type in DynamoDB is reflected here without a redeploy.
     """
     now = datetime.now(timezone.utc)
-    started_iso = started_at.isoformat()
+    schema: Dict[str, Any] = {
+        "pipelineVersion": PIPELINE_VERSION,
+        "model": model_id or "default",
+        **get_schema_info(),
+    }
+    type_versions = {}
+    for dt in sorted(set(doc_types or [])):
+        entry = get_type_entry(dt)
+        if getattr(entry, "schema_version", None):
+            type_versions[dt] = entry.schema_version
+    if type_versions:
+        schema["typeVersions"] = type_versions
     return {
         "createdAt": now.isoformat(),
         "updatedAt": now.isoformat(),
-        "processingStartedAt": started_iso,
+        "processingStartedAt": started_at.isoformat(),
         "processingCompletedAt": now.isoformat(),
         "processingSeconds": round(time.time() - started_monotonic, 2),
-        "schema": {
-            "pipelineVersion": PIPELINE_VERSION,
-            "model": model_id or "default",
-            **get_schema_info(),
-        },
+        "schema": schema,
     }
 
 # Fields (by doc type) that carry the pedimento reference for same_pedimento
@@ -192,7 +204,10 @@ def process_pdf(
     statuses = [d.get("status") for d in documents if d.get("documentType") != "OTRO"]
     overall = _overall_status(statuses, cross_checks)
 
-    tracking = _tracking(started_at, started, model_id)
+    tracking = _tracking(
+        started_at, started, model_id,
+        doc_types=[d["documentType"] for d in documents],
+    )
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
