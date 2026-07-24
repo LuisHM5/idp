@@ -3,11 +3,16 @@
 # devuelve el documentId para consultar el resultado.
 #
 # Uso:
-#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO]
+#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE]
 #
 # Ejemplos:
 #   scripts/enviar-documento.sh 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL
 #   scripts/enviar-documento.sh expediente.pdf            # sin tipo → Bedrock clasifica
+#   scripts/enviar-documento.sh expediente.pdf --env prod # manda al stack de prod
+#
+# Opciones:
+#   --env dev|prod    Ambiente destino (default: dev, igual que el deploy)
+#   --stack <NOMBRE>  Stack explícito (gana sobre --env)
 #
 # Requisitos:
 #   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar)
@@ -18,15 +23,43 @@
 
 set -euo pipefail
 
-STACK_NAME="${STACK_NAME:-DocumentValidationStack}"
+# Un stack por ambiente (ver bin/app.ts), igual que en scripts/track-execution.mjs.
+DEV_STACK="DocumentValidationStack-Dev"
+PROD_STACK="DocumentValidationStack"
+
+STACK_NAME="${STACK_NAME:-}"
+ENV="dev"
 REGION="${AWS_REGION:-us-east-1}"
 API_MAX_BYTES=4000000   # ~4 MB reales; por encima el API responde HTTP 413
 
-FILE="${1:-}"
-DOC_TYPE="${2:-}"
+FILE=""
+DOC_TYPE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      ENV="$2"; shift 2 ;;
+    --stack)
+      STACK_NAME="$2"; shift 2 ;;
+    *)
+      if [[ -z "$FILE" ]]; then
+        FILE="$1"
+      else
+        DOC_TYPE="$1"
+      fi
+      shift ;;
+  esac
+done
+
+if [[ -z "$STACK_NAME" ]]; then
+  if [[ "$ENV" == "prod" ]]; then
+    STACK_NAME="$PROD_STACK"
+  else
+    STACK_NAME="$DEV_STACK"
+  fi
+fi
 
 if [[ -z "$FILE" ]]; then
-  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO]" >&2
+  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE]" >&2
   exit 2
 fi
 
@@ -40,6 +73,8 @@ if [[ ! -f "$FILE" ]]; then
   echo "No existe el archivo: $FILE" >&2
   exit 2
 fi
+
+echo "Ambiente: $ENV (stack: $STACK_NAME)"
 
 # --- 0. ¿Estoy autenticado en AWS? -----------------------------------------
 if ! aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1; then
