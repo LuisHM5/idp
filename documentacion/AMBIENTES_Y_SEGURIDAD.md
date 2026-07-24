@@ -10,6 +10,18 @@ API keys); `dev` queda abierto en el URL random de Amazon para probar fácil.
 | Auth | ninguna (abierto) | **API key** (`x-api-key`) en todos los endpoints |
 | Rate limit / anti-DDoS | no | **WAF** (rate-based + managed rules) + usage plan |
 | TLS | sí (execute-api) | sí (cert propio, TLS 1.2+) |
+| Recursos globales | sufijo `-dev` (`idp-broker-dev`, alias KMS `…/pipeline-dev`) | nombres base (`idp-broker`, `…/pipeline`) |
+
+Cada ambiente es un **stack aislado y completo** (sus propias Lambdas, Step
+Functions, S3, tabla DynamoDB de tracking, KMS, EventBus). Comparten solo la
+**tabla de catálogo** `document-validation-catalog` (importada por nombre, no se
+crea). Por eso dev es un espejo funcional para probar sin tocar prod.
+
+> **Estado actual:** dev **ya está desplegado** — su URL sale del output
+> `ApiEndpoint` del stack `DocumentValidationStack-Dev`
+> (`aws cloudformation describe-stacks --stack-name DocumentValidationStack-Dev
+> --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text`).
+> Prod sigue en su versión pública actual hasta que corras `deploy:prod`.
 
 ## Desplegar
 
@@ -22,7 +34,17 @@ pnpm run diff:dev / diff:prod
 
 La config por ambiente vive en `.env.dev` y `.env.production` (ambos gitignored;
 plantilla en `.env.example`). El ambiente se elige con `-c env=dev|prod` (lo
-hacen los scripts).
+hacen los scripts). Cada `.env.<env>` puede sobreescribir, entre otros, el
+**modelo Bedrock** (`BEDROCK_MODEL_ID`) — p. ej. probar otro modelo en dev sin
+tocar prod. Cambiar el modelo requiere **redeploy** de ese ambiente (la var se
+hornea en la Lambda). Los catálogos generados (`config/catalogs.json`,
+`query-lambda/document-types.json`) están gitignored: se regeneran con `pnpm build`.
+
+### Nombres únicos por cuenta
+El alias de KMS y el nombre del EventBus son **únicos por cuenta**, así que dev
+usa un sufijo `-dev` para coexistir con prod (lo resuelve `envSuffix` en
+`src/document-validation-stack.ts`). Prod conserva los nombres base con los que
+ya se desplegó.
 
 ## Dominio propio `idp.alsuper.com` (solo prod)
 

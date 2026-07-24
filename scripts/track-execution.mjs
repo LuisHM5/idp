@@ -15,6 +15,8 @@
  *   --document-id     Busca la ejecución por document ID
  *   --latest          Muestra la ejecución más reciente
  *   --follow          Polling cada 3s hasta que termine
+ *   --env dev|prod    Ambiente a monitorear (default: dev, igual que el deploy)
+ *   --stack <NOMBRE>  Stack explícito (gana sobre --env)
  *   --region          AWS region (default: AWS_REGION o us-east-1)
  *   --help            Mostrar ayuda
  */
@@ -22,6 +24,10 @@
 import { execSync } from "child_process";
 
 const STATE_MACHINE_PREFIX = "BedrockDocumentProcessingbedrockdocumentprocessingworkflow";
+// Un stack por ambiente (ver bin/app.ts). Ambos crean una state machine con el
+// mismo prefijo de nombre, así que hay que desempatar por stack.
+const DEV_STACK = "DocumentValidationStack-Dev";
+const PROD_STACK = "DocumentValidationStack";
 
 function parseArgs(args) {
   const parsed = {};
@@ -48,11 +54,74 @@ function run(cmd, silent = false) {
   }
 }
 
-function findStateMachineArn(region) {
+/**
+ * State machines del pipeline en la cuenta, más nueva primero.
+ *
+ * OJO: hay una por ambiente (dev y prod) y el constructo les pone el MISMO
+ * prefijo de nombre, así que esto SIEMPRE puede devolver varias — por eso se
+ * pide JSON y no `--output text` (que las pegaría en una sola cadena).
+ */
+function listStateMachines(region) {
   const result = run(
-    `aws stepfunctions list-state-machines --region ${region} --query "stateMachines[?contains(name,'${STATE_MACHINE_PREFIX}')].stateMachineArn" --output text`
+    `aws stepfunctions list-state-machines --region ${region} ` +
+      `--query "stateMachines[?contains(name,'${STATE_MACHINE_PREFIX}')].{arn:stateMachineArn,created:creationDate}" ` +
+      `--output json`
   );
-  return result || null;
+  if (!result) return [];
+  try {
+    return JSON.parse(result).sort((a, b) => new Date(b.created) - new Date(a.created));
+  } catch {
+    return [];
+  }
+}
+
+/** ARN de la state machine que pertenece a un stack concreto, o null. */
+function stateMachineOfStack(stackName, region) {
+  const result = run(
+    `aws cloudformation describe-stack-resources --stack-name ${stackName} --region ${region} ` +
+      `--query "StackResources[?ResourceType=='AWS::StepFunctions::StateMachine'].PhysicalResourceId" ` +
+      `--output json`,
+    true // silencioso: que el stack no exista es un caso normal
+  );
+  if (!result) return null;
+  try {
+    return JSON.parse(result)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Elige la state machine a monitorear.
+ *
+ * Orden: --stack explícito → --env dev|prod (default dev, igual que el deploy)
+ * → si el stack no resuelve, la única que exista → error explicando cómo elegir.
+ */
+function resolveStateMachine(args, region) {
+  if (args.stack) {
+    const arn = stateMachineOfStack(args.stack, region);
+    if (!arn) {
+      console.error(`❌ El stack '${args.stack}' no existe o no tiene state machine.`);
+      process.exit(1);
+    }
+    return arn;
+  }
+
+  const stackName = args.env === "prod" ? PROD_STACK : DEV_STACK;
+  const fromStack = stateMachineOfStack(stackName, region);
+  if (fromStack) return fromStack;
+
+  const machines = listStateMachines(region);
+  if (machines.length === 1) return machines[0].arn;
+  if (machines.length > 1) {
+    console.error(
+      `❌ Hay ${machines.length} state machines del pipeline y el stack '${stackName}' no resolvió.\n` +
+        "   Elige una con --stack <NOMBRE_DEL_STACK> o --execution-arn:"
+    );
+    for (const m of machines) console.error(`     · ${m.arn}  (creada ${m.created})`);
+    process.exit(1);
+  }
+  return null;
 }
 
 function getLatestExecution(smArn, region) {
@@ -202,11 +271,14 @@ Opciones:
   --document-id     Buscar ejecución por document ID
   --latest          Mostrar la ejecución más reciente
   --follow          Polling cada 3s hasta que termine
+  --env dev|prod    Ambiente a monitorear (default: dev)
+  --stack <NOMBRE>  Stack explícito (gana sobre --env)
   --region          AWS region (default: us-east-1)
 
 Ejemplos:
   pnpm track --latest
   pnpm track --latest --follow
+  pnpm track -- --env prod --latest
   pnpm track --document-id curp-1777998616520
   pnpm track --execution-arn arn:aws:states:us-east-1:...
 `);
@@ -220,12 +292,15 @@ async function main() {
   const region = args.region || process.env.AWS_REGION || "us-east-1";
   const follow = !!args.follow;
 
-  // Find state machine
-  const smArn = findStateMachineArn(region);
+  // Find state machine (dev por default; --env prod o --stack para elegir)
+  const smArn = resolveStateMachine(args, region);
   if (!smArn) {
     console.error("❌ No se encontró la state machine del pipeline.");
     console.error("   Verifica que el stack está desplegado.");
     process.exit(1);
+  }
+  if (!args["execution-arn"]) {
+    console.log(`🔎 State machine: ${smArn.split(":").pop()}`);
   }
 
   // Resolve execution ARN
