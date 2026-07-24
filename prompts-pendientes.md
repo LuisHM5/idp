@@ -1,12 +1,15 @@
 - mejora la seguridad del sistema
+- necesito que mejores esta app con las siguientes consideraciones
+  quiero tener un modo dev y prod
+  quiero que en prod tenga auth por token y todas las rutas protegidas
 - mejorar
   - buckets privados solo accesibles por app o gestion
   - endpoint protegicos
-  - y ratelimits configurables
+  - y ratelimits configurables general y por documento o endpoint
+  - anti ddos y ataques de fuerza bruta
+  - consulta segura y auditoria de quien y que paso en todo momento
   - api keys para otros sistemas
     y lo pendiente no implementado de seguridad
-    la app ya esta medio implementada pero la satisfacción de extracción es muy mala y no considere todo lo siguiente mejorala para que sea realista y al menos solucione al 100% el caso de pedimentos
-    Actúa como un arquitecto de soluciones AWS senior, especialista en sistemas serverless, procesamiento inteligente de documentos, seguridad de APIs, machine learning, OCR y diseño de plataformas multiaplicación.
 
 Necesito diseñar e implementar una plataforma middleware para la extracción y validación automática de documentos. La solución será utilizada por diferentes aplicaciones internas, cada una con sus propios tipos de documentos, campos, reglas de extracción y reglas de validación.
 

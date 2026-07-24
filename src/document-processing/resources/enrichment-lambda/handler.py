@@ -178,6 +178,23 @@ def _extract_s3_pointer(event: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _declared_type_from_key(key: str) -> Optional[str]:
+    """User-declared document type from the S3 layout, or None.
+
+    Manual classification places the object under `raw/{TYPE}/{uuid}/file`, so
+    the second path segment names the type the uploader chose explicitly. An
+    auto-classified object is under `raw/{uuid}/file` (no type segment). Returns
+    the declared type only when that segment is a known catalog type — a bare
+    UUID resolves to OTRO and yields None.
+    """
+    parts = (key or "").split("/")
+    if len(parts) >= 3 and parts[0] == "raw":
+        candidate = parts[1].strip().upper()
+        if candidate and get_type_entry(candidate).type_id != "OTRO":
+            return candidate
+    return None
+
+
 def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str]:
     """Download the raw document from S3 and return its bytes + MIME type."""
     import boto3  # defer boto3 import; Lambda runtime provides it
@@ -361,13 +378,19 @@ def _run_expediente(
     from pipeline.expediente import process_pdf  # deferred: pulls pypdf
 
     expected_values = event.get("expectedValues") or {}
-    # declared_type=None on purpose: the upstream classification is a single
-    # vision call and regularly confuses look-alikes (fee CFDI vs. the permit
-    # it pays for). The text-based segmenter re-classifies with deterministic
-    # markers and is the accuracy authority for customs documents.
+    # Honor an EXPLICIT user classification. When the uploader declares a type,
+    # the file is stored under raw/{TYPE}/{uuid}/... — that user intent wins and
+    # the whole file is treated as that single type (no re-segmentation).
+    # When the file was auto-classified (raw/{uuid}/... — no type segment),
+    # declared_type stays None so the text segmenter, which re-classifies with
+    # deterministic markers, is the accuracy authority (the single upstream
+    # vision call regularly confuses look-alikes, e.g. fee CFDI vs. permit).
+    declared_type = _declared_type_from_key(key)
+    if declared_type:
+        logger.info("honoring user-declared type '%s' from key %s", declared_type, key)
     result = process_pdf(
         document_bytes,
-        declared_type=None,
+        declared_type=declared_type,
         expected_values=expected_values,
         source_name=key,
     )

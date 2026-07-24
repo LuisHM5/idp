@@ -29,7 +29,9 @@ Key pieces:
   - `custom_validators/*.mjs` — Optional Node.js custom validators for logic beyond regex.
 - `tests/unit/` — Offline pytest suite for the rule engine and normalizers (`pnpm test:unit`).
 - `scripts/test-pedimentos.py` + `tests/integration/expected_pedimentos.json` — Integration runner with ground truth for the PDFs in `test-docs/pedimentos docs/docs` (`pnpm test:pedimentos`; needs AWS creds, costs ~$1/run).
-- `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint.
+- `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint (`POST /upload`).
+- `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}` by id, `GET /documents?field=&value=` search by any extracted field via table Scan + dot-path filter).
+- `documentacion/API_USO.md` — **User-facing API reference (all endpoints).** Keep it in sync — see "API Documentation" below.
 - `catalogs/` — Per-type JSON files (one document type per file, keyed by `type_id`) synced to DynamoDB via `pnpm db-sync`. Use this for hot-reload changes without touching the bundled JSON or redeploying. Root shape is `{ "TYPE_ID": { ...entry } }` — no `types:` wrapper.
 - `scripts/` — CLI tooling (add types, preview prompts, DynamoDB hot-reload, end-to-end tests).
 - `patches/default-bedrock-invoke-index.py` — Patch applied by `scripts/patch-construct.mjs` during `pnpm build`.
@@ -84,6 +86,18 @@ Pick the lowest-impact path that solves the request:
 4. **External API calls, cross-field checks, check digits** → create a `custom_validators/<name>.mjs` exporting `async function validate(entityMap, context)` that returns `[{ field, rule, valid, message }]`. Reference it via `custom_validator` in the catalog entry.
 
 Avoid editing `handler.py` for feature work. It is the engine; features live in the catalog and validators.
+
+## API Documentation (keep in sync automatically)
+
+`documentacion/API_USO.md` is the single source of truth for how to call the app's REST API. **Whenever you change the API surface, update that doc in the same change — do not defer it.** This applies when you:
+
+- add, remove, or rename a route in `src/document-validation-stack.ts` (the `DocumentUploadApi` RestApi — `addResource` / `addMethod`);
+- change a handler's request or response shape in `src/document-processing/resources/upload-lambda/` or `query-lambda/` (body fields, query params, status codes, response JSON);
+- change auth, payload limits, or the base URL / stage.
+
+For each such change: edit the matching section of `API_USO.md` (endpoint table + the per-endpoint request/response/examples), keep the curl and `pnpm` examples runnable, and match the existing Spanish tone. The doc carries a maintenance header comment repeating this rule.
+
+**API Gateway gotcha:** adding a route via CDK does not always redeploy the `prod` stage — a new route can return `403 Missing Authentication Token` even after a successful `pnpm run deploy`. If so, force a stage redeploy: `aws apigateway create-deployment --rest-api-id <id> --stage-name prod --region us-east-1`.
 
 ## Conventions
 

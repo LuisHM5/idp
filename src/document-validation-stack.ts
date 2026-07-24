@@ -244,6 +244,26 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     });
     documentBucket.grantPut(uploadFn);
 
+    // Query Lambda - read a document by id and search by any extracted field.
+    const queryFn = new lambda.Function(this, "QueryLambda", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "document-processing/resources/query-lambda")
+      ),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      description: "Document read/search via REST API",
+      environment: {
+        DOCUMENT_TABLE: pipeline.documentProcessingTable.tableName,
+        DOCUMENT_BUCKET: documentBucket.bucketName,
+      },
+    });
+    // GetItem + Scan on the tracking table (and KMS decrypt for its CMK), plus
+    // read of the full results/ objects in S3.
+    pipeline.documentProcessingTable.grantReadData(queryFn);
+    documentBucket.grantRead(queryFn);
+
     // API Gateway for document upload
     const api = new apigateway.RestApi(this, "DocumentUploadApi", {
       restApiName: "Document Upload API",
@@ -251,7 +271,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         "REST API for uploading documents to the validation pipeline",
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
-        allowMethods: ["POST", "OPTIONS"],
+        allowMethods: ["GET", "POST", "OPTIONS"],
       },
     });
 
@@ -260,6 +280,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       "POST",
       new apigateway.LambdaIntegration(uploadFn)
     );
+
+    // GET /documents?field=<dot.path>&value=<v>  → search by any extracted field
+    // GET /documents/{id}                        → full result for one document
+    const queryIntegration = new apigateway.LambdaIntegration(queryFn);
+    const documentsResource = api.root.addResource("documents");
+    documentsResource.addMethod("GET", queryIntegration);
+    documentsResource.addResource("{id}").addMethod("GET", queryIntegration);
 
     // Outputs
     new cdk.CfnOutput(this, "ApiEndpoint", {
