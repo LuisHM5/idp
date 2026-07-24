@@ -1,11 +1,11 @@
 {
     "schema_version": 1,
-    "commit": "75542187b531cd5855b7e56e6de58b14e9e59385",
-    "indexed_at": "2026-07-24T17:30:10Z",
+    "commit": "6047d2e467a833b3e7f5837342766bfb98710095",
+    "indexed_at": "2026-07-24T21:13:02Z",
     "project": "home-luis-pc-Desktop-documents-validator",
-    "nodes": 2497,
-    "edges": 4062,
-    "original_size": 3407872,
-    "compressed_size": 270339,
-    "compression_level": 9
+    "nodes": 2414,
+    "edges": 3947,
+    "original_size": 7274496,
+    "compressed_size": 1057309,
+    "compression_level": 3
 }

@@ -29,7 +29,8 @@ Key pieces:
 - `tests/unit/` — Offline pytest suite for the rule engine and normalizers (`pnpm test:unit`).
 - `scripts/test-pedimentos.py` + `tests/integration/expected_pedimentos.json` — Integration runner with ground truth for the PDFs in `test-docs/pedimentos docs/docs` (`pnpm test:pedimentos`; needs AWS creds, costs ~$1/run).
 - `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint (`POST /upload`).
-- `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}` by id, `GET /documents?field=&value=` search by any extracted field via table Scan + dot-path filter).
+- `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}` by id; `GET /documents?docType=` filters by type via **Query on the `DocumentTypeIndex` GSI** — accepts TYPE_ID or human name, resolved with the build-generated `query-lambda/document-types.json` + the DynamoDB catalog; `GET /documents?field=&value=` searches any extracted field, indexed when combined with `docType`, full-table Scan otherwise).
+- `src/document-processing/resources/enrichment-lambda/indexing.py` — Promotes the final classification to indexed DynamoDB columns (`DocumentType`, `ProcessedAt`, `DocumentTypeName`, `ValidationStatus`, `ContainedDocumentTypes`, `DocumentName`) so the query API filters by type without a Scan. Best-effort: never fails validation. Backfill older items with `pnpm backfill:index`.
 - `documentacion/API_USO.md` — **User-facing API reference (all endpoints).** Keep it in sync — see "API Documentation" below.
 - `catalogs/` — **THE single source of truth for document types.** One JSON per type (`<TYPE_ID>.json`, shape `{ "TYPE_ID": { ...entry } }`), plus `catalogs/_shared.json` (globals: `_field_sets`, `cross_document_validation_rules`, `_global_output_fields`) and `catalogs/_TEMPLATE.json` (copy this to create a new type). See `catalogs/README.md` for the full guide. `pnpm run build` combines this folder into the bundled `config/catalogs.json`; `pnpm sync` pushes it to DynamoDB for hot-reload.
 - `scripts/` — CLI tooling (add types, preview prompts, DynamoDB hot-reload, end-to-end tests).
@@ -53,9 +54,12 @@ Run everything with pnpm from the repo root.
 | `pnpm sync:one -- <selector>` | **Push ONE type: `--type TYPE_ID`, `--file path`, or a fuzzy name.** Add `--dry-run` to preview. |
 | `pnpm synth` | Produce CloudFormation via `npx cdk synth`. |
 | `pnpm run diff` | Show pending changes vs deployed stack. |
-| `pnpm run deploy` | Deploy (`--require-approval never`). |
+| `pnpm run deploy` | Deploy (`--require-approval never`). Defaults to **dev** (safe: never touches prod). |
+| `pnpm run deploy:dev` / `deploy:prod` | Deploy a specific environment (`-c env=dev\|prod`). Prod is explicit. See below. |
+| `pnpm run import-cert` | Import/renew the TLS cert into ACM for the custom domain. |
 | `pnpm run destroy` / `pnpm run destroy:full` | Tear down stack (full variant cleans lingering resources). |
 | `pnpm preview-prompts` | Render the actual prompts Bedrock will receive. Run after catalog edits (needs `pnpm build` first). |
+| `pnpm backfill:index` | Rebuild the indexed type columns on documents processed before they existed (`-- --dry-run`, `-- --force`). |
 | `pnpm setup:python` | Create the test venv. |
 | `pnpm test-local` / `pnpm test-e2e` | Local handler tests and end-to-end pipeline tests. |
 | `pnpm track` | Track a Step Functions execution. |
@@ -63,6 +67,14 @@ Run everything with pnpm from the repo root.
 **Schema/catalog management is exactly two commands: `pnpm sync` (all) and `pnpm sync:one` (one).** There is no `add-type`, `db-sync`, `list-types`, etc. anymore — edit files under `catalogs/` and sync.
 
 Python tests use pytest from the project venv (`.venv`): `pnpm test:unit` is offline; `pnpm test:pedimentos` hits real AWS (Textract + Bedrock).
+
+## Environments & API security
+
+Two environments via CDK context (`bin/app.ts` reads `-c env=dev|prod`, **default dev**, loads `.env.dev` / `.env.production`):
+- **dev** (default) → stack `DocumentValidationStack-Dev`, **open** API on the random execute-api URL. For testing. A bare `pnpm run deploy` targets dev.
+- **prod** → stack `DocumentValidationStack`, hardened: **API keys** (`x-api-key`) required on every method, **WAFv2** (rate-based + AWS managed rules), and a **custom domain** (`idp.alsuper.com`) when `DOMAIN_NAME`+`CERT_ARN` are set. All prod hardening is gated on `environment === "prod"` in `src/document-validation-stack.ts`.
+
+Missing/invalid key → native 403 from API Gateway **without invoking the Lambda** (no backend cost for 401/403/404). Cert is bring-your-own: import with `scripts/import-cert.mjs` (renew in place with `--renew --arn` — zero downtime, no redeploy). External DNS: add a CNAME to the `CustomDomainTarget` output. Full guide: **`documentacion/AMBIENTES_Y_SEGURIDAD.md`**.
 
 ## Catalog Loading Precedence
 
