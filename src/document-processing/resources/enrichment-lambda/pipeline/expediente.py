@@ -17,8 +17,10 @@ document and expediente statuses aggregate them conservatively.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +49,11 @@ logger = logging.getLogger(__name__)
 # Bump when extraction/validation logic changes in a way consumers should
 # notice (recorded in every result's tracking block).
 PIPELINE_VERSION = "1.0.0"
+
+# Segments are extracted concurrently: each is an independent Bedrock call, so a
+# 17-document expediente runs in parallel instead of serially. Bounded to respect
+# Bedrock rate limits; boto3 clients are thread-safe.
+_EXTRACT_WORKERS = int(os.environ.get("EXTRACT_WORKERS", "4"))
 
 
 def _tracking(
@@ -102,6 +109,48 @@ _IMPORTER_RFC_FIELDS = (
 )
 
 
+def _extract_segment(seg: Segment, pages: List[PageText], model_id: Optional[str]) -> Dict[str, Any]:
+    """Extract one segment into a document dict. Runs in a worker thread.
+
+    Self-contained (reads only its own pages + catalog entry) so it can be mapped
+    concurrently over all segments without shared mutable state.
+    """
+    seg_pages = [p for p in pages if seg.page_start <= p.number <= seg.page_end]
+    entry = get_type_entry(seg.doc_type)
+    doc: Dict[str, Any] = {
+        "documentType": seg.doc_type,
+        "documentSubtype": seg.subtype,
+        "pageStart": seg.page_start,
+        "pageEnd": seg.page_end,
+        "classificationConfidence": round(seg.confidence, 4),
+    }
+    if seg.doc_type == "OTRO" or not entry.extraction_fields:
+        doc["status"] = engine.DOC_REVIEW if seg.doc_type == "OTRO" else engine.DOC_APPROVED
+        doc["fields"] = {}
+        doc["_entities"] = {}
+        doc["_text"] = "\n".join(p.text for p in seg_pages)
+        return doc
+    try:
+        extracted = extract_document(seg_pages, entry, model_id=model_id)
+        doc["_entities"] = extracted.entity_map
+        doc["_confidences"] = extracted.confidences
+        doc["_text"] = "\n".join(p.text for p in seg_pages)
+        doc["extractionMeta"] = extracted.meta
+        _recover_references(doc, entry)
+        # Deterministic customs liquidation normalization (config-driven):
+        # DTA/IGI/IVA/PRV/IEPS_* from CUADRO_LIQUIDACION.CONCEPTOS + CONTRIBUCIONES.
+        liq = build_liquidacion_normalizada(doc["_entities"], entry)
+        if liq is not None:
+            doc["_entities"]["LIQUIDACION_NORMALIZADA"] = liq
+            doc["liquidacionNormalizada"] = liq
+    except Exception as e:
+        logger.error("extraction failed for %s pages %d-%d: %s", seg.doc_type, seg.page_start, seg.page_end, e)
+        doc["status"] = engine.DOC_ERROR
+        doc["error"] = str(e)[:300]
+        doc["_entities"] = {}
+    return doc
+
+
 def process_pdf(
     pdf_bytes: bytes,
     declared_type: Optional[str] = None,
@@ -130,44 +179,15 @@ def process_pdf(
 
     segments = segment_pages(pages, declared_type=declared_type, model_id=model_id)
 
-    # ---- extraction pass (all documents first, so cross-doc rules see siblings)
-    documents: List[Dict[str, Any]] = []
-    for seg in segments:
-        seg_pages = [p for p in pages if seg.page_start <= p.number <= seg.page_end]
-        entry = get_type_entry(seg.doc_type)
-        doc: Dict[str, Any] = {
-            "documentType": seg.doc_type,
-            "documentSubtype": seg.subtype,
-            "pageStart": seg.page_start,
-            "pageEnd": seg.page_end,
-            "classificationConfidence": round(seg.confidence, 4),
-        }
-        if seg.doc_type == "OTRO" or not entry.extraction_fields:
-            doc["status"] = engine.DOC_REVIEW if seg.doc_type == "OTRO" else engine.DOC_APPROVED
-            doc["fields"] = {}
-            doc["_entities"] = {}
-            doc["_text"] = "\n".join(p.text for p in seg_pages)
-            documents.append(doc)
-            continue
-        try:
-            extracted = extract_document(seg_pages, entry, model_id=model_id)
-            doc["_entities"] = extracted.entity_map
-            doc["_confidences"] = extracted.confidences
-            doc["_text"] = "\n".join(p.text for p in seg_pages)
-            doc["extractionMeta"] = extracted.meta
-            _recover_references(doc, entry)
-            # Deterministic customs liquidation normalization (config-driven):
-            # DTA/IGI/IVA/PRV/IEPS_* from CUADRO_LIQUIDACION.CONCEPTOS + CONTRIBUCIONES.
-            liq = build_liquidacion_normalizada(doc["_entities"], entry)
-            if liq is not None:
-                doc["_entities"]["LIQUIDACION_NORMALIZADA"] = liq
-                doc["liquidacionNormalizada"] = liq
-        except Exception as e:
-            logger.error("extraction failed for %s pages %d-%d: %s", seg.doc_type, seg.page_start, seg.page_end, e)
-            doc["status"] = engine.DOC_ERROR
-            doc["error"] = str(e)[:300]
-            doc["_entities"] = {}
-        documents.append(doc)
+    # ---- extraction pass (all documents first, so cross-doc rules see siblings).
+    # Segments are extracted concurrently (each is an independent Bedrock call);
+    # ThreadPoolExecutor.map preserves segment order, so `documents` stays in
+    # page order for the downstream validation and cross-document passes.
+    workers = min(_EXTRACT_WORKERS, len(segments)) or 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        documents: List[Dict[str, Any]] = list(
+            pool.map(lambda seg: _extract_segment(seg, pages, model_id), segments)
+        )
 
     # ---- validation pass (with sibling context)
     siblings = [
