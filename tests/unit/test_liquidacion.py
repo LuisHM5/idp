@@ -39,6 +39,20 @@ class TestLiquidacionNormalizada:
         assert liq["IEPS_30"] == 42
         assert liq["FORMA_PAGO_IEPS"] == "0"
 
+    def test_concepts_fall_back_to_contribuciones(self):
+        # Real case: model files the liquidation line items under CONTRIBUCIONES
+        # and leaves CUADRO_LIQUIDACION.CONCEPTOS empty. IVA/PRV must still resolve.
+        entity_map = {
+            "CUADRO_LIQUIDACION.CONCEPTOS": None,
+            "CONTRIBUCIONES": [
+                {"CLAVE_CONTRIBUCION": "PRV", "FORMA_PAGO": "0", "IMPORTE": "330"},
+                {"CLAVE_CONTRIBUCION": "IVA PRV", "FORMA_PAGO": "0", "IMPORTE": "53"},
+            ],
+        }
+        liq = build_liquidacion_normalizada(entity_map, _entry())
+        assert liq["IVA"] == 53
+        assert liq["PRV"] == 330
+
     def test_totals_from_scalars(self):
         entity_map = {"TOTAL_EFECTIVO": "383", "TOTAL_OTROS": "0"}
         liq = build_liquidacion_normalizada(entity_map, _entry())

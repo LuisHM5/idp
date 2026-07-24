@@ -118,6 +118,12 @@ def build_liquidacion_normalizada(entity_map: Dict[str, Any], entry) -> Optional
 
     concepts = [c for c in (entity_map.get("CUADRO_LIQUIDACION.CONCEPTOS") or []) if isinstance(c, dict)]
     contribuciones = [c for c in (entity_map.get("CONTRIBUCIONES") or []) if isinstance(c, dict)]
+    # In many pedimentos the model files the liquidation line items under
+    # CONTRIBUCIONES (same shape: CLAVE_CONTRIBUCION/DESCRIPCION/FORMA_PAGO/
+    # IMPORTE) and leaves CUADRO_LIQUIDACION.CONCEPTOS empty. Use CONTRIBUCIONES
+    # as the concept source in that case so DTA/IGI/IVA/PRV are not lost. Only
+    # one of the two is populated per document, so there is no double counting.
+    concept_pool = concepts if concepts else contribuciones
 
     for target, spec in config.items():
         if not isinstance(spec, dict):
@@ -128,7 +134,7 @@ def build_liquidacion_normalizada(entity_map: Dict[str, Any], entry) -> Optional
 
         if source == "CUADRO_LIQUIDACION.CONCEPTOS":
             aliases = spec.get("concept_aliases") or [target]
-            val = _sum_concepts(concepts, aliases, value_field)
+            val = _sum_concepts(concept_pool, aliases, value_field)
             out[target] = val if val else default
         elif source == "CONTRIBUCIONES":
             val = _sum_contribuciones(contribuciones, spec.get("filters") or {}, value_field)
