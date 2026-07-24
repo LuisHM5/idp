@@ -39,10 +39,18 @@ def converse(
     model_id: Optional[str] = None,
     max_tokens: int = 8192,
     system: Optional[str] = None,
+    cache_system: Optional[str] = None,
     max_retries: int = 4,
 ) -> Tuple[str, Dict[str, Any]]:
     """Single-turn Converse call. Returns (text, meta) where meta carries
-    usage tokens and stopReason for cost tracking."""
+    usage tokens and stopReason for cost tracking.
+
+    `cache_system` is a large, STATIC prefix (instructions + schema) marked with
+    a Bedrock `cachePoint`, so repeated calls (chunks of a document, or several
+    documents of the same type) reuse it at the discounted cache-read rate
+    instead of re-billing it as fresh input. Content is identical, so extraction
+    quality is unchanged. Below the model's cache minimum Bedrock simply skips
+    caching (no error)."""
     model_id = model_id or DEFAULT_MODEL_ID
     messages = [{"role": "user", "content": [{"text": prompt}]}]
     kwargs: Dict[str, Any] = {
@@ -50,8 +58,14 @@ def converse(
         "messages": messages,
         "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0},
     }
+    system_blocks = []
     if system:
-        kwargs["system"] = [{"text": system}]
+        system_blocks.append({"text": system})
+    if cache_system:
+        system_blocks.append({"text": cache_system})
+        system_blocks.append({"cachePoint": {"type": "default"}})
+    if system_blocks:
+        kwargs["system"] = system_blocks
 
     delay = 2.0
     for attempt in range(max_retries + 1):

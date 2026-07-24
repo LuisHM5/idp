@@ -1,17 +1,13 @@
 {
   "NUEVO_TIPO": {
+    "schema_version": "x.x.x",
     "description": "Qué es este documento y cómo se distingue de otros. Este texto va al prompt de clasificación de Bedrock, así que sé discriminante (menciona marcas del documento: folios, sellos, encabezados).",
-    "extraction_fields": [
-      "CAMPO_UNO",
-      "CAMPO_DOS"
-    ],
+    "extraction_fields": ["CAMPO_UNO", "CAMPO_DOS"],
     "extraction_hints": {
       "CAMPO_UNO": "Dónde vive el dato en el documento, en español (p. ej. 'esquina superior derecha, junto al folio').",
       "CAMPO_DOS": "Pista de extracción para el modelo."
     },
-    "required_fields": [
-      "CAMPO_UNO"
-    ],
+    "required_fields": ["CAMPO_UNO"],
     "validation_rules": [
       {
         "field": "CAMPO_UNO",

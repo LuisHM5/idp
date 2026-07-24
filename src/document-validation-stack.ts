@@ -3,6 +3,7 @@ import * as cdk from "aws-cdk-lib";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import {
@@ -45,10 +46,22 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const forceReload = props?.forceReloadCatalog ?? false;
     const bedrockModel = process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
+    // ONE customer-managed KMS key shared across the pipeline instead of a
+    // separate CMK per component. Each CMK costs ~$1/month just to exist; the
+    // blueprint otherwise creates 5 (base, log group, adapter, broker, bucket).
+    // Consolidating cuts fixed KMS spend with no change to encryption at rest —
+    // only that components share one customer key instead of isolated keys.
+    const encryptionKey = new kms.Key(this, "PipelineEncryptionKey", {
+      enableKeyRotation: true,
+      alias: "document-validation/pipeline",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // EventBridge broker for pipeline notifications
     const broker = new EventbridgeBroker(this, "IDPBroker", {
       name: "idp-broker",
       eventSource: "document-validation-pipeline",
+      kmsKey: encryptionKey,
     });
 
     // Generate prompts dynamically from the JSON config catalog
@@ -185,6 +198,10 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       classificationPrompt,
       processingPrompt,
       enrichmentLambdaFunction: enrichmentFn,
+      // Share the single CMK for the table + state machine, and for the log
+      // group data-protection key (else the blueprint mints its own CMK each).
+      encryptionKey,
+      logGroupDataProtection: { logGroupEncryptionKey: encryptionKey },
     });
 
     // Grant broad Bedrock invoke permissions to all Lambda roles in the pipeline

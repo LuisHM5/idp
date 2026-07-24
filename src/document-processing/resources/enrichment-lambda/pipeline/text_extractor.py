@@ -65,13 +65,22 @@ def _pages_block(pages: List[PageText]) -> str:
     return "\n\n".join(parts)
 
 
-def _build_prompt(type_entry: TypeRegistryEntry, pages: List[PageText], arrays_only: bool) -> str:
+def _build_prompts(
+    type_entry: TypeRegistryEntry, pages: List[PageText], arrays_only: bool
+) -> Tuple[str, str]:
+    """Return (cache_prefix, user_text).
+
+    `cache_prefix` is the large STATIC part (type header + task + schema +
+    instructions), identical across chunks and across documents of the same
+    type, so it is marked with a Bedrock cachePoint. `user_text` is the variable
+    per-call page text. Splitting them lets prompt caching discount the repeated
+    prefix without changing what the model sees."""
     task = (
         "Extrae UNICAMENTE los campos repetibles (arrays) del schema."
         if arrays_only
         else "Extrae los campos del schema."
     )
-    return (
+    cache_prefix = (
         f"Documento clasificado como {type_entry.type_id}. {type_entry.description}\n\n"
         f"{task}\n\n{_schema_block(type_entry)}\n\n"
         "CONTEXTO ADUANAL: las referencias de pedimento aparecen en formas como "
@@ -99,9 +108,10 @@ def _build_prompt(type_entry: TypeRegistryEntry, pages: List[PageText], arrays_o
         "baja el valor si el OCR se ve corrupto o hay ambiguedad.\n\n"
         "FORMATO DE RESPUESTA (solo JSON, sin markdown):\n"
         "{\"fields\": {\"CAMPO\": {\"value\": \"...\"|null, \"confidence\": 0.95}},\n"
-        " \"arrays\": {\"CAMPO\": [{\"SUBCAMPO\": \"...\"|null}]}}\n\n"
-        "TEXTO DEL DOCUMENTO:\n\n" + _pages_block(pages)
+        " \"arrays\": {\"CAMPO\": [{\"SUBCAMPO\": \"...\"|null}]}}"
     )
+    user_text = "TEXTO DEL DOCUMENTO:\n\n" + _pages_block(pages)
+    return cache_prefix, user_text
 
 
 def _chunk_pages(pages: List[PageText], max_chars: int = _MAX_CHUNK_CHARS) -> List[List[PageText]]:
@@ -126,18 +136,29 @@ def _call_model(
     arrays_only: bool,
     model_id: Optional[str],
     usage_acc: Dict[str, int],
+    cache: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """One extraction call. On max_tokens overflow, split the pages and merge."""
-    prompt = _build_prompt(type_entry, pages, arrays_only)
-    text, meta = converse(prompt, model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS)
+    """One extraction call. On max_tokens overflow, split the pages and merge.
+
+    `cache` marks the static prefix with a Bedrock cachePoint. Only enable it
+    when the prefix will be reused (multi-chunk document or overflow split):
+    caching a prefix used just once costs ~1.25x (net loss); reused it saves
+    ~90% on the prefix. The recursive overflow split guarantees reuse, so it
+    always caches."""
+    cache_prefix, user_text = _build_prompts(type_entry, pages, arrays_only)
+    text, meta = converse(
+        user_text, model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
+        cache_system=cache_prefix if cache else None,
+    )
     for k, v in (meta.get("usage") or {}).items():
         if isinstance(v, int):
             usage_acc[k] = usage_acc.get(k, 0) + v
 
     if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
         mid = len(pages) // 2
-        left_f, left_a = _call_model(type_entry, pages[:mid], arrays_only, model_id, usage_acc)
-        right_f, right_a = _call_model(type_entry, pages[mid:], arrays_only, model_id, usage_acc)
+        # Splitting means ≥2 calls share this prefix → caching now pays off.
+        left_f, left_a = _call_model(type_entry, pages[:mid], arrays_only, model_id, usage_acc, cache=True)
+        right_f, right_a = _call_model(type_entry, pages[mid:], arrays_only, model_id, usage_acc, cache=True)
         return _merge_fields(left_f, right_f), _merge_arrays(left_a, right_a)
 
     try:
@@ -182,13 +203,18 @@ def extract_document(
     usage: Dict[str, int] = {}
     chunks = _chunk_pages(pages)
 
+    # Cache the static prefix only when it will be reused: >1 chunk means the
+    # sequential chunk loop reuses it (chunk 1 writes, 2+ read at ~10%). A
+    # single-chunk document makes one call, where caching would be a net loss.
+    use_cache = len(chunks) > 1
+
     all_fields: Dict[str, Any] = {}
     all_arrays: Dict[str, Any] = {}
     for i, chunk in enumerate(chunks):
         # After the first chunk, scalars are usually already found; still ask
         # for everything (header data can live on later pages) — merge keeps
         # the first non-null value.
-        fields, arrays = _call_model(type_entry, chunk, arrays_only=False, model_id=model_id, usage_acc=usage)
+        fields, arrays = _call_model(type_entry, chunk, arrays_only=False, model_id=model_id, usage_acc=usage, cache=use_cache)
         all_fields = _merge_fields(all_fields, fields)
         all_arrays = _merge_arrays(all_arrays, arrays)
 

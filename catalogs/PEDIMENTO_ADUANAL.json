@@ -1,333 +1,615 @@
 {
   "PEDIMENTO_ADUANAL": {
-    "schema_version": "3.0.0",
-    "description": "Esquema canónico y normalizado para extracción completa de pedimentos aduanales mexicanos y sus anexos. Conserva los datos impresos, separa valores extraídos de valores derivados, mantiene códigos con ceros a la izquierda y soporta bloques opcionales o repetibles sin descartar información.",
-    "business_destination": "PEDIMENTO",
-    "normative_reference": {
-      "name": "Anexo 22 de las Reglas Generales de Comercio Exterior para 2026 - Instructivo para el llenado del pedimento",
-      "edition": "Compilado con la Primera Modificación de 2026",
-      "published": "2026-05-20",
-      "scope_note": "Los campos son dinámicos: algunos bloques se imprimen únicamente cuando aplican al tipo de operación, régimen, clave de pedimento o mercancía. La ausencia de un bloque opcional no debe invalidar el documento."
-    },
-    "supported_forms": [
-      "PEDIMENTO",
-      "ANEXO_DEL_PEDIMENTO",
-      "PEDIMENTO_SIMPLIFICADO",
-      "PEDIMENTO_RECTIFICACION",
-      "PEDIMENTO_COMPLEMENTARIO",
-      "PEDIMENTO_CONSOLIDADO",
-      "CAPTURA_PEDIMENTOS_GENERALES",
-      "CAPTURA_FACTURAS_PEDIMENTO"
-    ],
-    "source_types": {
-      "DOCUMENT": "Valor leído directamente del documento",
-      "DERIVED": "Valor calculado únicamente a partir de datos extraídos",
-      "LOOKUP": "Valor resuelto contra un catálogo oficial o base de datos",
-      "CONTEXT": "Valor recibido desde la aplicación solicitante",
-      "DEFAULT": "Valor aplicado en la capa de negocio, nunca durante la extracción",
-      "MANUAL": "Valor que requiere confirmación humana",
-      "RAW": "Texto crudo preservado cuando la estructura no puede determinarse con confianza"
-    },
-    "output_contract": {
-      "root": "PEDIMENTO_ADUANAL",
-      "return_only_json": true,
-      "missing_value": null,
-      "empty_collection": [],
-      "do_not_invent": true,
-      "do_not_default_missing_numbers_to_zero": true,
-      "preserve_raw_text_in_metadata": true,
-      "continue_tables_across_pages": true,
-      "deduplicate_repeated_footer_blocks": true
-    },
-    "normalization_policy": {
-      "codes": "Guardar como string, en mayúsculas, sin espacios exteriores y conservando ceros a la izquierda.",
-      "pedimento_number": "Normalizar a 15 dígitos: 2 año + 2 aduana + 4 patente/autorización + 7 consecutivo.",
-      "dates": "ISO 8601 YYYY-MM-DD. Conservar el valor crudo en METADATOS_EXTRACCION.",
-      "datetimes": "ISO 8601 YYYY-MM-DDTHH:mm:ss cuando el documento muestre hora.",
-      "money": "Número decimal sin símbolo monetario ni separadores de miles. No redondear durante extracción.",
-      "rates": "Número decimal. Conservar la clave de tipo de tasa separada de la tasa.",
-      "quantities": "Número decimal. No convertir a entero si el documento contiene decimales.",
-      "text": "Colapsar espacios repetidos; conservar acentos; no resumir observaciones, domicilios, descripciones ni firmas.",
-      "country": "Conservar la clave impresa; resolver nombre e ISO mediante catálogo en campos LOOKUP, sin reemplazar el valor original.",
-      "null_vs_zero": "null significa ausente/no impreso/no legible; 0 significa que el documento imprimió cero.",
-      "repeated_blocks": "Extraer todos los renglones y continuar el mismo arreglo cuando el bloque se repita en páginas posteriores.",
-      "ambiguous_cells": "No forzar asignación. Conservar VALOR_CRUDO, TOKENS y una ADVERTENCIA cuando una fila no pueda separarse con confianza.",
-      "unknown_information": "Guardar cualquier bloque no modelado en OTROS_BLOQUES_DOCUMENTO para evitar pérdida de información."
-    },
-    "document_classification": {
-      "required_evidence_any": [
-        "Texto PEDIMENTO",
-        "Texto ANEXO DEL PEDIMENTO",
-        "Campo NUM. PEDIMENTO junto con T.OPER y CVE.PEDIMENTO"
-      ],
-      "supporting_evidence_any": [
-        "CUADRO DE LIQUIDACION",
-        "DATOS DEL IMPORTADOR / EXPORTADOR",
-        "PARTIDAS",
-        "AGENTE ADUANAL, AGENCIA ADUANAL, APODERADO ADUANAL O DE ALMACEN",
-        "DEPOSITO REFERENCIADO - LINEA DE CAPTURA"
-      ],
-      "reject_when": [
-        "El documento es únicamente una factura comercial sin encabezado de pedimento",
-        "El documento es únicamente un COVE, aviso consolidado o documento de transporte sin pedimento"
-      ]
-    },
+    "schema_version": "3.2.0",
+    "description": "Pedimento aduanal mexicano y sus anexos. Se distingue por los encabezados 'PEDIMENTO' o 'ANEXO DEL PEDIMENTO', el número de pedimento compuesto por año, aduana, patente/autorización y consecutivo, y por bloques como T.OPER, CVE.PEDIMENTO, REGIMEN, DATOS DEL IMPORTADOR/EXPORTADOR, TASAS A NIVEL PEDIMENTO, CUADRO DE LIQUIDACION, DEPOSITO REFERENCIADO, DATOS DEL PROVEEDOR O COMPRADOR, TRANSPORTE, IDENTIFICADORES, OBSERVACIONES, PARTIDAS y AGENTE ADUANAL. El esquema extrae tanto filas normalizadas como la disposición cruda de tablas de doble columna, conserva continuaciones entre páginas y evita perder celdas ambiguas.",
     "extraction_fields": [
-      "DOCUMENTO",
-      "ENCABEZADO",
-      "IMPORTADOR_EXPORTADOR",
-      "VALORES",
+      "TIPO_DOCUMENTO",
+      "SUBTIPO_PEDIMENTO",
+      "REFERENCIA_PEDIMENTO",
+      "REFERENCIA_COMPLEMENTO",
+      "NUMERO_PAGINAS",
+      "PAGINAS_DETECTADAS",
+      "VERSION_FORMATO",
+      "LEYENDA_DESTINO_ORIGEN",
+      "USUARIO_IMPRESION",
+      "FECHA_HORA_IMPRESION",
+      "NUMERO_PEDIMENTO",
+      "NUMERO_PEDIMENTO_NORMALIZADO",
+      "ANIO_PEDIMENTO",
+      "ADUANA_DESPACHO",
+      "SECCION_ADUANERA",
+      "NOMBRE_SECCION_ADUANERA",
+      "PATENTE",
+      "NUMERO_CONSECUTIVO",
+      "TIPO_OPERACION",
+      "TIPO_OPERACION_NORMALIZADO",
+      "CLAVE_PEDIMENTO",
+      "REGIMEN_ADUANERO",
+      "DESTINO_ORIGEN",
+      "TIPO_CAMBIO",
+      "PESO_BRUTO",
+      "ADUANA_ENTRADA_SALIDA",
+      "MEDIO_TRANSPORTE_ENTRADA_SALIDA",
+      "MEDIO_TRANSPORTE_ARRIBO",
+      "MEDIO_TRANSPORTE_SALIDA",
+      "CODIGO_ACEPTACION",
+      "CODIGO_BARRAS_PEDIMENTO",
+      "MARCAS_NUMEROS_TOTAL_BULTOS",
+      "TOTAL_BULTOS",
+      "CERTIFICACIONES_TEXTO",
+      "CERTIFICACIONES",
+      "VALOR_DOLARES",
+      "VALOR_ADUANA",
+      "VALOR_COMERCIAL_PESOS",
+      "PRECIO_PAGADO_VALOR_COMERCIAL",
+      "RFC_IMPORTADOR_EXPORTADOR",
+      "CURP_IMPORTADOR_EXPORTADOR",
+      "NOMBRE_IMPORTADOR_EXPORTADOR",
+      "DOMICILIO_IMPORTADOR_EXPORTADOR",
+      "CALLE_IMPORTADOR_EXPORTADOR",
+      "NUMERO_EXTERIOR_IMPORTADOR_EXPORTADOR",
+      "NUMERO_INTERIOR_IMPORTADOR_EXPORTADOR",
+      "COLONIA_IMPORTADOR_EXPORTADOR",
+      "CODIGO_POSTAL_IMPORTADOR_EXPORTADOR",
+      "MUNICIPIO_IMPORTADOR_EXPORTADOR",
+      "ENTIDAD_FEDERATIVA_IMPORTADOR_EXPORTADOR",
+      "PAIS_IMPORTADOR_EXPORTADOR",
+      "PAIS_IMPORTADOR_EXPORTADOR_NOMBRE",
+      "PAIS_VENDEDOR_COMPRADOR",
+      "PAIS_ORIGEN_DESTINO",
+      "PAIS_ORIGEN_PRINCIPAL",
+      "VALOR_SEGUROS",
+      "SEGUROS",
+      "FLETES",
+      "EMBALAJES",
+      "OTROS_INCREMENTABLES",
+      "TOTAL_INCREMENTABLES",
+      "TRANSPORTE_DECREMENTABLE",
+      "SEGURO_DECREMENTABLE",
+      "CARGA_DECREMENTABLE",
+      "DESCARGA_DECREMENTABLE",
+      "OTROS_DECREMENTABLES",
+      "TOTAL_DECREMENTABLES",
+      "FECHA_ENTRADA",
+      "FECHA_PAGO",
+      "FECHA_PRESENTACION",
       "FECHAS",
       "TASAS_NIVEL_PEDIMENTO",
       "CUADRO_LIQUIDACION",
-      "PAGO_ELECTRONICO",
+      "LIQUIDACION_NORMALIZADA",
+      "CONTRIBUCIONES",
+      "TASAS_LIQUIDACION_VINCULADAS",
+      "TOTAL_EFECTIVO",
+      "TOTAL_OTROS",
+      "TOTAL_PEDIMENTO",
+      "PAGO_ELECTRONICO_PRESENTE",
+      "TIPO_PAGO_TEXTO",
+      "LINEA_CAPTURA",
+      "BANCO",
+      "PATENTE_PAGO",
+      "PEDIMENTO_PAGO",
+      "ADUANA_PAGO",
+      "IMPORTE_PAGADO",
+      "FECHA_PAGO_BANCARIO",
+      "OPERACION_BANCARIA",
+      "TRANSACCION_SAT",
+      "MEDIO_PRESENTACION",
+      "MEDIO_RECEPCION_COBRO",
+      "CODIGO_BARRAS_PAGO",
+      "CODIGO_QR_PAGO",
       "PROVEEDORES_COMPRADORES",
       "DESTINATARIOS",
       "FACTURAS",
-      "TRANSPORTE",
+      "FACTURAS_FILAS_IMPRESAS",
+      "COVES_EDOCUMENTS",
+      "TOTAL_FACTURAS_DOLARES",
+      "TOTAL_FACTURAS_PESOS",
+      "TRANSPORTISTA",
+      "TRANSPORTE_IDENTIFICACION",
+      "TRANSPORTE_PAIS",
+      "VEHICULO_TRANSPORTE",
       "GUIAS_DOCUMENTOS_TRANSPORTE",
+      "CONTENEDORES",
+      "CONTENEDORES_FILAS_IMPRESAS",
       "EQUIPOS_TRANSPORTE",
-      "CANDADOS",
-      "IDENTIFICADORES_PEDIMENTO",
-      "CUENTAS_ADUANERAS_GARANTIA_PEDIMENTO",
+      "CANDADOS_SELLOS",
+      "IDENTIFICADORES",
+      "IDENTIFICADORES_FILAS_IMPRESAS",
+      "CUENTAS_ADUANERAS_GARANTIA",
       "DESCARGOS",
       "COMPENSACIONES",
       "PEDIMENTOS_RELACIONADOS",
       "RECTIFICACION",
+      "CONSOLIDACION",
+      "DIFERENCIAS_CONTRIBUCIONES",
       "OBSERVACIONES",
+      "DOCUMENTOS_DIGITALIZADOS",
+      "REGULACIONES_RESTRICCIONES",
+      "CANDADO_FISCAL",
       "PARTIDAS",
-      "RESUMEN_PEDIMENTO",
+      "PARTIDAS_FILAS_IMPRESAS",
+      "NUMERO_TOTAL_PARTIDAS",
+      "CLAVE_PREVALIDADOR",
       "AGENTE_ADUANAL",
-      "FIRMAS_CERTIFICACIONES",
+      "NUMERO_SERIE_CERTIFICADO",
+      "FIRMA_ELECTRONICA",
+      "FIRMA_AUTOGRAFA_PRESENTE",
+      "FIRMA_AUTOGRAFA_DETECTADA",
+      "DECLARACION_ARTICULO_81_PRESENTE",
       "OTROS_BLOQUES_DOCUMENTO",
-      "METADATOS_EXTRACCION"
+      "METADATOS_EXTRACCION",
+      "TABLAS_DETECTADAS"
     ],
-    "structured_fields": {
-      "DOCUMENTO": {
-        "TIPO_DOCUMENTO": "PEDIMENTO_ADUANAL",
-        "SUBTIPO_IMPRESION": null,
-        "REFERENCIA": null,
-        "REFERENCIA_COMPLEMENTO": null,
-        "NUMERO_PAGINAS": null,
-        "PAGINAS_DETECTADAS": [],
-        "VERSION_FORMATO": null,
-        "LEYENDA_DESTINO_ORIGEN": null,
-        "USUARIO_IMPRESION": null,
-        "FECHA_HORA_IMPRESION": null
-      },
-      "ENCABEZADO": {
-        "NUMERO_PEDIMENTO_IMPRESO": null,
-        "NUMERO_PEDIMENTO_NORMALIZADO": null,
-        "ANIO_VALIDACION": null,
-        "ADUANA_DESPACHO": null,
-        "PATENTE_AUTORIZACION": null,
-        "NUMERO_CONSECUTIVO": null,
-        "TIPO_OPERACION": null,
-        "TIPO_OPERACION_NORMALIZADO": null,
-        "CLAVE_PEDIMENTO": null,
-        "REGIMEN": null,
-        "DESTINO_ORIGEN": null,
-        "TIPO_CAMBIO": null,
-        "PESO_BRUTO": null,
-        "ADUANA_ENTRADA_SALIDA": null,
-        "MEDIOS_TRANSPORTE": {
-          "ENTRADA_SALIDA": null,
-          "ARRIBO": null,
-          "SALIDA": null
-        },
-        "CLAVE_SECCION_ADUANERA_DESPACHO": null,
-        "NOMBRE_SECCION_ADUANERA_DESPACHO": null,
-        "CODIGO_ACEPTACION": null,
-        "CODIGO_BARRAS_PEDIMENTO": null,
-        "MARCAS_NUMEROS_TOTAL_BULTOS": null,
-        "TOTAL_BULTOS": null,
-        "CERTIFICACIONES_TEXTO": null
-      },
-      "IMPORTADOR_EXPORTADOR": {
-        "RFC": null,
-        "CURP": null,
-        "NOMBRE_RAZON_SOCIAL": null,
-        "DOMICILIO_COMPLETO": null,
-        "PAIS_CLAVE": null,
-        "PAIS_NOMBRE": null
-      },
-      "VALORES": {
-        "VALOR_DOLARES": null,
-        "VALOR_ADUANA_MXN": null,
-        "PRECIO_PAGADO_VALOR_COMERCIAL_MXN": null,
-        "INCREMENTABLES": {
-          "VALOR_SEGUROS_MXN": null,
-          "SEGUROS_MXN": null,
-          "FLETES_MXN": null,
-          "EMBALAJES_MXN": null,
-          "OTROS_INCREMENTABLES_MXN": null,
-          "TOTAL_INCREMENTABLES_MXN": null
-        },
-        "DECREMENTABLES": {
-          "TRANSPORTE_MXN": null,
-          "SEGUROS_MXN": null,
-          "CARGA_MXN": null,
-          "DESCARGA_MXN": null,
-          "OTROS_DECREMENTABLES_MXN": null,
-          "TOTAL_DECREMENTABLES_MXN": null
-        }
-      },
-      "FECHAS": [],
-      "TASAS_NIVEL_PEDIMENTO": [],
-      "CUADRO_LIQUIDACION": {
-        "CONCEPTOS": [],
-        "TOTAL_EFECTIVO": null,
-        "TOTAL_OTROS": null,
-        "TOTAL": null,
-        "POR_CONCEPTO_NORMALIZADO": [],
-        "POR_FORMA_PAGO": []
-      },
-      "PAGO_ELECTRONICO": {
-        "PRESENTE": false,
-        "TIPO_PAGO_TEXTO": null,
-        "BANCO": null,
-        "PATENTE_AUTORIZACION": null,
-        "NUMERO_PEDIMENTO_CONSECUTIVO": null,
-        "ADUANA": null,
-        "LINEA_CAPTURA": null,
-        "IMPORTE_PAGADO": null,
-        "FECHA_PAGO": null,
-        "NUMERO_OPERACION_BANCARIA": null,
-        "NUMERO_TRANSACCION_SAT": null,
-        "MEDIO_PRESENTACION": null,
-        "MEDIO_RECEPCION_COBRO": null,
-        "CODIGO_BARRAS_VALOR": null,
-        "CODIGO_QR_VALOR": null
-      },
-      "PROVEEDORES_COMPRADORES": [],
-      "DESTINATARIOS": [],
-      "FACTURAS": [],
-      "TRANSPORTE": {
-        "IDENTIFICACION": null,
-        "PAIS_CLAVE": null,
-        "PAIS_NOMBRE": null,
-        "TRANSPORTISTA": {
-          "RFC_TAX_ID": null,
-          "CURP": null,
-          "NOMBRE_RAZON_SOCIAL": null,
-          "DOMICILIO_COMPLETO": null
-        },
-        "VEHICULO": {
-          "PLACAS": null,
-          "NUMERO_SERIE": null,
-          "MODELO": null,
-          "NUMERO_ECONOMICO": null
-        }
-      },
-      "GUIAS_DOCUMENTOS_TRANSPORTE": [],
-      "EQUIPOS_TRANSPORTE": [],
-      "CANDADOS": [],
-      "IDENTIFICADORES_PEDIMENTO": [],
-      "CUENTAS_ADUANERAS_GARANTIA_PEDIMENTO": [],
-      "DESCARGOS": [],
-      "COMPENSACIONES": [],
-      "PEDIMENTOS_RELACIONADOS": [],
-      "RECTIFICACION": {
-        "ES_RECTIFICACION": false,
-        "PEDIMENTO_ORIGINAL": null,
-        "CLAVE_PEDIMENTO_ORIGINAL": null,
-        "FECHA_PAGO_ORIGINAL": null,
-        "DIFERENCIAS_CONTRIBUCIONES": []
-      },
-      "OBSERVACIONES": [],
-      "PARTIDAS": [],
-      "RESUMEN_PEDIMENTO": {
-        "NUMERO_TOTAL_PARTIDAS": null,
-        "CLAVE_PREVALIDADOR": null,
-        "TOTAL_FACTURAS": null,
-        "TOTAL_PROVEEDORES_COMPRADORES": null,
-        "TOTAL_IDENTIFICADORES_PEDIMENTO": null,
-        "TOTAL_EQUIPOS_TRANSPORTE": null
-      },
-      "AGENTE_ADUANAL": {
-        "TIPO_FIGURA": null,
-        "PATENTE_AUTORIZACION": null,
-        "RFC": null,
-        "CURP": null,
-        "NOMBRE_RAZON_SOCIAL": null
-      },
-      "FIRMAS_CERTIFICACIONES": {
-        "NUMERO_SERIE_CERTIFICADO": null,
-        "E_FIRMA": null,
-        "FIRMA_AUTOGRAFA_PRESENTE": null,
-        "DECLARACION_ARTICULO_81_PRESENTE": null,
-        "CERTIFICACIONES": []
-      },
-      "OTROS_BLOQUES_DOCUMENTO": [],
-      "METADATOS_EXTRACCION": {
-        "CAMPOS": [],
-        "ADVERTENCIAS": [],
-        "ERRORES_LECTURA": [],
-        "BLOQUES_NO_CLASIFICADOS": [],
-        "DOCUMENTO_COMPLETO": null,
-        "PAGINAS_FALTANTES": []
-      }
+    "extraction_hints": {
+      "TIPO_DOCUMENTO": "Valor fijo PEDIMENTO_ADUANAL cuando se confirme que el documento contiene el encabezado PEDIMENTO o ANEXO DEL PEDIMENTO.",
+      "SUBTIPO_PEDIMENTO": "Clasificar por el texto y estructura impresos: PEDIMENTO, ANEXO_DEL_PEDIMENTO, SIMPLIFICADO, RECTIFICACION, COMPLEMENTARIO, CONSOLIDADO u OTRO.",
+      "REFERENCIA_PEDIMENTO": "Campo REF ubicado normalmente en la franja superior de cada página. Conservar ceros a la izquierda.",
+      "REFERENCIA_COMPLEMENTO": "Texto o número adicional impreso junto a REF, cuando exista. No mezclarlo con el número de pedimento.",
+      "NUMERO_PAGINAS": "Total indicado por leyendas como 'Página 1 de 3'. Usar el mayor total consistente observado.",
+      "PAGINAS_DETECTADAS": "Registrar cada página detectada con número, total, tipo de página, referencia y pedimento para detectar faltantes.",
+      "VERSION_FORMATO": "Versión, revisión o formato impreso si aparece; de lo contrario null.",
+      "LEYENDA_DESTINO_ORIGEN": "Leyenda del pie como 'DESTINO/ORIGEN. INTERIOR DEL PAÍS'. Conservar texto completo.",
+      "USUARIO_IMPRESION": "Nombre mostrado junto a 'Usuario:' en el pie.",
+      "FECHA_HORA_IMPRESION": "Fecha y hora del pie. Normalizar a ISO 8601 cuando se pueda leer completa.",
+      "NUMERO_PEDIMENTO": "Valor impreso completo del campo NUM. PEDIMENTO, conservando la representación original.",
+      "NUMERO_PEDIMENTO_NORMALIZADO": "Concatenar 2 dígitos de año + 2 de aduana + 4 de patente/autorización + 7 de consecutivo. Resultado de 15 dígitos.",
+      "ANIO_PEDIMENTO": "Primeros 2 dígitos del número de pedimento; guardar como string.",
+      "ADUANA_DESPACHO": "Dos dígitos de aduana contenidos en el número de pedimento. No confundir con ADUANA E/S ni con la sección de despacho.",
+      "SECCION_ADUANERA": "Clave impresa en 'CLAVE DE LA SECCION ADUANERA DE DESPACHO'; puede tener 2 o 3 dígitos según impresión.",
+      "NOMBRE_SECCION_ADUANERA": "Nombre situado junto a la clave de sección aduanera, por ejemplo SAN JERONIMO STA. TERESA.",
+      "PATENTE": "Cuatro dígitos de patente o autorización del número de pedimento. Conservar ceros a la izquierda.",
+      "NUMERO_CONSECUTIVO": "Siete dígitos finales del número de pedimento. Conservar ceros a la izquierda.",
+      "TIPO_OPERACION": "Campo T.OPER o TIPO OPER; conservar el código impreso, normalmente IMP o EXP.",
+      "TIPO_OPERACION_NORMALIZADO": "Derivar IMPORTACION para IMP y EXPORTACION para EXP; para otros códigos conservar OTRO.",
+      "CLAVE_PEDIMENTO": "Campo CVE.PEDIMENTO/CVE.PEDIM, normalmente A1, R1, V1, K1, etc. No confundir con régimen.",
+      "REGIMEN_ADUANERO": "Campo REGIMEN del encabezado, por ejemplo IMD. Conservar código impreso.",
+      "DESTINO_ORIGEN": "Campo DESTINO del encabezado o leyenda equivalente; conservar como string.",
+      "TIPO_CAMBIO": "Campo TIPO CAMBIO del encabezado. Número decimal mayor que cero cuando esté impreso.",
+      "PESO_BRUTO": "Campo PESO BRUTO del encabezado. Extraer como decimal sin separadores de miles.",
+      "ADUANA_ENTRADA_SALIDA": "Campo ADUANA E/S del encabezado. Es independiente de ADUANA_DESPACHO y SECCION_ADUANERA.",
+      "MEDIO_TRANSPORTE_ENTRADA_SALIDA": "Primera columna del bloque MEDIOS DE TRANSPORTE: ENTRADA/SALIDA.",
+      "MEDIO_TRANSPORTE_ARRIBO": "Segunda columna del bloque MEDIOS DE TRANSPORTE: ARRIBO.",
+      "MEDIO_TRANSPORTE_SALIDA": "Tercera columna del bloque MEDIOS DE TRANSPORTE: SALIDA.",
+      "CODIGO_ACEPTACION": "Texto alfanumérico situado junto a 'CODIGO DE ACEPTACIÓN' y su código de barras/QR. No confundir con línea de captura.",
+      "CODIGO_BARRAS_PEDIMENTO": "Valor legible del código de barras principal cuando se pueda decodificar o leer impreso.",
+      "MARCAS_NUMEROS_TOTAL_BULTOS": "Texto completo del renglón MARCAS, NUMEROS Y TOTAL DE BULTOS.",
+      "TOTAL_BULTOS": "Extraer el número total de bultos del renglón de marcas/bultos cuando sea separable con confianza.",
+      "CERTIFICACIONES_TEXTO": "Texto del bloque CERTIFICACIONES. No resumir; null si el bloque está vacío.",
+      "VALOR_DOLARES": "Campo VALOR DOLARES del encabezado. No sustituirlo por la suma de facturas.",
+      "VALOR_ADUANA": "Campo VALOR ADUANA del encabezado, normalmente en MXN.",
+      "VALOR_COMERCIAL_PESOS": "Campo PRECIO PAGADO/VALOR COMERCIAL del encabezado, normalmente en MXN.",
+      "PRECIO_PAGADO_VALOR_COMERCIAL": "Alias compatible de VALOR_COMERCIAL_PESOS; devolver el mismo valor normalizado.",
+      "RFC_IMPORTADOR_EXPORTADOR": "Clave en el RFC dentro de DATOS DEL IMPORTADOR/EXPORTADOR.",
+      "CURP_IMPORTADOR_EXPORTADOR": "CURP del importador/exportador si está impresa. No tomar la CURP del agente.",
+      "NOMBRE_IMPORTADOR_EXPORTADOR": "NOMBRE, DENOMINACION O RAZON SOCIAL del bloque DATOS DEL IMPORTADOR/EXPORTADOR.",
+      "DOMICILIO_IMPORTADOR_EXPORTADOR": "Domicilio completo tal como aparece, unido en una sola cadena sin resumir.",
+      "CALLE_IMPORTADOR_EXPORTADOR": "Derivar de DOMICILIO_IMPORTADOR_EXPORTADOR solo cuando la calle sea separable con alta confianza.",
+      "NUMERO_EXTERIOR_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de NO.EXT, NUM EXT o equivalente.",
+      "NUMERO_INTERIOR_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de NO.INT, NUM INT o equivalente; null si no aparece.",
+      "COLONIA_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de COLONIA/COL.",
+      "CODIGO_POSTAL_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de C.P./CP; conservar ceros iniciales.",
+      "MUNICIPIO_IMPORTADOR_EXPORTADOR": "Municipio o ciudad del domicilio, solo si es separable.",
+      "ENTIDAD_FEDERATIVA_IMPORTADOR_EXPORTADOR": "Estado o entidad del domicilio, solo si es separable.",
+      "PAIS_IMPORTADOR_EXPORTADOR": "Clave o nombre de país impreso en el domicilio; preferir clave si existe.",
+      "PAIS_IMPORTADOR_EXPORTADOR_NOMBRE": "Nombre normalizado del país mediante catálogo, sin reemplazar el valor impreso.",
+      "PAIS_VENDEDOR_COMPRADOR": "País vendedor/comprador a nivel encabezado o valor principal derivado de proveedor y partidas. No autoseleccionar si existen varios.",
+      "PAIS_ORIGEN_DESTINO": "País de origen/destino principal observado en las partidas. Conservar null si hay múltiples valores sin uno dominante.",
+      "PAIS_ORIGEN_PRINCIPAL": "Derivar solo cuando todas las partidas con país de origen/destino comparten la misma clave; en caso contrario null.",
+      "VALOR_SEGUROS": "Campo VAL. SEGUROS. Es valor informativo y no debe sumarse como prima de seguro.",
+      "SEGUROS": "Campo SEGUROS del bloque de incrementables; esta sí es la prima incrementable.",
+      "FLETES": "Campo FLETES del bloque de incrementables.",
+      "EMBALAJES": "Campo EMBALAJES del bloque de incrementables.",
+      "OTROS_INCREMENTABLES": "Campo OTROS INCREMENTABLES.",
+      "TOTAL_INCREMENTABLES": "Derivar como SEGUROS + FLETES + EMBALAJES + OTROS_INCREMENTABLES. No sumar VALOR_SEGUROS.",
+      "TRANSPORTE_DECREMENTABLE": "Campo TRANSPORTE DECREMENTABLES.",
+      "SEGURO_DECREMENTABLE": "Campo SEGUROS DECREMENTABLES.",
+      "CARGA_DECREMENTABLE": "Campo CARGA DECREMENTABLES.",
+      "DESCARGA_DECREMENTABLE": "Campo DESCARGA DECREMENTABLES.",
+      "OTROS_DECREMENTABLES": "Campo OTROS DECREMENTABLES.",
+      "TOTAL_DECREMENTABLES": "Campo VALOR DECREMENTABLES o suma de los cinco conceptos decrementables.",
+      "FECHA_ENTRADA": "Fecha identificada como ENTRADA en el bloque FECHAS. Normalizar YYYY-MM-DD.",
+      "FECHA_PAGO": "Fecha identificada como PAGO en el bloque FECHAS del pedimento.",
+      "FECHA_PRESENTACION": "Fecha de presentación cuando aparezca como fecha adicional.",
+      "FECHAS": "Extraer todas las filas del bloque FECHAS, conservando tipo, fecha normalizada y valor crudo.",
+      "TASAS_NIVEL_PEDIMENTO": "Tabla TASAS A NIVEL PEDIMENTO: extraer una fila por contribución con clave cruda y normalizada, CVE T. TASA, tasa numérica o textual, unidad/tipo, página, orden y confianza. TASA puede ser porcentaje, cuota o texto como Ex.",
+      "CUADRO_LIQUIDACION": "Extraer la tabla completa en tres vistas: FILAS_IMPRESAS conserva las dos mitades visuales de cada renglón; CONCEPTOS crea un registro normalizado por concepto con F.P e importe; TOTALES conserva EFECTIVO, OTROS y TOTAL como filas. Leer ambas mitades de izquierda a derecha y no perder conceptos vacíos o no catalogados.",
+      "LIQUIDACION_NORMALIZADA": "Vista derivada por código normalizado, sin perder el concepto crudo. Mantener IVA y IVA PRV separados canónicamente.",
+      "CONTRIBUCIONES": "Vista normalizada que relaciona tasas a nivel pedimento, conceptos del cuadro de liquidación y contribuciones de partidas sin duplicar importes.",
+      "TOTAL_EFECTIVO": "Total EFECTIVO impreso en el cuadro de liquidación.",
+      "TOTAL_OTROS": "Total OTROS impreso en el cuadro de liquidación.",
+      "TOTAL_PEDIMENTO": "TOTAL impreso en el cuadro de liquidación.",
+      "PAGO_ELECTRONICO_PRESENTE": "true cuando exista DEPOSITO REFERENCIADO, LINEA DE CAPTURA o leyenda PAGO ELECTRÓNICO.",
+      "TIPO_PAGO_TEXTO": "Leyenda del tipo de pago, por ejemplo PAGO ELECTRÓNICO.",
+      "LINEA_CAPTURA": "Cadena alfanumérica del bloque DEPOSITO REFERENCIADO - LINEA DE CAPTURA.",
+      "BANCO": "NOMBRE DE LA INSTITUCION BANCARIA.",
+      "PATENTE_PAGO": "PATENTE dentro del bloque de pago.",
+      "PEDIMENTO_PAGO": "PEDIMENTO/consecutivo dentro del bloque de pago.",
+      "ADUANA_PAGO": "ADUANA dentro del bloque de pago.",
+      "IMPORTE_PAGADO": "IMPORTE PAGADO del bloque bancario, sin símbolo de moneda.",
+      "FECHA_PAGO_BANCARIO": "FECHA DE PAGO del bloque bancario.",
+      "OPERACION_BANCARIA": "NUMERO DE OPERACION BANCARIA.",
+      "TRANSACCION_SAT": "NUMERO DE TRANSACCION SAT.",
+      "MEDIO_PRESENTACION": "MEDIO DE PRESENTACION del bloque bancario.",
+      "MEDIO_RECEPCION_COBRO": "MEDIO DE RECEPCION/COBRO.",
+      "CODIGO_BARRAS_PAGO": "Valor legible bajo el código de barras de la línea de captura.",
+      "CODIGO_QR_PAGO": "Contenido del QR cuando sea decodificable; si no, null y registrar presencia en metadatos.",
+      "PROVEEDORES_COMPRADORES": "Extraer todos los bloques DATOS DEL PROVEEDOR O COMPRADOR, incluso si las facturas continúan en otra página.",
+      "DESTINATARIOS": "Extraer destinatario, comprador, vendedor u otra parte mencionada explícitamente en bloques u observaciones.",
+      "FACTURAS": "Extraer todas las facturas y vincularlas con proveedor/comprador. Conservar exactamente NUM. FACTURA, FECHA, INCOTERM, MONEDA, VAL. MON. FACT, FACTOR MON. FACT y VAL. DOLARES. Un COVE/e-document puede aparecer en un renglón inferior y la tabla puede comenzar en la página siguiente al proveedor.",
+      "COVES_EDOCUMENTS": "Extraer todos los COVE o e-document, indicando si se vincularon a una factura, identificador o permiso.",
+      "TOTAL_FACTURAS_DOLARES": "Derivar SUM(FACTURAS.VALOR_DOLARES) solo cuando todas las facturas estén completas.",
+      "TOTAL_FACTURAS_PESOS": "Derivar TOTAL_FACTURAS_DOLARES * TIPO_CAMBIO sin redondear prematuramente.",
+      "TRANSPORTISTA": "Bloque TRANSPORTISTA del anexo: nombre, RFC/CURP y domicilio.",
+      "TRANSPORTE_IDENTIFICACION": "Campo IDENTIFICACION del bloque TRANSPORTE.",
+      "TRANSPORTE_PAIS": "Campo PAIS del bloque TRANSPORTE.",
+      "VEHICULO_TRANSPORTE": "Datos de placas, serie/VIN, modelo o número económico cuando se impriman a nivel transporte.",
+      "GUIAS_DOCUMENTOS_TRANSPORTE": "Todas las guías, conocimientos de embarque, manifiestos u otros documentos de transporte.",
+      "CONTENEDORES": "Normalizar cada par número/tipo del bloque NUMERO/TIPO DE CONTENEDOR. Como una fila puede contener varios pares, usar CONTENEDORES_FILAS_IMPRESAS para preservar posición y tokens; si el pareo es ambiguo, dejar los campos normalizados en null y conservar VALOR_CRUDO.",
+      "EQUIPOS_TRANSPORTE": "Contenedores, carros, remolques u otros equipos; conservar tokens y valor crudo cuando no pueda separarse número/tipo.",
+      "CANDADOS_SELLOS": "Todos los candados o sellos fiscales/comerciales y su tipo cuando aparezca.",
+      "IDENTIFICADORES": "Extraer todos los identificadores a nivel pedimento con clave, posible complemento del identificador y complementos 1, 2 y 3. Conservar la fila física para evitar desplazamientos de columnas.",
+      "CUENTAS_ADUANERAS_GARANTIA": "Todos los bloques de cuenta aduanera o garantía a nivel pedimento.",
+      "DESCARGOS": "Todos los pedimentos/operaciones originales descargados y cantidades asociadas.",
+      "COMPENSACIONES": "Todos los datos de compensación, gravamen e importe compensado.",
+      "PEDIMENTOS_RELACIONADOS": "Pedimentos originales, complementarios, consolidados, rectificados o relacionados.",
+      "RECTIFICACION": "Datos del pedimento original y diferencias cuando la clave/estructura corresponda a rectificación.",
+      "CONSOLIDACION": "Datos de aviso consolidado, periodo, operación o relación cuando el pedimento sea consolidado.",
+      "DIFERENCIAS_CONTRIBUCIONES": "Diferencias de contribuciones por concepto y forma de pago, principalmente en rectificaciones/complementarios.",
+      "OBSERVACIONES": "Texto completo de OBSERVACIONES, unido entre renglones y páginas, sin resumir.",
+      "PARTIDAS": "Extraer todas las partidas y sus subtablas. Conservar SEC, FRACCION, SUBD/NICO, VINC., MET VAL, UMC/CANTIDAD UMC, UMT/CANTIDAD UMT, P.V/C, P.O/D, descripción, contribuciones, VAL. ADU/USD, IMP. PRECIO PAG., PRECIO UNIT., VAL. AGREG., MARCA, MODELO, CODIGO PRODUCTO, permisos e identificadores. Continuar la misma partida si los identificadores aparecen en la página siguiente.",
+      "NUMERO_TOTAL_PARTIDAS": "Número impreso en FIN DE PEDIMENTO.",
+      "CLAVE_PREVALIDADOR": "Clave impresa junto a CLAVE PREVALIDADOR, normalmente 3 dígitos.",
+      "AGENTE_ADUANAL": "Bloque AGENTE ADUANAL/AGENCIA/APODERADO: tipo de figura, patente, RFC, CURP, nombre y domicilio si existe.",
+      "NUMERO_SERIE_CERTIFICADO": "Número de serie del certificado del bloque de firma.",
+      "FIRMA_ELECTRONICA": "Cadena completa de e.firma. No truncar ni normalizar caracteres base64.",
+      "FIRMA_AUTOGRAFA_PRESENTE": "Indica que el formato contiene la etiqueta o el espacio destinado a FIRMA AUTOGRAFA. No confirma que exista una firma manuscrita; para eso usar FIRMA_AUTOGRAFA_DETECTADA.",
+      "DECLARACION_ARTICULO_81_PRESENTE": "true cuando se detecte la declaración bajo protesta relacionada con el artículo 81.",
+      "OTROS_BLOQUES_DOCUMENTO": "Guardar cualquier bloque, tabla o texto no cubierto por el esquema para no perder información.",
+      "METADATOS_EXTRACCION": "Trazabilidad por campo: valor crudo, página, confianza, método, bbox, advertencias, páginas faltantes y bloques ambiguos.",
+      "CERTIFICACIONES": "Extraer cada certificación del bloque CERTIFICACIONES como registro independiente con tipo, texto, folio, fecha, sello/cadena, emisor, página y valor crudo. Si el recuadro está presente pero vacío, devolver [] y registrar BLOQUE_PRESENTE en TABLAS_DETECTADAS.",
+      "TASAS_LIQUIDACION_VINCULADAS": "Relacionar, cuando sea posible, cada tasa de TASAS_NIVEL_PEDIMENTO con su concepto del CUADRO_LIQUIDACION. Conservar por separado la fuente de la tasa y la fuente del importe; no inventar vínculos cuando existan varios conceptos candidatos.",
+      "FACTURAS_FILAS_IMPRESAS": "Preservar la tabla física de facturas por renglón, incluidos renglones inferiores que contienen COVE/e-document. Esto permite reconstruir facturas que continúan desde la página del proveedor hacia el anexo.",
+      "CONTENEDORES_FILAS_IMPRESAS": "Preservar cada fila del bloque NUMERO/TIPO DE CONTENEDOR con todos los pares impresos en la misma línea. No asumir que cuatro tokens corresponden a un solo contenedor; guardar posición, tokens y valor crudo.",
+      "IDENTIFICADORES_FILAS_IMPRESAS": "Preservar las filas físicas de la tabla CLAVE/COMPL. IDENTIFICADOR y sus complementos 1, 2 y 3, además de la lista normalizada IDENTIFICADORES.",
+      "DOCUMENTOS_DIGITALIZADOS": "Extraer referencias explícitas a facturas, COVE, e-document, certificados, dictámenes u otros documentos digitalizados mencionados en OBSERVACIONES, con número, fecha, tipo y relación.",
+      "REGULACIONES_RESTRICCIONES": "Extraer regulaciones, permisos, certificados o inspecciones mencionados en tablas u observaciones, por ejemplo certificado fitosanitario, NOM, dictamen documental o autoridad competente. Conservar texto fuente y no inferir un número que no esté impreso.",
+      "CANDADO_FISCAL": "Estructurar la presencia o ausencia de candado fiscal, motivo, texto fuente, números de candado/sello y equipo relacionado. Distinguir 'SIN CANDADO FISCAL' de un número de candado efectivamente impreso.",
+      "PARTIDAS_FILAS_IMPRESAS": "Preservar filas físicas de la tabla PARTIDAS, incluyendo encabezado principal, descripción, valores, permisos, identificadores y continuaciones de página. La salida normalizada permanece en PARTIDAS.",
+      "FIRMA_AUTOGRAFA_DETECTADA": "true únicamente si se detecta trazo o firma manuscrita; no marcar true solo porque exista la etiqueta 'FIRMA AUTOGRAFA' o el espacio destinado a firmar.",
+      "TABLAS_DETECTADAS": "Inventario de tablas detectadas con nombre, página inicial/final, encabezados, número de filas, continuación, confianza y bbox. Sirve para confirmar que no se omitieron CUADRO DE LIQUIDACION, FACTURAS, IDENTIFICADORES o PARTIDAS."
     },
+    "required_fields": [
+      "NUMERO_PEDIMENTO_NORMALIZADO",
+      "ANIO_PEDIMENTO",
+      "ADUANA_DESPACHO",
+      "PATENTE",
+      "NUMERO_CONSECUTIVO",
+      "TIPO_OPERACION",
+      "CLAVE_PEDIMENTO",
+      "REGIMEN_ADUANERO",
+      "RFC_IMPORTADOR_EXPORTADOR",
+      "NOMBRE_IMPORTADOR_EXPORTADOR",
+      "AGENTE_ADUANAL",
+      "NUMERO_TOTAL_PARTIDAS",
+      "PARTIDAS"
+    ],
+    "validation_rules": [
+      {
+        "field": "NUMERO_PEDIMENTO_NORMALIZADO",
+        "rule_type": "regex",
+        "pattern": "^\\d{15}$",
+        "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
+      },
+      {
+        "field": "NUMERO_PEDIMENTO_NORMALIZADO",
+        "rule_type": "custom_formula",
+        "formula": "ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO",
+        "skip_if_missing": true,
+        "message": "El número normalizado no coincide con año, aduana, patente y consecutivo"
+      },
+      {
+        "field": "ANIO_PEDIMENTO",
+        "rule_type": "regex",
+        "pattern": "^\\d{2}$",
+        "message": "El año del pedimento debe contener 2 dígitos"
+      },
+      {
+        "field": "ADUANA_DESPACHO",
+        "rule_type": "regex",
+        "pattern": "^\\d{2}$",
+        "message": "La aduana del número de pedimento debe contener 2 dígitos"
+      },
+      {
+        "field": "PATENTE",
+        "rule_type": "regex",
+        "pattern": "^\\d{4}$",
+        "message": "La patente o autorización debe contener 4 dígitos"
+      },
+      {
+        "field": "NUMERO_CONSECUTIVO",
+        "rule_type": "regex",
+        "pattern": "^\\d{7}$",
+        "message": "El consecutivo del pedimento debe contener 7 dígitos"
+      },
+      {
+        "field": "RFC_IMPORTADOR_EXPORTADOR",
+        "rule_type": "regex",
+        "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "skip_if_missing": true,
+        "message": "El RFC del importador o exportador tiene un formato inválido"
+      },
+      {
+        "field": "TIPO_CAMBIO",
+        "rule_type": "greater_than",
+        "value": 0,
+        "skip_if_missing": true,
+        "message": "El tipo de cambio debe ser mayor que cero cuando esté impreso"
+      },
+      {
+        "field": "TOTAL_INCREMENTABLES",
+        "rule_type": "custom_formula",
+        "formula": "SEGUROS + FLETES + EMBALAJES + OTROS_INCREMENTABLES",
+        "tolerance": 0.02,
+        "skip_if_missing": true,
+        "message": "El total de incrementables no coincide; VALOR_SEGUROS no debe sumarse"
+      },
+      {
+        "field": "TOTAL_DECREMENTABLES",
+        "rule_type": "custom_formula",
+        "formula": "TRANSPORTE_DECREMENTABLE + SEGURO_DECREMENTABLE + CARGA_DECREMENTABLE + DESCARGA_DECREMENTABLE + OTROS_DECREMENTABLES",
+        "tolerance": 0.02,
+        "skip_if_missing": true,
+        "message": "El total de decrementables no coincide con sus conceptos"
+      },
+      {
+        "field": "VALOR_ADUANA",
+        "rule_type": "custom_formula",
+        "formula": "VALOR_COMERCIAL_PESOS + TOTAL_INCREMENTABLES - TOTAL_DECREMENTABLES",
+        "tolerance": 5,
+        "skip_if_missing": true,
+        "message": "El valor en aduana no coincide con valor comercial más incrementables menos decrementables"
+      },
+      {
+        "field": "VALOR_DOLARES",
+        "rule_type": "custom_formula",
+        "formula": "VALOR_ADUANA / TIPO_CAMBIO",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El valor dólares no coincide aproximadamente con valor aduana dividido entre tipo de cambio"
+      },
+      {
+        "field": "VALOR_COMERCIAL_PESOS",
+        "rule_type": "custom_formula",
+        "formula": "SUM(FACTURAS.VALOR_DOLARES) * TIPO_CAMBIO",
+        "tolerance": 5,
+        "skip_if_missing": true,
+        "message": "El valor comercial no coincide con las facturas convertidas a pesos; aplicar solo si se extrajeron todas las facturas"
+      },
+      {
+        "field": "CUADRO_LIQUIDACION.TOTAL",
+        "rule_type": "sum_array",
+        "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El total del cuadro de liquidación no coincide con la suma de conceptos"
+      },
+      {
+        "field": "CUADRO_LIQUIDACION.TOTAL",
+        "rule_type": "custom_formula",
+        "formula": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO + CUADRO_LIQUIDACION.TOTAL_OTROS",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El total del cuadro de liquidación no coincide con efectivo más otros"
+      },
+      {
+        "field": "TOTAL_PEDIMENTO",
+        "rule_type": "equals_field",
+        "source": "CUADRO_LIQUIDACION.TOTAL",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "TOTAL_PEDIMENTO no coincide con CUADRO_LIQUIDACION.TOTAL"
+      },
+      {
+        "field": "IMPORTE_PAGADO",
+        "rule_type": "equals_field",
+        "source": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El importe pagado debe compararse con el total efectivo, no necesariamente con el total general"
+      },
+      {
+        "field": "PATENTE_PAGO",
+        "rule_type": "equals_field",
+        "source": "PATENTE",
+        "skip_if_missing": true,
+        "message": "La patente del bloque de pago no coincide con la patente del pedimento"
+      },
+      {
+        "field": "PEDIMENTO_PAGO",
+        "rule_type": "equals_field",
+        "source": "NUMERO_CONSECUTIVO",
+        "skip_if_missing": true,
+        "message": "El consecutivo del bloque de pago no coincide con el pedimento"
+      },
+      {
+        "field": "NUMERO_TOTAL_PARTIDAS",
+        "rule_type": "array_length",
+        "source": "PARTIDAS",
+        "skip_if_missing": true,
+        "message": "El número total de partidas no coincide con las partidas extraídas"
+      },
+      {
+        "field": "VALOR_ADUANA",
+        "rule_type": "sum_array",
+        "source": "PARTIDAS.VALOR_ADUANA",
+        "tolerance": 5,
+        "skip_if_missing": true,
+        "message": "La suma del valor en aduana de las partidas no coincide con el encabezado"
+      },
+      {
+        "field": "VALOR_COMERCIAL_PESOS",
+        "rule_type": "sum_array",
+        "source": "PARTIDAS.IMPORTE_PRECIO_PAGADO",
+        "tolerance": 5,
+        "skip_if_missing": true,
+        "message": "La suma del precio pagado de las partidas no coincide con el encabezado"
+      },
+      {
+        "field": "CLAVE_PREVALIDADOR",
+        "rule_type": "regex",
+        "pattern": "^\\d{3}$",
+        "skip_if_missing": true,
+        "message": "La clave del prevalidador debe contener 3 dígitos"
+      },
+      {
+        "field": "NUMERO_PAGINAS",
+        "rule_type": "greater_than",
+        "value": 0,
+        "skip_if_missing": true,
+        "message": "El número total de páginas debe ser mayor que cero"
+      },
+      {
+        "field": "PESO_BRUTO",
+        "rule_type": "greater_than",
+        "value": 0,
+        "skip_if_missing": true,
+        "message": "El peso bruto debe ser mayor que cero cuando esté impreso"
+      },
+      {
+        "field": "CUADRO_LIQUIDACION.TOTAL_CONCEPTOS",
+        "rule_type": "sum_array",
+        "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "TOTAL_CONCEPTOS no coincide con la suma de los conceptos normalizados del cuadro de liquidación"
+      },
+      {
+        "field": "CUADRO_LIQUIDACION.TOTAL",
+        "rule_type": "equals_field",
+        "source": "CUADRO_LIQUIDACION.TOTAL_CONCEPTOS",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El total impreso del cuadro de liquidación no coincide con TOTAL_CONCEPTOS"
+      },
+      {
+        "field": "LIQUIDACION_NORMALIZADA.TOTAL_CONCEPTOS",
+        "rule_type": "sum_array",
+        "source": "LIQUIDACION_NORMALIZADA.CONCEPTOS.IMPORTE_TOTAL",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El total de la liquidación normalizada no coincide con sus conceptos agrupados"
+      },
+      {
+        "field": "LIQUIDACION_NORMALIZADA.TOTAL",
+        "rule_type": "equals_field",
+        "source": "CUADRO_LIQUIDACION.TOTAL",
+        "tolerance": 1,
+        "skip_if_missing": true,
+        "message": "El total de la liquidación normalizada no coincide con el total impreso"
+      }
+    ],
+    "validator_module": "validators.customs.pedimento",
+    "custom_validator": null,
+    "business_destination": "PEDIMENTO",
+    "pipeline": "expediente",
+    "min_confidence": 0.8,
     "repeatable_fields": {
-      "DOCUMENTO.PAGINAS_DETECTADAS": [
+      "PAGINAS_DETECTADAS": [
         "NUMERO_PAGINA",
-        "TOTAL_PAGINAS_IMPRESO",
+        "TOTAL_PAGINAS",
         "TIPO_PAGINA",
-        "REFERENCIA",
-        "NUMERO_PEDIMENTO_NORMALIZADO"
+        "REFERENCIA_PEDIMENTO",
+        "NUMERO_PEDIMENTO_NORMALIZADO",
+        "ES_CONTINUACION",
+        "VALOR_CRUDO",
+        "CONFIANZA"
       ],
-      "FECHAS": [
-        "TIPO_FECHA",
-        "FECHA",
-        "VALOR_CRUDO"
-      ],
+      "FECHAS": ["TIPO_FECHA", "FECHA", "VALOR_CRUDO", "PAGINA"],
       "TASAS_NIVEL_PEDIMENTO": [
+        "ID_TASA",
+        "NUMERO_FILA",
         "CLAVE_CONTRIBUCION",
+        "CLAVE_CONTRIBUCION_CRUDA",
+        "CLAVE_CONTRIBUCION_NORMALIZADA",
         "DESCRIPCION",
         "CLAVE_TIPO_TASA",
         "TIPO_TASA_DESCRIPCION",
         "TASA",
+        "TASA_NUMERICA",
+        "TASA_TEXTO",
+        "UNIDAD_TASA",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
         "VALOR_CRUDO"
       ],
       "CUADRO_LIQUIDACION.CONCEPTOS": [
+        "ID_CONCEPTO",
+        "NUMERO_FILA_IMPRESA",
+        "LADO_TABLA",
+        "CLAVE_CONCEPTO",
         "CLAVE_CONCEPTO_CRUDA",
         "CLAVE_CONCEPTO_NORMALIZADA",
         "DESCRIPCION",
+        "TIPO_CONCEPTO",
+        "NIVEL",
         "FORMA_PAGO",
+        "FORMA_PAGO_CRUDA",
         "FORMA_PAGO_DESCRIPCION",
         "CLASIFICACION_PAGO",
         "IMPORTE",
-        "ORDEN"
+        "MONEDA",
+        "ID_TASA_NIVEL_PEDIMENTO",
+        "CLAVE_TIPO_TASA",
+        "TASA",
+        "TASA_TEXTO",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
       ],
-      "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO": [
+      "LIQUIDACION_NORMALIZADA.CONCEPTOS": [
         "CLAVE_CONCEPTO_NORMALIZADA",
         "DESCRIPCION",
         "IMPORTE_TOTAL",
-        "FORMAS_PAGO"
-      ],
-      "CUADRO_LIQUIDACION.POR_FORMA_PAGO": [
-        "FORMA_PAGO",
-        "DESCRIPCION",
-        "CLASIFICACION_PAGO",
-        "IMPORTE_TOTAL"
+        "FORMAS_PAGO",
+        "CONCEPTOS_ORIGEN"
       ],
       "PROVEEDORES_COMPRADORES": [
+        "TIPO_PARTE",
         "ID_FISCAL",
         "RFC_TAX_ID",
         "NOMBRE_RAZON_SOCIAL",
         "DOMICILIO_COMPLETO",
+        "CALLE",
+        "NUMERO_EXTERIOR",
+        "NUMERO_INTERIOR",
+        "COLONIA",
+        "CODIGO_POSTAL",
+        "CIUDAD_MUNICIPIO",
+        "ESTADO_PROVINCIA",
         "PAIS_CLAVE",
         "PAIS_NOMBRE",
         "VINCULACION",
-        "ORDEN"
+        "ORDEN",
+        "PAGINA"
       ],
       "DESTINATARIOS": [
+        "TIPO",
         "RFC_TAX_ID",
         "NOMBRE_RAZON_SOCIAL",
         "DOMICILIO_COMPLETO",
+        "CALLE",
+        "NUMERO_EXTERIOR",
+        "NUMERO_INTERIOR",
+        "COLONIA",
+        "CODIGO_POSTAL",
+        "CIUDAD_MUNICIPIO",
+        "ESTADO_PROVINCIA",
         "PAIS_CLAVE",
         "PAIS_NOMBRE",
-        "TIPO"
+        "FUENTE",
+        "PAGINA"
       ],
       "FACTURAS": [
         "NUMERO_FACTURA",
@@ -337,21 +619,54 @@
         "VALOR_MONEDA_EXTRANJERA",
         "FACTOR_MONEDA",
         "VALOR_DOLARES",
-        "COVE_EDOCUMENT",
-        "ID_FISCAL_PROVEEDOR_COMPRADOR",
-        "INDICE_PROVEEDOR_COMPRADOR",
-        "NOMBRE_PROVEEDOR_COMPRADOR",
-        "DOMICILIO_PROVEEDOR_COMPRADOR",
-        "PAIS_PROVEEDOR_COMPRADOR",
+        "COVE",
+        "EDOCUMENT",
+        "ID_FISCAL_PROVEEDOR",
+        "NOMBRE_PROVEEDOR",
+        "DOMICILIO_PROVEEDOR",
+        "PAIS_PROVEEDOR",
         "VINCULACION",
+        "INDICE_PROVEEDOR_COMPRADOR",
+        "ORDEN",
+        "PAGINA_INICIO",
+        "PAGINA_FIN",
+        "VALOR_CRUDO",
+        "NUMERO_RENGLON",
+        "TIPO_RENGLON",
+        "ES_CONTINUACION",
+        "PAGINA",
+        "CONFIANZA"
+      ],
+      "COVES_EDOCUMENTS": [
+        "TIPO",
+        "NUMERO",
+        "VINCULADO_A",
+        "INDICE_FACTURA",
+        "CLAVE_IDENTIFICADOR",
+        "PAGINA",
         "ORDEN"
       ],
       "GUIAS_DOCUMENTOS_TRANSPORTE": [
-        "NUMERO_DOCUMENTO",
         "TIPO_DOCUMENTO",
+        "NUMERO_DOCUMENTO",
         "IDENTIFICADOR",
+        "EMISOR",
+        "FECHA",
         "VALOR_CRUDO",
         "ORDEN"
+      ],
+      "CONTENEDORES": [
+        "NUMERO_CONTENEDOR",
+        "TIPO_CONTENEDOR",
+        "SELLO",
+        "SELLOS_ADICIONALES",
+        "VALOR_CRUDO",
+        "ORDEN",
+        "PARSEO_CONFIABLE",
+        "NUMERO_FILA",
+        "POSICION_EN_FILA",
+        "PAGINA",
+        "CONFIANZA"
       ],
       "EQUIPOS_TRANSPORTE": [
         "NUMERO_IDENTIFICACION",
@@ -363,20 +678,31 @@
         "ORDEN",
         "PARSEO_CONFIABLE"
       ],
-      "CANDADOS": [
-        "NUMERO_CANDADO",
-        "TIPO_CANDADO",
-        "ORDEN"
+      "CANDADOS_SELLOS": [
+        "NUMERO_CANDADO_SELLO",
+        "TIPO",
+        "EMISOR",
+        "EQUIPO_RELACIONADO",
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
-      "IDENTIFICADORES_PEDIMENTO": [
+      "IDENTIFICADORES": [
+        "NIVEL",
         "CLAVE_IDENTIFICADOR",
+        "COMPLEMENTO_IDENTIFICADOR",
+        "NUMERO_FILA",
+        "ES_CONTINUACION",
+        "CONFIANZA",
         "DESCRIPCION",
         "COMPLEMENTO_1",
         "COMPLEMENTO_2",
         "COMPLEMENTO_3",
-        "ORDEN"
+        "ORDEN",
+        "PAGINA",
+        "VALOR_CRUDO"
       ],
-      "CUENTAS_ADUANERAS_GARANTIA_PEDIMENTO": [
+      "CUENTAS_ADUANERAS_GARANTIA": [
+        "NIVEL",
         "TIPO_CUENTA",
         "CLAVE_GARANTIA",
         "INSTITUCION_EMISORA",
@@ -386,10 +712,11 @@
         "TOTAL_DEPOSITO",
         "SALDO_DISPONIBLE",
         "IMPORTE_GARANTIZADO",
-        "ORDEN"
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
       "DESCARGOS": [
-        "PATENTE_AUTORIZACION_ORIGINAL",
+        "PATENTE_ORIGINAL",
         "NUMERO_PEDIMENTO_ORIGINAL",
         "ADUANA_SECCION_ORIGINAL",
         "CLAVE_PEDIMENTO_ORIGINAL",
@@ -397,43 +724,55 @@
         "FRACCION_ARANCELARIA_ORIGINAL",
         "UNIDAD_MEDIDA",
         "CANTIDAD_DESCARGADA",
-        "ORDEN"
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
       "COMPENSACIONES": [
-        "PATENTE_AUTORIZACION_ORIGINAL",
+        "PATENTE_ORIGINAL",
         "NUMERO_PEDIMENTO_ORIGINAL",
         "ADUANA_SECCION_ORIGINAL",
         "FECHA_PAGO_ORIGINAL",
         "CLAVE_GRAVAMEN",
+        "FORMA_PAGO",
         "IMPORTE_COMPENSADO",
-        "ORDEN"
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
       "PEDIMENTOS_RELACIONADOS": [
         "TIPO_RELACION",
         "NUMERO_PEDIMENTO",
         "NUMERO_PEDIMENTO_NORMALIZADO",
+        "ANIO_PEDIMENTO",
+        "ADUANA",
+        "PATENTE",
+        "CONSECUTIVO",
         "CLAVE_PEDIMENTO",
         "FECHA_PAGO",
-        "ORDEN"
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
-      "RECTIFICACION.DIFERENCIAS_CONTRIBUCIONES": [
+      "DIFERENCIAS_CONTRIBUCIONES": [
         "CLAVE_CONTRIBUCION",
         "FORMA_PAGO",
         "IMPORTE_ORIGINAL",
         "IMPORTE_RECTIFICADO",
-        "DIFERENCIA"
+        "DIFERENCIA",
+        "ORDEN"
       ],
       "OBSERVACIONES": [
+        "TIPO",
         "TEXTO_COMPLETO",
         "PAGINA_INICIO",
         "PAGINA_FIN",
-        "TIPO"
+        "ORDEN"
       ],
       "PARTIDAS": [
         "NUMERO_PARTIDA",
+        "SECUENCIA_PARTIDA",
         "FRACCION_ARANCELARIA",
         "SUBDIVISION",
         "NICO",
+        "SUBDIVISION_NICO_CRUDO",
         "VINCULACION",
         "METODO_VALORACION",
         "UNIDAD_UMC",
@@ -441,56 +780,95 @@
         "UNIDAD_UMT",
         "CANTIDAD_UMT",
         "PAIS_VENDEDOR_COMPRADOR",
+        "PAIS_VENDEDOR_COMPRADOR_NOMBRE",
         "PAIS_ORIGEN_DESTINO",
+        "PAIS_ORIGEN_DESTINO_NOMBRE",
         "DESCRIPCION_MERCANCIA",
-        "VALOR_ADUANA_O_USD",
-        "MONEDA_VALOR_ADUANA_O_USD",
+        "DESCRIPCION_RENGLONES",
+        "VALOR_ADUANA_USD",
+        "VALOR_ADUANA_DOLARES_IMPRESO",
+        "VALOR_ADUANA_MXN",
+        "VALOR_DOLARES_PARTIDA",
+        "TIPO_VALOR_PRINCIPAL",
+        "VALOR_ADUANA",
+        "MONEDA_VALOR_ADUANA",
         "IMPORTE_PRECIO_PAGADO",
         "PRECIO_UNITARIO",
         "VALOR_AGREGADO",
         "MARCA",
         "MODELO",
         "CODIGO_PRODUCTO",
-        "CONTRIBUCIONES",
-        "PERMISOS_REGULACIONES",
-        "IDENTIFICADORES",
-        "CUENTAS_ADUANERAS_GARANTIA",
-        "DATOS_VEHICULO",
-        "DATOS_MERCANCIA_PELIGROSA",
+        "NUMERO_SERIE",
+        "LOTE",
+        "ESPECIE",
+        "CALIDAD",
+        "CONTRIBUCIONES_PARTIDA",
+        "PERMISOS_PARTIDA",
+        "IDENTIFICADORES_PARTIDA",
+        "CUENTAS_ADUANERAS_GARANTIA_PARTIDA",
+        "DATOS_VEHICULO_PARTIDA",
+        "DATOS_MERCANCIA_PELIGROSA_PARTIDA",
+        "GUIAS_PARTIDA",
         "OBSERVACIONES_PARTIDA",
         "PAGINA_INICIO",
         "PAGINA_FIN",
-        "ORDEN"
+        "PAGINAS",
+        "ES_CONTINUACION",
+        "PARTIDA_COMPLETA",
+        "CONFIANZA",
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
-      "PARTIDAS.CONTRIBUCIONES": [
+      "PARTIDAS.CONTRIBUCIONES_PARTIDA": [
         "CLAVE_CONTRIBUCION",
+        "ID_CONTRIBUCION",
+        "CLAVE_CONTRIBUCION_CRUDA",
+        "CLAVE_CONTRIBUCION_NORMALIZADA",
+        "NIVEL",
+        "PAGINA",
+        "CONFIANZA",
         "DESCRIPCION",
         "TASA",
+        "TASA_TEXTO",
         "CLAVE_TIPO_TASA",
         "TIPO_TASA_DESCRIPCION",
         "FORMA_PAGO",
         "FORMA_PAGO_DESCRIPCION",
         "IMPORTE",
-        "ORDEN"
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
-      "PARTIDAS.PERMISOS_REGULACIONES": [
+      "PARTIDAS.PERMISOS_PARTIDA": [
         "CLAVE_PERMISO",
         "DESCRIPCION",
+        "TIPO_REGULACION",
+        "PAIS_EMISOR",
+        "PAGINA",
+        "CONFIANZA",
         "NUMERO_PERMISO_NOM",
         "FIRMA_DESCARGO",
         "VALOR_COMERCIAL_DOLARES",
         "CANTIDAD_UMT_C",
-        "ORDEN"
+        "EDOCUMENT",
+        "FECHA_VIGENCIA",
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
-      "PARTIDAS.IDENTIFICADORES": [
+      "PARTIDAS.IDENTIFICADORES_PARTIDA": [
         "CLAVE_IDENTIFICADOR",
+        "COMPLEMENTO_IDENTIFICADOR",
+        "PAGINA_INICIO",
+        "PAGINA_FIN",
+        "ES_CONTINUACION",
+        "CONFIANZA",
         "DESCRIPCION",
         "COMPLEMENTO_1",
         "COMPLEMENTO_2",
         "COMPLEMENTO_3",
-        "ORDEN"
+        "ORDEN",
+        "VALOR_CRUDO"
       ],
-      "PARTIDAS.CUENTAS_ADUANERAS_GARANTIA": [
+      "PARTIDAS.CUENTAS_ADUANERAS_GARANTIA_PARTIDA": [
         "INSTITUCION_EMISORA",
         "NUMERO_CUENTA_CONTRATO",
         "FOLIO_CONSTANCIA",
@@ -498,703 +876,365 @@
         "CLAVE_GARANTIA",
         "VALOR_UNITARIO_TITULO",
         "IMPORTE_TOTAL_GARANTIA",
-        "CANTIDAD_UMC"
+        "CANTIDAD_UMC",
+        "VALOR_CRUDO"
       ],
-      "PARTIDAS.DATOS_VEHICULO": [
+      "PARTIDAS.DATOS_VEHICULO_PARTIDA": [
         "VIN_NUMERO_SERIE",
         "KILOMETRAJE",
         "MARCA",
         "MODELO",
         "ANIO_MODELO",
-        "COLOR"
+        "COLOR",
+        "TIPO_VEHICULO",
+        "VALOR_CRUDO"
       ],
-      "PARTIDAS.DATOS_MERCANCIA_PELIGROSA": [
+      "PARTIDAS.DATOS_MERCANCIA_PELIGROSA_PARTIDA": [
         "NUMERO_ONU",
         "CLASE_DIVISION",
         "GRUPO_EMBALAJE",
-        "DESCRIPCION"
+        "DESCRIPCION",
+        "CANTIDAD",
+        "UNIDAD",
+        "VALOR_CRUDO"
       ],
-      "FIRMAS_CERTIFICACIONES.CERTIFICACIONES": [
-        "TIPO",
-        "TEXTO",
-        "FECHA",
-        "FOLIO",
-        "PAGINA"
+      "PARTIDAS.GUIAS_PARTIDA": [
+        "TIPO_DOCUMENTO",
+        "NUMERO_DOCUMENTO",
+        "ORDEN",
+        "VALOR_CRUDO"
+      ],
+      "PARTIDAS.OBSERVACIONES_PARTIDA": [
+        "TEXTO_COMPLETO",
+        "ORDEN",
+        "PAGINA_INICIO",
+        "PAGINA_FIN"
       ],
       "OTROS_BLOQUES_DOCUMENTO": [
         "TITULO",
         "CAMPOS",
         "TEXTO_CRUDO",
         "PAGINA_INICIO",
-        "PAGINA_FIN"
+        "PAGINA_FIN",
+        "ORDEN"
       ],
       "METADATOS_EXTRACCION.CAMPOS": [
+        "CAMPO",
         "PATH",
         "VALOR_CRUDO",
+        "VALOR_NORMALIZADO",
         "PAGINA",
         "CONFIANZA",
         "METODO",
-        "BBOX"
+        "BBOX",
+        "ADVERTENCIAS"
+      ],
+      "CONTRIBUCIONES": [
+        "NIVEL",
+        "NUMERO_PARTIDA",
+        "CLAVE_CONTRIBUCION",
+        "DESCRIPCION",
+        "CLAVE_TIPO_TASA",
+        "TIPO_TASA_DESCRIPCION",
+        "TASA",
+        "TASA_TEXTO",
+        "FORMA_PAGO",
+        "FORMA_PAGO_DESCRIPCION",
+        "IMPORTE",
+        "FUENTE",
+        "ORDEN",
+        "VALOR_CRUDO"
+      ],
+      "CUADRO_LIQUIDACION.FILAS_IMPRESAS": [
+        "NUMERO_FILA",
+        "CONCEPTO_IZQUIERDA",
+        "FORMA_PAGO_IZQUIERDA",
+        "IMPORTE_IZQUIERDA",
+        "CONCEPTO_DERECHA",
+        "FORMA_PAGO_DERECHA",
+        "IMPORTE_DERECHA",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "CUADRO_LIQUIDACION.TOTALES": [
+        "TIPO_TOTAL",
+        "ETIQUETA_CRUDA",
+        "IMPORTE",
+        "MONEDA",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "CUADRO_LIQUIDACION.POR_FORMA_PAGO": [
+        "FORMA_PAGO",
+        "FORMA_PAGO_DESCRIPCION",
+        "CLASIFICACION_PAGO",
+        "IMPORTE_TOTAL",
+        "CANTIDAD_CONCEPTOS",
+        "CONCEPTOS_ORIGEN"
+      ],
+      "TASAS_LIQUIDACION_VINCULADAS": [
+        "ID_VINCULO",
+        "ID_TASA_NIVEL_PEDIMENTO",
+        "ID_CONCEPTO_LIQUIDACION",
+        "CLAVE_CONTRIBUCION",
+        "CLAVE_CONCEPTO_LIQUIDACION",
+        "CLAVE_TIPO_TASA",
+        "TASA",
+        "TASA_TEXTO",
+        "FORMA_PAGO",
+        "IMPORTE",
+        "FUENTE_TASA",
+        "FUENTE_IMPORTE",
+        "TIPO_VINCULO",
+        "CONFIANZA",
+        "ADVERTENCIA"
+      ],
+      "FACTURAS_FILAS_IMPRESAS": [
+        "NUMERO_FILA",
+        "NUMERO_FACTURA",
+        "FECHA",
+        "INCOTERM",
+        "MONEDA",
+        "VALOR_MONEDA_FACTURA",
+        "FACTOR_MONEDA_FACTURA",
+        "VALOR_DOLARES",
+        "COVE_EDOCUMENT_RENGLON_INFERIOR",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "CONTENEDORES_FILAS_IMPRESAS": [
+        "NUMERO_FILA",
+        "PARES_NUMERO_TIPO",
+        "TOKENS_CRUDOS",
+        "CANTIDAD_PARES_ESPERADOS",
+        "PAGINA",
+        "ORDEN",
+        "PARSEO_CONFIABLE",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "IDENTIFICADORES_FILAS_IMPRESAS": [
+        "NUMERO_FILA",
+        "CLAVE_O_COMPLEMENTO_IDENTIFICADOR",
+        "COMPLEMENTO_1",
+        "COMPLEMENTO_2",
+        "COMPLEMENTO_3",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "PARTIDAS_FILAS_IMPRESAS": [
+        "NUMERO_PARTIDA",
+        "TIPO_FILA",
+        "COLUMNAS",
+        "PAGINA",
+        "ORDEN_EN_PARTIDA",
+        "ES_CONTINUACION",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "CERTIFICACIONES": [
+        "TIPO_CERTIFICACION",
+        "TEXTO_COMPLETO",
+        "FOLIO",
+        "FECHA",
+        "EMISOR",
+        "SELLO_CADENA",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "DOCUMENTOS_DIGITALIZADOS": [
+        "TIPO_DOCUMENTO",
+        "NUMERO_DOCUMENTO",
+        "FECHA_DOCUMENTO",
+        "COVE_EDOCUMENT",
+        "TIENE_INCREMENTABLES",
+        "RELACION",
+        "FUENTE",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "REGULACIONES_RESTRICCIONES": [
+        "TIPO_REGULACION",
+        "CLAVE",
+        "NUMERO_DOCUMENTO",
+        "AUTORIDAD",
+        "ESTATUS",
+        "DESCRIPCION",
+        "MERCANCIA_RELACIONADA",
+        "NUMERO_PARTIDA",
+        "FUENTE",
+        "PAGINA",
+        "ORDEN",
+        "CONFIANZA",
+        "VALOR_CRUDO"
+      ],
+      "CONSOLIDACION.REMESAS": [
+        "NUMERO_REMESA",
+        "FECHA",
+        "DOCUMENTO_RELACIONADO",
+        "VALOR",
+        "MONEDA",
+        "ORDEN",
+        "VALOR_CRUDO"
+      ],
+      "TABLAS_DETECTADAS": [
+        "NOMBRE_TABLA",
+        "PAGINA_INICIO",
+        "PAGINA_FIN",
+        "ENCABEZADOS_DETECTADOS",
+        "NUMERO_FILAS",
+        "CONTINUA_EN_SIGUIENTE_PAGINA",
+        "TABLA_COMPLETA",
+        "BBOX",
+        "CONFIANZA",
+        "ADVERTENCIAS"
+      ],
+      "LIQUIDACION_NORMALIZADA.POR_FORMA_PAGO": [
+        "FORMA_PAGO",
+        "FORMA_PAGO_DESCRIPCION",
+        "CLASIFICACION_PAGO",
+        "IMPORTE_TOTAL",
+        "CANTIDAD_CONCEPTOS",
+        "CONCEPTOS_ORIGEN"
+      ],
+      "LIQUIDACION_NORMALIZADA.CONCEPTOS_NO_CATALOGADOS": [
+        "CLAVE_CONCEPTO_CRUDA",
+        "DESCRIPCION",
+        "FORMA_PAGO",
+        "IMPORTE",
+        "PAGINA",
+        "ORDEN",
+        "VALOR_CRUDO"
       ]
     },
-    "field_specs": {
-      "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO": {
-        "type": "string",
-        "pattern": "^\\d{15}$"
+    "structured_fields": {
+      "CUADRO_LIQUIDACION": {
+        "FILAS_IMPRESAS": [],
+        "CONCEPTOS": [],
+        "TOTALES": [],
+        "POR_FORMA_PAGO": [],
+        "MONEDA": "MXN",
+        "TOTAL_CONCEPTOS": null,
+        "TOTAL_EFECTIVO": null,
+        "TOTAL_OTROS": null,
+        "TOTAL": null,
+        "DIFERENCIA_CONCEPTOS_TOTAL": null,
+        "DIFERENCIA_EFECTIVO_OTROS_TOTAL": null,
+        "TABLA_COMPLETA": null
       },
-      "ENCABEZADO.ANIO_VALIDACION": {
-        "type": "string",
-        "pattern": "^\\d{2}$"
+      "LIQUIDACION_NORMALIZADA": {
+        "CONCEPTOS": [],
+        "POR_FORMA_PAGO": [],
+        "CONCEPTOS_NO_CATALOGADOS": [],
+        "DTA": null,
+        "IGI": null,
+        "PRV": null,
+        "ECI": null,
+        "MT": null,
+        "CC": null,
+        "REC": null,
+        "IVA": null,
+        "IVA_PRV": null,
+        "IEPS_8": null,
+        "IEPS_25_CAFEINA": null,
+        "IEPS_26_5": null,
+        "IEPS_30": null,
+        "IEPS_50": null,
+        "OTROS_IEPS": null,
+        "FORMA_PAGO_IEPS": null,
+        "TOTAL_EFECTIVO": null,
+        "TOTAL_OTROS": null,
+        "TOTAL": null,
+        "TOTAL_CONCEPTOS": null,
+        "DIFERENCIA_TOTAL": null
       },
-      "ENCABEZADO.ADUANA_DESPACHO": {
-        "type": "string",
-        "pattern": "^\\d{2}$"
+      "TRANSPORTISTA": {
+        "IDENTIFICACION_TRANSPORTE": null,
+        "PAIS": null,
+        "RFC": null,
+        "CURP": null,
+        "NOMBRE_RAZON_SOCIAL": null,
+        "DOMICILIO_COMPLETO": null,
+        "CALLE": null,
+        "NUMERO_EXTERIOR": null,
+        "NUMERO_INTERIOR": null,
+        "COLONIA": null,
+        "CODIGO_POSTAL": null,
+        "CIUDAD_MUNICIPIO": null,
+        "ESTADO": null
       },
-      "ENCABEZADO.PATENTE_AUTORIZACION": {
-        "type": "string",
-        "pattern": "^\\d{4}$"
+      "VEHICULO_TRANSPORTE": {
+        "PLACAS": null,
+        "PAIS_PLACAS": null,
+        "NUMERO_SERIE_VIN": null,
+        "MODELO": null,
+        "ANIO_MODELO": null,
+        "NUMERO_ECONOMICO": null,
+        "TIPO": null
       },
-      "ENCABEZADO.NUMERO_CONSECUTIVO": {
-        "type": "string",
-        "pattern": "^\\d{7}$"
+      "RECTIFICACION": {
+        "ES_RECTIFICACION": false,
+        "NUMERO_PEDIMENTO_ORIGINAL": null,
+        "NUMERO_PEDIMENTO_ORIGINAL_NORMALIZADO": null,
+        "CLAVE_PEDIMENTO_ORIGINAL": null,
+        "FECHA_PAGO_ORIGINAL": null,
+        "MOTIVO_RECTIFICACION": null,
+        "DIFERENCIAS_CONTRIBUCIONES": []
       },
-      "ENCABEZADO.TIPO_OPERACION": {
-        "type": "string",
-        "allowed_examples": [
-          "IMP",
-          "EXP"
-        ]
+      "CONSOLIDACION": {
+        "ES_CONSOLIDADO": false,
+        "NUMERO_AVISO_CONSOLIDADO": null,
+        "PERIODO_INICIO": null,
+        "PERIODO_FIN": null,
+        "TOTAL_REMESAS": null,
+        "REMESAS": []
       },
-      "ENCABEZADO.CLAVE_PEDIMENTO": {
-        "type": "string",
-        "pattern": "^[A-Z0-9]{2,3}$"
+      "AGENTE_ADUANAL": {
+        "TIPO_FIGURA": null,
+        "PATENTE_AUTORIZACION": null,
+        "RFC": null,
+        "CURP": null,
+        "NOMBRE_RAZON_SOCIAL": null,
+        "DOMICILIO_COMPLETO": null,
+        "NUMERO_SERIE_CERTIFICADO": null,
+        "FIRMA_ELECTRONICA": null
       },
-      "ENCABEZADO.TIPO_CAMBIO": {
-        "type": "number",
-        "exclusiveMinimum": 0
+      "METADATOS_EXTRACCION": {
+        "CAMPOS": [],
+        "ADVERTENCIAS": [],
+        "ERRORES_LECTURA": [],
+        "BLOQUES_NO_CLASIFICADOS": [],
+        "PAGINAS_FALTANTES": [],
+        "DOCUMENTO_COMPLETO": null,
+        "CONFIANZA_GLOBAL": null,
+        "TABLAS": [],
+        "FILAS_AMBIGUAS": [],
+        "CELDAS_NO_ASIGNADAS": []
       },
-      "IMPORTADOR_EXPORTADOR.RFC": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+      "CANDADO_FISCAL": {
+        "ESTATUS": null,
+        "PRESENTE": null,
+        "LEYENDA_SIN_CANDADO": null,
+        "MOTIVO": null,
+        "NUMEROS_CANDADO_SELLO": [],
+        "EQUIPO_RELACIONADO": null,
+        "PAGINA": null,
+        "VALOR_CRUDO": null
       },
-      "IMPORTADOR_EXPORTADOR.CURP": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "pattern": "^[A-Z][AEIOUX][A-Z]{2}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$"
-      },
-      "FACTURAS[].FECHA_FACTURA": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "format": "date"
-      },
-      "PARTIDAS[].FRACCION_ARANCELARIA": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "pattern": "^\\d{8}$"
-      },
-      "PARTIDAS[].NICO": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "pattern": "^\\d{2}$"
-      },
-      "PAGO_ELECTRONICO.FECHA_PAGO": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "format": "date"
-      },
-      "RESUMEN_PEDIMENTO.CLAVE_PREVALIDADOR": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "pattern": "^\\d{3}$"
-      }
-    },
-    "legacy_aliases": {
-      "REFERENCIA_PEDIMENTO": "DOCUMENTO.REFERENCIA",
-      "NUMERO_PEDIMENTO": "ENCABEZADO.NUMERO_PEDIMENTO_IMPRESO",
-      "NUMERO_PEDIMENTO_NORMALIZADO": "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO",
-      "ANIO_PEDIMENTO": "ENCABEZADO.ANIO_VALIDACION",
-      "ADUANA_DESPACHO": "ENCABEZADO.ADUANA_DESPACHO",
-      "PATENTE": "ENCABEZADO.PATENTE_AUTORIZACION",
-      "NUMERO_CONSECUTIVO": "ENCABEZADO.NUMERO_CONSECUTIVO",
-      "TIPO_OPERACION": "ENCABEZADO.TIPO_OPERACION",
-      "CLAVE_PEDIMENTO": "ENCABEZADO.CLAVE_PEDIMENTO",
-      "REGIMEN_ADUANERO": "ENCABEZADO.REGIMEN",
-      "DESTINO_ORIGEN": "ENCABEZADO.DESTINO_ORIGEN",
-      "TIPO_CAMBIO": "ENCABEZADO.TIPO_CAMBIO",
-      "PESO_BRUTO": "ENCABEZADO.PESO_BRUTO",
-      "ADUANA_E_S": "ENCABEZADO.ADUANA_ENTRADA_SALIDA",
-      "VALOR_DOLARES": "VALORES.VALOR_DOLARES",
-      "VALOR_ADUANA": "VALORES.VALOR_ADUANA_MXN",
-      "VALOR_COMERCIAL_PESOS": "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN",
-      "PRECIO_PAGADO_VALOR_COMERCIAL": "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN",
-      "RFC_IMPORTADOR_EXPORTADOR": "IMPORTADOR_EXPORTADOR.RFC",
-      "NOMBRE_IMPORTADOR_EXPORTADOR": "IMPORTADOR_EXPORTADOR.NOMBRE_RAZON_SOCIAL",
-      "CURP_IMPORTADOR_EXPORTADOR": "IMPORTADOR_EXPORTADOR.CURP",
-      "DOMICILIO_IMPORTADOR_EXPORTADOR": "IMPORTADOR_EXPORTADOR.DOMICILIO_COMPLETO",
-      "VALOR_SEGUROS": "VALORES.INCREMENTABLES.VALOR_SEGUROS_MXN",
-      "SEGUROS": "VALORES.INCREMENTABLES.SEGUROS_MXN",
-      "FLETES": "VALORES.INCREMENTABLES.FLETES_MXN",
-      "EMBALAJES": "VALORES.INCREMENTABLES.EMBALAJES_MXN",
-      "OTROS_INCREMENTABLES": "VALORES.INCREMENTABLES.OTROS_INCREMENTABLES_MXN",
-      "TOTAL_INCREMENTABLES": "VALORES.INCREMENTABLES.TOTAL_INCREMENTABLES_MXN",
-      "TRANSPORTE_DECREMENTABLE": "VALORES.DECREMENTABLES.TRANSPORTE_MXN",
-      "SEGURO_DECREMENTABLE": "VALORES.DECREMENTABLES.SEGUROS_MXN",
-      "CARGA_DECREMENTABLE": "VALORES.DECREMENTABLES.CARGA_MXN",
-      "DESCARGA_DECREMENTABLE": "VALORES.DECREMENTABLES.DESCARGA_MXN",
-      "OTROS_DECREMENTABLES": "VALORES.DECREMENTABLES.OTROS_DECREMENTABLES_MXN",
-      "TOTAL_DECREMENTABLES": "VALORES.DECREMENTABLES.TOTAL_DECREMENTABLES_MXN",
-      "CODIGO_ACEPTACION": "ENCABEZADO.CODIGO_ACEPTACION",
-      "MARCAS_NUMEROS_TOTAL_BULTOS": "ENCABEZADO.MARCAS_NUMEROS_TOTAL_BULTOS",
-      "TOTAL_EFECTIVO": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO",
-      "TOTAL_OTROS": "CUADRO_LIQUIDACION.TOTAL_OTROS",
-      "TOTAL_PEDIMENTO": "CUADRO_LIQUIDACION.TOTAL",
-      "LINEA_CAPTURA": "PAGO_ELECTRONICO.LINEA_CAPTURA",
-      "BANCO": "PAGO_ELECTRONICO.BANCO",
-      "OPERACION_BANCARIA": "PAGO_ELECTRONICO.NUMERO_OPERACION_BANCARIA",
-      "TRANSACCION_SAT": "PAGO_ELECTRONICO.NUMERO_TRANSACCION_SAT",
-      "IMPORTE_PAGADO": "PAGO_ELECTRONICO.IMPORTE_PAGADO",
-      "IDENTIFICADORES": "IDENTIFICADORES_PEDIMENTO",
-      "CONTENEDORES": "EQUIPOS_TRANSPORTE",
-      "NUMERO_TOTAL_PARTIDAS": "RESUMEN_PEDIMENTO.NUMERO_TOTAL_PARTIDAS",
-      "CLAVE_PREVALIDADOR": "RESUMEN_PEDIMENTO.CLAVE_PREVALIDADOR",
-      "NUMERO_SERIE_CERTIFICADO": "FIRMAS_CERTIFICACIONES.NUMERO_SERIE_CERTIFICADO",
-      "FIRMA_ELECTRONICA": "FIRMAS_CERTIFICACIONES.E_FIRMA"
-    },
-    "derived_fields": {
-      "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO": {
-        "source_type": "DERIVED",
-        "formula": "ENCABEZADO.ANIO_VALIDACION + ENCABEZADO.ADUANA_DESPACHO + ENCABEZADO.PATENTE_AUTORIZACION + ENCABEZADO.NUMERO_CONSECUTIVO",
-        "derive_only_if_all_sources_present": true
-      },
-      "VALORES.INCREMENTABLES.TOTAL_INCREMENTABLES_MXN": {
-        "source_type": "DERIVED",
-        "formula": "SEGUROS_MXN + FLETES_MXN + EMBALAJES_MXN + OTROS_INCREMENTABLES_MXN",
-        "important": "VALOR_SEGUROS_MXN es informativo y NO se suma como incrementable."
-      },
-      "VALORES.DECREMENTABLES.TOTAL_DECREMENTABLES_MXN": {
-        "source_type": "DERIVED",
-        "formula": "TRANSPORTE_MXN + SEGUROS_MXN + CARGA_MXN + DESCARGA_MXN + OTROS_DECREMENTABLES_MXN"
-      },
-      "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO": {
-        "source_type": "DERIVED",
-        "formula": "GROUP_BY(CUADRO_LIQUIDACION.CONCEPTOS, CLAVE_CONCEPTO_NORMALIZADA, SUM(IMPORTE))",
-        "preserve_unknown_codes": true
-      },
-      "CUADRO_LIQUIDACION.POR_FORMA_PAGO": {
-        "source_type": "DERIVED",
-        "formula": "GROUP_BY(CUADRO_LIQUIDACION.CONCEPTOS, FORMA_PAGO, SUM(IMPORTE))",
-        "lookup": "catalogo_formas_pago_apendice_13"
-      },
-      "RESUMEN_PEDIMENTO.TOTAL_FACTURAS": {
-        "source_type": "DERIVED",
-        "formula": "LENGTH(FACTURAS)"
-      },
-      "RESUMEN_PEDIMENTO.TOTAL_PROVEEDORES_COMPRADORES": {
-        "source_type": "DERIVED",
-        "formula": "LENGTH(PROVEEDORES_COMPRADORES)"
-      },
-      "RESUMEN_PEDIMENTO.TOTAL_IDENTIFICADORES_PEDIMENTO": {
-        "source_type": "DERIVED",
-        "formula": "LENGTH(IDENTIFICADORES_PEDIMENTO)"
-      },
-      "RESUMEN_PEDIMENTO.TOTAL_EQUIPOS_TRANSPORTE": {
-        "source_type": "DERIVED",
-        "formula": "LENGTH(EQUIPOS_TRANSPORTE)"
-      }
-    },
-    "concept_normalization": {
-      "keep_raw_and_normalized": true,
-      "aliases": {
-        "IGI/IGE": "IGI_IGE",
-        "IGE": "IGI_IGE",
-        "IGI": "IGI_IGE",
-        "IVA PRV": "IVA_PRV",
-        "IVA/PRV": "IVA_PRV",
-        "PRV": "PRV",
-        "DTA": "DTA",
-        "IVA": "IVA",
-        "IEPS": "IEPS",
-        "CC": "CUOTA_COMPENSATORIA",
-        "REC": "RECARGOS",
-        "MT": "MEDIDA_TRANSICION",
-        "ECI": "ECI"
-      },
-      "rule": "No convertir IVA PRV a IVA ordinario en almacenamiento canónico. La capa de mapeo al formulario puede sumar o redirigir conceptos según la regla de negocio."
-    },
-    "field_requirements": {
-      "always_required": [
-        "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO",
-        "ENCABEZADO.ANIO_VALIDACION",
-        "ENCABEZADO.ADUANA_DESPACHO",
-        "ENCABEZADO.PATENTE_AUTORIZACION",
-        "ENCABEZADO.NUMERO_CONSECUTIVO",
-        "ENCABEZADO.TIPO_OPERACION",
-        "ENCABEZADO.CLAVE_PEDIMENTO",
-        "IMPORTADOR_EXPORTADOR.RFC",
-        "IMPORTADOR_EXPORTADOR.NOMBRE_RAZON_SOCIAL",
-        "AGENTE_ADUANAL.PATENTE_AUTORIZACION"
-      ],
-      "conditionally_required": [
-        {
-          "when": "ENCABEZADO.TIPO_OPERACION_NORMALIZADO IN ['IMPORTACION','EXPORTACION'] AND ENCABEZADO.CLAVE_PEDIMENTO IS NOT NULL",
-          "fields": [
-            "ENCABEZADO.REGIMEN",
-            "ENCABEZADO.DESTINO_ORIGEN"
-          ]
-        },
-        {
-          "when": "VALORES block is printed",
-          "fields": [
-            "VALORES.VALOR_DOLARES",
-            "VALORES.VALOR_ADUANA_MXN",
-            "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN"
-          ]
-        },
-        {
-          "when": "CUADRO DE LIQUIDACION block is printed",
-          "fields": [
-            "CUADRO_LIQUIDACION.CONCEPTOS",
-            "CUADRO_LIQUIDACION.TOTAL"
-          ]
-        },
-        {
-          "when": "DEPOSITO REFERENCIADO - LINEA DE CAPTURA block is printed",
-          "fields": [
-            "PAGO_ELECTRONICO.LINEA_CAPTURA",
-            "PAGO_ELECTRONICO.IMPORTE_PAGADO",
-            "PAGO_ELECTRONICO.FECHA_PAGO"
-          ]
-        },
-        {
-          "when": "FIN DE PEDIMENTO contains NUM. TOTAL PARTIDAS",
-          "fields": [
-            "RESUMEN_PEDIMENTO.NUMERO_TOTAL_PARTIDAS",
-            "PARTIDAS"
-          ]
-        },
-        {
-          "when": "FACTURAS are printed in the pedimento or annex",
-          "fields": [
-            "FACTURAS"
-          ]
-        }
-      ]
-    },
-    "validation_rules": [
-      {
-        "id": "PED-001",
-        "field": "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO",
-        "rule_type": "regex",
-        "pattern": "^\\d{15}$",
-        "severity": "ERROR",
-        "skip_if_missing": false,
-        "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos."
-      },
-      {
-        "id": "PED-002",
-        "field": "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO",
-        "rule_type": "custom_formula",
-        "requires": [
-          "ENCABEZADO.ANIO_VALIDACION",
-          "ENCABEZADO.ADUANA_DESPACHO",
-          "ENCABEZADO.PATENTE_AUTORIZACION",
-          "ENCABEZADO.NUMERO_CONSECUTIVO"
-        ],
-        "formula": "ANIO_VALIDACION + ADUANA_DESPACHO + PATENTE_AUTORIZACION + NUMERO_CONSECUTIVO",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El número normalizado no coincide con sus cuatro componentes."
-      },
-      {
-        "id": "PED-003",
-        "field": "IMPORTADOR_EXPORTADOR.RFC",
-        "rule_type": "regex",
-        "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El RFC del importador/exportador no tiene un formato válido."
-      },
-      {
-        "id": "PED-004",
-        "field": "AGENTE_ADUANAL.RFC",
-        "rule_type": "regex",
-        "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El RFC del agente o agencia aduanal no tiene un formato válido."
-      },
-      {
-        "id": "PED-005",
-        "field": "ENCABEZADO.TIPO_CAMBIO",
-        "rule_type": "greater_than",
-        "value": 0,
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El tipo de cambio debe ser mayor que cero cuando el campo está impreso."
-      },
-      {
-        "id": "PED-006",
-        "field": "VALORES.INCREMENTABLES.TOTAL_INCREMENTABLES_MXN",
-        "rule_type": "custom_formula",
-        "requires": [
-          "VALORES.INCREMENTABLES.SEGUROS_MXN",
-          "VALORES.INCREMENTABLES.FLETES_MXN",
-          "VALORES.INCREMENTABLES.EMBALAJES_MXN",
-          "VALORES.INCREMENTABLES.OTROS_INCREMENTABLES_MXN"
-        ],
-        "formula": "SEGUROS_MXN + FLETES_MXN + EMBALAJES_MXN + OTROS_INCREMENTABLES_MXN",
-        "exclude_fields": [
-          "VALORES.INCREMENTABLES.VALOR_SEGUROS_MXN"
-        ],
-        "tolerance": 0.02,
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El total de incrementables no coincide. VALOR SEGUROS no debe sumarse."
-      },
-      {
-        "id": "PED-007",
-        "field": "VALORES.DECREMENTABLES.TOTAL_DECREMENTABLES_MXN",
-        "rule_type": "custom_formula",
-        "requires": [
-          "VALORES.DECREMENTABLES.TRANSPORTE_MXN",
-          "VALORES.DECREMENTABLES.SEGUROS_MXN",
-          "VALORES.DECREMENTABLES.CARGA_MXN",
-          "VALORES.DECREMENTABLES.DESCARGA_MXN",
-          "VALORES.DECREMENTABLES.OTROS_DECREMENTABLES_MXN"
-        ],
-        "formula": "TRANSPORTE_MXN + SEGUROS_MXN + CARGA_MXN + DESCARGA_MXN + OTROS_DECREMENTABLES_MXN",
-        "tolerance": 0.02,
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El total de decrementables no coincide con sus conceptos."
-      },
-      {
-        "id": "PED-008",
-        "field": "VALORES.VALOR_ADUANA_MXN",
-        "rule_type": "custom_formula",
-        "requires": [
-          "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN",
-          "VALORES.INCREMENTABLES.TOTAL_INCREMENTABLES_MXN",
-          "VALORES.DECREMENTABLES.TOTAL_DECREMENTABLES_MXN"
-        ],
-        "formula": "PRECIO_PAGADO_VALOR_COMERCIAL_MXN + TOTAL_INCREMENTABLES_MXN - TOTAL_DECREMENTABLES_MXN",
-        "tolerance_mode": "max",
-        "tolerance": 2.0,
-        "relative_tolerance": 0.0001,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El valor en aduana no coincide con el valor comercial más incrementables menos decrementables; revisar régimen, redondeos o lectura."
-      },
-      {
-        "id": "PED-009",
-        "field": "VALORES.VALOR_DOLARES",
-        "rule_type": "custom_formula",
-        "requires": [
-          "VALORES.VALOR_ADUANA_MXN",
-          "ENCABEZADO.TIPO_CAMBIO"
-        ],
-        "formula": "VALOR_ADUANA_MXN / TIPO_CAMBIO",
-        "tolerance_mode": "max",
-        "tolerance": 1.0,
-        "relative_tolerance": 0.001,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El valor dólares no coincide aproximadamente con valor aduana dividido entre tipo de cambio."
-      },
-      {
-        "id": "PED-010",
-        "field": "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN",
-        "rule_type": "custom_formula",
-        "when": "FACTURAS are complete and every FACTURA.VALOR_DOLARES is present",
-        "requires": [
-          "FACTURAS",
-          "ENCABEZADO.TIPO_CAMBIO"
-        ],
-        "formula": "SUM(FACTURAS.VALOR_DOLARES) * TIPO_CAMBIO",
-        "tolerance_mode": "max",
-        "tolerance": 2.0,
-        "relative_tolerance": 0.001,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El valor comercial no coincide con la suma de facturas en dólares convertida a pesos."
-      },
-      {
-        "id": "PED-011",
-        "field": "CUADRO_LIQUIDACION.TOTAL",
-        "rule_type": "sum_array",
-        "source": "CUADRO_LIQUIDACION.CONCEPTOS[].IMPORTE",
-        "tolerance": 1.0,
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El total del cuadro de liquidación no coincide con la suma de los conceptos."
-      },
-      {
-        "id": "PED-012",
-        "field": "CUADRO_LIQUIDACION.TOTAL",
-        "rule_type": "custom_formula",
-        "requires": [
-          "CUADRO_LIQUIDACION.TOTAL_EFECTIVO",
-          "CUADRO_LIQUIDACION.TOTAL_OTROS"
-        ],
-        "formula": "TOTAL_EFECTIVO + TOTAL_OTROS",
-        "tolerance": 1.0,
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El total del cuadro de liquidación no coincide con efectivo más otros."
-      },
-      {
-        "id": "PED-013",
-        "field": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO",
-        "rule_type": "catalog_group_sum",
-        "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-        "catalog": "catalogo_formas_pago_apendice_13",
-        "group": "EFECTIVO",
-        "value_field": "IMPORTE",
-        "tolerance": 1.0,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El total efectivo no coincide con los conceptos clasificados como efectivo por la forma de pago."
-      },
-      {
-        "id": "PED-014",
-        "field": "CUADRO_LIQUIDACION.TOTAL_OTROS",
-        "rule_type": "catalog_group_sum",
-        "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-        "catalog": "catalogo_formas_pago_apendice_13",
-        "group": "OTROS",
-        "value_field": "IMPORTE",
-        "tolerance": 1.0,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El total otros no coincide con los conceptos clasificados como otras formas de pago."
-      },
-      {
-        "id": "PED-015",
-        "field": "PAGO_ELECTRONICO.IMPORTE_PAGADO",
-        "rule_type": "equals_field",
-        "source": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO",
-        "when": "PAGO_ELECTRONICO.PRESENTE == true",
-        "tolerance": 1.0,
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El importe pagado por línea de captura debe compararse contra TOTAL EFECTIVO, no contra el total general cuando existen otras formas de pago."
-      },
-      {
-        "id": "PED-016",
-        "field": "PAGO_ELECTRONICO.PATENTE_AUTORIZACION",
-        "rule_type": "equals_field",
-        "source": "ENCABEZADO.PATENTE_AUTORIZACION",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "La patente del pago electrónico no coincide con la del encabezado."
-      },
-      {
-        "id": "PED-017",
-        "field": "PAGO_ELECTRONICO.NUMERO_PEDIMENTO_CONSECUTIVO",
-        "rule_type": "equals_field",
-        "source": "ENCABEZADO.NUMERO_CONSECUTIVO",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El consecutivo del pago electrónico no coincide con el pedimento."
-      },
-      {
-        "id": "PED-018",
-        "field": "PAGO_ELECTRONICO.ADUANA",
-        "rule_type": "one_of_fields",
-        "sources": [
-          "ENCABEZADO.ADUANA_ENTRADA_SALIDA",
-          "ENCABEZADO.CLAVE_SECCION_ADUANERA_DESPACHO"
-        ],
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "La aduana del pago electrónico no coincide con la aduana E/S ni con la sección de despacho."
-      },
-      {
-        "id": "PED-019",
-        "field": "RESUMEN_PEDIMENTO.NUMERO_TOTAL_PARTIDAS",
-        "rule_type": "array_length",
-        "source": "PARTIDAS",
-        "when": "METADATOS_EXTRACCION.DOCUMENTO_COMPLETO == true",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "El total de partidas no coincide con las partidas extraídas considerando todas las páginas."
-      },
-      {
-        "id": "PED-020",
-        "field": "VALORES.VALOR_ADUANA_MXN",
-        "rule_type": "sum_array",
-        "source": "PARTIDAS[].VALOR_ADUANA_O_USD",
-        "when": "TIPO_OPERACION_NORMALIZADO == 'IMPORTACION' AND all PARTIDAS complete",
-        "tolerance_mode": "max",
-        "tolerance": 2.0,
-        "relative_tolerance": 0.001,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "La suma del valor en aduana de partidas no coincide con el encabezado."
-      },
-      {
-        "id": "PED-021",
-        "field": "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN",
-        "rule_type": "sum_array",
-        "source": "PARTIDAS[].IMPORTE_PRECIO_PAGADO",
-        "when": "all PARTIDAS complete",
-        "tolerance_mode": "max",
-        "tolerance": 2.0,
-        "relative_tolerance": 0.001,
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "La suma del precio pagado de partidas no coincide con el valor comercial del encabezado."
-      },
-      {
-        "id": "PED-022",
-        "field": "PARTIDAS[].FRACCION_ARANCELARIA",
-        "rule_type": "regex_each",
-        "pattern": "^\\d{8}$",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "La fracción arancelaria debe contener 8 dígitos."
-      },
-      {
-        "id": "PED-023",
-        "field": "PARTIDAS[].NICO",
-        "rule_type": "regex_each",
-        "pattern": "^\\d{2}$",
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "El NICO debe contener 2 dígitos cuando esté impreso."
-      },
-      {
-        "id": "PED-024",
-        "field": "AGENTE_ADUANAL.PATENTE_AUTORIZACION",
-        "rule_type": "equals_field",
-        "source": "ENCABEZADO.PATENTE_AUTORIZACION",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "La patente/autorización del agente no coincide con el número de pedimento."
-      },
-      {
-        "id": "PED-025",
-        "field": "DOCUMENTO.NUMERO_PAGINAS",
-        "rule_type": "page_sequence",
-        "source": "DOCUMENTO.PAGINAS_DETECTADAS",
-        "severity": "ERROR",
-        "skip_if_missing": true,
-        "message": "Faltan páginas o la secuencia de páginas no es consistente."
-      },
-      {
-        "id": "PED-026",
-        "field": "DOCUMENTO.REFERENCIA",
-        "rule_type": "same_across_pages",
-        "source": "DOCUMENTO.PAGINAS_DETECTADAS[].REFERENCIA",
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "La referencia no es consistente en todas las páginas."
-      },
-      {
-        "id": "PED-027",
-        "field": "FACTURAS",
-        "rule_type": "unique_by",
-        "keys": [
-          "NUMERO_FACTURA",
-          "FECHA_FACTURA",
-          "ID_FISCAL_PROVEEDOR_COMPRADOR"
-        ],
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "Se detectaron facturas posiblemente duplicadas."
-      },
-      {
-        "id": "PED-028",
-        "field": "CUADRO_LIQUIDACION.CONCEPTOS",
-        "rule_type": "raw_normalized_pair_required",
-        "raw_field": "CLAVE_CONCEPTO_CRUDA",
-        "normalized_field": "CLAVE_CONCEPTO_NORMALIZADA",
-        "severity": "WARNING",
-        "skip_if_missing": true,
-        "message": "Cada concepto debe conservar tanto la clave impresa como la clave normalizada."
-      },
-      {
-        "id": "PED-029",
-        "field": "METADATOS_EXTRACCION.DOCUMENTO_COMPLETO",
-        "rule_type": "must_be_true_for_final_approval",
-        "severity": "ERROR",
-        "message": "No debe emitirse aprobación final si faltan páginas del pedimento."
-      },
-      {
-        "id": "PED-030",
-        "field": "EQUIPOS_TRANSPORTE",
-        "rule_type": "ambiguity_guard",
-        "condition": "PARSEO_CONFIABLE == false",
-        "required_fields": [
-          "VALOR_CRUDO",
-          "TOKENS_CRUDOS"
-        ],
-        "severity": "WARNING",
-        "message": "Cuando número y tipo de equipo no puedan separarse con certeza, se debe conservar la fila cruda y no inventar pares."
-      }
-    ],
-    "confidence_policy": {
-      "critical_fields": [
-        "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO",
-        "ENCABEZADO.CLAVE_PEDIMENTO",
-        "IMPORTADOR_EXPORTADOR.RFC",
-        "VALORES.VALOR_ADUANA_MXN",
-        "CUADRO_LIQUIDACION.TOTAL",
-        "RESUMEN_PEDIMENTO.NUMERO_TOTAL_PARTIDAS"
-      ],
-      "minimum_confidence_for_auto_approval": 0.9,
-      "minimum_confidence_for_noncritical_field": 0.75,
-      "manual_review_when": [
-        "Un campo crítico tiene confianza menor a 0.90",
-        "Faltan páginas",
-        "Hay una validación ERROR",
-        "Una tabla continúa en otra página y no pudo reconstruirse",
-        "Un bloque ambiguo fue guardado únicamente como RAW"
-      ],
-      "final_status": {
-        "VALID": "Sin errores y todos los campos críticos por encima del umbral",
-        "VALID_WITH_WARNINGS": "Sin errores, pero existen advertencias no críticas",
-        "REVIEW_REQUIRED": "Hay baja confianza, páginas faltantes o ambigüedades relevantes",
-        "INVALID": "Existe al menos una validación ERROR confirmada"
-      }
-    },
-    "extraction_hints": {
-      "NUMERO_PEDIMENTO": "El encabezado imprime 2 dígitos de año, 2 de aduana, 4 de patente/autorización y 7 de consecutivo. No incluir espacios ni guiones en el valor normalizado.",
-      "ADUANA_E_S_VS_ADUANA_DESPACHO": "ADUANA E/S y CLAVE DE LA SECCION ADUANERA DE DESPACHO son campos distintos; no sobrescribir uno con el otro.",
-      "TIPO_OPERACION": "Conservar IMP/EXP como valor impreso y derivar IMPORTACION/EXPORTACION en TIPO_OPERACION_NORMALIZADO.",
-      "VALOR_SEGUROS": "VAL. SEGUROS no es la prima de seguro y no forma parte de la suma de incrementables. La prima se encuentra en SEGUROS.",
-      "VALOR_DOLARES": "Normalmente representa VALOR ADUANA dividido entre TIPO CAMBIO. No debe sustituirse por la suma de facturas.",
-      "VALOR_COMERCIAL": "Se relaciona con la suma del valor en dólares de facturas multiplicada por el tipo de cambio, sujeto a redondeos y completitud de facturas.",
-      "TASAS_NIVEL_PEDIMENTO": "La columna TASA puede contener porcentaje, cuota o texto como Ex. según la clave de tipo de tasa. No interpretarla siempre como porcentaje.",
-      "CUADRO_LIQUIDACION": "Leer las dos mitades de la tabla como una sola lista ordenada de conceptos. Extraer concepto, forma de pago e importe de cada renglón.",
-      "IVA_PRV": "Conservar como concepto IVA_PRV. Solo mapearlo a un campo de negocio llamado IVA cuando el formulario destino lo requiera expresamente.",
-      "IMPORTE_PAGADO": "En pago electrónico debe compararse con TOTAL EFECTIVO. TOTAL OTROS puede incluir compensaciones, fianzas u otras formas que no pasan por la línea de captura.",
-      "PROVEEDOR_Y_FACTURAS": "El proveedor puede aparecer en la página anterior y las facturas en el anexo. Vincular por orden, ID fiscal y contexto, sin duplicar al proveedor por cada página.",
-      "FACTURAS": "Una factura puede ocupar dos renglones: el número y fecha en el primer renglón y el COVE/e-document en el segundo.",
-      "EQUIPOS_TRANSPORTE": "El bloque puede contener contenedores, carros de ferrocarril o números económicos. Si las columnas no son claras, preservar la fila cruda.",
-      "IDENTIFICADORES": "La clave del identificador y sus complementos pueden desplazarse visualmente por el ancho de las columnas. Validar contra el catálogo, pero no mover valores por intuición.",
-      "OBSERVACIONES": "No resumir. Unir renglones y páginas manteniendo el texto completo.",
-      "PARTIDAS": "La misma partida puede iniciar en una página y continuar en la siguiente. No crear una partida nueva si la página siguiente solo contiene identificadores o datos complementarios.",
-      "VALOR_ADUANA_O_USD_PARTIDA": "El rótulo impreso puede ser VAL. ADU/USD; interpretarlo como valor en aduana para importación y valor en dólares para exportación, conservando el campo canónico y la moneda derivada.",
-      "CONTRIBUCIONES_PARTIDA": "TASA puede ser texto (por ejemplo Ex.) y T.T conserva la clave de tipo de tasa. FORMA_PAGO siempre debe mantenerse como string.",
-      "PERMISOS": "CANTIDAD UMT/C es un campo propio del permiso/regulación y no debe confundirse con CANTIDAD UMT de la partida.",
-      "PIE_DOCUMENTO": "AGENTE ADUANAL, certificado y e.firma suelen repetirse en cada página. Extraer una sola entidad y registrar las páginas en metadatos.",
-      "MISSING_VALUES": "No poner 0 por defecto. Cero solo cuando está impreso; ausencia o ilegibilidad debe ser null."
+      "CERTIFICACIONES": [],
+      "TABLAS_DETECTADAS": []
     },
     "form_mapping": {
       "CAPTURA_PEDIMENTOS_GENERALES": {
@@ -1208,16 +1248,13 @@
           },
           "NUMERO": {
             "source_type": "DOCUMENT",
-            "source": "ENCABEZADO.NUMERO_PEDIMENTO_NORMALIZADO",
+            "source": "NUMERO_PEDIMENTO_NORMALIZADO",
             "required": true
           },
           "CLASIFICACION_CAPTURA": {
             "source_type": "LOOKUP",
             "source": "classification_rules.document_or_merchandise_type",
-            "allowed_values": [
-              "MERCANCIAS",
-              "EQUIPO_Y_SERVICIOS"
-            ]
+            "allowed_values": ["MERCANCIAS", "EQUIPO_Y_SERVICIOS"]
           },
           "ESTADO": {
             "source_type": "CONTEXT",
@@ -1227,34 +1264,27 @@
           "TIPO_REGISTRO": {
             "source_type": "CONTEXT",
             "source": "request_context.tipo_registro",
-            "allowed_values": [
-              "GASTOS",
-              "ANTICIPOS",
-              "POLIZA"
-            ]
+            "allowed_values": ["GASTOS", "ANTICIPOS", "POLIZA"]
           },
           "ESTATUS_CAPTURA": {
             "source_type": "CONTEXT",
             "source": "request_context.estatus_captura",
-            "allowed_values": [
-              "PREVIO",
-              "PENDIENTE"
-            ]
+            "allowed_values": ["PREVIO", "PENDIENTE"]
           },
           "CLAVE_PEDIMENTO": {
             "source_type": "DOCUMENT",
-            "source": "ENCABEZADO.CLAVE_PEDIMENTO",
+            "source": "CLAVE_PEDIMENTO",
             "required": true
           },
           "CLAVE_PEDIMENTO_DESCRIPCION": {
             "source_type": "LOOKUP",
-            "source": "catalogo_claves_pedimento[ENCABEZADO.CLAVE_PEDIMENTO].descripcion"
+            "source": "catalogo_claves_pedimento[CLAVE_PEDIMENTO].descripcion"
           },
           "PAIS_ORIGEN": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].PAIS_ORIGEN_DESTINO",
+            "source": "PARTIDAS.PAIS_ORIGEN_DESTINO",
             "fallback": "MANUAL",
-            "rule": "Autoseleccionar solo si todas las partidas no nulas comparten el mismo país."
+            "rule": "Autoseleccionar solo si todas las partidas con país comparten el mismo valor."
           },
           "PAIS_ORIGEN_ID_INTERNO": {
             "source_type": "LOOKUP",
@@ -1262,45 +1292,46 @@
           },
           "PATENTE": {
             "source_type": "DOCUMENT",
-            "source": "ENCABEZADO.PATENTE_AUTORIZACION",
+            "source": "PATENTE",
             "required": true
           },
           "PATENTE_DESCRIPCION": {
             "source_type": "LOOKUP",
-            "source": "catalogo_patentes[ENCABEZADO.PATENTE_AUTORIZACION].nombre_agente_aduanal"
+            "source": "catalogo_patentes[PATENTE].nombre_agente_aduanal"
           },
           "FECHA_ENTRADA": {
             "source_type": "DOCUMENT",
-            "source": "FECHAS[TIPO_FECHA=ENTRADA].FECHA",
+            "source": "FECHA_ENTRADA",
             "required": true
           },
           "TIPO_CAMBIO": {
             "source_type": "DOCUMENT",
-            "source": "ENCABEZADO.TIPO_CAMBIO",
+            "source": "TIPO_CAMBIO",
             "required": true
           },
           "TIPO_OPERACION": {
             "source_type": "DOCUMENT",
-            "source": "ENCABEZADO.TIPO_OPERACION",
+            "source": "TIPO_OPERACION",
             "required": true
           },
           "TIPO_OPERACION_DESCRIPCION": {
             "source_type": "DERIVED",
-            "source": "ENCABEZADO.TIPO_OPERACION_NORMALIZADO"
+            "source": "TIPO_OPERACION_NORMALIZADO"
           },
           "VALOR_DOLARES": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.VALOR_DOLARES",
+            "source": "VALOR_DOLARES",
             "required": true
           },
           "VALOR_ADUANA": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.VALOR_ADUANA_MXN",
+            "source": "VALOR_ADUANA",
             "required": true
           },
           "VALOR_COMERCIAL_PESOS": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.PRECIO_PAGADO_VALOR_COMERCIAL_MXN",
+            "source": "VALOR_COMERCIAL_PESOS",
+            "aliases": ["PRECIO_PAGADO_VALOR_COMERCIAL"],
             "required": true
           },
           "TIPO_PAGO": {
@@ -1320,7 +1351,8 @@
           },
           "FECHA_EMPATE": {
             "source_type": "CONTEXT",
-            "source": "request_context.fecha_empate"
+            "source": "request_context.fecha_empate",
+            "required": false
           },
           "DIA_EMPATE": {
             "source_type": "CONTEXT",
@@ -1329,182 +1361,167 @@
           },
           "VALOR_SEGUROS": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.INCREMENTABLES.VALOR_SEGUROS_MXN",
-            "business_default": 0
+            "source": "VALOR_SEGUROS",
+            "default": 0
           },
           "SEGUROS": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.INCREMENTABLES.SEGUROS_MXN",
-            "business_default": 0
+            "source": "SEGUROS",
+            "default": 0
           },
           "FLETES": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.INCREMENTABLES.FLETES_MXN",
-            "business_default": 0
+            "source": "FLETES",
+            "default": 0
           },
           "EMBALAJES": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.INCREMENTABLES.EMBALAJES_MXN",
-            "business_default": 0
+            "source": "EMBALAJES",
+            "default": 0
           },
           "OTROS_INCREMENTABLES": {
             "source_type": "DOCUMENT",
-            "source": "VALORES.INCREMENTABLES.OTROS_INCREMENTABLES_MXN",
-            "business_default": 0
+            "source": "OTROS_INCREMENTABLES",
+            "default": 0
           }
         },
         "cuadro_liquidacion_fields": {
           "DTA": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "DTA"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["DTA"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "IGI": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "IGI_IGE"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["IGI", "IGE", "IGI/IGE"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "PRV": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "PRV"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["PRV"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "ECI": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "ECI"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["ECI"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "MT": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "MEDIDA_TRANSICION"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["MT"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "CC": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "CUOTA_COMPENSATORIA"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["CC"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "REC": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "RECARGOS"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["REC"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "default": 0
           },
           "IVA": {
             "source_type": "DERIVED",
-            "source": "CUADRO_LIQUIDACION.POR_CONCEPTO_NORMALIZADO",
-            "concept_codes": [
-              "IVA",
-              "IVA_PRV"
-            ],
-            "value_field": "IMPORTE_TOTAL",
-            "rule": "Sumar IVA e IVA_PRV únicamente porque el formulario destino usa un solo campo IVA.",
-            "business_default": 0
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS",
+            "concept_aliases": ["IVA", "IVA PRV", "IVA/PRV"],
+            "value_field": "IMPORTE",
+            "aggregate": "SUM",
+            "rule": "El almacenamiento canónico conserva IVA e IVA PRV separados; el formulario destino los concentra en IVA.",
+            "default": 0
           },
           "IEPS_8": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
               "TASA": 8
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",
-            "business_default": 0
+            "default": 0
           },
           "IEPS_26_5": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
               "TASA": 26.5
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",
-            "business_default": 0
+            "default": 0
           },
           "IEPS_30": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
               "TASA": 30
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",
-            "business_default": 0
+            "default": 0
           },
           "IEPS_50": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
               "TASA": 50
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",
-            "business_default": 0
+            "default": 0
           },
           "IEPS_25_CAFEINA": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
               "TASA": 25
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",
-            "business_default": 0
+            "default": 0
           },
           "OTROS_IEPS": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
-              "TASA_NOT_IN": [
-                8,
-                25,
-                26.5,
-                30,
-                50
-              ]
+              "TASA_NOT_IN": [8, 25, 26.5, 30, 50]
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",
-            "business_default": 0
+            "default": 0
           },
           "FORMA_PAGO_IEPS": {
             "source_type": "DERIVED",
-            "source": "PARTIDAS[].CONTRIBUCIONES[CLAVE_CONTRIBUCION=IEPS].FORMA_PAGO",
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA[CLAVE_CONTRIBUCION=IEPS].FORMA_PAGO",
             "aggregate": "DISTINCT_OR_MANUAL",
-            "business_default": null
+            "default": null
           },
           "TOTAL_EFECTIVO": {
             "source_type": "DOCUMENT",
@@ -1528,14 +1545,13 @@
         "fields": {
           "PROVEEDOR_ID_INTERNO": {
             "source_type": "LOOKUP",
-            "source": "catalogo_proveedores[FACTURA.ID_FISCAL_PROVEEDOR_COMPRADOR].id_interno",
+            "source": "catalogo_proveedores[FACTURA.ID_FISCAL_PROVEEDOR].id_interno",
             "extractable_from_document": false,
             "required": true
           },
           "PROVEEDOR_NOMBRE": {
             "source_type": "DOCUMENT",
-            "source": "FACTURA.NOMBRE_PROVEEDOR_COMPRADOR",
-            "fallback": "PROVEEDORES_COMPRADORES[FACTURA.INDICE_PROVEEDOR_COMPRADOR].NOMBRE_RAZON_SOCIAL",
+            "source": "FACTURA.NOMBRE_PROVEEDOR",
             "required": true
           },
           "FACTURA": {
@@ -1568,12 +1584,12 @@
           "TOTAL_OTROS_GASTOS_DOLARES": {
             "source_type": "DERIVED",
             "source": "business_rules.distribucion_otros_gastos_dolares",
-            "business_default": 0
+            "default": 0
           },
           "TOTAL_FLETES": {
             "source_type": "DERIVED",
             "source": "business_rules.distribucion_fletes_por_factura",
-            "business_default": 0
+            "default": 0
           },
           "MANUAL": {
             "source_type": "DEFAULT",
@@ -1586,7 +1602,7 @@
           },
           "TOTAL_MERCANCIA_PESOS": {
             "source_type": "DERIVED",
-            "formula": "FACTURA.VALOR_DOLARES * ENCABEZADO.TIPO_CAMBIO",
+            "formula": "FACTURA.VALOR_DOLARES * TIPO_CAMBIO",
             "precision": 4,
             "required": true
           },
@@ -1599,7 +1615,7 @@
           "IMPORTE_GASTO_INCREMENTABLE": {
             "source_type": "DERIVED",
             "source": "business_rules.importe_gasto_incrementable",
-            "business_default": 0
+            "default": 0
           },
           "TECLA_ORIGEN": {
             "source_type": "LOOKUP",
@@ -1620,18 +1636,16 @@
           },
           "TOTAL_FACTURAS_PESOS": {
             "source_type": "DERIVED",
-            "formula": "SUM(FACTURAS.VALOR_DOLARES) * ENCABEZADO.TIPO_CAMBIO",
+            "formula": "SUM(FACTURAS.VALOR_DOLARES) * TIPO_CAMBIO",
             "precision": 4
           },
           "TOTAL_MERCANCIA_PESOS": {
             "source_type": "DERIVED",
-            "formula": "SUM(FACTURAS.VALOR_DOLARES) * ENCABEZADO.TIPO_CAMBIO",
+            "formula": "SUM(FACTURAS.VALOR_DOLARES) * TIPO_CAMBIO",
             "precision": 4
           }
         }
       }
-    },
-    "validator_module": "validators.customs.pedimento_v3",
-    "pipeline": "expediente"
+    }
   }
 }
