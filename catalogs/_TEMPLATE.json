@@ -1,6 +1,8 @@
 {
   "NUEVO_TIPO": {
     "schema_version": "x.x.x",
+    "display_name": "Nuevo Tipo",
+    "aliases": ["nombre alterno con el que la gente lo pide"],
     "description": "Qué es este documento y cómo se distingue de otros. Este texto va al prompt de clasificación de Bedrock, así que sé discriminante (menciona marcas del documento: folios, sellos, encabezados).",
     "extraction_fields": ["CAMPO_UNO", "CAMPO_DOS"],
     "extraction_hints": {
@@ -19,6 +21,6 @@
     "validator_module": null,
     "custom_validator": null,
 
-    "__NOTAS__": "Borra esta clave. Campos OPCIONALES para tipos aduanales multi-documento: agrega \"pipeline\": \"expediente\" para que pase por el pipeline de expediente (segmentación + reglas cruzadas). \"field_sets\": [\"COMMON_CFDI_FIELDS\"] reutiliza listas de campos definidas en _shared.json. \"repeatable_fields\", \"structured_fields\", \"form_mapping\", \"schema_version\", \"business_destination\", \"min_confidence\" también se soportan (ver PEDIMENTO_ADUANAL.json)."
+    "__NOTAS__": "Borra esta clave. \"display_name\" y \"aliases\" son opcionales: son los nombres que el API acepta en GET /documents?docType=... (si faltan, se deriva del TYPE_ID). Campos OPCIONALES para tipos aduanales multi-documento: agrega \"pipeline\": \"expediente\" para que pase por el pipeline de expediente (segmentación + reglas cruzadas). \"field_sets\": [\"COMMON_CFDI_FIELDS\"] reutiliza listas de campos definidas en _shared.json. \"repeatable_fields\", \"structured_fields\", \"form_mapping\", \"schema_version\", \"business_destination\", \"min_confidence\" también se soportan (ver PEDIMENTO_ADUANAL.json)."
   }
 }

@@ -65,6 +65,8 @@ lo empaquetado en runtime.
 | `validation_rules` | no | Reglas: `regex`, `date_expiry`, `presence`, `custom_formula`, `sum_array`, ... |
 | `validator_module` | no | Módulo Python de validación (`validators.identification`, etc.). |
 | `custom_validator` | no | Script Node en `custom_validators/` para lógica avanzada. |
+| `display_name` | no | Nombre legible del tipo (`"Pedimento Aduanal"`). Se guarda en la columna `DocumentTypeName` y el API lo acepta en `?docType=`. Si falta, se deriva del TYPE_ID. |
+| `aliases` | no | Otros nombres que el API acepta en `?docType=` (`["pedimento", "pedimento de importación"]`). |
 
 ### Solo para tipos aduanales multi-documento
 

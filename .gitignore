@@ -8,6 +8,16 @@ dist/
 !scripts/*.mjs
 !src/**/*.mjs
 
+# Índice del grafo de código (codebase-memory-mcp): artefacto derivado, 1 MB de
+# binario que cambia en cada indexación. Se regenera con index_repository.
+.codebase-memory/
+
+# Catálogos generados por `pnpm build` (scripts/sync-catalogs.mjs) desde
+# catalogs/. Van dentro del asset de cada Lambda, pero la fuente de verdad es
+# catalogs/ — se regeneran con `pnpm build`.
+src/document-processing/resources/enrichment-lambda/config/catalogs.json
+src/document-processing/resources/query-lambda/document-types.json
+
 # Dependencies
 node_modules/
 pnpm-lock.yaml

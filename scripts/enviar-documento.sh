@@ -108,8 +108,16 @@ trap 'rm -f "$BODY_FILE"' EXIT
   fi
 } > "$BODY_FILE"
 
+# En prod el API exige `x-api-key`. Exporta API_KEY con el valor de tu key
+# (aws apigateway get-api-key --api-key <id> --include-value). En dev no hace falta.
+API_KEY_HEADER=()
+if [[ -n "${API_KEY:-}" ]]; then
+  API_KEY_HEADER=(-H "x-api-key: ${API_KEY}")
+fi
+
 RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
   -H "Content-Type: application/json" \
+  "${API_KEY_HEADER[@]}" \
   --data-binary @"$BODY_FILE")
 
 echo "Respuesta del API:"

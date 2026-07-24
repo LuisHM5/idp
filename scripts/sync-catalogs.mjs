@@ -28,12 +28,47 @@ const CONFIG_DIR = join(
   "src/document-processing/resources/enrichment-lambda/config"
 );
 const OUTPUT = join(CONFIG_DIR, "catalogs.json");
+// Lista ligera de tipos (id + nombre + alias) que se empaqueta con el query
+// Lambda para resolver `?docType=pedimento aduanal` → PEDIMENTO_ADUANAL sin
+// leer el catálogo completo.
+const TYPES_OUTPUT = join(
+  repo,
+  "src/document-processing/resources/query-lambda/document-types.json"
+);
 
 // Files that are not a document type.
 const SPECIAL = new Set(["_shared.json", "_TEMPLATE.json"]);
 
 function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+/** "PEDIMENTO_ADUANAL" -> "Pedimento Aduanal" (nombre por defecto del tipo). */
+function titleize(typeId) {
+  return typeId
+    .split("_")
+    .filter(Boolean)
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+/**
+ * Escribe la lista de tipos que el query Lambda usa para resolver el parámetro
+ * `docType` cuando viene como nombre en vez de TYPE_ID. `display_name` y
+ * `aliases` son opcionales en cada entrada del catálogo.
+ */
+function writeTypeIndex(documentTypes) {
+  const types = Object.entries(documentTypes).map(([typeId, entry]) => ({
+    typeId,
+    displayName: entry.display_name || titleize(typeId),
+    aliases: entry.aliases || [],
+  }));
+  writeFileSync(
+    TYPES_OUTPUT,
+    JSON.stringify({ types }, null, 2) + "\n",
+    "utf8"
+  );
+  console.log(`  índice de tipos (${types.length}) -> ${TYPES_OUTPUT}`);
 }
 
 function main() {
@@ -69,6 +104,8 @@ function main() {
   console.log(
     `bundled ${Object.keys(documentTypes).length} tipos de ${CATALOGS_DIR}/*.json -> ${OUTPUT}`
   );
+
+  writeTypeIndex(documentTypes);
 
   // Remove superseded bundled configs (single base = catalogs.json).
   for (const stale of ["document_types.json", "customs_catalog.json"]) {

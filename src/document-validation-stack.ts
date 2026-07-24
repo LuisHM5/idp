@@ -6,6 +6,8 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import {
   BedrockDocumentProcessing,
   EventbridgeBroker,
@@ -15,6 +17,12 @@ import {
   generateClassificationPrompt,
   generateProcessingPrompt,
 } from "./prompt-generator";
+
+/**
+ * GSI que indexa el tipo de documento (PK DocumentType, SK ProcessedAt).
+ * Lo escribe `enrichment-lambda/indexing.py` y lo consulta el query Lambda.
+ */
+export const DOCUMENT_TYPE_INDEX = "DocumentTypeIndex";
 
 export interface DocumentValidationStackProps extends cdk.StackProps {
   /**
@@ -32,6 +40,38 @@ export interface DocumentValidationStackProps extends cdk.StackProps {
    * @default false
    */
   forceReloadCatalog?: boolean;
+
+  /**
+   * Deployment environment. In "prod" the API is hardened: API keys required,
+   * WAF (rate limiting + managed rules), and a custom domain when configured.
+   * In "dev" the API stays open on the random execute-api URL for easy testing.
+   * @default "dev"
+   */
+  environment?: "dev" | "prod";
+
+  /**
+   * Custom domain for the API (prod only), e.g. "idp.alsuper.com". Requires
+   * `certArn`. When either is unset, the random execute-api URL is used.
+   */
+  domainName?: string;
+
+  /**
+   * ARN of an ACM certificate (same region) covering `domainName`. Import your
+   * cert with `scripts/import-cert.mjs` and paste the ARN here (env CERT_ARN).
+   */
+  certArn?: string;
+
+  /**
+   * Per-IP request cap (WAF rate-based rule, requests per 5 min). Prod only.
+   * @default 2000
+   */
+  wafRateLimit?: number;
+
+  /**
+   * Usage plan throttle (steady-state requests/second) and daily quota. Prod only.
+   * @default { rateLimit: 20, burstLimit: 40, quotaPerDay: 5000 }
+   */
+  apiThrottle?: { rateLimit?: number; burstLimit?: number; quotaPerDay?: number };
 }
 
 export class BedrockDocumentProcessingStack extends cdk.Stack {
@@ -46,6 +86,14 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const forceReload = props?.forceReloadCatalog ?? false;
     const bedrockModel = process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
+    // Environment gate: prod hardens the API (keys + WAF + custom domain);
+    // dev stays open on the random execute-api URL.
+    const environment = props?.environment ?? "dev";
+    const isProd = environment === "prod";
+    // Suffix for account-global resource names (KMS alias, EventBus) so dev can
+    // coexist with prod. Prod keeps the bare names it was first deployed with.
+    const envSuffix = isProd ? "" : "-dev";
+
     // ONE customer-managed KMS key shared across the pipeline instead of a
     // separate CMK per component. Each CMK costs ~$1/month just to exist; the
     // blueprint otherwise creates 5 (base, log group, adapter, broker, bucket).
@@ -53,13 +101,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // only that components share one customer key instead of isolated keys.
     const encryptionKey = new kms.Key(this, "PipelineEncryptionKey", {
       enableKeyRotation: true,
-      alias: "document-validation/pipeline",
+      alias: `document-validation/pipeline${envSuffix}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // EventBridge broker for pipeline notifications
     const broker = new EventbridgeBroker(this, "IDPBroker", {
-      name: "idp-broker",
+      name: `idp-broker${envSuffix}`,
       eventSource: "document-validation-pipeline",
       kmsKey: encryptionKey,
     });
@@ -204,6 +252,41 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       logGroupDataProtection: { logGroupEncryptionKey: encryptionKey },
     });
 
+    // Tipo de documento como COLUMNA INDEXADA.
+    //
+    // El workflow solo guarda `EnrichmentResult` (el envelope entero como JSON
+    // string), así que filtrar por tipo obligaba a un Scan completo de la tabla
+    // + parseo en la Lambda. El enrichment Lambda promueve ahora el tipo final
+    // (el que dictamina el segmentador, no la clasificación de visión de
+    // upstream) a atributos de primer nivel — ver `enrichment-lambda/indexing.py` —
+    // y este GSI los hace consultables con Query en vez de Scan.
+    //
+    // PK DocumentType + SK ProcessedAt → "todos los X, del más reciente al más
+    // viejo" es una sola Query. La proyección INCLUDE lleva los atributos que
+    // permiten filtrar del lado de DynamoDB (estado de validación y los tipos
+    // contenidos en un expediente) sin traerse el envelope completo; el envelope
+    // solo se lee (BatchGet) para los items que sobreviven al filtro.
+    const documentTable = pipeline.documentProcessingTable;
+    documentTable.addGlobalSecondaryIndex({
+      indexName: DOCUMENT_TYPE_INDEX,
+      partitionKey: {
+        name: "DocumentType",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: { name: "ProcessedAt", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.INCLUDE,
+      nonKeyAttributes: [
+        "DocumentTypeName",
+        "ValidationStatus",
+        "ContainedDocumentTypes",
+        "DocumentName",
+      ],
+    });
+
+    // El enrichment Lambda escribe esas columnas (UpdateItem) al terminar.
+    enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
+    documentTable.grantWriteData(enrichmentFn);
+
     // Grant broad Bedrock invoke permissions to all Lambda roles in the pipeline
     // The construct creates its own roles but customModelId with cross-region prefix
     // may not generate correct IAM ARNs for inference profiles
@@ -272,14 +355,23 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       memorySize: 256,
       description: "Document read/search via REST API",
       environment: {
-        DOCUMENT_TABLE: pipeline.documentProcessingTable.tableName,
+        DOCUMENT_TABLE: documentTable.tableName,
         DOCUMENT_BUCKET: documentBucket.bucketName,
+        // Query por tipo (docType) contra el GSI en vez de Scan.
+        DOCUMENT_TYPE_INDEX,
+        // Resuelve nombres/alias de tipo ("pedimento aduanal") al TYPE_ID
+        // canónico usando el catálogo hot-reload cuando está habilitado.
+        ...(catalogTable && { CATALOG_TABLE: "document-validation-catalog" }),
       },
     });
-    // GetItem + Scan on the tracking table (and KMS decrypt for its CMK), plus
-    // read of the full results/ objects in S3.
-    pipeline.documentProcessingTable.grantReadData(queryFn);
+    // GetItem + Query/Scan on the tracking table and its GSI (and KMS decrypt
+    // for its CMK) — grantReadData covers `${tableArn}/index/*` — plus read of
+    // the full results/ objects in S3.
+    documentTable.grantReadData(queryFn);
     documentBucket.grantRead(queryFn);
+    if (catalogTable) {
+      catalogTable.grantReadData(queryFn);
+    }
 
     // API Gateway for document upload
     const api = new apigateway.RestApi(this, "DocumentUploadApi", {
@@ -292,23 +384,127 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       },
     });
 
+    // In prod every method requires an API key: requests without a valid
+    // `x-api-key` get a native 403 from API Gateway WITHOUT invoking the
+    // backend Lambda — so 401/403/404 never consume Lambda/Bedrock. In dev the
+    // API stays open for easy testing.
+    const methodOptions: apigateway.MethodOptions = { apiKeyRequired: isProd };
+
     const uploadResource = api.root.addResource("upload");
     uploadResource.addMethod(
       "POST",
-      new apigateway.LambdaIntegration(uploadFn)
+      new apigateway.LambdaIntegration(uploadFn),
+      methodOptions
     );
 
     // GET /documents?field=<dot.path>&value=<v>  → search by any extracted field
     // GET /documents/{id}                        → full result for one document
     const queryIntegration = new apigateway.LambdaIntegration(queryFn);
     const documentsResource = api.root.addResource("documents");
-    documentsResource.addMethod("GET", queryIntegration);
-    documentsResource.addResource("{id}").addMethod("GET", queryIntegration);
+    documentsResource.addMethod("GET", queryIntegration, methodOptions);
+    documentsResource.addResource("{id}").addMethod("GET", queryIntegration, methodOptions);
+
+    // ---- Prod hardening: API keys + usage plan, WAF, custom domain ----------
+    if (isProd) {
+      const throttle = {
+        rateLimit: props?.apiThrottle?.rateLimit ?? 20,
+        burstLimit: props?.apiThrottle?.burstLimit ?? 40,
+      };
+      const quotaPerDay = props?.apiThrottle?.quotaPerDay ?? 5000;
+
+      // Usage plan enforces rate/burst + a daily quota per key.
+      const usagePlan = api.addUsagePlan("DefaultUsagePlan", {
+        name: "idp-default",
+        throttle,
+        quota: { limit: quotaPerDay, period: apigateway.Period.DAY },
+      });
+      usagePlan.addApiStage({ stage: api.deploymentStage });
+
+      // One key to start; add more (one per consuming system) as needed.
+      const apiKey = api.addApiKey("DefaultApiKey", { apiKeyName: "idp-default" });
+      usagePlan.addApiKey(apiKey);
+      new cdk.CfnOutput(this, "ApiKeyId", {
+        value: apiKey.keyId,
+        description:
+          "API key id. Get the secret value: aws apigateway get-api-key --api-key <id> --include-value",
+      });
+
+      // WAF: rate-based anti-DDoS + AWS managed rule groups. Blocked requests
+      // (403) are dropped before the integration → no Lambda cost.
+      const webAcl = new wafv2.CfnWebACL(this, "ApiWebAcl", {
+        defaultAction: { allow: {} },
+        scope: "REGIONAL",
+        visibilityConfig: {
+          cloudWatchMetricsEnabled: true,
+          metricName: "idp-web-acl",
+          sampledRequestsEnabled: true,
+        },
+        rules: [
+          {
+            name: "RateLimitPerIp",
+            priority: 0,
+            action: { block: {} },
+            statement: {
+              rateBasedStatement: {
+                limit: props?.wafRateLimit ?? 2000,
+                aggregateKeyType: "IP",
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: "idp-rate-limit",
+              sampledRequestsEnabled: true,
+            },
+          },
+          ...[
+            "AWSManagedRulesCommonRuleSet",
+            "AWSManagedRulesKnownBadInputsRuleSet",
+            "AWSManagedRulesAmazonIpReputationList",
+          ].map((name, i) => ({
+            name,
+            priority: i + 1,
+            overrideAction: { none: {} },
+            statement: {
+              managedRuleGroupStatement: { vendorName: "AWS", name },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: name,
+              sampledRequestsEnabled: true,
+            },
+          })),
+        ],
+      });
+      new wafv2.CfnWebACLAssociation(this, "ApiWebAclAssociation", {
+        resourceArn: api.deploymentStage.stageArn,
+        webAclArn: webAcl.attrArn,
+      });
+
+      // Custom domain (only when both domainName and certArn are configured).
+      if (props?.domainName && props?.certArn) {
+        const certificate = acm.Certificate.fromCertificateArn(
+          this,
+          "ApiCertificate",
+          props.certArn
+        );
+        const domain = new apigateway.DomainName(this, "ApiCustomDomain", {
+          domainName: props.domainName,
+          certificate,
+          endpointType: apigateway.EndpointType.REGIONAL,
+          securityPolicy: apigateway.SecurityPolicy.TLS_1_2,
+        });
+        domain.addBasePathMapping(api, { stage: api.deploymentStage });
+        new cdk.CfnOutput(this, "CustomDomainTarget", {
+          value: domain.domainNameAliasDomainName,
+          description: `Add a CNAME: ${props.domainName} -> this value (external DNS)`,
+        });
+      }
+    }
 
     // Outputs
     new cdk.CfnOutput(this, "ApiEndpoint", {
       value: api.url,
-      description: "Document Upload API endpoint",
+      description: "Document Upload API endpoint (random execute-api URL)",
     });
 
     if (catalogTable) {

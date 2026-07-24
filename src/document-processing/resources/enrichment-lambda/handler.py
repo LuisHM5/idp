@@ -39,6 +39,7 @@ from document_catalog import (
     reload_catalog,
 )
 from extractors import get_extractor
+from indexing import write_index_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +490,20 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     """Lambda handler entry point.
+
+    Runs the validation flow (`_process`) and then promotes the document type
+    and friends to indexed DynamoDB columns (see `indexing.py`) so the query
+    API can filter by type with a GSI Query instead of a table Scan. Indexing
+    is best-effort and never changes the returned result.
+    """
+    result = _process(event, context)
+    pointer = _extract_s3_pointer(event)
+    write_index_attributes(result, source_key=pointer[1] if pointer else None)
+    return result
+
+
+def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
+    """Validation flow proper.
 
     Expected event structure from Step Functions:
     {

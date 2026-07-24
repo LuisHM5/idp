@@ -52,6 +52,13 @@ class TypeRegistryEntry:
     validator_module: Optional[str] = None
     custom_validator: Optional[str] = None  # Node.js custom script name
     description: str = ""
+    # Human-readable name of the type ("Pedimento Aduanal"). Optional: when
+    # absent it is derived from `type_id`. Persisted as the DocumentTypeName
+    # column in DynamoDB and accepted by `GET /documents?docType=`.
+    display_name: str = ""
+    # Extra names the API accepts for this type ("pedimento", "expediente
+    # aduanal"). Only used to resolve `docType` inputs to a canonical type_id.
+    aliases: List[str] = field(default_factory=list)
     # Per-field hints telling the extractor WHERE the data lives in the document.
     # Used by both Bedrock prompts (at synth time) and the fallback extractor.
     extraction_hints: Dict[str, str] = field(default_factory=dict)
@@ -166,6 +173,8 @@ def _parse_entry(
         validator_module=data.get("validator_module"),
         custom_validator=data.get("custom_validator"),
         description=data.get("description", ""),
+        display_name=data.get("display_name", "") or "",
+        aliases=data.get("aliases", []) or [],
         extraction_hints=data.get("extraction_hints", {}) or {},
         extraction_strategy=data.get("extraction_strategy"),
         field_aliases=data.get("field_aliases", {}) or {},

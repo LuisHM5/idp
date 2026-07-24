@@ -4,30 +4,45 @@ import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import { BedrockDocumentProcessingStack } from "../src/document-validation-stack";
 
-// Load .env.production if it exists (does NOT override existing env vars)
-const envFile = path.join(__dirname, "../.env.production");
+const app = new cdk.App();
+
+// Environment: `cdk deploy -c env=dev|prod`. Default is DEV (safe: isolated
+// stack, open API), so a bare `pnpm run deploy` never touches prod. Prod is
+// explicit via `pnpm run deploy:prod` (-c env=prod).
+const environment = (app.node.tryGetContext("env") as string) === "prod" ? "prod" : "dev";
+
+// Load the matching env file (does NOT override existing process env vars).
+const envFile = path.join(
+  __dirname,
+  environment === "prod" ? "../.env.production" : "../.env.dev"
+);
 if (fs.existsSync(envFile)) {
-  const lines = fs.readFileSync(envFile, "utf-8").split("\n");
-  for (const line of lines) {
+  for (const line of fs.readFileSync(envFile, "utf-8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const eqIdx = trimmed.indexOf("=");
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
     const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
+    if (!process.env[key]) process.env[key] = value;
   }
 }
 
-const app = new cdk.App();
+const env = {
+  account: process.env.CDK_DEFAULT_ACCOUNT,
+  region: process.env.CDK_DEFAULT_REGION || "us-east-1",
+};
 
-new BedrockDocumentProcessingStack(app, "DocumentValidationStack", {
-  env: {
-    account: process.env.CDK_DEFAULT_ACCOUNT,
-    region: process.env.CDK_DEFAULT_REGION || "us-east-1",
-  },
+// prod keeps the original stack id (in-place update); dev is an isolated stack.
+const stackId =
+  environment === "prod" ? "DocumentValidationStack" : "DocumentValidationStack-Dev";
+
+new BedrockDocumentProcessingStack(app, stackId, {
+  env,
+  environment,
   enableDynamoCatalog: true,
   forceReloadCatalog: true,
+  // Custom domain applies in prod only; unset in dev → random execute-api URL.
+  domainName: environment === "prod" ? process.env.DOMAIN_NAME : undefined,
+  certArn: environment === "prod" ? process.env.CERT_ARN : undefined,
 });
