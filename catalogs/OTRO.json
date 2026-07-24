@@ -1,0 +1,9 @@
+{
+  "OTRO": {
+    "description": "Documento no clasificado",
+    "extraction_fields": [],
+    "required_fields": [],
+    "validation_rules": [],
+    "validator_module": null
+  }
+}

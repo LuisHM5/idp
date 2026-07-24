@@ -1,0 +1,44 @@
+{
+  "PASAPORTE": {
+    "description": "Pasaporte mexicano SRE: libreta portada guinda 'PASAPORTE/PASSPORT', encabezados bilingues (Surname/Apellido, Date of expiry), MRZ con '<<<' al pie",
+    "extraction_fields": [
+      "NOMBRE_COMPLETO",
+      "NOMBRE",
+      "APELLIDO_PATERNO",
+      "APELLIDO_MATERNO",
+      "FECHA_NACIMIENTO",
+      "CURP",
+      "NUMERO_DOCUMENTO",
+      "VIGENCIA",
+      "DOMICILIO",
+      "TIPO_DOCUMENTO"
+    ],
+    "extraction_hints": {
+      "NOMBRE_COMPLETO": "Nombre completo como aparece en la pagina de datos del pasaporte",
+      "CURP": "CURP de 18 caracteres, en la pagina de datos o en la zona MRZ (Machine Readable Zone) al fondo",
+      "NUMERO_DOCUMENTO": "Numero de pasaporte, cadena alfanumerica en la esquina superior derecha de la pagina de datos",
+      "VIGENCIA": "Fecha de expiracion en formato DD/MM/YYYY o YYYY-MM-DD, campo 'Date of expiry' en la pagina de datos",
+      "FECHA_NACIMIENTO": "Fecha de nacimiento, campo 'Date of birth' en la pagina de datos"
+    },
+    "required_fields": [
+      "NOMBRE_COMPLETO",
+      "CURP",
+      "NUMERO_DOCUMENTO",
+      "VIGENCIA"
+    ],
+    "validation_rules": [
+      {
+        "field": "CURP",
+        "rule_type": "regex",
+        "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+        "message": "CURP no cumple el patron oficial"
+      },
+      {
+        "field": "VIGENCIA",
+        "rule_type": "date_expiry",
+        "message": "El documento esta vencido"
+      }
+    ],
+    "validator_module": "validators.identification"
+  }
+}

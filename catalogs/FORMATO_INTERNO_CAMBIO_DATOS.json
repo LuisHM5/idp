@@ -1,0 +1,49 @@
+{
+  "FORMATO_INTERNO_CAMBIO_DATOS": {
+    "description": "Formato corporativo interno de CAMBIO/ACTUALIZACION de datos: titulo con 'cambio'/'actualizacion', bloques 'datos anteriores' y 'datos nuevos'",
+    "extraction_fields": [
+      "TIPO_FORMATO",
+      "FOLIO_INTERNO",
+      "NOMBRE_SOLICITANTE",
+      "RFC",
+      "CURP",
+      "FECHA_SOLICITUD",
+      "AREA",
+      "FIRMA_PRESENTE",
+      "CAMPOS_OBLIGATORIOS_COMPLETOS",
+      "VERSION_FORMATO"
+    ],
+    "extraction_hints": {
+      "FOLIO_INTERNO": "Numero de folio o consecutivo, esquina superior derecha",
+      "NOMBRE_SOLICITANTE": "Nombre de quien solicita el cambio",
+      "FECHA_SOLICITUD": "Fecha del formato, campo 'Fecha'",
+      "FIRMA_PRESENTE": "SI o NO segun si hay firma visible en la parte inferior del documento"
+    },
+    "required_fields": [
+      "FOLIO_INTERNO",
+      "NOMBRE_SOLICITANTE",
+      "FECHA_SOLICITUD",
+      "FIRMA_PRESENTE"
+    ],
+    "validation_rules": [
+      {
+        "field": "FIRMA_PRESENTE",
+        "rule_type": "boolean_true",
+        "message": "La firma debe estar presente"
+      },
+      {
+        "field": "RFC",
+        "rule_type": "regex",
+        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "message": "RFC no cumple el formato valido"
+      },
+      {
+        "field": "CURP",
+        "rule_type": "regex",
+        "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+        "message": "CURP no cumple el patron oficial"
+      }
+    ],
+    "validator_module": "validators.internal_formats"
+  }
+}

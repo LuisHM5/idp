@@ -22,8 +22,7 @@ Key pieces:
 - `src/document-validation-stack.ts` — Main CDK stack. Wires Upload Lambda, Bedrock pipeline (via `@cdklabs/cdk-appmod-catalog-blueprints`), Enrichment Lambda, optional DynamoDB catalog, and EventBridge broker.
 - `src/prompt-generator.ts` / `src/document-catalog.ts` — Generate Bedrock classification and extraction prompts from the JSON catalog at synth time, injecting `extraction_hints` so the model knows where to look for each field.
 - `src/document-processing/resources/enrichment-lambda/` — Python 3.12 validation engine (do not modify `handler.py` lightly; extend via config and validators instead).
-  - `config/document_types.json` — **The catalog. Primary extension point.**
-  - `config/customs_catalog.json` — Customs/pedimentos catalog, **generated copy** of `catalogs/full-pedimentos-docs.json` (synced by `pnpm build` / `pnpm sync-catalogs`; edit the source, not the copy).
+  - `config/catalogs.json` — **Bundled catalog. GENERATED — do not edit.** Produced by `pnpm build` (scripts/sync-catalogs.mjs) from the `catalogs/` folder. Edit the source in `catalogs/`, never this file.
   - `validators/` — Built-in rule modules plus `engine.py`, the dynamic rule engine (formulas, sum_array, cross-document, per-field statuses). `validators/customs/*` are thin shims — customs rules live entirely in the catalog JSON.
   - `pipeline/` — Expediente/pedimento pipeline: `pdf_pages` (pypdf layout text + Textract per-page OCR fallback), `segmenter` (Bedrock page-range classification with deterministic markers), `text_extractor` (catalog-schema extraction incl. repeatable fields, chunked), `expediente` (orchestrator + cross-document checks), `normalize` (deterministic amounts/dates/pedimento/UUID normalization + regex reference recovery).
   - `custom_validators/*.mjs` — Optional Node.js custom validators for logic beyond regex.
@@ -32,7 +31,7 @@ Key pieces:
 - `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint (`POST /upload`).
 - `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}` by id, `GET /documents?field=&value=` search by any extracted field via table Scan + dot-path filter).
 - `documentacion/API_USO.md` — **User-facing API reference (all endpoints).** Keep it in sync — see "API Documentation" below.
-- `catalogs/` — Per-type JSON files (one document type per file, keyed by `type_id`) synced to DynamoDB via `pnpm db-sync`. Use this for hot-reload changes without touching the bundled JSON or redeploying. Root shape is `{ "TYPE_ID": { ...entry } }` — no `types:` wrapper.
+- `catalogs/` — **THE single source of truth for document types.** One JSON per type (`<TYPE_ID>.json`, shape `{ "TYPE_ID": { ...entry } }`), plus `catalogs/_shared.json` (globals: `_field_sets`, `cross_document_validation_rules`, `_global_output_fields`) and `catalogs/_TEMPLATE.json` (copy this to create a new type). See `catalogs/README.md` for the full guide. `pnpm run build` combines this folder into the bundled `config/catalogs.json`; `pnpm sync` pushes it to DynamoDB for hot-reload.
 - `scripts/` — CLI tooling (add types, preview prompts, DynamoDB hot-reload, end-to-end tests).
 - `patches/default-bedrock-invoke-index.py` — Patch applied by `scripts/patch-construct.mjs` during `pnpm build`.
 
@@ -49,21 +48,19 @@ Run everything with pnpm from the repo root.
 
 | Command | Purpose |
 |---|---|
-| `pnpm build` | Run `scripts/patch-construct.mjs` then `tsc`. Run this before `deploy` / `diff` / `synth`. |
+| `pnpm build` | Combine `catalogs/*.json` → `config/catalogs.json`, patch the construct, `tsc`. Run before `deploy` / `diff` / `synth`. |
+| `pnpm sync` | **Push the whole `catalogs/` folder to DynamoDB (hot-reload, no redeploy).** |
+| `pnpm sync:one -- <selector>` | **Push ONE type: `--type TYPE_ID`, `--file path`, or a fuzzy name.** Add `--dry-run` to preview. |
 | `pnpm synth` | Produce CloudFormation via `npx cdk synth`. |
 | `pnpm run diff` | Show pending changes vs deployed stack. |
 | `pnpm run deploy` | Deploy (`--require-approval never`). |
 | `pnpm run destroy` / `pnpm run destroy:full` | Tear down stack (full variant cleans lingering resources). |
-| `pnpm list-types` | List types from the local JSON catalog. |
-| `pnpm preview-prompts` | Render the actual prompts Bedrock will receive. Always run this after catalog edits. |
-| `pnpm add-type` | Scaffold a new type inside `document_types.json`. |
-| `pnpm add-validator` | Scaffold a custom Node.js validator under `custom_validators/`. |
-| `pnpm db-put-type` / `pnpm db-list-types` / `pnpm db-sync` | Manage the DynamoDB catalog for hot-reload without redeploy. `db-sync` accepts the customs catalog shape (`document_types` + `_field_sets`, resolved before upload) and `--dry-run`. |
-| `pnpm db-sync-customs` | Push `catalogs/full-pedimentos-docs.json` to DynamoDB (hot-reload). |
-| `pnpm db-delete-type` | Delete or disable (`--disable`) a type in DynamoDB; `--all` empties the table. |
-| `pnpm sync-catalogs` / `pnpm setup:python` | Copy catalog sources into the Lambda config / create the test venv. |
+| `pnpm preview-prompts` | Render the actual prompts Bedrock will receive. Run after catalog edits (needs `pnpm build` first). |
+| `pnpm setup:python` | Create the test venv. |
 | `pnpm test-local` / `pnpm test-e2e` | Local handler tests and end-to-end pipeline tests. |
 | `pnpm track` | Track a Step Functions execution. |
+
+**Schema/catalog management is exactly two commands: `pnpm sync` (all) and `pnpm sync:one` (one).** There is no `add-type`, `db-sync`, `list-types`, etc. anymore — edit files under `catalogs/` and sync.
 
 Python tests use pytest from the project venv (`.venv`): `pnpm test:unit` is offline; `pnpm test:pedimentos` hits real AWS (Textract + Bedrock).
 
@@ -71,21 +68,23 @@ Python tests use pytest from the project venv (`.venv`): `pnpm test:unit` is off
 
 When the enrichment Lambda runs, it loads types in this order (last wins):
 
-1. `config/document_types.json` — shipped with the Lambda code.
-2. DynamoDB (`CATALOG_TABLE` env var) — overrides JSON entries when `enableDynamoCatalog: true`.
+1. `config/catalogs.json` — the single bundled catalog (built from `catalogs/*.json`), shipped with the Lambda code.
+2. DynamoDB (`CATALOG_TABLE` env var) — overrides bundled entries when `enableDynamoCatalog: true`. This is what `pnpm sync` writes to.
 
 `forceReloadCatalog: true` reloads on every invocation (small perf cost, immediate DynamoDB effect).
+
+A type is routed to the multi-document customs pipeline (segmenter + cross-document rules) iff its entry declares `"pipeline": "expediente"`; otherwise it uses the standard single-document flow (`is_customs_type` reads this field).
 
 ## How To Extend
 
 Pick the lowest-impact path that solves the request:
 
-1. **New document type, standard rules** → preferred flow: drop a new file under `catalogs/<name>.json` (single-type object) and run `pnpm db-sync --file catalogs/<name>.json` for immediate effect (no redeploy). Alternatively, edit `config/document_types.json` (or `pnpm add-type`) and `pnpm build && pnpm run deploy` to bake it into the Lambda. `pnpm db-sync --all` syncs every type from the local config. Re-syncing a type overwrites the DynamoDB row entirely.
-2. **New extraction field or hint** → add it to `extraction_fields` / `extraction_hints` in the catalog. Hints are free-form Spanish text describing *where* on the document the field lives.
+1. **New document type** → copy `catalogs/_TEMPLATE.json` to `catalogs/<TYPE_ID>.json`, edit it, then either `pnpm sync:one -- --type <TYPE_ID>` (immediate, DynamoDB) or `pnpm run build && pnpm run deploy` (bundled baseline). Full guide: `catalogs/README.md`. Re-syncing a type overwrites its DynamoDB row entirely.
+2. **New extraction field or hint** → add it to `extraction_fields` / `extraction_hints` in that type's file under `catalogs/`. Hints are free-form Spanish describing *where* on the document the field lives.
 3. **New rule type beyond regex / date_expiry / presence / boolean_true** → extend `validators/base.py` and the corresponding module under `validators/`.
-4. **External API calls, cross-field checks, check digits** → create a `custom_validators/<name>.mjs` exporting `async function validate(entityMap, context)` that returns `[{ field, rule, valid, message }]`. Reference it via `custom_validator` in the catalog entry.
+4. **External API calls, cross-field checks, check digits** → create a `custom_validators/<name>.mjs` exporting `async function validate(entityMap, context)` that returns `[{ field, rule, valid, message }]`. Reference it via `custom_validator` in the type's catalog entry.
 
-Avoid editing `handler.py` for feature work. It is the engine; features live in the catalog and validators.
+Avoid editing `handler.py` for feature work. It is the engine; features live in the catalog (`catalogs/`) and validators.
 
 ## API Documentation (keep in sync automatically)
 

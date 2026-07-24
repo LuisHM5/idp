@@ -1,13 +1,13 @@
 /**
  * Document Catalog - TypeScript representation for CDK prompt generation.
  *
- * Reads from the same JSON config file used by the Python Lambda at runtime.
- * This ensures prompts and validation rules are always in sync.
+ * Reads the same bundled catalog the Python Lambda loads at runtime
+ * (config/catalogs.json, produced from catalogs/*.json by `pnpm build`), so
+ * prompts and validation rules are always in sync.
  *
- * To add a new document type:
- *   node scripts/add-document-type.mjs --type ACTA_NACIMIENTO --fields "NOMBRE,CURP" --required "NOMBRE"
- *
- * Or manually edit: src/document-processing/resources/enrichment-lambda/config/document_types.json
+ * To add a new document type: copy catalogs/_TEMPLATE.json to
+ * catalogs/<TYPE_ID>.json, edit it, then `pnpm sync` (DynamoDB, hot) or
+ * `pnpm build && pnpm run deploy` (bundled). See AGENTS.md.
  */
 
 import * as fs from "fs";
@@ -53,20 +53,17 @@ interface RawTypeConfig {
   custom_validator?: string | null;
 }
 
-interface RawCatalogConfig {
-  types: Record<string, RawTypeConfig>;
-}
-
 /**
  * Load the document catalog from the shared JSON config file.
  * This is the single source of truth for both CDK (prompts) and Lambda (validation).
  */
 export function loadCatalog(): DocumentTypeEntry[] {
-  // Resolve config path relative to project root (works from dist/src/ and src/)
+  // Single bundled catalog produced from catalogs/*.json by `pnpm build`.
+  // Resolve relative to project root (works from dist/src/ and src/).
   const candidates = [
-    path.join(__dirname, "../../src/document-processing/resources/enrichment-lambda/config/document_types.json"),
-    path.join(__dirname, "../src/document-processing/resources/enrichment-lambda/config/document_types.json"),
-    path.join(__dirname, "document-processing/resources/enrichment-lambda/config/document_types.json"),
+    path.join(__dirname, "../../src/document-processing/resources/enrichment-lambda/config/catalogs.json"),
+    path.join(__dirname, "../src/document-processing/resources/enrichment-lambda/config/catalogs.json"),
+    path.join(__dirname, "document-processing/resources/enrichment-lambda/config/catalogs.json"),
   ];
 
   let configPath = "";
@@ -78,36 +75,54 @@ export function loadCatalog(): DocumentTypeEntry[] {
   }
 
   if (!configPath) {
-    throw new Error(`document_types.json not found. Tried: ${candidates.join(", ")}`);
+    throw new Error(`catalogs.json not found. Run 'pnpm build' first. Tried: ${candidates.join(", ")}`);
   }
 
-  const raw: RawCatalogConfig = JSON.parse(
-    fs.readFileSync(configPath, "utf-8")
-  );
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  const types: Record<string, RawTypeConfig & { pipeline?: string }> =
+    raw.document_types || raw.types || {};
 
-  const entries: DocumentTypeEntry[] = Object.entries(raw.types).map(([typeId, config]) => ({
-    typeId,
-    description: config.description || "",
-    extractionFields: config.extraction_fields || [],
-    requiredFields: config.required_fields || [],
-    extractionHints: config.extraction_hints || {},
-    validationRules: (config.validation_rules || []).map((r) => ({
-      field: r.field,
-      rule_type: r.rule_type,
-      pattern: r.pattern,
-      message: r.message,
-    })),
-    validatorModule: config.validator_module || null,
-    customValidator: config.custom_validator || null,
-  }));
+  const entries: DocumentTypeEntry[] = [];
+  for (const [typeId, config] of Object.entries(types)) {
+    if (config.pipeline === "expediente") {
+      // Customs types: classification prompt only. extractionFields stays empty
+      // on purpose — the expediente pipeline in the Lambda does the real
+      // extraction, and listing ~50 fields per type would blow the prompt limit.
+      entries.push({
+        typeId,
+        description:
+          CUSTOMS_SHORT_DESCRIPTIONS[typeId] || (config.description || "").slice(0, 110),
+        extractionFields: [],
+        requiredFields: [],
+        validationRules: [],
+        validatorModule: null,
+        isCustoms: true,
+      });
+    } else {
+      entries.push({
+        typeId,
+        description: config.description || "",
+        extractionFields: config.extraction_fields || [],
+        requiredFields: config.required_fields || [],
+        extractionHints: config.extraction_hints || {},
+        validationRules: (config.validation_rules || []).map((r) => ({
+          field: r.field,
+          rule_type: r.rule_type,
+          pattern: r.pattern,
+          message: r.message,
+        })),
+        validatorModule: config.validator_module || null,
+        customValidator: config.custom_validator || null,
+      });
+    }
+  }
 
-  entries.push(...loadCustomsTypes(configPath));
   return entries;
 }
 
 /**
  * Short, discriminant classification labels for the customs catalog.
- * The full descriptions live in customs_catalog.json; these terse versions
+ * The full descriptions live in each type file under catalogs/; these terse versions
  * exist because the classification prompt must fit a 4KB Lambda env var.
  */
 const CUSTOMS_SHORT_DESCRIPTIONS: Record<string, string> = {
@@ -136,31 +151,6 @@ const CUSTOMS_SHORT_DESCRIPTIONS: Record<string, string> = {
   ACUSE_VUCEM:
     "Acuse de la Ventanilla Digital (VUCEM): folio de solicitud, numero e-document, cadena original",
 };
-
-/**
- * Load customs (pedimentos) types from customs_catalog.json for the
- * CLASSIFICATION prompt only. extractionFields stays empty on purpose: the
- * expediente pipeline in the enrichment Lambda performs the real extraction,
- * and listing ~50 fields per type would blow the processing prompt's limit.
- */
-function loadCustomsTypes(documentTypesPath: string): DocumentTypeEntry[] {
-  const customsPath = path.join(path.dirname(documentTypesPath), "customs_catalog.json");
-  if (!fs.existsSync(customsPath)) return [];
-
-  const raw = JSON.parse(fs.readFileSync(customsPath, "utf-8"));
-  const types: Record<string, { description?: string }> = raw.document_types || {};
-  return Object.keys(types).map((typeId) => ({
-    typeId,
-    description:
-      CUSTOMS_SHORT_DESCRIPTIONS[typeId] ||
-      (types[typeId].description || "").slice(0, 110),
-    extractionFields: [],
-    requiredFields: [],
-    validationRules: [],
-    validatorModule: null,
-    isCustoms: true,
-  }));
-}
 
 /**
  * Convenience: get the catalog as a static array.

@@ -1,0 +1,79 @@
+{
+  "CFDI_GASTO_TERCERO": {
+    "description": "CFDI emitido por un tercero relacionado con el pedimento. Puede corresponder a muestreo, pago de derechos, punto de inspección, maniobras, almacenaje, logística u otros servicios.",
+    "business_destination": "GASTOS_TERCEROS",
+    "field_sets": [
+      "COMMON_CFDI_FIELDS"
+    ],
+    "extraction_fields": [
+      "GASTO_TERCERO_CATEGORIA",
+      "PEDIMENTO_REFERENCE",
+      "PRODUCTO_MERCANCIA",
+      "FECHA_PAGO",
+      "DEPENDENCIA_AUTORIDAD",
+      "CONCEPTOS"
+    ],
+    "allowed_subtypes": [
+      "IMPUESTOS_ADUANALES",
+      "MUESTREO",
+      "PAGO_DERECHOS",
+      "PUNTO_INSPECCION",
+      "MANIOBRAS",
+      "ALMACENAJE",
+      "REVISION_FITOSANITARIA",
+      "LOGISTICA",
+      "OTROS"
+    ],
+    "repeatable_fields": {
+      "CONCEPTOS": [
+        "CLAVE_PRODUCTO_SERVICIO",
+        "CANTIDAD",
+        "CLAVE_UNIDAD",
+        "DESCRIPCION",
+        "VALOR_UNITARIO",
+        "IMPORTE",
+        "IVA",
+        "IEPS",
+        "TOTAL_CONCEPTO"
+      ]
+    },
+    "extraction_hints": {
+      "GASTO_TERCERO_CATEGORIA": "Clasificar usando el concepto principal. 'Certificado fitosanitario' pagado a SENASICA corresponde a PAGO_DERECHOS, no a PERMISO_SANITARIO.",
+      "PEDIMENTO_REFERENCE": "Puede aparecer como 'Pedimento', 'PED.', 'REF', 'Observaciones del contribuyente' o unido a un prefijo de aduana.",
+      "PRODUCTO_MERCANCIA": "Extraer cuando el documento mencione el producto, por ejemplo papa, abarrotes u otra mercancía."
+    },
+    "required_fields": [
+      "GASTO_TERCERO_CATEGORIA",
+      "UUID",
+      "EMISOR_RFC",
+      "RECEPTOR_RFC",
+      "PEDIMENTO_REFERENCE",
+      "CONCEPTOS",
+      "TOTAL"
+    ],
+    "validation_rules": [
+      {
+        "field": "UUID",
+        "rule_type": "regex",
+        "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+        "message": "UUID del CFDI inválido"
+      },
+      {
+        "field": "TOTAL",
+        "rule_type": "cfdi_total",
+        "formula": "SUBTOTAL - DESCUENTO + TOTAL_IMPUESTOS_TRASLADADOS - TOTAL_IMPUESTOS_RETENIDOS",
+        "tolerance": 0.02,
+        "message": "El total del CFDI no coincide"
+      },
+      {
+        "field": "PEDIMENTO_REFERENCE",
+        "rule_type": "cross_document_match",
+        "target_document_type": "PEDIMENTO_ADUANAL",
+        "target_field": "NUMERO_CONSECUTIVO",
+        "message": "La referencia del CFDI no coincide con el pedimento del expediente"
+      }
+    ],
+    "validator_module": "validators.customs.third_party_expense",
+    "pipeline": "expediente"
+  }
+}

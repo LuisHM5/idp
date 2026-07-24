@@ -1,0 +1,43 @@
+{
+  "CEDULA_PROFESIONAL": {
+    "description": "Cedula profesional SEP: titulo 'CEDULA PROFESIONAL', numero 7-8 digitos, profesion autorizada (LIC/ING/MED), institucion educativa",
+    "extraction_fields": [
+      "NOMBRE_COMPLETO",
+      "NOMBRE",
+      "APELLIDO_PATERNO",
+      "APELLIDO_MATERNO",
+      "FECHA_NACIMIENTO",
+      "CURP",
+      "NUMERO_DOCUMENTO",
+      "VIGENCIA",
+      "DOMICILIO",
+      "TIPO_DOCUMENTO"
+    ],
+    "extraction_hints": {
+      "NOMBRE_COMPLETO": "Nombre del profesionista como aparece en la cedula",
+      "CURP": "CURP de 18 caracteres, generalmente en la parte inferior",
+      "NUMERO_DOCUMENTO": "Numero de cedula profesional, cadena numerica prominente",
+      "VIGENCIA": "Fecha de vigencia o expedicion, puede no tener fecha de vencimiento (usar fecha de expedicion si no hay vigencia)"
+    },
+    "required_fields": [
+      "NOMBRE_COMPLETO",
+      "CURP",
+      "NUMERO_DOCUMENTO",
+      "VIGENCIA"
+    ],
+    "validation_rules": [
+      {
+        "field": "CURP",
+        "rule_type": "regex",
+        "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+        "message": "CURP no cumple el patron oficial"
+      },
+      {
+        "field": "VIGENCIA",
+        "rule_type": "date_expiry",
+        "message": "El documento esta vencido"
+      }
+    ],
+    "validator_module": "validators.identification"
+  }
+}

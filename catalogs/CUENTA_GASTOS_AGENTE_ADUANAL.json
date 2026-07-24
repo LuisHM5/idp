@@ -1,0 +1,69 @@
+{
+  "CUENTA_GASTOS_AGENTE_ADUANAL": {
+    "description": "Resumen o cuenta de gastos del agente aduanal que concentra honorarios y pagos realizados por cuenta del importador.",
+    "business_destination": "FACTURA_AGENCIA_ADUANAL",
+    "extraction_fields": [
+      "AGENTE_ADUANAL_NOMBRE",
+      "AGENTE_ADUANAL_RFC",
+      "IMPORTADOR_NOMBRE",
+      "IMPORTADOR_RFC",
+      "NUMERO_PEDIMENTO",
+      "REFERENCIA",
+      "FECHA",
+      "HONORARIOS",
+      "IVA_HONORARIOS",
+      "ISR_RETENIDO",
+      "IVA_RETENIDO",
+      "TOTAL_HONORARIOS_NETO",
+      "GASTOS_RESUMEN",
+      "TOTAL_GASTOS_TERCEROS",
+      "TOTAL_GENERAL",
+      "ANTICIPO",
+      "SALDO"
+    ],
+    "repeatable_fields": {
+      "GASTOS_RESUMEN": [
+        "CATEGORIA",
+        "DESCRIPCION",
+        "IMPORTE",
+        "DOCUMENTO_SOPORTE_ESPERADO"
+      ]
+    },
+    "extraction_hints": {
+      "GASTOS_RESUMEN": "Normalizar conceptos como IMPUESTOS ADUANALES, MUESTREO, PAGO DE DERECHOS, PUNTO DE INSPECCION, LOGISTICA, ALMACENAJE y OTROS.",
+      "TOTAL_GENERAL": "Debe corresponder a honorarios netos más gastos por cuenta de terceros, salvo que el formato indique otra composición."
+    },
+    "required_fields": [
+      "IMPORTADOR_RFC",
+      "NUMERO_PEDIMENTO",
+      "GASTOS_RESUMEN",
+      "TOTAL_GENERAL",
+      "SALDO"
+    ],
+    "validation_rules": [
+      {
+        "field": "TOTAL_GASTOS_TERCEROS",
+        "rule_type": "sum_array",
+        "source": "GASTOS_RESUMEN.IMPORTE",
+        "tolerance": 0.02,
+        "message": "El total de gastos de terceros no coincide con el desglose"
+      },
+      {
+        "field": "TOTAL_GENERAL",
+        "rule_type": "custom_formula",
+        "formula": "TOTAL_HONORARIOS_NETO + TOTAL_GASTOS_TERCEROS",
+        "tolerance": 0.02,
+        "message": "El total general no coincide con honorarios más gastos"
+      },
+      {
+        "field": "SALDO",
+        "rule_type": "custom_formula",
+        "formula": "TOTAL_GENERAL - ANTICIPO",
+        "tolerance": 0.02,
+        "message": "El saldo no coincide con el total menos el anticipo"
+      }
+    ],
+    "validator_module": "validators.customs.expense_account",
+    "pipeline": "expediente"
+  }
+}

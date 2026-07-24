@@ -1,0 +1,59 @@
+{
+  "COMPROBANTE_PAGO_ADUANAL": {
+    "description": "Comprobante de pago de contribuciones de comercio exterior, banco, línea de captura o pago electrónico asociado al pedimento.",
+    "business_destination": "PEDIMENTO",
+    "extraction_fields": [
+      "NUMERO_PEDIMENTO",
+      "RFC_IMPORTADOR",
+      "LINEA_CAPTURA",
+      "BANCO",
+      "CLAVE_BANCO",
+      "NUMERO_OPERACION",
+      "FECHA_PAGO",
+      "HORA_PAGO",
+      "IMPORTE_TOTAL",
+      "MONEDA",
+      "REFERENCIA",
+      "CONTRIBUCIONES",
+      "SELLO_DIGITAL",
+      "CADENA_ORIGINAL"
+    ],
+    "repeatable_fields": {
+      "CONTRIBUCIONES": [
+        "CLAVE",
+        "DESCRIPCION",
+        "IMPORTE"
+      ]
+    },
+    "extraction_hints": {
+      "LINEA_CAPTURA": "Extraer completa, sin espacios agregados por OCR.",
+      "IMPORTE_TOTAL": "No confundir con una contribución individual.",
+      "CONTRIBUCIONES": "Extraer el desglose cuando esté disponible.",
+      "RFC_IMPORTADOR": "RFC del importador que paga las contribuciones. NO usar el RFC del banco, de la cuenta destino ni del concentrador de pagos. Si el comprobante no lo indica expresamente, dejar null."
+    },
+    "required_fields": [
+      "NUMERO_PEDIMENTO",
+      "FECHA_PAGO",
+      "IMPORTE_TOTAL"
+    ],
+    "validation_rules": [
+      {
+        "field": "NUMERO_PEDIMENTO",
+        "rule_type": "cross_document_match",
+        "target_document_type": "PEDIMENTO_ADUANAL",
+        "target_field": "NUMERO_PEDIMENTO_NORMALIZADO",
+        "message": "El comprobante de pago no corresponde al pedimento"
+      },
+      {
+        "field": "IMPORTE_TOTAL",
+        "rule_type": "cross_document_amount",
+        "target_document_type": "PEDIMENTO_ADUANAL",
+        "target_field": "TOTAL_PEDIMENTO",
+        "tolerance": 1,
+        "message": "El importe pagado no coincide con el total del pedimento"
+      }
+    ],
+    "validator_module": "validators.customs.customs_payment",
+    "pipeline": "expediente"
+  }
+}

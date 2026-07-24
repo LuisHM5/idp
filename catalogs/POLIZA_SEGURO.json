@@ -1,0 +1,51 @@
+{
+  "POLIZA_SEGURO": {
+    "description": "Poliza de aseguradora comercial (GNP/AXA/Qualitas/MetLife/Mapfre/HDI): numero de poliza, ramo (auto/vida/GMM/danos), vigencia inicio-fin, suma asegurada, coberturas",
+    "extraction_fields": [
+      "NUMERO_POLIZA",
+      "ASEGURADORA",
+      "NOMBRE_ASEGURADO",
+      "RFC_ASEGURADO",
+      "TIPO_SEGURO",
+      "VIGENCIA_INICIO",
+      "VIGENCIA_FIN",
+      "SUMA_ASEGURADA",
+      "PRIMA_TOTAL",
+      "FORMA_PAGO",
+      "MONEDA",
+      "COBERTURAS",
+      "DEDUCIBLE",
+      "BENEFICIARIOS",
+      "AGENTE"
+    ],
+    "extraction_hints": {
+      "NUMERO_POLIZA": "Numero de poliza, prominente en la parte superior del documento",
+      "ASEGURADORA": "Nombre de la compania aseguradora, logo o encabezado",
+      "NOMBRE_ASEGURADO": "Nombre completo del titular/asegurado",
+      "VIGENCIA_INICIO": "Fecha de inicio de vigencia, formato DD/MM/YYYY o similar",
+      "VIGENCIA_FIN": "Fecha de fin de vigencia, formato DD/MM/YYYY o similar",
+      "SUMA_ASEGURADA": "Monto de la suma asegurada, campo Suma Asegurada",
+      "PRIMA_TOTAL": "Monto total de la prima a pagar"
+    },
+    "required_fields": [
+      "NUMERO_POLIZA",
+      "ASEGURADORA",
+      "NOMBRE_ASEGURADO",
+      "VIGENCIA_FIN"
+    ],
+    "validation_rules": [
+      {
+        "field": "VIGENCIA_FIN",
+        "rule_type": "date_expiry",
+        "message": "La poliza esta vencida"
+      },
+      {
+        "field": "RFC_ASEGURADO",
+        "rule_type": "regex",
+        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "message": "RFC asegurado invalido"
+      }
+    ],
+    "validator_module": "validators.fiscal"
+  }
+}

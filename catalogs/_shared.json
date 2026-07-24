@@ -1,0 +1,143 @@
+{
+  "_global_output_fields": [
+    "DOCUMENT_TYPE",
+    "DOCUMENT_SUBTYPE",
+    "BUSINESS_CATEGORY",
+    "SOURCE_FILE_NAME",
+    "SOURCE_PAGE_START",
+    "SOURCE_PAGE_END",
+    "EXTRACTION_CONFIDENCE",
+    "VALIDATION_STATUS",
+    "REVIEW_REQUIRED",
+    "WARNINGS"
+  ],
+  "_field_sets": {
+    "COMMON_CFDI_FIELDS": [
+      "VERSION_CFDI",
+      "TIPO_COMPROBANTE",
+      "SERIE",
+      "FOLIO",
+      "UUID",
+      "FECHA_EMISION",
+      "FECHA_CERTIFICACION",
+      "LUGAR_EXPEDICION",
+      "MONEDA",
+      "TIPO_CAMBIO",
+      "FORMA_PAGO",
+      "METODO_PAGO",
+      "CONDICIONES_PAGO",
+      "EXPORTACION",
+      "EMISOR_RFC",
+      "EMISOR_NOMBRE",
+      "EMISOR_REGIMEN_FISCAL",
+      "EMISOR_DOMICILIO",
+      "RECEPTOR_RFC",
+      "RECEPTOR_NOMBRE",
+      "RECEPTOR_REGIMEN_FISCAL",
+      "RECEPTOR_CODIGO_POSTAL",
+      "RECEPTOR_DOMICILIO",
+      "USO_CFDI",
+      "REFERENCIA_PEDIMENTO",
+      "REFERENCIA_INTERNA",
+      "MERCANCIA",
+      "SUBTOTAL",
+      "DESCUENTO",
+      "IVA_TRASLADADO",
+      "IEPS_TRASLADADO",
+      "ISR_RETENIDO",
+      "IVA_RETENIDO",
+      "TOTAL_IMPUESTOS_TRASLADADOS",
+      "TOTAL_IMPUESTOS_RETENIDOS",
+      "TOTAL",
+      "TOTAL_CON_LETRA",
+      "ANTICIPO",
+      "SALDO",
+      "CERTIFICADO_EMISOR",
+      "CERTIFICADO_SAT",
+      "RFC_PROVEEDOR_CERTIFICACION",
+      "SELLO_CFDI",
+      "SELLO_SAT",
+      "CADENA_ORIGINAL",
+      "CONCEPTOS"
+    ],
+    "COMMON_FOREIGN_INVOICE_FIELDS": [
+      "INVOICE_NUMBER",
+      "INVOICE_DATE",
+      "DUE_DATE",
+      "SELLER_NAME",
+      "SELLER_TAX_ID",
+      "SELLER_ADDRESS",
+      "SELLER_COUNTRY",
+      "BUYER_NAME",
+      "BUYER_TAX_ID",
+      "BUYER_ADDRESS",
+      "BUYER_COUNTRY",
+      "CURRENCY",
+      "EXCHANGE_RATE",
+      "PAYMENT_TERMS",
+      "INCOTERM",
+      "PURCHASE_ORDER",
+      "SHIPMENT_REFERENCE",
+      "PEDIMENTO_REFERENCE",
+      "SUBTOTAL",
+      "FREIGHT_AMOUNT",
+      "INSURANCE_AMOUNT",
+      "OTHER_CHARGES",
+      "TAX_AMOUNT",
+      "TOTAL",
+      "ITEMS"
+    ]
+  },
+  "cross_document_validation_rules": [
+    {
+      "rule_type": "same_pedimento",
+      "documents": [
+        "PEDIMENTO_ADUANAL",
+        "FACTURA_AGENCIA_ADUANAL",
+        "CUENTA_GASTOS_AGENTE_ADUANAL",
+        "CFDI_GASTO_TERCERO",
+        "FACTURA_LOGISTICA",
+        "COMPROBANTE_PAGO_ADUANAL"
+      ],
+      "message": "Los documentos no corresponden al mismo pedimento"
+    },
+    {
+      "rule_type": "expected_importer_rfc",
+      "fields": [
+        "RFC_IMPORTADOR_EXPORTADOR",
+        "RECEPTOR_RFC",
+        "IMPORTADOR_RFC",
+        "RFC_PARA_CONSULTA"
+      ],
+      "message": "Uno o más documentos no pertenecen al importador configurado"
+    },
+    {
+      "rule_type": "unique_cfdi_uuid",
+      "documents": [
+        "FACTURA_AGENCIA_ADUANAL",
+        "CFDI_GASTO_TERCERO",
+        "FACTURA_LOGISTICA"
+      ],
+      "message": "Se detectó un CFDI duplicado dentro del expediente"
+    },
+    {
+      "rule_type": "expense_reconciliation",
+      "summary_document": "CUENTA_GASTOS_AGENTE_ADUANAL",
+      "detail_documents": [
+        "CFDI_GASTO_TERCERO",
+        "FACTURA_LOGISTICA",
+        "COMPROBANTE_PAGO_ADUANAL"
+      ],
+      "group_by": "GASTO_TERCERO_CATEGORIA",
+      "tolerance": 0.02,
+      "message": "Los gastos resumidos por el agente aduanal no coinciden con sus documentos soporte"
+    },
+    {
+      "rule_type": "pedimento_value_reconciliation",
+      "pedimento_document": "PEDIMENTO_ADUANAL",
+      "foreign_invoice_document": "FACTURA_PROVEEDOR_EXTRANJERO",
+      "freight_document": "FACTURA_FLETE_EXTRANJERO",
+      "message": "Los valores comerciales e incrementables no coinciden con las facturas del expediente"
+    }
+  ]
+}

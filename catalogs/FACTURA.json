@@ -1,0 +1,60 @@
+{
+  "FACTURA": {
+    "description": "CFDI 4.0 del SAT: UUID 36 chars (8-4-4-4-12), RFC emisor/receptor, desglose Subtotal/IVA/Total, cadena original '||1.1|...||'",
+    "extraction_fields": [
+      "RFC_EMISOR",
+      "NOMBRE_EMISOR",
+      "RFC_RECEPTOR",
+      "NOMBRE_RECEPTOR",
+      "FOLIO",
+      "SERIE",
+      "FECHA_EMISION",
+      "SUBTOTAL",
+      "IVA",
+      "TOTAL",
+      "MONEDA",
+      "FORMA_PAGO",
+      "METODO_PAGO",
+      "USO_CFDI",
+      "UUID",
+      "REGIMEN_FISCAL_EMISOR",
+      "CODIGO_POSTAL_EMISOR"
+    ],
+    "extraction_hints": {
+      "RFC_EMISOR": "RFC del emisor, 12 o 13 caracteres, parte superior del CFDI",
+      "RFC_RECEPTOR": "RFC del receptor/cliente, campo Receptor",
+      "UUID": "Folio fiscal UUID de 36 caracteres con guiones, sello digital o timbre fiscal",
+      "FOLIO": "Numero de folio de la factura, parte superior",
+      "TOTAL": "Monto total con IVA incluido, campo Total",
+      "FECHA_EMISION": "Fecha de emision del CFDI, formato YYYY-MM-DDTHH:MM:SS"
+    },
+    "required_fields": [
+      "RFC_EMISOR",
+      "RFC_RECEPTOR",
+      "TOTAL",
+      "UUID",
+      "FECHA_EMISION"
+    ],
+    "validation_rules": [
+      {
+        "field": "RFC_EMISOR",
+        "rule_type": "regex",
+        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "message": "RFC emisor invalido"
+      },
+      {
+        "field": "RFC_RECEPTOR",
+        "rule_type": "regex",
+        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "message": "RFC receptor invalido"
+      },
+      {
+        "field": "UUID",
+        "rule_type": "regex",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "message": "UUID fiscal invalido"
+      }
+    ],
+    "validator_module": "validators.fiscal"
+  }
+}

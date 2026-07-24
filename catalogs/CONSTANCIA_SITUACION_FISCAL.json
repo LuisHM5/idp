@@ -1,0 +1,50 @@
+{
+  "CONSTANCIA_SITUACION_FISCAL": {
+    "description": "Constancia de Situacion Fiscal del SAT: logo SAT, RFC prominente (12-13 chars), secciones 'Regimenes' y 'Obligaciones', cadena original y QR",
+    "extraction_fields": [
+      "RFC",
+      "CURP",
+      "NOMBRE_O_RAZON_SOCIAL",
+      "REGIMEN_FISCAL",
+      "CODIGO_POSTAL",
+      "FECHA_EMISION",
+      "ESTATUS_EN_PADRON",
+      "ACTIVIDAD_ECONOMICA"
+    ],
+    "extraction_hints": {
+      "RFC": "Registro Federal de Contribuyentes, 12 o 13 caracteres alfanumericos, aparece prominente en la parte superior del documento junto a 'RFC:'",
+      "CURP": "CURP de 18 caracteres, aparece debajo del RFC en la seccion de datos de identificacion",
+      "NOMBRE_O_RAZON_SOCIAL": "Nombre completo de la persona fisica o razon social de la empresa, campo 'Nombre, denominacion o razon social'",
+      "REGIMEN_FISCAL": "Regimen fiscal en el que esta inscrito, seccion 'Regimenes' del documento, puede haber multiples",
+      "CODIGO_POSTAL": "Codigo postal del domicilio fiscal, 5 digitos, en la seccion de ubicacion",
+      "FECHA_EMISION": "Fecha en que se genero la constancia, usualmente en la parte superior o inferior del documento",
+      "ESTATUS_EN_PADRON": "Estado del contribuyente: ACTIVO, SUSPENDIDO, etc. Campo 'Estatus en el padron'",
+      "ACTIVIDAD_ECONOMICA": "Actividad economica principal registrada ante el SAT"
+    },
+    "required_fields": [
+      "RFC",
+      "NOMBRE_O_RAZON_SOCIAL"
+    ],
+    "validation_rules": [
+      {
+        "field": "RFC",
+        "rule_type": "regex",
+        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
+        "message": "RFC no cumple el formato valido"
+      },
+      {
+        "field": "CURP",
+        "rule_type": "regex",
+        "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+        "message": "CURP no cumple el patron oficial"
+      },
+      {
+        "field": "FECHA_EMISION",
+        "rule_type": "date_max_age",
+        "pattern": "5",
+        "message": "La constancia tiene mas de 5 años de emision, se considera vencida"
+      }
+    ],
+    "validator_module": "validators.fiscal"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "NUEVO_TIPO": {
+    "description": "Qué es este documento y cómo se distingue de otros. Este texto va al prompt de clasificación de Bedrock, así que sé discriminante (menciona marcas del documento: folios, sellos, encabezados).",
+    "extraction_fields": [
+      "CAMPO_UNO",
+      "CAMPO_DOS"
+    ],
+    "extraction_hints": {
+      "CAMPO_UNO": "Dónde vive el dato en el documento, en español (p. ej. 'esquina superior derecha, junto al folio').",
+      "CAMPO_DOS": "Pista de extracción para el modelo."
+    },
+    "required_fields": [
+      "CAMPO_UNO"
+    ],
+    "validation_rules": [
+      {
+        "field": "CAMPO_UNO",
+        "rule_type": "regex",
+        "pattern": "^.+$",
+        "message": "CAMPO_UNO tiene un formato inválido"
+      }
+    ],
+    "validator_module": null,
+    "custom_validator": null,
+
+    "__NOTAS__": "Borra esta clave. Campos OPCIONALES para tipos aduanales multi-documento: agrega \"pipeline\": \"expediente\" para que pase por el pipeline de expediente (segmentación + reglas cruzadas). \"field_sets\": [\"COMMON_CFDI_FIELDS\"] reutiliza listas de campos definidas en _shared.json. \"repeatable_fields\", \"structured_fields\", \"form_mapping\", \"schema_version\", \"business_destination\", \"min_confidence\" también se soportan (ver PEDIMENTO_ADUANAL.json)."
+  }
+}

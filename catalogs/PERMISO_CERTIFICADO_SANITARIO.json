@@ -1,0 +1,79 @@
+{
+  "PERMISO_CERTIFICADO_SANITARIO": {
+    "description": "Permiso, certificado sanitario, certificado fitosanitario o autorización oficial emitida por SENASICA, COFEPRIS u otra autoridad. No debe confundirse con la factura por pago de derechos.",
+    "business_destination": "PERMISO_SALUD",
+    "extraction_fields": [
+      "AUTORIDAD_EMISORA",
+      "TIPO_PERMISO",
+      "NUMERO_PERMISO_CERTIFICADO",
+      "FOLIO",
+      "FECHA_EMISION",
+      "FECHA_VIGENCIA_INICIO",
+      "FECHA_VIGENCIA_FIN",
+      "ESTATUS",
+      "IMPORTADOR_NOMBRE",
+      "IMPORTADOR_RFC",
+      "EXPORTADOR_NOMBRE",
+      "PRODUCTOR_NOMBRE",
+      "ESTABLECIMIENTO_ORIGEN",
+      "PAIS_ORIGEN",
+      "PAIS_DESTINO",
+      "PRODUCTO",
+      "DESCRIPCION_MERCANCIA",
+      "CANTIDAD_AUTORIZADA",
+      "UNIDAD",
+      "PESO",
+      "NUMERO_LOTE",
+      "PEDIMENTO_REFERENCE",
+      "REQUISITOS_CONDICIONES",
+      "OBSERVACIONES",
+      "CODIGO_QR",
+      "CODIGO_BARRAS",
+      "FIRMA_FUNCIONARIO",
+      "SELLO_AUTORIDAD"
+    ],
+    "extraction_hints": {
+      "NUMERO_PERMISO_CERTIFICADO": "Debe ser el número de autorización oficial, no el folio de la factura ni su UUID.",
+      "TIPO_PERMISO": "Ejemplos: certificado fitosanitario, permiso sanitario previo de importación, certificado zoosanitario o autorización de importación.",
+      "FECHA_VIGENCIA_FIN": "No confundir con la fecha de emisión ni con la fecha de pago de derechos.",
+      "REQUISITOS_CONDICIONES": "Conservar el texto completo de restricciones, tratamientos, inspecciones o condiciones especiales."
+    },
+    "required_fields": [
+      "AUTORIDAD_EMISORA",
+      "TIPO_PERMISO",
+      "NUMERO_PERMISO_CERTIFICADO",
+      "FECHA_EMISION",
+      "IMPORTADOR_NOMBRE",
+      "PRODUCTO"
+    ],
+    "validation_rules": [
+      {
+        "field": "FECHA_VIGENCIA_FIN",
+        "rule_type": "date_expiry",
+        "allow_empty": true,
+        "message": "El permiso o certificado está vencido"
+      },
+      {
+        "field": "PEDIMENTO_REFERENCE",
+        "rule_type": "cross_document_match",
+        "allow_empty": true,
+        "target_document_type": "PEDIMENTO_ADUANAL",
+        "target_field": "NUMERO_CONSECUTIVO",
+        "message": "El permiso no corresponde al pedimento del expediente"
+      },
+      {
+        "field": "TIPO_PERMISO",
+        "rule_type": "negative_keyword",
+        "keywords": [
+          "FACTURA ELECTRONICA",
+          "CFDI",
+          "FOLIO FISCAL",
+          "UUID"
+        ],
+        "message": "El archivo parece ser una factura de derechos y no un permiso sanitario"
+      }
+    ],
+    "validator_module": "validators.customs.health_permit",
+    "pipeline": "expediente"
+  }
+}

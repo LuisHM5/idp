@@ -1,0 +1,51 @@
+{
+  "ACUSE_VUCEM": {
+    "description": "Acuse de digitalización o registro de documentos emitido por la Ventanilla Digital Mexicana de Comercio Exterior.",
+    "business_destination": "EXPEDIENTE_COMPLETO",
+    "extraction_fields": [
+      "TIPO_ACUSE",
+      "RFC_SOLICITANTE",
+      "NOMBRE_SOLICITANTE",
+      "FECHA_RECEPCION",
+      "HORA_RECEPCION",
+      "FOLIO_SOLICITUD",
+      "OPERACION",
+      "NUMERO_E_DOCUMENT",
+      "FECHA_REGISTRO",
+      "NOMBRE_DOCUMENTO",
+      "TIPO_DOCUMENTO_VUCEM",
+      "RFC_PARA_CONSULTA",
+      "PLAZO_VIGENCIA_DIAS",
+      "CADENA_ORIGINAL",
+      "SELLO_SOLICITANTE",
+      "SELLO_VUCEM"
+    ],
+    "extraction_hints": {
+      "NUMERO_E_DOCUMENT": "Identificador asignado al documento digitalizado por VUCEM.",
+      "TIPO_DOCUMENTO_VUCEM": "Conservar la descripción oficial, por ejemplo 'Escritos' o 'Conocimiento de embarque, lista de empaque, guía o demás documentos de transporte'.",
+      "PLAZO_VIGENCIA_DIAS": "Extraer cuando el acuse indique un plazo para utilizar el documento."
+    },
+    "required_fields": [
+      "FOLIO_SOLICITUD",
+      "NUMERO_E_DOCUMENT",
+      "FECHA_REGISTRO",
+      "NOMBRE_DOCUMENTO",
+      "RFC_PARA_CONSULTA"
+    ],
+    "validation_rules": [
+      {
+        "field": "NUMERO_E_DOCUMENT",
+        "rule_type": "regex",
+        "pattern": "^[A-Z0-9]+$",
+        "message": "Número e-document inválido"
+      },
+      {
+        "field": "RFC_PARA_CONSULTA",
+        "rule_type": "expected_value_by_app",
+        "message": "El RFC para consulta no corresponde a la empresa configurada"
+      }
+    ],
+    "validator_module": "validators.customs.vucem_acknowledgement",
+    "pipeline": "expediente"
+  }
+}

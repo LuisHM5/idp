@@ -10,7 +10,7 @@ Sistema extensible de validación y extracción inteligente de documentos mexica
 
 ## Pipeline de Pedimentos / Expedientes Aduanales
 
-Los tipos del catálogo aduanal (`catalogs/full-pedimentos-docs.json`) se procesan con un pipeline dedicado (`pipeline/` dentro de la enrichment lambda) diseñado para PDFs multi-documento, escaneados o digitales:
+Los tipos aduanales (los que declaran `"pipeline": "expediente"` en `catalogs/`) se procesan con un pipeline dedicado (`pipeline/` dentro de la enrichment lambda) diseñado para PDFs multi-documento, escaneados o digitales:
 
 ```
 PDF → texto por página (pypdf layout / Textract solo páginas escaneadas)
@@ -40,7 +40,7 @@ pnpm test:pedimentos -- --file B2401416 --save /tmp/resultados
 
 Las expectativas (ground truth) viven en `tests/integration/expected_pedimentos.json`. Un run completo de los 8 documentos cuesta ~$1 USD y tarda ~15 min.
 
-> `catalogs/full-pedimentos-docs.json` es la fuente de verdad del catálogo aduanal; `pnpm build` (o `pnpm sync-catalogs`) lo copia a `config/customs_catalog.json` dentro de la Lambda.
+> La carpeta `catalogs/` (un archivo por tipo + `_shared.json`) es la única fuente de verdad; `pnpm build` la combina en `config/catalogs.json` dentro de la Lambda. Guía: `catalogs/README.md`.
 
 ---
 
@@ -129,85 +129,38 @@ pnpm build && pnpm run deploy
 | `pnpm test:unit` | Tests offline del motor de reglas (pytest) |
 | `pnpm test:pedimentos` | Pipeline real contra los docs de pedimentos (AWS) |
 | `pnpm test-e2e --file doc.pdf` | Probar el stack desplegado end-to-end |
-| `pnpm sync-catalogs` | Copiar `catalogs/full-pedimentos-docs.json` → Lambda config |
-| `pnpm db-sync-customs` | Subir catálogo de pedimentos a DynamoDB (hot-reload) |
-| `pnpm db-sync --file catalogs/x.json` | Subir cualquier catálogo a DynamoDB (`--dry-run` para validar) |
-| `pnpm db-put-type` | Insertar tipo en DynamoDB por CLI (hot-reload) |
-| `pnpm db-list-types` | Listar tipos en DynamoDB |
-| `pnpm db-delete-type --type X [--disable]` | Borrar/deshabilitar un tipo en DynamoDB (`--all` vacía la tabla) |
-| `pnpm list-types` | Listar tipos del JSON config local |
-| `pnpm preview-prompts` | Ver los prompts que recibirá Bedrock |
-| `pnpm add-type` | Agregar tipo documental al JSON |
-| `pnpm add-validator` | Crear custom validator Node.js |
+| `pnpm sync` | Subir **toda** la carpeta `catalogs/` a DynamoDB (hot-reload, sin redeploy) |
+| `pnpm sync:one -- --type X` | Subir **un** tipo (o `--file`, o un nombre difuso; `--dry-run` para validar) |
+| `pnpm preview-prompts` | Ver los prompts que recibirá Bedrock (corre `pnpm build` antes) |
 
 ---
 
 ## Agregar un Nuevo Tipo Documental
 
-### Opción A: JSON config (requiere redeploy)
+Todo vive en la carpeta **`catalogs/`** (un archivo por tipo). Tres pasos:
 
 ```bash
-pnpm add-type \
-  --type ACTA_NACIMIENTO \
-  --description "Acta de nacimiento" \
-  --fields "NOMBRE_COMPLETO,CURP,FECHA_NACIMIENTO,ENTIDAD,MUNICIPIO,NUMERO_ACTA" \
-  --required "NOMBRE_COMPLETO,CURP" \
-  --rules '[{"field":"CURP","rule_type":"regex","pattern":"^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$","message":"CURP invalido"}]'
+# 1. Copia la plantilla con el nombre del tipo
+cp catalogs/_TEMPLATE.json catalogs/ACTA_NACIMIENTO.json
 
-# Luego redesplegar
-pnpm build && pnpm run deploy
+# 2. Edita catalogs/ACTA_NACIMIENTO.json:
+#    { "ACTA_NACIMIENTO": { "description": "...", "extraction_fields": [...],
+#      "extraction_hints": {...}, "required_fields": [...], "validation_rules": [...] } }
+
+# 3. Aplícalo
+pnpm sync:one -- --type ACTA_NACIMIENTO     # inmediato (DynamoDB, sin redeploy), o
+pnpm run build && pnpm run deploy           # permanente (empaquetado en la Lambda)
 ```
 
-Para ver ayuda completa: `pnpm add-type --help`
-
-### Opción B: DynamoDB (efecto inmediato, sin redeploy)
-
-```bash
-pnpm db-put-type \
-  --type ACTA_NACIMIENTO \
-  --description "Acta de nacimiento" \
-  --fields "NOMBRE_COMPLETO,CURP,FECHA_NACIMIENTO,ENTIDAD,MUNICIPIO" \
-  --required "NOMBRE_COMPLETO,CURP" \
-  --rules '[{"field":"CURP","rule_type":"regex","pattern":"^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$"}]' \
-  --hints '{"CURP":"CURP de 18 caracteres, usualmente en la parte inferior del acta"}'
-```
-
-Para ver ayuda: `pnpm db-put-type --help`
-
-Para listar lo que hay en DynamoDB: `pnpm db-list-types`
-
-### Opción C: Editar el JSON directamente
-
-Archivo: `src/document-processing/resources/enrichment-lambda/config/document_types.json`
-
-```json
-{
-  "types": {
-    "MI_NUEVO_TIPO": {
-      "description": "Descripción del documento",
-      "extraction_fields": ["CAMPO1", "CAMPO2", "CAMPO3"],
-      "extraction_hints": {
-        "CAMPO1": "Dónde encontrar este campo en el documento",
-        "CAMPO2": "Formato esperado y ubicación visual"
-      },
-      "required_fields": ["CAMPO1"],
-      "validation_rules": [
-        {"field": "CAMPO1", "rule_type": "regex", "pattern": "^[A-Z]+$", "message": "Error personalizado"}
-      ],
-      "validator_module": null,
-      "custom_validator": null
-    }
-  }
-}
-```
+Guía detallada de los campos: **`catalogs/README.md`**. Para tipos aduanales
+multi-documento agrega `"pipeline": "expediente"` al entry.
 
 ---
 
 ## Agregar Extraction Hints
 
 Los hints le dicen a Bedrock **dónde y cómo** encontrar cada campo en el documento.
-
-Editar directamente en el JSON config:
+Se editan en `extraction_hints` del archivo del tipo en `catalogs/`:
 
 ```json
 "extraction_hints": {
@@ -217,28 +170,15 @@ Editar directamente en el JSON config:
 }
 ```
 
-O al agregar un tipo via CLI:
-
-```bash
-pnpm db-put-type --type MI_TIPO --fields "RFC,NOMBRE" \
-  --hints '{"RFC":"RFC prominente en la parte superior del documento"}'
-```
+Luego `pnpm sync:one -- --type MI_TIPO` (hot-reload) o `pnpm run build && pnpm run deploy`.
 
 ---
 
 ## Agregar Validación Custom (Node.js)
 
-Para lógica que va más allá de regex/fechas/presencia (APIs externas, cálculos, cruces):
-
-```bash
-# Crear el template
-pnpm add-validator --name validate_rfc_sat
-
-# O crear y asociar a un tipo en un solo paso
-pnpm add-validator --name validate_rfc_sat --type CONSTANCIA_SITUACION_FISCAL
-```
-
-Editar el archivo generado en `custom_validators/validate_rfc_sat.mjs`:
+Para lógica que va más allá de regex/fechas/presencia (APIs externas, cálculos, cruces),
+crea un archivo en `custom_validators/` (p. ej. `custom_validators/validate_rfc_sat.mjs`)
+y referéncialo con `"custom_validator": "validate_rfc_sat"` en el tipo. Ejemplo:
 
 ```javascript
 export async function validate(entityMap, context) {
@@ -296,7 +236,7 @@ documents-validator/
 │       │   ├── handler.py               # Motor de validación (NO modificar)
 │       │   ├── document_catalog.py      # Carga config JSON + DynamoDB
 │       │   ├── config/
-│       │   │   ├── document_types.json  # ← CATÁLOGO PRINCIPAL (editar aquí)
+│       │   │   ├── catalogs.json        # ← catálogo empaquetado (GENERADO, no editar)
 │       │   │   └── schema.json          # JSON Schema para autocompletado
 │       │   ├── validators/
 │       │   │   ├── base.py              # Utilidades compartidas (regex, fechas)
@@ -309,12 +249,13 @@ documents-validator/
 │       └── upload-lambda/
 │           ├── index.mjs                # API de upload
 │           └── package.json
+├── catalogs/                           # ← FUENTE DE VERDAD: un JSON por tipo
+│   ├── _shared.json                    #   field_sets + reglas cross-documento
+│   ├── _TEMPLATE.json                  #   plantilla para tipos nuevos
+│   └── <TYPE_ID>.json                  #   un tipo por archivo
 ├── scripts/
-│   ├── add-document-type.mjs            # CLI: agregar tipo al JSON
-│   ├── add-custom-validator.mjs         # CLI: crear custom validator
-│   ├── db-put-type.mjs                  # CLI: insertar tipo en DynamoDB
-│   ├── db-list-types.mjs               # CLI: listar tipos en DynamoDB
-│   ├── list-types.mjs                   # CLI: listar tipos del JSON local
+│   ├── sync-catalogs.mjs               # build: combina catalogs/ → config/catalogs.json
+│   ├── sync-schema.mjs                 # pnpm sync / sync:one → DynamoDB
 │   └── preview-prompts.mjs             # CLI: ver prompts generados
 ├── package.json
 └── tsconfig.json
@@ -342,8 +283,8 @@ new BedrockDocumentProcessingStack(app, "DocValidator", {
 
 Cuando la Lambda se ejecuta, carga tipos en este orden (último gana):
 
-1. **JSON local** (`config/document_types.json`) — siempre disponible, desplegado con la Lambda
-2. **DynamoDB** (si `CATALOG_TABLE` está configurado) — sobreescribe tipos del JSON
+1. **JSON empaquetado** (`config/catalogs.json`, generado de `catalogs/`) — siempre disponible, desplegado con la Lambda
+2. **DynamoDB** (si `CATALOG_TABLE` está configurado) — sobreescribe tipos del JSON (es lo que escribe `pnpm sync`)
 
 Esto permite:
 - Tener una base estable en JSON (versionada en git)
@@ -355,18 +296,18 @@ Esto permite:
 ## Flujo de Trabajo Recomendado
 
 ### Para desarrollo normal:
-1. Editar `config/document_types.json` (o usar `pnpm add-type`)
+1. Editar el archivo del tipo en `catalogs/` (o `cp catalogs/_TEMPLATE.json catalogs/NUEVO.json`)
 2. `pnpm build`
 3. `pnpm preview-prompts` (verificar que los prompts se ven bien)
 4. `pnpm run deploy`
 
-### Para cambios urgentes en producción:
-1. `pnpm db-put-type --type NUEVO_TIPO --fields "..." --required "..."`
-2. Listo — efecto inmediato
+### Para cambios urgentes en producción (sin redeploy):
+1. Editar el archivo en `catalogs/`
+2. `pnpm sync` (todo) o `pnpm sync:one -- --type NUEVO_TIPO` — efecto inmediato
 
 ### Para validación custom:
-1. `pnpm add-validator --name mi_validador --type MI_TIPO`
-2. Editar `custom_validators/mi_validador.mjs`
+1. Crear `custom_validators/mi_validador.mjs`
+2. Referenciarlo con `"custom_validator": "mi_validador"` en el tipo
 3. `pnpm build && pnpm run deploy`
 
 ---

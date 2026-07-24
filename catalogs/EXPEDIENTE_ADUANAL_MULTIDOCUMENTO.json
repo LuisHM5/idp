@@ -1,0 +1,47 @@
+{
+  "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO": {
+    "description": "Archivo PDF que contiene varios documentos relacionados con una misma operación de comercio exterior. Puede incluir factura de agencia, pedimento, CFDI, comprobantes de pago, documentos de transporte, permisos y anexos VUCEM.",
+    "business_destination": "EXPEDIENTE_COMPLETO",
+    "extraction_fields": [
+      "NUMERO_PEDIMENTO_PRINCIPAL",
+      "RFC_IMPORTADOR",
+      "REFERENCIA_OPERACION",
+      "TOTAL_PAGES",
+      "DETECTED_DOCUMENTS"
+    ],
+    "repeatable_fields": {
+      "DETECTED_DOCUMENTS": [
+        "DOCUMENT_TYPE",
+        "DOCUMENT_SUBTYPE",
+        "PAGE_START",
+        "PAGE_END",
+        "CONFIDENCE",
+        "PEDIMENTO_REFERENCE",
+        "UUID",
+        "FOLIO"
+      ]
+    },
+    "extraction_hints": {
+      "DETECTED_DOCUMENTS": "Separar el PDF por rangos de páginas. Un cambio fuerte de diseño, emisor, folio, UUID, título o numeración de páginas normalmente indica el inicio de otro documento.",
+      "NUMERO_PEDIMENTO_PRINCIPAL": "Elegir el número de pedimento que aparece repetido en la mayoría de los documentos del expediente."
+    },
+    "required_fields": [
+      "DETECTED_DOCUMENTS"
+    ],
+    "validation_rules": [
+      {
+        "field": "DETECTED_DOCUMENTS",
+        "rule_type": "minimum_items",
+        "value": 1,
+        "message": "No fue posible identificar documentos dentro del expediente"
+      },
+      {
+        "field": "DETECTED_DOCUMENTS",
+        "rule_type": "page_ranges_no_overlap",
+        "message": "Los rangos de páginas clasificados se traslapan"
+      }
+    ],
+    "validator_module": "validators.customs.document_segmentation",
+    "pipeline": "expediente"
+  }
+}

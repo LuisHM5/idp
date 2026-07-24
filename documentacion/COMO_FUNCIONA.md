@@ -91,7 +91,7 @@ flowchart TD
 
 ## 4. El motor de reglas (validación configurable)
 
-Las reglas viven en **JSON** (`catalogs/full-pedimentos-docs.json`) — se agregan o cambian **sin tocar código ni redesplegar**:
+Las reglas viven en la carpeta **`catalogs/`** (un JSON por tipo) — se agregan o cambian **sin tocar código ni redesplegar**:
 
 ```mermaid
 flowchart LR
@@ -101,7 +101,7 @@ flowchart LR
         C["validation_rules<br/>(cómo validar)"]
         D["cross_document_rules<br/>(validar ENTRE documentos)"]
     end
-    Catalogo -->|"pnpm db-sync-customs<br/>(hot-reload)"| E[("DynamoDB")]
+    Catalogo -->|"pnpm sync<br/>(hot-reload)"| E[("DynamoDB")]
     Catalogo -->|"pnpm build + deploy<br/>(empaquetado)"| F["Lambda"]
 ```
 
@@ -194,8 +194,8 @@ sequenceDiagram
 | Subir uno grande (≥4 MB) | `aws s3 cp doc.pdf s3://<bucket>/raw/$(uuidgen)/doc.pdf` |
 | Ver el resultado | `pnpm resultado -- --id <documentId> --wait` |
 | Probar local sin el stack | `pnpm procesar -- --file doc.pdf --importer MI_RFC` |
-| Cambiar reglas sin redeploy | editar `catalogs/full-pedimentos-docs.json` + `pnpm db-sync-customs` |
-| Ver/borrar tipos del catálogo | `pnpm db-list-types` / `pnpm db-delete-type --type X` |
+| Cambiar reglas sin redeploy | editar `catalogs/<TIPO>.json` + `pnpm sync` |
+| Crear un tipo nuevo | copiar `catalogs/_TEMPLATE.json` → `catalogs/<TIPO>.json` + `pnpm sync:one` |
 | Desplegar cambios de código | `pnpm build && pnpm run deploy` |
 
 ---
@@ -225,13 +225,13 @@ Tu aplicación consumidora: busca el documento con `documentType == "PEDIMENTO_A
 
 ```
 documents-validator/
-├── catalogs/full-pedimentos-docs.json    ← ⭐ TUS REGLAS (fuente de verdad)
+├── catalogs/                          ← ⭐ TUS REGLAS (un JSON por tipo, fuente de verdad)
 ├── src/
 │   ├── document-validation-stack.ts      ← infraestructura (CDK)
 │   └── document-processing/resources/enrichment-lambda/
 │       ├── pipeline/                     ← pipeline de expedientes (OCR, segmentar, extraer)
 │       ├── validators/engine.py          ← motor de reglas dinámico
-│       └── config/customs_catalog.json   ← copia generada del catálogo (NO editar)
+│       └── config/catalogs.json        ← copia generada del catálogo (NO editar)
 ├── scripts/                              ← CLI: subir, procesar, ver resultado, catálogo
 ├── tests/                                ← 67 tests unitarios + integración con docs reales
 └── documentacion/

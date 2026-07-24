@@ -1,0 +1,70 @@
+{
+  "DOCUMENTO_TRANSPORTE": {
+    "description": "Conocimiento de embarque, Bill of Lading, guía aérea, carta porte, lista de empaque o documento equivalente de transporte.",
+    "business_destination": "OPERACIONES_LOGISTICAS_INTERNACIONALES",
+    "allowed_subtypes": [
+      "BILL_OF_LADING",
+      "AIR_WAYBILL",
+      "CARTA_PORTE",
+      "GUIA_TRANSPORTE",
+      "LISTA_EMPAQUE"
+    ],
+    "extraction_fields": [
+      "DOCUMENT_SUBTYPE",
+      "DOCUMENT_NUMBER",
+      "MASTER_DOCUMENT_NUMBER",
+      "HOUSE_DOCUMENT_NUMBER",
+      "SHIPPER_NAME",
+      "SHIPPER_ADDRESS",
+      "CONSIGNEE_NAME",
+      "CONSIGNEE_ADDRESS",
+      "NOTIFY_PARTY",
+      "CARRIER_NAME",
+      "SCAC_CODE",
+      "VESSEL_FLIGHT_TRUCK",
+      "PORT_PLACE_OF_LOADING",
+      "PORT_PLACE_OF_DISCHARGE",
+      "PLACE_OF_RECEIPT",
+      "FINAL_DESTINATION",
+      "DEPARTURE_DATE",
+      "ARRIVAL_DATE",
+      "CONTAINER_NUMBERS",
+      "SEAL_NUMBERS",
+      "PACKAGE_COUNT",
+      "PACKAGE_TYPE",
+      "GROSS_WEIGHT",
+      "NET_WEIGHT",
+      "VOLUME",
+      "COMMODITY_DESCRIPTION",
+      "MARKS_AND_NUMBERS",
+      "PEDIMENTO_REFERENCE"
+    ],
+    "repeatable_fields": {
+      "CONTAINER_NUMBERS": [
+        "CONTAINER_NUMBER",
+        "CONTAINER_TYPE"
+      ],
+      "SEAL_NUMBERS": [
+        "SEAL_NUMBER"
+      ]
+    },
+    "required_fields": [
+      "DOCUMENT_SUBTYPE",
+      "DOCUMENT_NUMBER",
+      "SHIPPER_NAME",
+      "CONSIGNEE_NAME",
+      "COMMODITY_DESCRIPTION"
+    ],
+    "validation_rules": [
+      {
+        "field": "CONTAINER_NUMBERS.CONTAINER_NUMBER",
+        "rule_type": "regex_each",
+        "pattern": "^[A-Z]{4}\\d{7}$",
+        "allow_empty": true,
+        "message": "Número de contenedor con formato inválido"
+      }
+    ],
+    "validator_module": "validators.customs.transport_document",
+    "pipeline": "expediente"
+  }
+}

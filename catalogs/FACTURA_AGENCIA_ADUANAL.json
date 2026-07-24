@@ -1,0 +1,89 @@
+{
+  "FACTURA_AGENCIA_ADUANAL": {
+    "description": "CFDI emitido por una agencia aduanal. Incluye honorarios, gastos complementarios, CAAAREM, precintos, COVE, UVA y otros servicios relacionados con el despacho.",
+    "business_destination": "FACTURA_AGENCIA_ADUANAL",
+    "field_sets": [
+      "COMMON_CFDI_FIELDS"
+    ],
+    "extraction_fields": [
+      "FOLIO_INTERNO",
+      "REFERENCIA_EMBARQUE",
+      "PEDIMENTO_REFERENCE",
+      "TIPO_OPERACION",
+      "VALOR_ADUANA_REFERENCIADO",
+      "PESO_BRUTO",
+      "BULTOS",
+      "CONTENEDORES",
+      "GASTOS_CUENTA_TERCEROS",
+      "TOTAL_SERVICIOS_AGENCIA",
+      "TOTAL_GASTOS_TERCEROS",
+      "TOTAL_FACTURA_MAS_GASTOS",
+      "PAGOS_A_CUENTA",
+      "PENDIENTE_DEPOSITAR",
+      "SALDO_CFDI"
+    ],
+    "repeatable_fields": {
+      "CONCEPTOS": [
+        "CLAVE_PRODUCTO_SERVICIO",
+        "CANTIDAD",
+        "CLAVE_UNIDAD",
+        "UNIDAD",
+        "DESCRIPCION",
+        "VALOR_UNITARIO",
+        "IMPORTE",
+        "DESCUENTO",
+        "OBJETO_IMPUESTO",
+        "BASE",
+        "IMPUESTO",
+        "TIPO_FACTOR",
+        "TASA_CUOTA",
+        "IMPORTE_IMPUESTO"
+      ],
+      "GASTOS_CUENTA_TERCEROS": [
+        "CATEGORIA_GASTO",
+        "CONCEPTO",
+        "NUMERO_FACTURA",
+        "PAGO_CLIENTE",
+        "PAGO_AGENTE_ADUANAL",
+        "IMPORTE"
+      ]
+    },
+    "extraction_hints": {
+      "PEDIMENTO_REFERENCE": "Buscar en campos como 'Pedimento', 'Referencia', 'SDV Ref.', 'Observaciones' o dentro de conceptos.",
+      "GASTOS_CUENTA_TERCEROS": "Extraer cada renglón del desglose, aunque el número de factura esté vacío.",
+      "TOTAL_SERVICIOS_AGENCIA": "Importe correspondiente exclusivamente a los servicios facturados por la agencia.",
+      "TOTAL_FACTURA_MAS_GASTOS": "Total combinado del CFDI y los gastos pagados por cuenta del cliente."
+    },
+    "required_fields": [
+      "UUID",
+      "EMISOR_RFC",
+      "RECEPTOR_RFC",
+      "PEDIMENTO_REFERENCE",
+      "CONCEPTOS",
+      "SUBTOTAL",
+      "TOTAL"
+    ],
+    "validation_rules": [
+      {
+        "field": "UUID",
+        "rule_type": "regex",
+        "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+        "message": "UUID del CFDI inválido"
+      },
+      {
+        "field": "TOTAL",
+        "rule_type": "cfdi_total",
+        "formula": "SUBTOTAL - DESCUENTO + TOTAL_IMPUESTOS_TRASLADADOS - TOTAL_IMPUESTOS_RETENIDOS",
+        "tolerance": 0.02,
+        "message": "El total del CFDI no coincide con subtotal, impuestos y retenciones"
+      },
+      {
+        "field": "RECEPTOR_RFC",
+        "rule_type": "expected_value_by_app",
+        "message": "El RFC receptor no corresponde a la empresa configurada"
+      }
+    ],
+    "validator_module": "validators.customs.customs_broker_invoice",
+    "pipeline": "expediente"
+  }
+}

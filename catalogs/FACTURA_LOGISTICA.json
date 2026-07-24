@@ -1,0 +1,55 @@
+{
+  "FACTURA_LOGISTICA": {
+    "description": "Factura o CFDI por servicios logísticos, maniobras, almacenaje, inspección, acceso de vehículos, carga, descarga o transporte relacionado con el pedimento.",
+    "business_destination": "OPERACIONES_LOGISTICAS_INTERNACIONALES",
+    "field_sets": [
+      "COMMON_CFDI_FIELDS"
+    ],
+    "extraction_fields": [
+      "PEDIMENTO_REFERENCE",
+      "REFERENCIA_LOGISTICA",
+      "PRODUCTO_MERCANCIA",
+      "ORIGEN",
+      "DESTINO",
+      "TRANSPORTISTA",
+      "UNIDAD_TRANSPORTE",
+      "PLACAS",
+      "CONTENEDOR",
+      "CONCEPTOS"
+    ],
+    "repeatable_fields": {
+      "CONCEPTOS": [
+        "CLAVE_PRODUCTO_SERVICIO",
+        "CANTIDAD",
+        "UNIDAD",
+        "DESCRIPCION",
+        "VALOR_UNITARIO",
+        "IMPORTE",
+        "IVA",
+        "TOTAL_CONCEPTO"
+      ]
+    },
+    "extraction_hints": {
+      "PEDIMENTO_REFERENCE": "Buscar números junto a REF, PED, PEDIMENTO, operación o dentro de la descripción.",
+      "CONCEPTOS": "Mantener separados acceso, maniobras, muestreo, almacenaje y logística aunque estén en la misma factura."
+    },
+    "required_fields": [
+      "EMISOR_RFC",
+      "RECEPTOR_RFC",
+      "PEDIMENTO_REFERENCE",
+      "CONCEPTOS",
+      "TOTAL"
+    ],
+    "validation_rules": [
+      {
+        "field": "TOTAL",
+        "rule_type": "cfdi_total",
+        "formula": "SUBTOTAL - DESCUENTO + TOTAL_IMPUESTOS_TRASLADADOS - TOTAL_IMPUESTOS_RETENIDOS",
+        "tolerance": 0.02,
+        "message": "El total de la factura logística no coincide"
+      }
+    ],
+    "validator_module": "validators.customs.logistics_invoice",
+    "pipeline": "expediente"
+  }
+}

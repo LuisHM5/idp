@@ -15,7 +15,10 @@
       "STATUS_CURP": "Estatus de la CURP, por ejemplo 'CURP Certificada'",
       "FECHA_EMISION": "Fecha de emision del documento, formato 'Ciudad de México, a DD de mes de YYYY'"
     },
-    "required_fields": ["CURP", "NOMBRE_COMPLETO"],
+    "required_fields": [
+      "CURP",
+      "NOMBRE_COMPLETO"
+    ],
     "validation_rules": [
       {
         "field": "CURP",

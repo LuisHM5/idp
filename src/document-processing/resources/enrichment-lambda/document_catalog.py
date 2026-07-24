@@ -2,11 +2,11 @@
 Document Catalog - Config-driven registry of document types.
 
 Loads document type definitions from:
-1. Local JSON config file (config/document_types.json) - default, always available
+1. Local bundled catalog (config/catalogs.json) - built from catalogs/*.json
 2. DynamoDB table (optional, runtime override) - set CATALOG_TABLE env var
 
 To add a new document type WITHOUT code changes:
-- Edit config/document_types.json and redeploy, OR
+- Edit catalogs/<TYPE>.json then `pnpm run build` and redeploy, OR
 - Insert a record in the DynamoDB catalog table (takes effect immediately)
 
 To add custom programmatic validation:
@@ -79,6 +79,10 @@ class TypeRegistryEntry:
     # each result's tracking so you can tell which version processed a document,
     # including hot-reloaded DynamoDB overrides.
     schema_version: Optional[str] = None
+    # Processing pipeline for this type. "expediente" routes through the
+    # multi-document customs pipeline (segmenter + cross-document rules); any
+    # other value (or None) uses the standard single-document flow.
+    pipeline: Optional[str] = None
     # Target shapes for derived/structured outputs (e.g. LIQUIDACION_NORMALIZADA
     # defaults). Consumed by post-extraction normalizers.
     structured_fields: Dict[str, Any] = field(default_factory=dict)
@@ -106,12 +110,14 @@ CURP_PATTERN = r"^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$"
 # --- Config Loading ---
 
 _CONFIG_DIR = Path(__file__).parent / "config"
-_CONFIG_FILE = _CONFIG_DIR / "document_types.json"
+# Single bundled catalog, produced from catalogs/*.json by `pnpm build`
+# (scripts/sync-catalogs.mjs). One base, one file.
+_CONFIG_FILE = _CONFIG_DIR / "catalogs.json"
 _CATALOG_TABLE = os.environ.get("CATALOG_TABLE")  # DynamoDB table name (optional)
 _CATALOG_CACHE: Optional[Dict[str, TypeRegistryEntry]] = None
 # Version of each loaded catalog file: declared `_schema_version` if present,
 # else a short content hash so the identifier is always deterministic and
-# changes whenever the schema does. Keyed by file stem (e.g. "customs_catalog").
+# changes whenever the schema does. Keyed by file stem (e.g. "catalogs").
 _SCHEMA_VERSIONS: Dict[str, str] = {}
 
 
@@ -170,11 +176,11 @@ def _parse_entry(
         schema_version=data.get("schema_version"),
         structured_fields=data.get("structured_fields", {}) or {},
         form_mapping=data.get("form_mapping", {}) or {},
+        pipeline=data.get("pipeline"),
     )
 
 
 _CROSS_DOC_RULES: List[Dict[str, Any]] = []
-_CUSTOMS_TYPE_IDS: set = set()
 
 
 def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
@@ -201,8 +207,6 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
     for type_id, type_data in types_data.items():
         catalog[type_id] = _parse_entry(type_id, type_data, field_sets)
 
-    if "document_types" in data:
-        _CUSTOMS_TYPE_IDS.update(catalog.keys())
     for rule in data.get("cross_document_validation_rules", []) or []:
         if rule not in _CROSS_DOC_RULES:
             _CROSS_DOC_RULES.append(rule)
@@ -211,22 +215,19 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
 
 
 def _load_from_json() -> Dict[str, TypeRegistryEntry]:
-    """Load catalog from all local JSON config files.
+    """Load the single bundled catalog (`config/catalogs.json`).
 
-    `document_types.json` is the base; any other `*_catalog.json` in the
-    config dir (e.g. customs_catalog.json with the pedimento types) extends
-    or overrides it.
+    That file is generated at build time by combining every per-type file in
+    `catalogs/` plus `catalogs/_shared.json` — the one source of truth.
     """
-    catalog: Dict[str, TypeRegistryEntry] = {}
-    files = [_CONFIG_FILE] + sorted(_CONFIG_DIR.glob("*_catalog.json"))
-    for path in files:
-        if not path.exists():
-            logger.warning(f"Config file not found: {path}")
-            continue
-        try:
-            catalog.update(_load_config_file(path))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.error(f"Failed to load catalog file {path}: {e}")
+    if not _CONFIG_FILE.exists():
+        logger.warning(f"Config file not found: {_CONFIG_FILE}")
+        return {}
+    try:
+        catalog = _load_config_file(_CONFIG_FILE)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error(f"Failed to load catalog file {_CONFIG_FILE}: {e}")
+        return {}
 
     logger.info(f"Loaded {len(catalog)} document types from JSON config")
     return catalog
@@ -306,7 +307,6 @@ def reload_catalog() -> None:
     global _CATALOG_CACHE
     _CATALOG_CACHE = None
     _CROSS_DOC_RULES.clear()
-    _CUSTOMS_TYPE_IDS.clear()
     _SCHEMA_VERSIONS.clear()
 
 
@@ -362,9 +362,11 @@ def get_cross_document_rules() -> List[Dict[str, Any]]:
 
 
 def is_customs_type(doc_type: str) -> bool:
-    """True when the type belongs to the customs (pedimentos) catalog."""
-    _load_catalog()
-    return doc_type in _CUSTOMS_TYPE_IDS
+    """True when the type is routed through the expediente (customs) pipeline.
+
+    Declared per type with `"pipeline": "expediente"` in its catalog file.
+    """
+    return get_type_entry(doc_type).pipeline == "expediente"
 
 
 # Expose DOCUMENT_CATALOG for backward compatibility

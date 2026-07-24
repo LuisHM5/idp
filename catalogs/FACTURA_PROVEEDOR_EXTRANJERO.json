@@ -1,0 +1,71 @@
+{
+  "FACTURA_PROVEEDOR_EXTRANJERO": {
+    "description": "Commercial invoice emitida por el proveedor extranjero de la mercancía. Normalmente no contiene UUID ni estructura CFDI.",
+    "business_destination": "FACTURA_PROVEEDORES_EXTRANJEROS",
+    "field_sets": [
+      "COMMON_FOREIGN_INVOICE_FIELDS"
+    ],
+    "extraction_fields": [
+      "COUNTRY_OF_ORIGIN",
+      "COUNTRY_OF_PROVENANCE",
+      "EXPORTER_NAME",
+      "MANUFACTURER_NAME",
+      "CONSIGNEE",
+      "NOTIFY_PARTY",
+      "PACKAGES",
+      "GROSS_WEIGHT",
+      "NET_WEIGHT",
+      "TOTAL_QUANTITY",
+      "SIGNATURE_NAME",
+      "SIGNED",
+      "ITEMS"
+    ],
+    "repeatable_fields": {
+      "ITEMS": [
+        "LINE_NUMBER",
+        "SKU",
+        "DESCRIPTION",
+        "HS_CODE",
+        "COUNTRY_OF_ORIGIN",
+        "QUANTITY",
+        "UNIT",
+        "UNIT_PRICE",
+        "AMOUNT"
+      ]
+    },
+    "extraction_hints": {
+      "INVOICE_NUMBER": "Buscar Invoice No., Invoice Number, Commercial Invoice No. o Folio.",
+      "PEDIMENTO_REFERENCE": "Puede no existir porque la factura normalmente se emite antes del pedimento.",
+      "INCOTERM": "Extraer la clave y el lugar pactado, por ejemplo FOB El Paso o DAP Chihuahua.",
+      "CURRENCY": "No asumir USD. Extraer la moneda expresamente indicada."
+    },
+    "required_fields": [
+      "INVOICE_NUMBER",
+      "INVOICE_DATE",
+      "SELLER_NAME",
+      "BUYER_NAME",
+      "CURRENCY",
+      "TOTAL",
+      "ITEMS"
+    ],
+    "validation_rules": [
+      {
+        "field": "TOTAL",
+        "rule_type": "custom_formula",
+        "formula": "SUBTOTAL + FREIGHT_AMOUNT + INSURANCE_AMOUNT + OTHER_CHARGES + TAX_AMOUNT",
+        "tolerance": 0.05,
+        "message": "El total de la factura extranjera no coincide con sus componentes"
+      },
+      {
+        "field": "TOTAL",
+        "rule_type": "sum_array",
+        "source": "ITEMS.AMOUNT",
+        "comparison_field": "SUBTOTAL",
+        "tolerance": 0.05,
+        "message": "El subtotal no coincide con la suma de partidas"
+      }
+    ],
+    "validator_module": "validators.customs.foreign_supplier_invoice",
+    "pipeline": "expediente"
+  }
+}

@@ -9,12 +9,9 @@ Guía operativa completa: subir, actualizar, eliminar (total o parcial), gestion
 > | Desplegar todo por primera vez                          | `pnpm install && pnpm build && pnpm run deploy`             |
 > | Actualizar código o catálogo (con redeploy)             | `pnpm build && pnpm run deploy`                             |
 > | Ver qué cambiaría antes de desplegar                    | `pnpm build && pnpm run diff`                               |
-> | Actualizar catálogo SIN redeploy (hot-reload)           | `pnpm db-sync --file catalogs/<archivo>.json`               |
-> | Subir catálogo de pedimentos a DynamoDB                 | `pnpm db-sync-customs`                                      |
-> | Ver tipos activos en DynamoDB                           | `pnpm db-list-types`                                        |
-> | Desactivar un tipo (reversible)                         | `pnpm db-delete-type --type MI_TIPO --disable`              |
-> | Borrar un tipo de DynamoDB                              | `pnpm db-delete-type --type MI_TIPO`                        |
-> | Vaciar el catálogo DynamoDB                             | `pnpm db-delete-type --all`                                 |
+> | Actualizar TODO el catálogo SIN redeploy (hot-reload)   | `pnpm sync`                                                 |
+> | Actualizar UN tipo SIN redeploy                         | `pnpm sync:one -- --type MI_TIPO`                           |
+> | Validar el sync sin escribir                            | `pnpm sync -- --dry-run`                                    |
 > | Eliminar el stack (conserva tabla DynamoDB)             | `pnpm run destroy`                                          |
 > | Eliminar TODO (stack + tabla)                           | `pnpm run destroy:full`                                     |
 > | **Procesar MIS documentos y solo revisar el resultado** | `pnpm procesar -- --dir /ruta/a/mis/docs --importer MI_RFC` |
@@ -150,17 +147,17 @@ Salida (tú solo validas el resultado final):
 - **`resultados/<archivo>.json`**: resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`).
 - **`resultados/_resumen.md`**: tabla consolidada de toda la corrida para revisar de un vistazo.
 
-### 4.0.1 ¿Dónde está el JSON de reglas de extracción y validación?
+### 4.0.1 ¿Dónde están las reglas de extracción y validación?
 
-**`catalogs/full-pedimentos-docs.json`** — ahí viven TODOS los campos de extracción, hints, campos repetibles, reglas de validación y reglas cross-documento del caso pedimentos. Es la fuente de verdad y el archivo que se sube a DynamoDB:
+En la carpeta **`catalogs/`** — **un archivo por tipo** (`PEDIMENTO_ADUANAL.json`, etc.), más `catalogs/_shared.json` (field_sets + reglas cross-documento). Es la única fuente de verdad. Guía completa en `catalogs/README.md`.
 
 ```bash
-pnpm db-sync-customs                 # súbelo a DynamoDB (hot-reload, sin redeploy)
-pnpm db-sync-customs -- --dry-run    # valida el marshalling sin subir nada
-pnpm db-list-types                   # confirma qué quedó en la tabla
+pnpm sync                          # sube TODA la carpeta a DynamoDB (hot-reload, sin redeploy)
+pnpm sync:one -- --type PEDIMENTO_ADUANAL   # sube un solo tipo
+pnpm sync -- --dry-run             # valida el marshalling sin subir nada
 ```
 
-No es obligatorio subirlo: la Lambda ya trae una copia empaquetada (`config/customs_catalog.json`, generada por `pnpm build`). DynamoDB solo sirve para **cambiar reglas al vuelo sin redeploy** — y si borras el tipo de DynamoDB (`pnpm db-delete-type --type X`), vuelve a aplicar la copia empaquetada.
+No es obligatorio: la Lambda ya trae el catálogo empaquetado (`config/catalogs.json`, generado por `pnpm build` desde `catalogs/`). DynamoDB solo sirve para **cambiar reglas al vuelo sin redeploy**; DynamoDB gana sobre lo empaquetado en runtime.
 
 ### Enviar un documento (API REST)
 
@@ -235,27 +232,27 @@ pnpm build && pnpm run diff     # revisar cambios
 pnpm run deploy
 ```
 
-### 5.2 Actualizar el catálogo de pedimentos (fuente de verdad)
+### 5.2 Actualizar el catálogo (fuente de verdad)
 
-Edita **`catalogs/full-pedimentos-docs.json`** (nunca `config/customs_catalog.json`, que es copia generada). Luego:
+Edita el archivo del tipo en **`catalogs/`** (p. ej. `catalogs/PEDIMENTO_ADUANAL.json`); nunca `config/catalogs.json`, que es copia generada. Luego:
 
 ```bash
 # Opción A — con redeploy (queda versionado en la Lambda):
 pnpm build && pnpm run deploy
 
 # Opción B — hot-reload SIN redeploy (efecto inmediato):
-pnpm db-sync-customs
+pnpm sync                              # toda la carpeta
+pnpm sync:one -- --type PEDIMENTO_ADUANAL   # un solo tipo
 ```
 
-> El sync a DynamoDB expande automáticamente los `field_sets` (p.ej. `COMMON_CFDI_FIELDS`) y conserva todos los parámetros de reglas (`formula`, `tolerance`, `source`, `keywords`, `repeatable_fields`, …). Las `cross_document_validation_rules` solo viven en el JSON empaquetado: cambios en ellas requieren la Opción A.
+> El sync a DynamoDB expande automáticamente los `field_sets` (p.ej. `COMMON_CFDI_FIELDS`, definidos en `catalogs/_shared.json`) y conserva todos los parámetros de reglas (`formula`, `tolerance`, `source`, `keywords`, `repeatable_fields`, …). Las `cross_document_validation_rules` (en `_shared.json`) solo viven en el JSON empaquetado: cambios en ellas requieren la Opción A.
 
-### 5.3 Actualizar un tipo documental clásico (INE, CSF, …)
+### 5.3 Crear un tipo nuevo
 
 ```bash
-# Editar config/document_types.json y redesplegar, o hot-reload:
-pnpm db-sync --file catalogs/curp.json          # un archivo {TYPE_ID: {...}}
-pnpm db-put-type --type MI_TIPO --fields "A,B" --required "A"   # inline por CLI
-pnpm db-list-types                               # verificar
+cp catalogs/_TEMPLATE.json catalogs/MI_TIPO.json    # copia la plantilla
+# edita MI_TIPO.json (ver catalogs/README.md)
+pnpm sync:one -- --type MI_TIPO                     # aplica al vuelo (o build + deploy)
 ```
 
 ### 5.4 Actualizar solo reglas de un tipo
@@ -276,12 +273,12 @@ Ejemplo — agregar tolerancia a una validación de total:
 }
 ```
 
-Después: `pnpm db-sync-customs` (inmediato) o `pnpm build && pnpm run deploy` (versionado).
+Después: `pnpm sync` (inmediato) o `pnpm build && pnpm run deploy` (versionado).
 
 ### 5.5 Reglas de precedencia del catálogo en runtime
 
-1. **DynamoDB** (si `CATALOG_TABLE` está configurada) — gana siempre.
-2. **JSON empaquetado** (`config/document_types.json` + `config/customs_catalog.json`).
+1. **DynamoDB** (si `CATALOG_TABLE` está configurada) — gana siempre. Es lo que escribe `pnpm sync`.
+2. **JSON empaquetado** (`config/catalogs.json`, generado de `catalogs/`).
 3. Tipo desconocido → `OTRO` (revisión manual).
 
 Con `forceReloadCatalog: true` (default en `bin/app.ts`) los cambios en DynamoDB aplican en la siguiente invocación.
@@ -290,13 +287,13 @@ Con `forceReloadCatalog: true` (default en `bin/app.ts`) los cambios en DynamoDB
 
 ### 6.1 Eliminación parcial (tipos del catálogo)
 
-```bash
-pnpm db-delete-type --type MI_TIPO --disable   # desactivar (reversible con db-sync)
-pnpm db-delete-type --type MI_TIPO             # borrar de DynamoDB → vuelve a aplicar el JSON local si existe
-pnpm db-delete-type --all                      # vaciar todo el catálogo DynamoDB (pide confirmación)
-```
+Para **deshabilitar** un tipo sin borrarlo, pon `"enabled": false` en su archivo de `catalogs/` y corre `pnpm sync:one -- --type MI_TIPO`.
 
-Para eliminar un tipo **definitivamente** (también del JSON): borrarlo de `catalogs/full-pedimentos-docs.json` o `config/document_types.json` + `pnpm build && pnpm run deploy` + `pnpm db-delete-type --type MI_TIPO`.
+Para eliminar un tipo **definitivamente**: borra `catalogs/MI_TIPO.json`, corre `pnpm run build && pnpm run deploy`, y quítalo de DynamoDB con:
+```bash
+aws dynamodb delete-item --table-name document-validation-catalog \
+  --key '{"type_id":{"S":"MI_TIPO"}}' --region us-east-1
+```
 
 ### 6.2 Eliminación total
 
@@ -342,7 +339,7 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 | `AccessDeniedException` de Bedrock                                     | Modelo no habilitado en la cuenta/región                                                             | Consola Bedrock → Model access → habilitar Claude Haiku 4.5 en us-east-1                                                                                                                                                                                                                                                                    |
 | Task timed out (Lambda)                                                | Expediente muy grande                                                                                | La Lambda ya corre a 15 min / 1024 MB; para archivos mayores dividir el PDF o subir memoria en el stack                                                                                                                                                                                                                                     |
 | Resultado `REQUIERE_REVISION` con segmentos `OTRO`                     | Páginas sin tipo en el catálogo (COVE, DODA, manifestación…)                                         | Normal y conservador; si quieres que aprueben, agrega esos tipos al catálogo JSON                                                                                                                                                                                                                                                           |
-| Tipos nuevos no aplican                                                | Se editó la copia generada                                                                           | Editar `catalogs/full-pedimentos-docs.json` y correr `pnpm sync-catalogs` / `db-sync-customs`                                                                                                                                                                                                                                               |
+| Tipos nuevos no aplican                                                | Se editó la copia generada (`config/catalogs.json`)                                                  | Editar el archivo del tipo en `catalogs/` y correr `pnpm sync` (hot-reload) o `pnpm run build && pnpm run deploy`                                                                                                                                                                                                                            |
 | `test-e2e` no encuentra el endpoint                                    | Nombre de stack distinto                                                                             | `pnpm test-e2e --stack DocumentValidationStack --endpoint https://...`                                                                                                                                                                                                                                                                      |
 | `UPDATE_FAILED ... AWS::Logs::LogGroup ... was not found` al desplegar | Drift: un log group del stack fue borrado fuera de CloudFormation (limpiezas manuales de CloudWatch) | Recrear el log group con el nombre exacto del error: `aws logs create-log-group --log-group-name "<nombre>"` y reintentar `pnpm run deploy`. Ver los que CFN registra: `aws cloudformation describe-stack-resources --stack-name DocumentValidationStack --query "StackResources[?ResourceType=='AWS::Logs::LogGroup'].PhysicalResourceId"` |
 | Extracción pobre en un campo                                           | Falta pista                                                                                          | Agregar/mejorar su `extraction_hints` en el catálogo y hot-reload                                                                                                                                                                                                                                                                           |
@@ -350,9 +347,10 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 ## 10. Mapa de archivos (qué editar y qué no)
 
 ```
-catalogs/full-pedimentos-docs.json   ← EDITAR: catálogo aduanal (fuente de verdad)
-config/document_types.json           ← EDITAR: tipos clásicos (INE, CSF, ...)
-config/customs_catalog.json          ← NO EDITAR: copia generada por pnpm build/sync-catalogs
+catalogs/<TYPE_ID>.json              ← EDITAR: un archivo por tipo (fuente de verdad)
+catalogs/_shared.json                ← EDITAR: field_sets + reglas cross-documento
+catalogs/_TEMPLATE.json              ← plantilla para tipos nuevos
+config/catalogs.json                 ← NO EDITAR: copia generada por pnpm build
 validators/engine.py                 ← motor de reglas (agregar rule_types nuevos aquí)
 pipeline/                            ← pipeline de expedientes (OCR, segmentación, extracción)
 tests/integration/expected_pedimentos.json ← ground truth de los tests de pedimentos

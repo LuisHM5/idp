@@ -1,0 +1,61 @@
+{
+  "FACTURA_FLETE_EXTRANJERO": {
+    "description": "Factura de transportista o proveedor extranjero por flete terrestre, marítimo o aéreo. Puede denominarse freight invoice, transportation invoice o trucking invoice.",
+    "business_destination": "PAGO_FLETE_AMERICANO",
+    "field_sets": [
+      "COMMON_FOREIGN_INVOICE_FIELDS"
+    ],
+    "extraction_fields": [
+      "CARRIER_NAME",
+      "CARRIER_TAX_ID",
+      "SCAC_CODE",
+      "BOL_NUMBER",
+      "MASTER_BOL",
+      "HOUSE_BOL",
+      "TRAILER_NUMBER",
+      "CONTAINER_NUMBER",
+      "SEAL_NUMBER",
+      "PICKUP_DATE",
+      "DELIVERY_DATE",
+      "ORIGIN",
+      "DESTINATION",
+      "ROUTE",
+      "FREIGHT_AMOUNT",
+      "FUEL_SURCHARGE",
+      "ACCESSORIAL_CHARGES",
+      "TOTAL"
+    ],
+    "repeatable_fields": {
+      "ACCESSORIAL_CHARGES": [
+        "DESCRIPTION",
+        "QUANTITY",
+        "RATE",
+        "AMOUNT"
+      ]
+    },
+    "extraction_hints": {
+      "FREIGHT_AMOUNT": "Extraer solamente el cargo de transporte principal cuando esté separado de combustible, espera, maniobras u otros cargos.",
+      "BOL_NUMBER": "Buscar Bill of Lading, BOL, Load Number, Shipment Number o Reference Number."
+    },
+    "required_fields": [
+      "INVOICE_NUMBER",
+      "INVOICE_DATE",
+      "CARRIER_NAME",
+      "ORIGIN",
+      "DESTINATION",
+      "CURRENCY",
+      "TOTAL"
+    ],
+    "validation_rules": [
+      {
+        "field": "TOTAL",
+        "rule_type": "custom_formula",
+        "formula": "FREIGHT_AMOUNT + FUEL_SURCHARGE + SUM(ACCESSORIAL_CHARGES.AMOUNT) + TAX_AMOUNT",
+        "tolerance": 0.05,
+        "message": "El total del flete no coincide con el desglose de cargos"
+      }
+    ],
+    "validator_module": "validators.customs.foreign_freight_invoice",
+    "pipeline": "expediente"
+  }
+}

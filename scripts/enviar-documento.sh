@@ -29,6 +29,13 @@ if [[ -z "$FILE" ]]; then
   echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO]" >&2
   exit 2
 fi
+
+# pnpm ejecuta scripts desde la raíz del paquete, aunque el usuario los invoque
+# desde un subdirectorio. INIT_CWD conserva ese directorio original.
+if [[ "$FILE" != /* && ! -f "$FILE" && -n "${INIT_CWD:-}" && -f "${INIT_CWD}/${FILE}" ]]; then
+  FILE="${INIT_CWD}/${FILE}"
+fi
+
 if [[ ! -f "$FILE" ]]; then
   echo "No existe el archivo: $FILE" >&2
   exit 2

@@ -1,31 +1,83 @@
 #!/usr/bin/env node
 /**
- * Sync catalog sources into the enrichment Lambda bundle.
+ * Build-time bundling: combine the per-type catalog files in `catalogs/` into a
+ * single `config/catalogs.json` that ships inside the Lambda.
  *
- * `catalogs/full-pedimentos-docs.json` is the source of truth for the customs
- * (pedimentos) catalog; the Lambda only packages its own config/ directory,
- * so this script copies it to `config/customs_catalog.json`. Runs as part of
- * `pnpm build`.
+ * `catalogs/` is the ONE source of truth:
+ *   - catalogs/_shared.json  → { _field_sets, cross_document_validation_rules,
+ *                                _global_output_fields }  (shared globals)
+ *   - catalogs/_TEMPLATE.json → template for new types (ignored here)
+ *   - catalogs/<TYPE_ID>.json → one document type, shape { "<TYPE_ID>": { ... } }
+ *
+ * Output: config/catalogs.json in the customs shape the loaders understand:
+ *   { _global_output_fields, _field_sets, document_types, cross_document_validation_rules }
+ *
+ * Runs as part of `pnpm build`. Editing a type in `catalogs/` and rebuilding is
+ * all that is needed to bake it into the deployed Lambda.
  */
 
-import { copyFileSync } from "fs";
-import { dirname, resolve } from "path";
+import { readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from "fs";
+import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(__dirname, "..");
+const CATALOGS_DIR = join(repo, "catalogs");
+const CONFIG_DIR = join(
+  repo,
+  "src/document-processing/resources/enrichment-lambda/config"
+);
+const OUTPUT = join(CONFIG_DIR, "catalogs.json");
 
-const pairs = [
-  [
-    resolve(repo, "catalogs/full-pedimentos-docs.json"),
-    resolve(
-      repo,
-      "src/document-processing/resources/enrichment-lambda/config/customs_catalog.json"
-    ),
-  ],
-];
+// Files that are not a document type.
+const SPECIAL = new Set(["_shared.json", "_TEMPLATE.json"]);
 
-for (const [src, dst] of pairs) {
-  copyFileSync(src, dst);
-  console.log(`synced ${src} -> ${dst}`);
+function loadJson(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
 }
+
+function main() {
+  const shared = existsSync(join(CATALOGS_DIR, "_shared.json"))
+    ? loadJson(join(CATALOGS_DIR, "_shared.json"))
+    : {};
+
+  const documentTypes = {};
+  const files = readdirSync(CATALOGS_DIR)
+    .filter((f) => f.endsWith(".json") && !SPECIAL.has(f))
+    .sort();
+
+  for (const file of files) {
+    const data = loadJson(join(CATALOGS_DIR, file));
+    // Each type file is { "<TYPE_ID>": { ...entry } }.
+    for (const [typeId, entry] of Object.entries(data)) {
+      if (typeId.startsWith("_")) continue;
+      if (documentTypes[typeId]) {
+        console.warn(`  ⚠ tipo duplicado '${typeId}' (${file}) — se sobrescribe`);
+      }
+      documentTypes[typeId] = entry;
+    }
+  }
+
+  const combined = {
+    _global_output_fields: shared._global_output_fields || [],
+    _field_sets: shared._field_sets || {},
+    document_types: documentTypes,
+    cross_document_validation_rules: shared.cross_document_validation_rules || [],
+  };
+
+  writeFileSync(OUTPUT, JSON.stringify(combined, null, 2), "utf8");
+  console.log(
+    `bundled ${Object.keys(documentTypes).length} tipos de ${CATALOGS_DIR}/*.json -> ${OUTPUT}`
+  );
+
+  // Remove superseded bundled configs (single base = catalogs.json).
+  for (const stale of ["document_types.json", "customs_catalog.json"]) {
+    const p = join(CONFIG_DIR, stale);
+    if (existsSync(p)) {
+      rmSync(p);
+      console.log(`  removed obsolete ${stale}`);
+    }
+  }
+}
+
+main();
