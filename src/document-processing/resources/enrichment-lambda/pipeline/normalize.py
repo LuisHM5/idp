@@ -124,6 +124,40 @@ def normalize_pedimento(value: Any) -> Optional[str]:
     return digits or None
 
 
+def digits_exact(value: Any, length: int) -> Optional[str]:
+    """Digits of `value`, but only when there are exactly `length` of them.
+
+    Used to validate an atomic pedimento component (ANIO_PEDIMENTO,
+    ADUANA_DESPACHO, PATENTE, NUMERO_CONSECUTIVO) before trusting it as an
+    input to a deterministic concatenation — a value with the wrong digit
+    count is a sign the extraction itself is off, so callers should not use
+    it rather than silently pad/truncate.
+    """
+    digits = normalize_pedimento(value)
+    return digits if digits and len(digits) == length else None
+
+
+def normalize_year_2digit(value: Any) -> Optional[str]:
+    """Collapse a 4-digit year to its trailing 2 digits ("2026" -> "26").
+
+    Pedimento numbers encode the year as 2 digits; models sometimes
+    "helpfully" expand it back to 4 despite an explicit instruction to
+    return only 2 (a real, observed failure — not hypothetical). Collapsing
+    the last 2 digits of an unambiguous 19xx/20xx value loses no
+    information (they're the same digits either way) and is not invented,
+    so it's a safe deterministic fix rather than a guess. Returns the
+    2-digit form unchanged if it's already 2 digits; None if it's neither.
+    """
+    digits = normalize_pedimento(value)
+    if digits is None:
+        return None
+    if len(digits) == 2:
+        return digits
+    if len(digits) == 4 and digits[:2] in ("19", "20"):
+        return digits[2:]
+    return None
+
+
 def pedimento_consecutivo(value: Any) -> Optional[str]:
     """Last 7 digits of a pedimento reference — the operation consecutivo.
 
@@ -169,6 +203,25 @@ def find_pedimento_reference(text: str) -> Optional[str]:
             if c:
                 return c.group(1)
     return None
+
+
+def find_pedimento_components(text: str) -> Optional["tuple[str, str, str, str]"]:
+    """Deterministically split a full "AA ADUANA PATENTE CONSECUTIVO"
+    pedimento reference into its 4 parts (year, aduana, patente,
+    consecutivo), when the full 15-digit form appears in `text`.
+
+    Used to recover an atomic field (e.g. ADUANA_DESPACHO) the model left
+    empty even though the full reference — which contains that same digit
+    group — was extracted elsewhere on the document. Returns None when the
+    full form isn't present (the caller falls back to whatever the model
+    extracted directly for that field).
+    """
+    if not text:
+        return None
+    m = _PED_FULL_RE.search(text)
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3), m.group(4)
 
 
 # ---------------------------------------------------------------- ids

@@ -35,9 +35,12 @@ from validators.engine import RuleCheck, ValidationContext
 
 from .liquidacion import build_liquidacion_normalizada
 from .normalize import (
+    digits_exact,
+    find_pedimento_components,
     find_pedimento_reference,
     normalize_pedimento,
     normalize_uuid,
+    normalize_year_2digit,
     parse_amount,
     pedimento_consecutivo,
 )
@@ -357,18 +360,75 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
                 doc.setdefault("_confidences", {})[name] = 0.95
                 recovered[name] = match
 
-    # Derived, purely mechanical: the normalized 15-digit form
-    if "NUMERO_PEDIMENTO_NORMALIZADO" in entry.extraction_fields and entities.get(
-        "NUMERO_PEDIMENTO_NORMALIZADO"
-    ) in (None, "", []):
-        source = entities.get("NUMERO_PEDIMENTO") or entities.get("PEDIMENTO_REFERENCE")
-        digits = normalize_pedimento(source) if source else None
-        if digits and len(digits) == 15:
-            entities["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
+    # Fill any of the 4 atomic pedimento-number components the model left
+    # empty, by splitting the full "AA ADUANA PATENTE CONSECUTIVO" reference
+    # (the same 15-digit pattern used for PEDIMENTO_REFERENCE/NUMERO_PEDIMENTO
+    # recovery above) when it appears in the segment text — e.g.
+    # ADUANA_DESPACHO regularly comes back empty even when the full
+    # reference containing that same 2-digit group was extracted elsewhere.
+    components = find_pedimento_components(text)
+    if components:
+        anio_c, aduana_c, patente_c, consecutivo_c = components
+        for name, comp_value in (
+            ("ANIO_PEDIMENTO", anio_c),
+            ("ADUANA_DESPACHO", aduana_c),
+            ("PATENTE", patente_c),
+            ("NUMERO_CONSECUTIVO", consecutivo_c),
+        ):
+            if name in entry.extraction_fields and entities.get(name) in (None, "", []):
+                entities[name] = comp_value
+                doc.setdefault("_confidences", {})[name] = 0.9
+                recovered[name] = comp_value
+
+    # ANIO_PEDIMENTO must be 2 digits; models sometimes expand it to 4
+    # ("2026" instead of "26") despite the catalog hint saying otherwise —
+    # collapsing it loses no information (same digits) so it's safe to fix
+    # deterministically rather than leave it failing its own regex rule.
+    if "ANIO_PEDIMENTO" in entry.extraction_fields:
+        anio_raw = entities.get("ANIO_PEDIMENTO")
+        fixed_anio = normalize_year_2digit(anio_raw) if anio_raw not in (None, "", []) else None
+        if fixed_anio and fixed_anio != str(anio_raw).strip():
+            entities["ANIO_PEDIMENTO"] = fixed_anio
+            recovered["ANIO_PEDIMENTO"] = fixed_anio
+
+    # Derived, purely mechanical: the normalized 15-digit form. Prefer
+    # rebuilding it from the 4 atomic fields the model already extracted
+    # separately (ANIO_PEDIMENTO+ADUANA_DESPACHO+PATENTE+NUMERO_CONSECUTIVO)
+    # over trusting whatever the model wrote directly into
+    # NUMERO_PEDIMENTO_NORMALIZADO — the catalog asks the model to build
+    # that value itself via string concatenation, which is exactly the kind
+    # of task free-text generation is unreliable at (verified: a real run
+    # returned 14 digits instead of 15, dropping the trailing 0 of
+    # NUMERO_CONSECUTIVO, even though NUMERO_CONSECUTIVO itself was
+    # extracted correctly as its own field). Concatenating in code cannot
+    # drop or duplicate a digit the way regenerating the string can, so this
+    # overrides the model's value whenever all 4 parts are present and each
+    # already has its expected digit count.
+    if "NUMERO_PEDIMENTO_NORMALIZADO" in entry.extraction_fields:
+        anio = digits_exact(entities.get("ANIO_PEDIMENTO"), 2)
+        aduana = digits_exact(entities.get("ADUANA_DESPACHO"), 2)
+        patente = digits_exact(entities.get("PATENTE"), 4)
+        consecutivo = digits_exact(entities.get("NUMERO_CONSECUTIVO"), 7)
+        computed = f"{anio}{aduana}{patente}{consecutivo}" if all((anio, aduana, patente, consecutivo)) else None
+
+        current = entities.get("NUMERO_PEDIMENTO_NORMALIZADO")
+        if computed and computed != current:
+            entities["NUMERO_PEDIMENTO_NORMALIZADO"] = computed
             doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO_NORMALIZADO"] = (
-                doc.get("_confidences", {}).get("NUMERO_PEDIMENTO", 0.9)
+                doc.get("_confidences", {}).get("NUMERO_CONSECUTIVO", 0.9)
             )
-            recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
+            recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = computed
+        elif not computed and current in (None, "", []):
+            # Fallback for when the atomic fields aren't all usable: try the
+            # raw NUMERO_PEDIMENTO/PEDIMENTO_REFERENCE string instead.
+            source = entities.get("NUMERO_PEDIMENTO") or entities.get("PEDIMENTO_REFERENCE")
+            digits = normalize_pedimento(source) if source else None
+            if digits and len(digits) == 15:
+                entities["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
+                doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO_NORMALIZADO"] = (
+                    doc.get("_confidences", {}).get("NUMERO_PEDIMENTO", 0.9)
+                )
+                recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
 
     if recovered:
         doc["recoveredFields"] = recovered

@@ -532,7 +532,13 @@ def resolve_fields(
     """Build the per-field resolution block.
 
     Every catalog extraction field gets an entry with the original extracted
-    value, a normalized copy, confidence, executed checks and a final status.
+    value, a normalized copy, confidence, executed checks and a final status
+    (VALIDATED / INVALID / LOW_CONFIDENCE / NOT_FOUND / NOT_APPLICABLE /
+    REVIEW_REQUIRED) — plus a simple `value`/`valid`/`reason` view derived
+    from that status, for callers that just want a pass/fail per field
+    without the full enum: `valid` is True for VALIDATED and NOT_APPLICABLE
+    (nothing wrong — the field legitimately doesn't apply), False otherwise;
+    `reason` is populated only when `valid` is False.
     """
     failures_by_field: Dict[str, List[RuleCheck]] = {}
     warnings_by_field: Dict[str, List[RuleCheck]] = {}
@@ -567,6 +573,22 @@ def resolve_fields(
             entry["status"] = LOW_CONFIDENCE
         else:
             entry["status"] = VALIDATED
+
+        entry["value"] = entry["normalizedValue"] if entry["normalizedValue"] is not None else entry["extractedValue"]
+        entry["valid"] = entry["status"] in (VALIDATED, NOT_APPLICABLE)
+        if entry["valid"]:
+            entry["reason"] = None
+        else:
+            reasons = [c["message"] for c in entry["checks"] if not c["valid"] and not c["skipped"]]
+            if reasons:
+                entry["reason"] = "; ".join(reasons)
+            elif entry["status"] == NOT_FOUND:
+                entry["reason"] = f"required field '{name}' missing or empty"
+            elif entry["status"] == LOW_CONFIDENCE:
+                entry["reason"] = f"confidence {entry['confidence']} below minimum {type_entry.min_confidence}"
+            else:
+                entry["reason"] = entry["status"]
+
         resolved[name] = entry
     return resolved
 

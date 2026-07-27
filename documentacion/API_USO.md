@@ -152,7 +152,7 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 ```
 
 Query params:
-- `full=1` → agrega **`fullResult`**: el detalle más profundo desde S3 (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`status`/`checks`). El `result` del envelope trae las entidades y `liquidacionNormalizada`, pero el detalle por-campo solo está en `fullResult`.
+- `full=1` → agrega **`fullResult`**: el detalle más profundo desde S3 (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`, más `value`/`valid`/`reason` (vista simple: valor resuelto, booleano y motivo si `valid` es falso)). El `result` del envelope trae las entidades y `liquidacionNormalizada`, pero el detalle por-campo solo está en `fullResult`.
 
 **Errores:** `404 NOT_FOUND` si no hay documento con ese id/prefijo (acepta id completo o prefijo).
 
@@ -187,7 +187,7 @@ Puedes usar uno, el otro o los dos. Con los dos, `docType` **acota primero** y e
 | `expand` | no | `true` | `0`/`false` desactiva la búsqueda dentro de expedientes (ver abajo). |
 | `limit` | no | `25` | Máximo de resultados (tope `100`). |
 | `summary` | no | `false` | `1`/`true` devuelve solo un **resumen ligero** por match (id, clasificación, status, escalares, arrayCounts) en vez del envelope completo. Útil para listar. |
-| `full` | no | `false` | `1`/`true` agrega `fullResult` por match: el detalle **más profundo** desde S3 (`fields[]` con extractedValue/normalizedValue/status/checks, contenido completo de arrays). Cuesta un GET de S3 por match. |
+| `full` | no | `false` | `1`/`true` agrega `fullResult` por match: el detalle **más profundo** desde S3 (`fields[]` con extractedValue/normalizedValue/confidence/status/checks, más value/valid/reason (vista simple), contenido completo de arrays). Cuesta un GET de S3 por match. |
 
 \* Se requiere **al menos uno** de `docType` o `field`+`value`. Sin ninguno: `400 MISSING_PARAMS`.
 
@@ -265,7 +265,7 @@ curl -sS "$API/documents?field=NOMBRE_IMPORTADOR_EXPORTADOR&value=futurama&op=co
 
 El resultado se guarda en **dos lugares con distinto nivel de detalle** — esto explica por qué una respuesta puede verse "incompleta":
 
-- **DynamoDB** tabla `DocumentValidationStack-BedrockDocumentProcessingDocumentProcessingTable...` (PK `DocumentId`): un **envelope COMPACTO** en la columna `EnrichmentResult` (string JSON). Trae los campos **escalares**, `arrayCounts` (solo conteos), `liquidacionNormalizada`, `status` y `tracking`. **NO** trae el contenido de los arrays ni el detalle por campo (`fields[]` con extractedValue/normalizedValue/status/checks). Es compacto a propósito: el payload de Step Functions tiene límite de 256 KB.
+- **DynamoDB** tabla `DocumentValidationStack-BedrockDocumentProcessingDocumentProcessingTable...` (PK `DocumentId`): un **envelope COMPACTO** en la columna `EnrichmentResult` (string JSON). Trae los campos **escalares**, `arrayCounts` (solo conteos), `liquidacionNormalizada`, `status` y `tracking`. **NO** trae el contenido de los arrays ni el detalle por campo (`fields[]` con extractedValue/normalizedValue/confidence/status/checks, más value/valid/reason (vista simple)). Es compacto a propósito: el payload de Step Functions tiene límite de 256 KB.
 - **S3** `results/{documentId}.json`: el resultado **COMPLETO** — todos los campos con su detalle, el contenido de todos los arrays (PARTIDAS, CONTRIBUCIONES...), checks y confianzas.
 
 ### Columnas indexadas (para filtrar sin Scan)
@@ -294,4 +294,4 @@ Cómo lo devuelve cada endpoint:
 | `GET /documents?...&summary=1` | DynamoDB (Query o Scan) | Resumen ligero por match |
 | `GET /documents?...&full=1` | DynamoDB + S3 por match | Envelope + `fullResult` por match |
 
-> El envelope de DynamoDB ya trae los escalares, `arrayCounts`, `liquidacionNormalizada` y `expediente.documents[...]`. Lo único que **solo** está en S3 es el detalle por-campo (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`status`/`checks`), que se obtiene con `full=1`.
+> El envelope de DynamoDB ya trae los escalares, `arrayCounts`, `liquidacionNormalizada` y `expediente.documents[...]`. Lo único que **solo** está en S3 es el detalle por-campo (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`, más `value`/`valid`/`reason` (vista simple: valor resuelto, booleano y motivo si `valid` es falso)), que se obtiene con `full=1`.

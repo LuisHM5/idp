@@ -446,12 +446,35 @@ def _scalar_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in entities.items() if not isinstance(v, (list, dict))}
 
 
+def _fields_validity(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Condensed value/confidence/valid/reason per scalar field, for the
+    compact envelope (the one that lands in DynamoDB — see
+    `_compact_expediente`). `fields` is `resolve_fields()`'s output, which
+    also has the full `status`/`checks`/`extractedValue`/`normalizedValue`
+    detail; that stays S3-only (see `resultLocation`) to keep this envelope
+    small. Repeatable/array fields are skipped here (already summarized via
+    `arrayCounts`) — this covers the same fields as `extractedEntities`.
+    """
+    return {
+        name: {
+            "value": f.get("value"),
+            "confidence": f.get("confidence"),
+            "valid": f.get("valid"),
+            "reason": f.get("reason"),
+        }
+        for name, f in fields.items()
+        if not isinstance(f.get("extractedValue"), (list, dict))
+    }
+
+
 def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
     """Summary of the expediente result that fits Step Functions payloads.
 
-    Per document: type, pages, status, confidence and scalar entities only;
-    arrays become item counts and per-field detail/checks stay in the full
-    S3 result (see `resultLocation`).
+    Per document: type, pages, status, confidence, scalar entities (plain
+    values, for search/backward-compat) and `fieldsValidity` (value +
+    confidence + valid + reason per scalar field). Arrays become item
+    counts and the full per-field detail (status enum + individual rule
+    checks) stays in the full S3 result (see `resultLocation`).
     """
     docs = []
     for d in result.get("documents", []):
@@ -466,6 +489,7 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
                 "confidence": d.get("confidence"),
                 "businessDestination": d.get("businessDestination"),
                 "extractedEntities": _scalar_entities(entities),
+                "fieldsValidity": _fields_validity(d.get("fields") or {}),
                 "arrayCounts": {
                     k: len(v) for k, v in entities.items() if isinstance(v, list)
                 },

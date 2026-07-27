@@ -151,14 +151,15 @@
       "LEYENDA_DESTINO_ORIGEN": "Leyenda del pie como 'DESTINO/ORIGEN. INTERIOR DEL PAÍS'. Conservar texto completo.",
       "USUARIO_IMPRESION": "Nombre mostrado junto a 'Usuario:' en el pie.",
       "FECHA_HORA_IMPRESION": "Fecha y hora del pie. Normalizar a ISO 8601 cuando se pueda leer completa.",
-      "NUMERO_PEDIMENTO": "Valor impreso completo del campo NUM. PEDIMENTO, conservando la representación original.",
-      "NUMERO_PEDIMENTO_NORMALIZADO": "Concatenar 2 dígitos de año + 2 de aduana + 4 de patente/autorización + 7 de consecutivo. Resultado de 15 dígitos.",
-      "ANIO_PEDIMENTO": "Primeros 2 dígitos del número de pedimento; guardar como string.",
-      "ADUANA_DESPACHO": "Dos dígitos de aduana contenidos en el número de pedimento. No confundir con ADUANA E/S ni con la sección de despacho.",
+      "NUMERO_PEDIMENTO": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros y nunca truncar el último dígito.",
+
+      "NUMERO_PEDIMENTO_NORMALIZADO": "No copiar directamente NUMERO_PEDIMENTO. Construir obligatoriamente concatenando ANIO_PEDIMENTO de 2 dígitos + ADUANA_DESPACHO de 2 dígitos + PATENTE de 4 dígitos + NUMERO_CONSECUTIVO de 7 dígitos. El resultado debe tener exactamente 15 dígitos. Para este ejemplo: 26 + 07 + 0823 + 6001630 = 260708236001630.",
+      "ANIO_PEDIMENTO": "Extraer únicamente los últimos 2 dígitos del año. Ejemplo: para 2026 devolver \"26\", no \"2026\".",
+      "ADUANA_DESPACHO": "Extraer exactamente 2 dígitos. Conservar ceros a la izquierda.",
+      "PATENTE": "Extraer exactamente 4 dígitos como string. Conservar ceros a la izquierda.",
+      "NUMERO_CONSECUTIVO": "Extraer exactamente 7 dígitos como string. Conservar ceros tanto a la izquierda como a la derecha. Nunca convertir a número ni truncar.",
       "SECCION_ADUANERA": "Clave impresa en 'CLAVE DE LA SECCION ADUANERA DE DESPACHO'; puede tener 2 o 3 dígitos según impresión.",
       "NOMBRE_SECCION_ADUANERA": "Nombre situado junto a la clave de sección aduanera, por ejemplo SAN JERONIMO STA. TERESA.",
-      "PATENTE": "Cuatro dígitos de patente o autorización del número de pedimento. Conservar ceros a la izquierda.",
-      "NUMERO_CONSECUTIVO": "Siete dígitos finales del número de pedimento. Conservar ceros a la izquierda.",
       "TIPO_OPERACION": "Campo T.OPER o TIPO OPER; conservar el código impreso, normalmente IMP o EXP.",
       "TIPO_OPERACION_NORMALIZADO": "Derivar IMPORTACION para IMP y EXPORTACION para EXP; para otros códigos conservar OTRO.",
       "CLAVE_PEDIMENTO": "Campo CVE.PEDIMENTO/CVE.PEDIM, normalmente A1, R1, V1, K1, etc. No confundir con régimen.",
@@ -299,13 +300,6 @@
         "rule_type": "regex",
         "pattern": "^\\d{15}$",
         "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
-      },
-      {
-        "field": "NUMERO_PEDIMENTO_NORMALIZADO",
-        "rule_type": "custom_formula",
-        "formula": "ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO",
-        "skip_if_missing": true,
-        "message": "El número normalizado no coincide con año, aduana, patente y consecutivo"
       },
       {
         "field": "ANIO_PEDIMENTO",
