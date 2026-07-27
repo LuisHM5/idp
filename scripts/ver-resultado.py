@@ -9,6 +9,7 @@ Uso:
     pnpm resultado                          # última ejecución
     pnpm resultado -- --id e07e3e90         # por documentId (prefijo basta)
     pnpm resultado -- --id e07e3e90 --wait  # espera si aún está corriendo
+    pnpm resultado -- --env prod --id e07e3e90
     pnpm resultado -- --save resultados/    # además guarda el JSON completo
 """
 
@@ -22,6 +23,8 @@ import time
 from pathlib import Path
 
 GREEN, RED, YELLOW, CYAN, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[36m", "\033[2m", "\033[0m"
+DEV_STACK = "DocumentValidationStack-Dev"
+PROD_STACK = "DocumentValidationStack"
 STATUS_COLOR = {
     "APPROVED": GREEN, "APROBADO": GREEN,
     "REJECTED": RED, "RECHAZADO": RED,
@@ -47,14 +50,23 @@ def aws(args: list[str], region: str) -> dict:
     return json.loads(out.stdout) if out.stdout.strip() else {}
 
 
-def find_state_machine(region: str) -> str:
-    sms = aws(["stepfunctions", "list-state-machines"], region)["stateMachines"]
-    for sm in sms:
-        if "documentprocessing" in sm["name"].lower().replace("-", ""):
-            return sm["stateMachineArn"]
-    if sms:
-        return sms[0]["stateMachineArn"]
-    raise RuntimeError("No hay state machines en la cuenta/región")
+def find_state_machine(region: str, environment: str = "dev", stack_name: str | None = None) -> str:
+    """Resolve the workflow from its owning stack, avoiding dev/prod ambiguity."""
+    target_stack = stack_name or (PROD_STACK if environment == "prod" else DEV_STACK)
+    stack = aws(
+        ["cloudformation", "describe-stack-resources", "--stack-name", target_stack],
+        region,
+    )
+    matches = [
+        resource["PhysicalResourceId"]
+        for resource in stack.get("StackResources", [])
+        if resource.get("ResourceType") == "AWS::StepFunctions::StateMachine"
+    ]
+    if not matches:
+        raise RuntimeError(
+            f"El stack '{target_stack}' no existe o no contiene una state machine"
+        )
+    return matches[0]
 
 
 def find_execution(sm_arn: str, doc_id: str | None, region: str) -> dict:
@@ -126,10 +138,13 @@ def main() -> int:
     parser.add_argument("--id", help="documentId (o prefijo) de la ejecución a consultar")
     parser.add_argument("--wait", action="store_true", help="esperar si la ejecución sigue corriendo")
     parser.add_argument("--save", help="carpeta donde guardar el JSON completo")
+    parser.add_argument("--env", choices=("dev", "prod"), default="dev",
+                        help="ambiente a consultar (default: dev)")
+    parser.add_argument("--stack", help="stack explícito (gana sobre --env)")
     parser.add_argument("--region", default="us-east-1")
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
 
-    sm = find_state_machine(args.region)
+    sm = find_state_machine(args.region, args.env, args.stack)
     # S3 → SQS → workflow start takes a few seconds; with --wait, retry until
     # the execution shows up instead of failing immediately.
     deadline = time.time() + (300 if args.wait else 0)

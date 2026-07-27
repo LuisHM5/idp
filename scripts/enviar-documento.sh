@@ -28,6 +28,10 @@ DEV_STACK="DocumentValidationStack-Dev"
 PROD_STACK="DocumentValidationStack"
 
 STACK_NAME="${STACK_NAME:-}"
+STACK_EXPLICIT=false
+if [[ -n "$STACK_NAME" ]]; then
+  STACK_EXPLICIT=true
+fi
 ENV="dev"
 REGION="${AWS_REGION:-us-east-1}"
 API_MAX_BYTES=4000000   # ~4 MB reales; por encima el API responde HTTP 413
@@ -37,18 +41,37 @@ DOC_TYPE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env)
+      if [[ $# -lt 2 ]]; then
+        echo "Falta el valor de --env (dev o prod)." >&2
+        exit 2
+      fi
       ENV="$2"; shift 2 ;;
     --stack)
-      STACK_NAME="$2"; shift 2 ;;
+      if [[ $# -lt 2 ]]; then
+        echo "Falta el valor de --stack." >&2
+        exit 2
+      fi
+      STACK_NAME="$2"; STACK_EXPLICIT=true; shift 2 ;;
+    --*)
+      echo "Opción desconocida: $1" >&2
+      exit 2 ;;
     *)
       if [[ -z "$FILE" ]]; then
         FILE="$1"
-      else
+      elif [[ -z "$DOC_TYPE" ]]; then
         DOC_TYPE="$1"
+      else
+        echo "Argumento inesperado: $1" >&2
+        exit 2
       fi
       shift ;;
   esac
 done
+
+if [[ "$ENV" != "dev" && "$ENV" != "prod" ]]; then
+  echo "Ambiente inválido: $ENV (usa dev o prod)." >&2
+  exit 2
+fi
 
 if [[ -z "$STACK_NAME" ]]; then
   if [[ "$ENV" == "prod" ]]; then
@@ -75,6 +98,15 @@ if [[ ! -f "$FILE" ]]; then
 fi
 
 echo "Ambiente: $ENV (stack: $STACK_NAME)"
+
+RESULT_TARGET=(--env "$ENV")
+if [[ "$STACK_EXPLICIT" == true ]]; then
+  RESULT_TARGET=(--stack "$STACK_NAME")
+fi
+RESULT_COMMAND='pnpm resultado -- --id %s --wait'
+for arg in "${RESULT_TARGET[@]}"; do
+  printf -v RESULT_COMMAND '%s %q' "$RESULT_COMMAND" "$arg"
+done
 
 # --- 0. ¿Estoy autenticado en AWS? -----------------------------------------
 if ! aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1; then
@@ -120,7 +152,7 @@ if (( SIZE > API_MAX_BYTES )); then
   fi
   aws s3 cp "$FILE" "s3://${BUCKET}/${KEY}" --region "$REGION"
   echo "documentId: $DOCID"
-  echo "Consulta el resultado con: pnpm resultado -- --id $DOCID --wait"
+  printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"
   exit 0
 fi
 
@@ -163,5 +195,5 @@ DOCID=$(echo "$RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *
 if [[ -n "$DOCID" ]]; then
   echo
   echo "documentId: $DOCID"
-  echo "Consulta el resultado con: pnpm resultado -- --id $DOCID --wait"
+  printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"
 fi

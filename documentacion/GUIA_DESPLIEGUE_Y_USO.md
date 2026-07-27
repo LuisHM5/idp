@@ -123,7 +123,11 @@ pnpm resultado                          # la ejecución más reciente
 pnpm resultado -- --id $DOCID           # la tuya (con el prefijo del documentId basta)
 pnpm resultado -- --id $DOCID --wait    # espera si sigue procesando (86 pág ≈ 6-8 min)
 pnpm resultado -- --id $DOCID --save resultados/   # además guarda el JSON completo
+pnpm resultado -- --env prod --id $DOCID --wait    # consulta el stack de producción
 ```
+
+`enviar`, `track` y `resultado` usan **dev por default**. Pasa `--env prod` a
+los tres cuando trabajes con producción.
 
 La salida muestra: estado general del expediente, cada documento detectado con su rango de páginas/tipo/estado, los campos clave con confianza, los checks cruzados (mismo pedimento, RFC importador, UUIDs duplicados) y warnings. El JSON guardado trae el detalle completo de todos los campos (`extractedValue`/`normalizedValue`/`status`/`checks`).
 

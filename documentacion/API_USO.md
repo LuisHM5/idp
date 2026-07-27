@@ -72,7 +72,8 @@ Sube un archivo (base64 en JSON) que dispara el pipeline de clasificación → e
 } > /tmp/body.json
 curl -sS -X POST "$API/upload" -H "Content-Type: application/json" --data-binary @/tmp/body.json
 ```
-Atajo del repo: `pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL`.
+Atajo del repo: `pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL` (dev por default);
+para producción: `API_KEY=<VALOR> pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL --env prod`.
 
 ---
 

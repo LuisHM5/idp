@@ -5,16 +5,21 @@ Guía para mandar un documento al pipeline de validación y leer el resultado.
 ## TL;DR (script)
 
 ```bash
-pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL
-# o:  bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO]
+pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL  # dev (default)
+pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL --env prod
+# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod]
 ```
 
 El script hace todo: verifica tu sesión de AWS, obtiene el endpoint del stack,
 elige API (chico) o S3 directo (grande) y te devuelve el `documentId`. Luego:
 
 ```bash
-pnpm resultado -- --id <documentId> --wait
+pnpm resultado -- --id <documentId> --wait             # dev
+pnpm resultado -- --id <documentId> --wait --env prod  # prod
 ```
+
+Usa el mismo ambiente en ambos comandos. También puedes seleccionar un stack
+concreto con `--stack <NOMBRE>`; esta opción gana sobre `--env`.
 
 ---
 

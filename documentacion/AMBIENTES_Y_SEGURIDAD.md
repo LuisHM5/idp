@@ -101,7 +101,7 @@ Usarla:
 ```bash
 curl -H "x-api-key: <VALOR>" https://idp.alsuper.com/documents/...
 # o con el script:
-API_KEY=<VALOR> pnpm enviar archivo.pdf PEDIMENTO_ADUANAL
+API_KEY=<VALOR> pnpm enviar archivo.pdf PEDIMENTO_ADUANAL --env prod
 ```
 Puedes crear **una key por sistema consumidor** (Promocontrol, CEDIS/ERP, Portal…)
 para métricas y límites por módulo — se agregan en el stack (`api.addApiKey` +
