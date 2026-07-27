@@ -1,11 +1,15 @@
 import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cwActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import {
@@ -338,6 +342,53 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // payloads only carry a compact summary).
     documentBucket.grantReadWrite(enrichmentFn);
 
+    // Cost guardrail: catch a runaway enrichment Lambda (unexpected request
+    // volume, or a single invocation crawling toward its 15-minute cap) fast,
+    // instead of finding out from the AWS bill. Complements the account-wide
+    // monthly Budget with something specific to this pipeline and much
+    // faster to fire (minutes, not a % of a monthly ceiling).
+    const alertsTopic = new sns.Topic(this, "PipelineAlertsTopic", {
+      topicName: `document-validation-alerts${envSuffix}`,
+      masterKey: encryptionKey,
+    });
+    alertsTopic.addSubscription(
+      new subscriptions.EmailSubscription("luis.hernandez@alsuper.com")
+    );
+
+    // Many invocations in a short window: normal single-document testing
+    // never approaches this; a real spike (script loop, retry storm, abuse)
+    // does. 15-minute period so a burst of manual tests doesn't false-alarm.
+    new cloudwatch.Alarm(this, "EnrichmentInvocationSpikeAlarm", {
+      alarmName: `enrichment-invocation-spike${envSuffix}`,
+      alarmDescription:
+        "Unusually many enrichment Lambda invocations in 15 minutes — possible request storm or retry loop burning Textract/Bedrock spend.",
+      metric: enrichmentFn.metricInvocations({
+        period: cdk.Duration.minutes(15),
+        statistic: "sum",
+      }),
+      threshold: 20,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cwActions.SnsAction(alertsTopic));
+
+    // A single invocation crawling toward its own 15-minute hard cap: fires
+    // before the timeout actually happens, so there's a chance to intervene
+    // (or at least know) instead of just seeing it in the bill/logs after.
+    new cloudwatch.Alarm(this, "EnrichmentDurationNearTimeoutAlarm", {
+      alarmName: `enrichment-duration-near-timeout${envSuffix}`,
+      alarmDescription:
+        "Enrichment Lambda invocation running close to its 15-minute timeout — likely to time out and waste the full invocation's Textract/Bedrock spend.",
+      metric: enrichmentFn.metricDuration({
+        period: cdk.Duration.minutes(5),
+        statistic: "Maximum",
+      }),
+      threshold: cdk.Duration.minutes(13).toMilliseconds(),
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cwActions.SnsAction(alertsTopic));
+
     // Upload Lambda - Node.js document ingestion API
     const uploadFn = new lambda.Function(this, "UploadLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -392,6 +443,19 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: ["GET", "POST", "OPTIONS"],
       },
+      // Dev has no API key / WAF (open on purpose, for easy testing — see
+      // methodOptions below), so without a stage-wide default it has no rate
+      // limit at all: a bug or accidental script loop could fire uploads as
+      // fast as the client can send them, each one billing Textract+Bedrock.
+      // This is a blunt, key-independent cap — every caller shares it, unlike
+      // prod's per-API-key usage plan below. Prod already has WAF + a usage
+      // plan, so this only applies to dev.
+      ...(!isProd && {
+        deployOptions: {
+          throttlingRateLimit: 10,
+          throttlingBurstLimit: 20,
+        },
+      }),
     });
 
     // In prod every method requires an API key: requests without a valid

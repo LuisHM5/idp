@@ -485,6 +485,7 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
         "documents": docs,
         "crossDocumentChecks": result.get("crossDocumentChecks", []),
         "warnings": result.get("warnings", []),
+        **({"truncated": result["truncated"]} if result.get("truncated") else {}),
     }
 
 

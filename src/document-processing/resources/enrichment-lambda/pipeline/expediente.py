@@ -16,13 +16,14 @@ document and expediente statuses aggregate them conservatively.
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import (
     get_cross_document_rules,
@@ -54,6 +55,17 @@ PIPELINE_VERSION = "1.0.0"
 # 17-document expediente runs in parallel instead of serially. Bounded to respect
 # Bedrock rate limits; boto3 clients are thread-safe.
 _EXTRACT_WORKERS = int(os.environ.get("EXTRACT_WORKERS", "4"))
+
+# Cost guardrail: an unbounded page count means unbounded Textract OCR calls
+# and Bedrock extraction chunks before anything can fail or time out — a
+# single oversized upload (accidental or malicious) can burn a full 15-minute
+# Lambda invocation's worth of billed Textract+Bedrock usage. Cap it before
+# any of that work starts; the untouched original always stays exactly where
+# it was uploaded (S3 raw/... -> processed/failed/... via the workflow) since
+# this only truncates the in-memory copy used for extraction, so nothing is
+# lost — just flagged for a human to reprocess in full if the extra pages
+# matter.
+_MAX_PAGES = int(os.environ.get("MAX_PAGES", "50"))
 
 
 def _tracking(
@@ -151,6 +163,35 @@ def _extract_segment(seg: Segment, pages: List[PageText], model_id: Optional[str
     return doc
 
 
+def _truncate_pdf(pdf_bytes: bytes, max_pages: int) -> Tuple[bytes, Optional[int]]:
+    """Cap a PDF to its first `max_pages` pages before any OCR/Bedrock work.
+
+    Returns (bytes_to_process, original_page_count). `original_page_count` is
+    None when no truncation was needed (page count <= max_pages) or the PDF
+    can't be parsed here — `load_pages()`'s own error handling takes over in
+    that case, unchanged. Never raises.
+    """
+    from pypdf import PdfReader, PdfWriter  # deferred: pulls pypdf
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        total = len(reader.pages)
+    except Exception as e:
+        logger.warning("could not read page count for truncation check: %s", e)
+        return pdf_bytes, None
+
+    if total <= max_pages:
+        return pdf_bytes, None
+
+    writer = PdfWriter()
+    for i in range(max_pages):
+        writer.add_page(reader.pages[i])
+    buf = io.BytesIO()
+    writer.write(buf)
+    logger.warning("truncating PDF from %d to %d pages (MAX_PAGES)", total, max_pages)
+    return buf.getvalue(), total
+
+
 def process_pdf(
     pdf_bytes: bytes,
     declared_type: Optional[str] = None,
@@ -167,6 +208,8 @@ def process_pdf(
     def _fail(message: str) -> Dict[str, Any]:
         return _error_result(processing_id, source_name, message,
                              _tracking(started_at, started, model_id))
+
+    pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, _MAX_PAGES)
 
     try:
         pages = load_pages(pdf_bytes)
@@ -235,6 +278,15 @@ def process_pdf(
         started_at, started, model_id,
         doc_types=[d["documentType"] for d in documents],
     )
+    warnings = [c["message"] for c in cross_checks if not c["valid"]]
+    truncated = original_page_count is not None
+    if truncated:
+        warnings.append(
+            f"Documento truncado a {_MAX_PAGES} de {original_page_count} páginas "
+            "para acotar costo de procesamiento; el PDF original completo "
+            "permanece sin modificar en S3 — reprocesar manualmente si se "
+            "necesitan las páginas restantes."
+        )
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
@@ -243,10 +295,11 @@ def process_pdf(
         "tracking": tracking,
         "pages": pages_summary(pages),
         "status": overall,
-        "reviewRequired": overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),
+        "reviewRequired": truncated or overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),
         "documents": documents,
         "crossDocumentChecks": cross_checks,
-        "warnings": [c["message"] for c in cross_checks if not c["valid"]],
+        "warnings": warnings,
+        **({"truncated": {"originalPages": original_page_count, "processedPages": _MAX_PAGES}} if truncated else {}),
     }
 
 
