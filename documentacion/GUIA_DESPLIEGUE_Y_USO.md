@@ -106,7 +106,7 @@ aws s3 cp "test-docs/pedimentos docs/docs/pedimentos.pdf" \
 echo "Tu documentId: $DOCID"     # guárdalo para consultar el resultado
 ```
 
-> El límite del API es ~4 MB reales (base64 + límite de payload de Lambda = 6 MB); por encima devuelve `HTTP 413`. La subida directa a `raw/` dispara exactamente el mismo pipeline.
+> El límite inline del API es ~4 MB reales (base64 + límite de payload de Lambda = 6 MB); por encima devuelve `HTTP 413`. Para archivos más grandes, `POST /upload` sin `contentBase64` devuelve una URL prefirmada de S3 (`uploadUrl`) para subir con `PUT` directo, sin tope de tamaño real y sin necesitar credenciales AWS — ver `ENVIAR_DOCUMENTO_API.md`.
 >
 > **Clasificación manual (opcional, más rápido/barato):** sube a `raw/{TIPO}/{uuid}/archivo.pdf` (p. ej. `raw/EXPEDIENTE_ADUANAL_MULTIDOCUMENTO/$DOCID/pedimentos.pdf`) y el paso de clasificación Bedrock se salta. Con el API: campo `documentType` en el body.
 

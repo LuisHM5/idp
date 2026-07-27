@@ -37,10 +37,13 @@ Puntos clave:
 ## Recorrido paso a paso (con referencias a código)
 
 ### 1. Subida
-- `upload-lambda/index.mjs:handler` — valida, decodifica base64, y escribe a
-  `raw/{TIPO}/{uuid}/file` si el usuario declaró `documentType`, o `raw/{uuid}/file`
-  si no. El **prefijo con tipo** es cómo el usuario "fuerza" la clasificación.
-- Alternativa: subir directo a `raw/` en S3 (archivos > ~4 MB).
+- `upload-lambda/index.mjs:handler` — valida, y escribe a `raw/{TIPO}/{uuid}/file`
+  si el usuario declaró `documentType`, o `raw/{uuid}/file` si no. El **prefijo
+  con tipo** es cómo el usuario "fuerza" la clasificación.
+- Archivos chicos (~4 MB): body con `contentBase64`, la Lambda decodifica y
+  escribe a S3 ella misma. Archivos grandes: `POST /upload` sin
+  `contentBase64` devuelve una URL prefirmada de S3; el cliente sube con
+  `PUT` directo a esa URL — sin tope de tamaño real, sin pasar por Lambda.
 
 ### 2. Orquestación (blueprint, sin código nuestro)
 - Trigger S3 sobre `raw/` → Step Functions.

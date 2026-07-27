@@ -40,13 +40,15 @@ Referencia de todos los endpoints del API de la app de validación documental.
 
 ## 1. `POST /upload` — Subir un documento
 
-Sube un archivo (base64 en JSON) que dispara el pipeline de clasificación → extracción → validación.
+Dispara el pipeline de clasificación → extracción → validación. Dos modos, mismo endpoint — la diferencia es si mandas `contentBase64` o no:
+
+### 1a. Inline (archivos chicos, hasta ~4 MB reales)
 
 **Body:**
 ```jsonc
 {
   "fileName": "pedimento.pdf",          // requerido; extensión: pdf|jpg|jpeg|png
-  "contentBase64": "JVBERi0xLjc...",    // requerido; el archivo en base64
+  "contentBase64": "JVBERi0xLjc...",    // el archivo en base64
   "documentType": "PEDIMENTO_ADUANAL",  // opcional; si se omite, Bedrock clasifica
   "metadata": { "lote": "A123" }        // opcional; se conserva con el documento
 }
@@ -54,26 +56,63 @@ Sube un archivo (base64 en JSON) que dispara el pipeline de clasificación → e
 
 **Respuesta `200`:**
 ```json
-{ "documentId": "PEDIMENTO-ADUANAL-e18d014a-...", "status": "queued" }
+{
+  "documentId": "e18d014a-...",
+  "bucket": "documentvalidationstack-...",
+  "key": "raw/PEDIMENTO_ADUANAL/e18d014a-.../pedimento.pdf",
+  "documentType": "PEDIMENTO_ADUANAL",
+  "classificationMode": "manual",
+  "uploadedAt": "2026-07-27T13:18:19.000Z"
+}
 ```
 
-**Límites y notas:**
-- Tope de payload ~4 MB reales (base64 infla ~33% → 6 MB de Lambda). Por encima: `HTTP 413`. Para archivos grandes, sube directo a S3 `raw/{id}/archivo.pdf` (dispara el mismo pipeline).
-- El base64 **no cabe como argumento de curl** → usa `--data-binary @archivo`.
+**Límite:** ~4 MB reales de payload (base64 infla ~33% → topa el límite duro de invocación síncrona de Lambda, 6 MB — no configurable). Por encima, `HTTP 413`. El base64 **no cabe como argumento de curl** → usa `--data-binary @archivo`.
+
+### 1b. Prefirmado (archivos grandes, sin límite de tamaño real)
+
+Igual, pero **sin `contentBase64`**:
+
+```jsonc
+{
+  "fileName": "expediente.pdf",
+  "documentType": "PEDIMENTO_ADUANAL"    // opcional
+}
+```
+
+**Respuesta `200`:**
+```json
+{
+  "documentId": "e18d014a-...",
+  "bucket": "documentvalidationstack-...",
+  "key": "raw/PEDIMENTO_ADUANAL/e18d014a-.../expediente.pdf",
+  "documentType": "PEDIMENTO_ADUANAL",
+  "classificationMode": "manual",
+  "uploadUrl": "https://...s3.amazonaws.com/...",
+  "uploadMethod": "PUT",
+  "uploadExpiresInSeconds": 900,
+  "uploadedAt": "2026-07-27T13:18:19.000Z"
+}
+```
+
+Con `uploadUrl` en mano, sube el archivo directo a S3 (el pipeline arranca en cuanto S3 recibe el objeto — no hace falta avisarle a nada más):
+
+```bash
+curl -X PUT --upload-file expediente.pdf "$UPLOAD_URL"
+```
+
+El archivo nunca pasa por API Gateway ni por el Lambda — el `PUT` va directo a S3, así que no hay tope de tamaño real (S3 acepta hasta 5 GB en un solo `PUT`). `uploadUrl` expira en 15 minutos; no hace falta que el `Content-Type` del `PUT` coincida con nada (no está atado a la firma). Funciona igual para cualquier cliente HTTP, no solo con credenciales AWS.
+
+### Notas comunes a ambos modos
+
 - Si mandas `documentType`, se salta la clasificación automática **y se HONRA tu tipo**: el documento se trata como ese tipo único y **no se re-clasifica ni se segmenta** en otro (p. ej. un PDF de varias páginas declarado `PEDIMENTO_ADUANAL` se procesa como un solo pedimento, no como `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). Si quieres que el sistema segmente/clasifique solo, **omite** `documentType`. Para forzar la segmentación multi-documento explícitamente, declara `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
+- **Tope de páginas (pipeline de expedientes/pedimentos):** un PDF de más de 50 páginas (`MAX_PAGES`, configurable) se **trunca a las primeras 50** antes de correr Textract/Bedrock, para acotar el costo de un documento inesperadamente grande. El PDF original completo **no se toca** — sigue intacto en S3 — pero el resultado solo cubre las páginas procesadas, queda marcado `reviewRequired: true` con un warning explícito, y un campo `truncated: {originalPages, processedPages}`. Si necesitas las páginas restantes, hay que reprocesar manualmente.
 - El resultado final se publica en **EventBridge** (broker `idp-broker`, source `document-validation-pipeline`) y se persiste (ver GET abajo).
 
-**Ejemplo:**
+**Ejemplo (atajo del repo, detecta automático inline vs. prefirmado por tamaño):**
 ```bash
-{
-  printf '{"fileName":"pedimento.pdf","contentBase64":"'
-  base64 -w0 pedimento.pdf
-  printf '","documentType":"PEDIMENTO_ADUANAL"}'
-} > /tmp/body.json
-curl -sS -X POST "$API/upload" -H "Content-Type: application/json" --data-binary @/tmp/body.json
+pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL              # dev por default
+API_KEY=<VALOR> pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL --env prod
 ```
-Atajo del repo: `pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL` (dev por default);
-para producción: `API_KEY=<VALOR> pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL --env prod`.
 
 ---
 

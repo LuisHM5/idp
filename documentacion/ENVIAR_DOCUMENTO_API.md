@@ -11,7 +11,8 @@ pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL --env prod
 ```
 
 El script hace todo: verifica tu sesión de AWS, obtiene el endpoint del stack,
-elige API (chico) o S3 directo (grande) y te devuelve el `documentId`. Luego:
+elige inline (chico) o URL prefirmada de S3 (grande) y te devuelve el
+`documentId`. Luego:
 
 ```bash
 pnpm resultado -- --id <documentId> --wait             # dev
@@ -27,9 +28,12 @@ concreto con `--stack <NOMBRE>`; esta opción gana sobre `--env`.
 
 - **El API es PÚBLICO** (sin API key ni auth): el método `POST /upload` se creó
   con `AuthorizationType.NONE` (`src/document-validation-stack.ts`). El `curl` no
-  lleva ningún header de autorización.
-- **Las credenciales AWS** solo se usan para: (1) *leer* el endpoint desde los
-  outputs del stack y (2) subir a S3 los archivos grandes. Verifícalas con:
+  lleva ningún header de autorización — ni para archivos chicos (inline) ni
+  para grandes (URL prefirmada): la URL prefirmada por sí sola autoriza el
+  `PUT` a S3, sin necesitar credenciales AWS del lado del cliente.
+- **Las credenciales AWS** en `scripts/enviar-documento.sh` solo se usan para
+  *leer* el endpoint desde los outputs del stack (`aws cloudformation
+  describe-stacks`) — no para subir el archivo. Verifícalas con:
 
   ```bash
   aws sts get-caller-identity        # debe devolver tu Account/Arn (886031931562)
@@ -88,24 +92,27 @@ curl -sS -X POST "$API_ENDPOINT/upload" \
 > **fish shell:** el bloque `{ ...; } > file` es de bash. En fish, envuélvelo en
 > `bash -c '...'` o usa directamente `pnpm enviar` (que ya corre en bash).
 
-### 3. Archivos grandes (≥ ~4 MB) → directo a S3
+### 3. Archivos grandes (≥ ~4 MB) → URL prefirmada de S3
 
-El API tope es ~4 MB reales (base64 infla ~33% → 6 MB de payload de Lambda);
-por encima devuelve `HTTP 413`. Sube directo a `raw/` — dispara el mismo pipeline:
+El API tope inline es ~4 MB reales (base64 infla ~33% → topa el límite duro
+de invocación síncrona de Lambda, 6 MB, no configurable); por encima
+devuelve `HTTP 413`. Para esos, el mismo `POST /upload` **sin
+`contentBase64`** devuelve una URL prefirmada de S3 — el archivo se sube con
+un `PUT` directo a esa URL, sin pasar por API Gateway/Lambda, así que no hay
+tope de tamaño real:
 
 ```bash
-BUCKET=$(aws cloudformation describe-stack-resources \
-  --stack-name DocumentValidationStack --region us-east-1 \
-  --query "StackResources[?ResourceType=='AWS::S3::Bucket'].PhysicalResourceId" \
-  --output text | tr '\t' '\n' | grep -i bedrockdocumentprocessing | head -1)
+curl -sS -X POST "$API_ENDPOINT/upload" \
+  -H "Content-Type: application/json" \
+  -d '{"fileName":"expediente.pdf","documentType":"PEDIMENTO_ADUANAL"}'
+# → { "documentId": "...", "uploadUrl": "https://...", "uploadExpiresInSeconds": 900, ... }
 
-DOCID=$(uuidgen)
-aws s3 cp "expediente.pdf" "s3://$BUCKET/raw/$DOCID/expediente.pdf"
-echo "documentId: $DOCID"
+curl -X PUT --upload-file expediente.pdf "$UPLOAD_URL"
 ```
 
-> **Clasificación manual (opcional):** sube a `raw/{TIPO}/{uuid}/archivo.pdf`
-> (p. ej. `raw/PEDIMENTO_ADUANAL/$DOCID/...`) y se salta la clasificación Bedrock.
+No necesitas credenciales AWS para este flujo — solo la `uploadUrl` que te
+regresa el POST (expira en 15 minutos). `documentType` sigue siendo opcional
+para clasificación manual, igual que en el modo inline.
 
 ### 4. Leer el resultado
 

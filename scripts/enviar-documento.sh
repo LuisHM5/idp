@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Envía un documento al API de validación (o directo a S3 si es grande) y te
-# devuelve el documentId para consultar el resultado.
+# Envía un documento al API de validación y te devuelve el documentId para
+# consultar el resultado. Sin límite de tamaño real: los archivos grandes
+# usan una URL prefirmada de S3 (ver abajo), igual que haría cualquier
+# cliente HTTP externo sin credenciales AWS.
 #
 # Uso:
 #   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE]
@@ -15,11 +17,18 @@
 #   --stack <NOMBRE>  Stack explícito (gana sobre --env)
 #
 # Requisitos:
-#   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar)
+#   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar) — solo
+#     para LEER el endpoint del stack, no para subir el archivo.
 #   - curl, base64
 #
-# El API es público (sin auth): las credenciales AWS solo se usan para LEER el
-# endpoint del stack y, si el archivo es grande, para subirlo a S3.
+# El API es público (sin auth). Archivos chicos (<=~4MB) van inline como
+# base64 en el POST /upload. Archivos más grandes: POST /upload SIN
+# `contentBase64` devuelve una URL prefirmada de S3 (`uploadUrl`), y el
+# script hace un PUT directo a esa URL — el archivo nunca pasa por API
+# Gateway ni por el Lambda (esos tienen topes duros de AWS de ~10MB/6MB no
+# configurables), así que no hay límite práctico de tamaño. Cualquier
+# cliente HTTP sin credenciales AWS puede hacer lo mismo: solo necesita la
+# `uploadUrl` que regresa el POST inicial.
 
 set -euo pipefail
 
@@ -131,26 +140,45 @@ echo "API_ENDPOINT = $API_ENDPOINT"
 FILE_NAME=$(basename "$FILE")
 SIZE=$(wc -c < "$FILE")
 
-# --- 2a. Archivo grande → subida directa a S3 (mismo pipeline) --------------
+# En prod el API exige `x-api-key`. Exporta API_KEY con el valor de tu key
+# (aws apigateway get-api-key --api-key <id> --include-value). En dev no hace falta.
+API_KEY_HEADER=()
+if [[ -n "${API_KEY:-}" ]]; then
+  API_KEY_HEADER=(-H "x-api-key: ${API_KEY}")
+fi
+
 if (( SIZE > API_MAX_BYTES )); then
-  echo "Archivo de $SIZE bytes (> ~4 MB): subiendo directo a S3 (el API daría HTTP 413)."
-  BUCKET=$(aws cloudformation describe-stack-resources \
-    --stack-name "$STACK_NAME" \
-    --region "$REGION" \
-    --query "StackResources[?ResourceType=='AWS::S3::Bucket'].PhysicalResourceId" \
-    --output text | tr '\t' '\n' | grep -i bedrockdocumentprocessing | head -1)
-  if [[ -z "$BUCKET" ]]; then
-    echo "No pude localizar el bucket de documentos en el stack." >&2
+  # --- 2a. Archivo grande → POST /upload sin contentBase64 pide una URL
+  # prefirmada de S3, y el PUT real del archivo va directo a S3 (nunca pasa
+  # por API Gateway/Lambda) — así no hay tope de tamaño real. Cualquier
+  # cliente HTTP puede hacer esto mismo sin credenciales AWS, con solo la
+  # `uploadUrl` que regresa este POST.
+  echo "Archivo de $SIZE bytes (> ~4 MB): pidiendo URL prefirmada de S3..."
+
+  REQ_BODY_FILE=$(mktemp)
+  trap 'rm -f "$REQ_BODY_FILE"' EXIT
+  if [[ -n "$DOC_TYPE" ]]; then
+    printf '{"fileName":"%s","documentType":"%s"}' "$FILE_NAME" "$DOC_TYPE" > "$REQ_BODY_FILE"
+  else
+    printf '{"fileName":"%s"}' "$FILE_NAME" > "$REQ_BODY_FILE"
+  fi
+
+  PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
+    -H "Content-Type: application/json" \
+    "${API_KEY_HEADER[@]}" \
+    --data-binary @"$REQ_BODY_FILE")
+
+  UPLOAD_URL=$(echo "$PRESIGN_RESPONSE" | grep -o '"uploadUrl"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+  DOCID=$(echo "$PRESIGN_RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+  if [[ -z "$UPLOAD_URL" || -z "$DOCID" ]]; then
+    echo "No obtuve uploadUrl/documentId del API. Respuesta:" >&2
+    echo "$PRESIGN_RESPONSE" >&2
     exit 1
   fi
-  DOCID=$(cat /proc/sys/kernel/random/uuid)
-  # Con tipo declarado: raw/{TIPO}/{uuid}/... salta la clasificación Bedrock.
-  if [[ -n "$DOC_TYPE" ]]; then
-    KEY="raw/${DOC_TYPE}/${DOCID}/${FILE_NAME}"
-  else
-    KEY="raw/${DOCID}/${FILE_NAME}"
-  fi
-  aws s3 cp "$FILE" "s3://${BUCKET}/${KEY}" --region "$REGION"
+
+  echo "Subiendo directo a S3 vía URL prefirmada..."
+  curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
+
   echo "documentId: $DOCID"
   printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"
   exit 0
@@ -174,13 +202,6 @@ trap 'rm -f "$BODY_FILE"' EXIT
     printf '"}'
   fi
 } > "$BODY_FILE"
-
-# En prod el API exige `x-api-key`. Exporta API_KEY con el valor de tu key
-# (aws apigateway get-api-key --api-key <id> --include-value). En dev no hace falta.
-API_KEY_HEADER=()
-if [[ -n "${API_KEY:-}" ]]; then
-  API_KEY_HEADER=(-H "x-api-key: ${API_KEY}")
-fi
 
 RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
   -H "Content-Type: application/json" \

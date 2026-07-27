@@ -245,7 +245,8 @@ documents-validator/
 
 | Tema | Situación |
 |---|---|
-| Archivos por API | Máximo ~4 MB (límite de Lambda); mayores van directo a S3 |
+| Archivos por API | Inline hasta ~4 MB (límite de Lambda); mayores usan URL prefirmada de S3 (`POST /upload` sin `contentBase64`), sin tope de tamaño real |
+| Páginas por documento (expedientes/pedimentos) | Máximo 50 (`MAX_PAGES`, configurable); el excedente se trunca antes de correr Textract/Bedrock para acotar costo — el original completo queda intacto en S3, resultado marcado `reviewRequired` + `truncated` |
 | Tiempo | 1 página ≈ 30 s · 27 págs escaneadas ≈ 4 min · 86 págs ≈ 6-8 min (límite Lambda: 15 min) |
 | Páginas `OTRO` | COVE, DODA, SPEI internos no tienen tipo en el catálogo → `REVIEW_REQUIRED` (agregables vía JSON) |
 | Reglas cross-documento | Solo viven en el JSON empaquetado (cambiarlas requiere `pnpm build && pnpm run deploy`) |

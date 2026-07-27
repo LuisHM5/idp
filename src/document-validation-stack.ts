@@ -390,12 +390,44 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     }).addAlarmAction(new cwActions.SnsAction(alertsTopic));
 
     // Upload Lambda - Node.js document ingestion API
+    // Bundling: @aws-sdk/s3-request-presigner (used for the large-file
+    // presigned-upload path) is not reliably part of the Node.js 20.x
+    // managed runtime's bundled SDK the way @aws-sdk/client-* packages are,
+    // so it's installed explicitly here — same local-npm-then-Docker-fallback
+    // pattern as the enrichment Lambda's pip bundling below.
+    const uploadDir = path.join(
+      __dirname,
+      "document-processing/resources/upload-lambda"
+    );
     const uploadFn = new lambda.Function(this, "UploadLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "document-processing/resources/upload-lambda")
-      ),
+      code: lambda.Code.fromAsset(uploadDir, {
+        exclude: ["node_modules"],
+        bundling: {
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            "bash",
+            "-c",
+            "cp -au . /asset-output && cd /asset-output && npm install --omit=dev --no-audit --no-fund --quiet",
+          ],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              const { execSync } = require("child_process");
+              try {
+                execSync(
+                  `cp -r "${uploadDir}/." "${outputDir}/"` +
+                    ` && cd "${outputDir}" && npm install --omit=dev --no-audit --no-fund --quiet`,
+                  { stdio: "pipe", shell: "/bin/bash" }
+                );
+                return true;
+              } catch {
+                return false; // fall back to Docker bundling
+              }
+            },
+          },
+        },
+      }),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       description: "Document upload via REST API",
