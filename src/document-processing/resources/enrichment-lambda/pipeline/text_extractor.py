@@ -17,7 +17,6 @@ Anti-hallucination contract enforced in the prompt:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import TypeRegistryEntry
 
-from .bedrock import converse, parse_json_response
+from .bedrock import converse_structured
 from .pdf_pages import PageText
 
 logger = logging.getLogger(__name__)
@@ -134,6 +133,48 @@ def _build_prompts(
     return cache_prefix, user_text
 
 
+def _tool_schema(type_entry: TypeRegistryEntry, arrays_only: bool) -> Dict[str, Any]:
+    """JSON schema for the extraction tool's input, mirroring the catalog
+    exactly (same field/subfield names as `_schema_block`'s prose listing).
+
+    Passed as `converse_structured`'s `tool_schema` so Bedrock's tool-calling
+    validates the model's response against it — the model can only emit keys
+    that exist here, so it can't rename or restructure fields the way it can
+    when merely asked (in prose) to produce JSON in a given shape. See
+    `converse_structured` for why the prose-only instruction isn't enough for
+    a schema this size.
+    """
+    field_props: Dict[str, Any] = {}
+    if not arrays_only:
+        for name in type_entry.extraction_fields:
+            if name in type_entry.repeatable_fields:
+                continue
+            field_props[name] = {
+                "type": "object",
+                "properties": {
+                    "value": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                },
+            }
+    array_props: Dict[str, Any] = {}
+    for name, subfields in type_entry.repeatable_fields.items():
+        array_props[name] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {sf: {"type": ["string", "null"]} for sf in subfields},
+            },
+        }
+    return {
+        "type": "object",
+        "properties": {
+            "fields": {"type": "object", "properties": field_props},
+            "arrays": {"type": "object", "properties": array_props},
+        },
+        "required": ["fields", "arrays"],
+    }
+
+
 def _chunk_pages(pages: List[PageText], max_chars: int = _MAX_CHUNK_CHARS) -> List[List[PageText]]:
     chunks: List[List[PageText]] = []
     current: List[PageText] = []
@@ -168,10 +209,24 @@ def _call_model(
     when the prefix will be reused (multi-chunk document or overflow split):
     caching a prefix used just once costs ~1.25x (net loss); reused it saves
     ~90% on the prefix. The recursive overflow split guarantees reuse, so it
-    always caches."""
+    always caches.
+
+    Uses `converse_structured` (Bedrock tool-calling), not free-text JSON:
+    verified against a real call that with a schema this large (e.g.
+    PEDIMENTO_ADUANAL's 136 scalar fields + 47 repeatable groups) the model
+    silently invents its own field names/shape instead of following the
+    prose instruction — even with a "{" prefill forcing valid JSON, the JSON
+    just isn't the requested schema. Tool-calling constrains the response to
+    `tool_schema`, so the model structurally cannot rename or restructure
+    fields."""
     cache_prefix, user_text = _build_prompts(type_entry, pages, arrays_only)
-    text, meta = converse(
-        user_text, model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
+    schema = _tool_schema(type_entry, arrays_only)
+    parsed, meta = converse_structured(
+        user_text,
+        tool_schema=schema,
+        tool_name="extract_document_fields",
+        tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
+        model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
         cache_system=cache_prefix if cache else None,
     )
     usage: Dict[str, int] = {
@@ -192,11 +247,8 @@ def _call_model(
             _merge_usage(_merge_usage(usage, left_u), right_u),
         )
 
-    try:
-        parsed = parse_json_response(text)
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.error("extractor: unparseable output for %s (%s)", type_entry.type_id, e)
-        return {}, {}, usage
+    if not parsed:
+        logger.error("extractor: empty tool response for %s", type_entry.type_id)
     fields = parsed.get("fields") or {}
     arrays = parsed.get("arrays") or {}
     return (
