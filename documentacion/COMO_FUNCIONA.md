@@ -233,7 +233,7 @@ documents-validator/
 │       ├── validators/engine.py          ← motor de reglas dinámico
 │       └── config/catalogs.json        ← copia generada del catálogo (NO editar)
 ├── scripts/                              ← CLI: subir, procesar, ver resultado, catálogo
-├── tests/                                ← 67 tests unitarios + integración con docs reales
+├── tests/                                ← tests unitarios (enfocados en PEDIMENTO_ADUANAL) + integración con docs reales
 └── documentacion/
     ├── COMO_FUNCIONA.md                  ← este documento
     └── GUIA_DESPLIEGUE_Y_USO.md          ← guía operativa paso a paso

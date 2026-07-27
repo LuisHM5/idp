@@ -66,17 +66,25 @@ def _match_field(doc_fields: dict, entities: dict, name: str, expected) -> tuple
     return False, f"{name} not extracted"
 
 
-def _check_doc_expectation(exp: dict, documents: list) -> tuple[bool, list[str]]:
-    """Find a document matching the expectation and verify its fields."""
+def _check_doc_expectation(exp: dict, documents: list) -> tuple[bool, list[str], dict | None]:
+    """Find a document matching the expectation and verify its fields.
+
+    Returns (passed, notes, matched_doc) — `matched_doc` is the best-matching
+    document dict (or None if no document of the expected type exists at
+    all), so callers can additionally inspect its own validation-engine
+    `checks` for failures that don't show up as a ground-truth field
+    mismatch (e.g. a cross-field formula rule) — see `_print_engine_checks`.
+    """
     from pipeline.normalize import pedimento_consecutivo
 
     allowed_types = exp.get("type", [])
     candidates = [d for d in documents if d.get("documentType") in allowed_types] or []
     if not candidates:
         found = [d.get("documentType") for d in documents]
-        return False, [f"no document of type {allowed_types} (found: {found})"]
+        return False, [f"no document of type {allowed_types} (found: {found})"], None
 
     best_notes: list[str] = []
+    best_doc: dict | None = None
     for doc in candidates:
         notes: list[str] = []
         ok = True
@@ -106,10 +114,30 @@ def _check_doc_expectation(exp: dict, documents: list) -> tuple[bool, list[str]]
             ok = ok and present
 
         if ok:
-            return True, [f"matched {doc.get('documentType')} (p{doc.get('pageStart')}-{doc.get('pageEnd')}, status={doc.get('status')})"] + notes
+            return True, [f"matched {doc.get('documentType')} (p{doc.get('pageStart')}-{doc.get('pageEnd')}, status={doc.get('status')})"] + notes, doc
         if not best_notes or sum(n.startswith("✓") for n in notes) > sum(n.startswith("✓") for n in best_notes):
             best_notes = [f"closest: {doc.get('documentType')} (p{doc.get('pageStart')}-{doc.get('pageEnd')})"] + notes
-    return False, best_notes
+            best_doc = doc
+    return False, best_notes, best_doc
+
+
+def _print_engine_checks(doc: dict) -> None:
+    """Print the matched document's own failing validation-engine checks.
+
+    Separate signal from the ground-truth field comparisons above: a field
+    can match its expected value exactly and the document can still fail a
+    cross-field rule (e.g. a formula reconciling VALOR_ADUANA against other
+    fields) — this is the "why is the overall status not APPROVED" view,
+    straight from `validators/engine.py`'s own rule results.
+    """
+    failing = [c for c in doc.get("checks", []) if not c.get("valid") and not c.get("skipped")]
+    if not failing:
+        print(f"  {DIM}engine: no failing validation rules{RESET}")
+        return
+    print(f"  {YELLOW}engine: {len(failing)} failing validation rule(s) (status={doc.get('status')}){RESET}")
+    for c in failing:
+        mark = RED if c.get("severity") == "error" else YELLOW
+        print(f"      {mark}✗ [{c.get('rule')}] {c.get('field')}: {c.get('message')}{RESET}")
 
 
 def main() -> int:
@@ -192,11 +220,13 @@ def main() -> int:
 
         file_ok = True
         for exp in spec.get("expect_documents", []):
-            ok, notes = _check_doc_expectation(exp, result.get("documents", []))
+            ok, notes, matched_doc = _check_doc_expectation(exp, result.get("documents", []))
             color = GREEN if ok else RED
             print(f"  {color}{'PASS' if ok else 'FAIL'}{RESET} expectation {exp.get('type')}")
             for n in notes:
                 print(f"      {n}")
+            if matched_doc:
+                _print_engine_checks(matched_doc)
             file_ok = file_ok and ok
 
         if file_ok:

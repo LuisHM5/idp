@@ -18,7 +18,8 @@ Guía operativa completa: subir, actualizar, eliminar (total o parcial), gestion
 > | Subir un documento al stack (<4 MB)                     | `pnpm test-e2e --file doc.pdf --no-wait`                    |
 > | Subir un documento grande (≥4 MB)                       | `aws s3 cp doc.pdf s3://<bucket>/raw/$(uuidgen)/doc.pdf`    |
 > | Ver el resultado de un documento subido                 | `pnpm resultado -- --id <documentId>`                       |
-> | Tests offline del motor de reglas                       | `pnpm test:unit`                                            |
+> | Tests offline del motor de reglas (y del ground truth)  | `pnpm test:unit`                                            |
+> | Comparar expected vs real de UN documento (usa AWS, centavos) | `pnpm comparar -- normal_pend.pdf`                    |
 > | Tests reales de pedimentos (usa AWS, ~$1)               | `pnpm test:pedimentos`                                      |
 > | Probar un documento contra el stack desplegado          | `pnpm test-e2e --file mi_doc.pdf`                           |
 
@@ -313,16 +314,19 @@ Notas:
 
 ## 7. Pruebas
 
-| Comando                                   | Qué prueba                                                                     | Requiere AWS            | Costo aprox. |
-| ----------------------------------------- | ------------------------------------------------------------------------------ | ----------------------- | ------------ |
-| `pnpm test:unit`                          | Motor de reglas, normalizadores, catálogo (67 tests)                           | No                      | $0           |
-| `pnpm test:pedimentos`                    | Pipeline completo contra los 9 PDFs reales de `test-docs/pedimentos docs/docs` | Sí (Textract + Bedrock) | ~$1 USD      |
-| `pnpm test:pedimentos -- --file B2401416` | Un solo documento                                                              | Sí                      | ~$0.02–0.35  |
-| `pnpm test:pedimentos -- --save /tmp/res` | Igual + guarda los JSON completos de resultado                                 | Sí                      | —            |
-| `pnpm test-local --type INE`              | Motor de validación con entidades simuladas                                    | No                      | $0           |
-| `pnpm test-e2e --file doc.pdf`            | Pipeline desplegado end-to-end (API → S3 → SFN → EventBridge)                  | Sí (stack desplegado)   | centavos     |
+Documentación completa movida a **[TESTS.md](TESTS.md)**: qué comando correr
+para cada caso, cómo validar el ground truth gratis antes de gastar dinero,
+y cómo leer la salida de `pnpm comparar` (valores esperados vs extraídos,
+campo por campo) para decidir si un bug es de extracción, de formato o de
+una regla cruzada del motor de validación.
 
-La verdad de terreno de los tests de pedimentos vive en `tests/integration/expected_pedimentos.json` — al agregar documentos de prueba nuevos, añade ahí sus valores esperados.
+Chuleta:
+
+```bash
+pnpm test:unit                        # gratis, offline
+pnpm comparar -- normal_pend.pdf      # un documento, con costo real
+pnpm test:pedimentos                  # los 9 documentos, ~$1
+```
 
 ## 8. Costos de operación (medidos)
 

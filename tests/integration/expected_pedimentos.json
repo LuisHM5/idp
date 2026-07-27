@@ -16,6 +16,36 @@
         }
       ]
     },
+    "normal_pend.pdf": {
+      "description": "Pedimento de importación digital (3 páginas, capa de texto nativa, sin OCR) — importador OFU910626UQ0, mismo dueño que 2607 0823 6001187 pero pedimento/transacción distintos (naranja fresca, proveedor BRAVANTE PRODUCE). Ground truth leída directamente del PDF, no derivada de una corrida previa del pipeline.",
+      "expect_documents": [
+        {
+          "type": ["PEDIMENTO_ADUANAL"],
+          "fields": {
+            "NUMERO_PEDIMENTO_NORMALIZADO": "260708236001630",
+            "RFC_IMPORTADOR_EXPORTADOR": "OFU910626UQ0",
+            "ANIO_PEDIMENTO": "26",
+            "ADUANA_DESPACHO": "07",
+            "PATENTE": "0823",
+            "NUMERO_CONSECUTIVO": "6001630",
+            "CLAVE_PEDIMENTO": "A1",
+            "TIPO_CAMBIO": 17.4958,
+            "VALOR_ADUANA": 435730.0,
+            "VALOR_DOLARES": 24904.86,
+            "PRECIO_PAGADO_VALOR_COMERCIAL": 421841.0,
+            "FECHA_PAGO": "2026-07-09",
+            "TOTAL_PEDIMENTO": 383.0
+          },
+          "pedimento_consecutivo": "6001630",
+          "required_present": [
+            "PATENTE", "TIPO_OPERACION", "CLAVE_PEDIMENTO", "TIPO_CAMBIO",
+            "VALOR_ADUANA", "FECHA_PAGO", "TOTAL_PEDIMENTO", "ANIO_PEDIMENTO",
+            "ADUANA_DESPACHO", "NUMERO_CONSECUTIVO", "REGIMEN_ADUANERO",
+            "PESO_BRUTO"
+          ]
+        }
+      ]
+    },
     "pedimento.pdf": {
       "description": "Copia idéntica (mismo md5) del pedimento escaneado 2607 0823 6001187",
       "expect_documents": [

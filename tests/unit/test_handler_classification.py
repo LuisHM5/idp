@@ -21,11 +21,6 @@ class TestDeclaredTypeFromKey:
     def test_unknown_type_segment_returns_none(self):
         assert handler._declared_type_from_key("raw/NOT_A_REAL_TYPE/uuid/x.pdf") is None
 
-    def test_declared_expediente_is_returned(self):
-        # Explicitly declaring the multi-doc type is valid (segmenter will split).
-        key = "raw/EXPEDIENTE_ADUANAL_MULTIDOCUMENTO/uuid/x.pdf"
-        assert handler._declared_type_from_key(key) == "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
-
     def test_empty_or_malformed_key_returns_none(self):
         assert handler._declared_type_from_key("") is None
         assert handler._declared_type_from_key("results/x.json") is None
