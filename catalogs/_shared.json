@@ -1,4 +1,39 @@
 {
+  "_schema_contract": {
+    "schema_version": "2.0.0",
+    "naming": "UPPER_SNAKE_CASE",
+    "null_policy": "Campo no visible o ilegible: null. Lista sin elementos: []. No inventar valores.",
+    "default_prompt_profile": "CLAUDE_HAIKU_JSON"
+  },
+  "_model_profiles": {
+    "CLAUDE_HAIKU_JSON": {
+      "include_schema_sections": [
+        "description",
+        "extraction_fields",
+        "extraction_hints",
+        "structured_fields",
+        "repeatable_fields"
+      ],
+      "exclude_schema_sections": [
+        "derived_fields",
+        "validation_rules",
+        "validator_module",
+        "custom_validator",
+        "output_aliases",
+        "form_mapping",
+        "business_destination",
+        "pipeline"
+      ],
+      "response_rules": [
+        "Devuelve solo JSON válido, sin Markdown ni explicación.",
+        "Extrae únicamente valores visibles; no completes por conocimiento externo.",
+        "Conserva folios, RFC, claves, patentes, pedimentos y códigos como string.",
+        "No calcules campos derivados; los calcula el backend.",
+        "Une continuaciones entre páginas y conserva el orden documental.",
+        "Omite campos opcionales nulos; usa [] para listas detectadas sin filas."
+      ]
+    }
+  },
   "_global_output_fields": [
     "DOCUMENT_TYPE",
     "DOCUMENT_SUBTYPE",
@@ -88,6 +123,11 @@
       "ITEMS"
     ]
   },
+  "_validation_defaults": {
+    "money_tolerance": 1.0,
+    "ratio_tolerance": 0.02,
+    "skip_if_missing": true
+  },
   "cross_document_validation_rules": [
     {
       "rule_type": "same_pedimento",
@@ -99,11 +139,18 @@
         "FACTURA_LOGISTICA",
         "COMPROBANTE_PAGO_ADUANAL"
       ],
+      "pedimento_paths": [
+        "PEDIMENTO.NUMERO_NORMALIZADO",
+        "DOCUMENTO.REFERENCIA",
+        "PEDIMENTO_REFERENCE",
+        "NUMERO_PEDIMENTO_NORMALIZADO"
+      ],
       "message": "Los documentos no corresponden al mismo pedimento"
     },
     {
       "rule_type": "expected_importer_rfc",
       "fields": [
+        "IMPORTADOR_EXPORTADOR.RFC",
         "RFC_IMPORTADOR_EXPORTADOR",
         "RECEPTOR_RFC",
         "IMPORTADOR_RFC",
@@ -130,13 +177,18 @@
       ],
       "group_by": "GASTO_TERCERO_CATEGORIA",
       "tolerance": 0.02,
-      "message": "Los gastos resumidos por el agente aduanal no coinciden con sus documentos soporte"
+      "message": "Los gastos resumidos por el agente aduanal no coinciden con sus soportes"
     },
     {
       "rule_type": "pedimento_value_reconciliation",
       "pedimento_document": "PEDIMENTO_ADUANAL",
       "foreign_invoice_document": "FACTURA_PROVEEDOR_EXTRANJERO",
       "freight_document": "FACTURA_FLETE_EXTRANJERO",
+      "value_paths": {
+        "commercial_value": "VALORES.VALOR_COMERCIAL_PESOS",
+        "exchange_rate": "VALORES.TIPO_CAMBIO",
+        "freight": "INCREMENTABLES.FLETES"
+      },
       "message": "Los valores comerciales e incrementables no coinciden con las facturas del expediente"
     }
   ]

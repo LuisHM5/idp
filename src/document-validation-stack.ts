@@ -243,6 +243,16 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       enableObservability: true,
       metricNamespace: "bedrock-document-processing",
       metricServiceName: "extraction-workflow",
+      // Must exceed the enrichment Lambda's own 15-minute timeout (below):
+      // the blueprint defaults this to Duration.minutes(15) when unset,
+      // which ties it to the Lambda's cap. When both are equal, a genuine
+      // Lambda timeout and the state machine's own ExecutionTimedOut race —
+      // ExecutionTimedOut usually wins, killing the whole execution before
+      // the enrichment step's addCatch can run, so the file never moves out
+      // of raw/ into failed/ and the item is never marked enrichment-failure.
+      // The extra minute gives the Lambda's timeout time to surface as a
+      // catchable task failure instead.
+      workflowTimeout: cdk.Duration.minutes(16),
       classificationPrompt,
       processingPrompt,
       enrichmentLambdaFunction: enrichmentFn,

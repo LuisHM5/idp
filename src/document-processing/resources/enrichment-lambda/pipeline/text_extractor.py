@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,7 +32,25 @@ from .pdf_pages import PageText
 logger = logging.getLogger(__name__)
 
 _MAX_CHUNK_CHARS = 28_000
-_MAX_OUTPUT_TOKENS = 8192
+# us.anthropic.claude-haiku-4-5's real Bedrock output ceiling is 64,000
+# tokens (verified against the live Converse API — a request above that
+# value is rejected outright). The old 8,192 cap was self-imposed and far
+# below that: for schemas with many repeatable-field rows (e.g.
+# PEDIMENTO_ADUANAL's PARTIDAS/CUADRO_LIQUIDACION), a row-dense chunk's
+# output regularly exceeded 8,192, truncating mid-JSON and forcing the
+# recursive split-in-half retry below to fire repeatedly. Raising the cap
+# costs nothing by itself (billed by tokens actually generated, not the
+# ceiling) and avoids paying for truncated, unusable output followed by a
+# retry. Leaves headroom under the hard 64,000 limit.
+_MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "32000"))
+# Chunks of the same document are extracted concurrently: each is an
+# independent Bedrock call, so a multi-chunk document runs in parallel
+# instead of serially. Bounded (not equal to EXTRACT_WORKERS in
+# expediente.py) so a multi-segment expediente's segment-level pool times
+# this pool without multiplying concurrent Bedrock calls too far; boto3
+# clients are thread-safe (pipeline.bedrock.client() is an lru_cache
+# singleton, already relied on by the segment-level pool).
+_CHUNK_WORKERS = int(os.environ.get("CHUNK_WORKERS", "2"))
 
 
 @dataclass
@@ -135,10 +155,14 @@ def _call_model(
     pages: List[PageText],
     arrays_only: bool,
     model_id: Optional[str],
-    usage_acc: Dict[str, int],
     cache: bool = False,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, int]]:
     """One extraction call. On max_tokens overflow, split the pages and merge.
+
+    Returns (fields, arrays, usage) — usage is returned rather than
+    accumulated into a shared dict so this function (and its recursion) can
+    be called concurrently from multiple worker threads without shared
+    mutable state; callers merge usage themselves via `_merge_usage`.
 
     `cache` marks the static prefix with a Bedrock cachePoint. Only enable it
     when the prefix will be reused (multi-chunk document or overflow split):
@@ -150,25 +174,43 @@ def _call_model(
         user_text, model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
         cache_system=cache_prefix if cache else None,
     )
-    for k, v in (meta.get("usage") or {}).items():
-        if isinstance(v, int):
-            usage_acc[k] = usage_acc.get(k, 0) + v
+    usage: Dict[str, int] = {
+        k: v for k, v in (meta.get("usage") or {}).items() if isinstance(v, int)
+    }
 
     if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
         mid = len(pages) // 2
         # Splitting means ≥2 calls share this prefix → caching now pays off.
-        left_f, left_a = _call_model(type_entry, pages[:mid], arrays_only, model_id, usage_acc, cache=True)
-        right_f, right_a = _call_model(type_entry, pages[mid:], arrays_only, model_id, usage_acc, cache=True)
-        return _merge_fields(left_f, right_f), _merge_arrays(left_a, right_a)
+        # Kept sequential (not a nested pool): the caller's ThreadPoolExecutor
+        # already bounds total in-flight Bedrock calls to _CHUNK_WORKERS, and
+        # a nested pool here would multiply concurrency past that bound.
+        left_f, left_a, left_u = _call_model(type_entry, pages[:mid], arrays_only, model_id, cache=True)
+        right_f, right_a, right_u = _call_model(type_entry, pages[mid:], arrays_only, model_id, cache=True)
+        return (
+            _merge_fields(left_f, right_f),
+            _merge_arrays(left_a, right_a),
+            _merge_usage(_merge_usage(usage, left_u), right_u),
+        )
 
     try:
         parsed = parse_json_response(text)
     except (ValueError, json.JSONDecodeError) as e:
         logger.error("extractor: unparseable output for %s (%s)", type_entry.type_id, e)
-        return {}, {}
+        return {}, {}, usage
     fields = parsed.get("fields") or {}
     arrays = parsed.get("arrays") or {}
-    return (fields if isinstance(fields, dict) else {}), (arrays if isinstance(arrays, dict) else {})
+    return (
+        fields if isinstance(fields, dict) else {},
+        arrays if isinstance(arrays, dict) else {},
+        usage,
+    )
+
+
+def _merge_usage(base: Dict[str, int], extra: Dict[str, int]) -> Dict[str, int]:
+    merged = dict(base)
+    for k, v in extra.items():
+        merged[k] = merged.get(k, 0) + v
+    return merged
 
 
 def _merge_fields(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
@@ -200,23 +242,32 @@ def extract_document(
     model_id: Optional[str] = None,
 ) -> ExtractedDoc:
     """Extract the catalog schema from a document's pages."""
-    usage: Dict[str, int] = {}
     chunks = _chunk_pages(pages)
 
     # Cache the static prefix only when it will be reused: >1 chunk means the
-    # sequential chunk loop reuses it (chunk 1 writes, 2+ read at ~10%). A
+    # chunk pool reuses it (first call to write, rest read at ~10%). A
     # single-chunk document makes one call, where caching would be a net loss.
     use_cache = len(chunks) > 1
 
+    # Chunks are independent Bedrock calls (each reads only its own chunk +
+    # catalog entry) mapped concurrently, mirroring expediente.py's
+    # segment-level pool. pool.map() preserves chunk order, so results merge
+    # in the same order as the old sequential loop — only *when* each call
+    # runs changes, not the first-non-null-wins merge semantics below.
+    workers = min(_CHUNK_WORKERS, len(chunks)) or 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(
+            lambda chunk: _call_model(type_entry, chunk, arrays_only=False, model_id=model_id, cache=use_cache),
+            chunks,
+        ))
+
+    usage: Dict[str, int] = {}
     all_fields: Dict[str, Any] = {}
     all_arrays: Dict[str, Any] = {}
-    for i, chunk in enumerate(chunks):
-        # After the first chunk, scalars are usually already found; still ask
-        # for everything (header data can live on later pages) — merge keeps
-        # the first non-null value.
-        fields, arrays = _call_model(type_entry, chunk, arrays_only=False, model_id=model_id, usage_acc=usage, cache=use_cache)
+    for fields, arrays, chunk_usage in results:
         all_fields = _merge_fields(all_fields, fields)
         all_arrays = _merge_arrays(all_arrays, arrays)
+        usage = _merge_usage(usage, chunk_usage)
 
     seg_conf = _segment_confidence(pages)
     entity_map: Dict[str, Any] = {}
