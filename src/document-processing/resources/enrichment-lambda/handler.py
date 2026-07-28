@@ -446,6 +446,34 @@ def _scalar_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in entities.items() if not isinstance(v, (list, dict))}
 
 
+def _scalar_entities_from_field_tree(entities: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact scalar-only projection of a field-centric-DSL `extractedEntities`
+    tree ({value, confidence, valid, reason, source} per field), for the
+    per-document view inside the compact `expedient` envelope. Repeating the
+    FULL recursive structure there (as well as at the top level) roughly
+    doubled the response for a single-document expediente — the top-level
+    `extractedEntities` already carries the full detail (and the S3 result
+    has it too, see `resultLocation`), so this one only needs `value`, same
+    as the legacy `_scalar_entities` it parallels."""
+    return {
+        name: node.get("value")
+        for name, node in entities.items()
+        if isinstance(node, dict) and "value" in node and node.get("value") not in (None, "", [])
+    }
+
+
+def _array_counts_from_field_tree(entities: Dict[str, Any]) -> Dict[str, int]:
+    """`{field: row count}` for every array field in a field-centric-DSL
+    `extractedEntities` tree — the field-tree equivalent of the legacy
+    `arrayCounts` (arrays become counts in the compact envelope, full rows
+    stay in the top-level `extractedEntities`/S3 result)."""
+    return {
+        name: len(node["items"])
+        for name, node in entities.items()
+        if isinstance(node, dict) and isinstance(node.get("items"), list) and node["items"]
+    }
+
+
 def _entities_for_envelope(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Top-level `extractedEntities` for the returned envelope.
 
@@ -497,13 +525,15 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
     for d in result.get("documents", []):
         entities = d.get("extractedEntities", {})
         if d.get("fieldTreeShape"):
-            # Field-centric DSL: `extractedEntities` already IS the full
-            # recursive value/confidence/valid/reason/source structure for
-            # every field (scalars, objects and arrays alike) — no separate
-            # fieldsValidity/arrayCounts split needed, unlike the legacy DSL.
-            per_doc_entities: Dict[str, Any] = entities
-            fields_validity: Dict[str, Any] = {}
-            array_counts: Dict[str, int] = {}
+            # Field-centric DSL: the FULL recursive value/confidence/valid/
+            # reason/source structure already lives at the top-level
+            # `extractedEntities` (see `_entities_for_envelope`) and in the
+            # S3 full result — this compact per-document view only needs
+            # scalar values + array row counts, same budget as the legacy
+            # fieldsValidity/arrayCounts split (Step Functions payload limit).
+            per_doc_entities = _scalar_entities_from_field_tree(entities)
+            fields_validity = {}
+            array_counts = _array_counts_from_field_tree(entities)
         else:
             per_doc_entities = _scalar_entities(entities)
             fields_validity = _fields_validity(d.get("fields") or {})
