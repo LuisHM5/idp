@@ -151,7 +151,7 @@
       "LEYENDA_DESTINO_ORIGEN": "Leyenda del pie como 'DESTINO/ORIGEN. INTERIOR DEL PAÍS'. Conservar texto completo.",
       "USUARIO_IMPRESION": "Nombre mostrado junto a 'Usuario:' en el pie.",
       "FECHA_HORA_IMPRESION": "Fecha y hora del pie. Normalizar a ISO 8601 cuando se pueda leer completa.",
-      "NUMERO_PEDIMENTO": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros y nunca truncar el último dígito.",
+      "NUMERO_PEDIMENTO": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito.",
 
       "NUMERO_PEDIMENTO_NORMALIZADO": "No copiar directamente NUMERO_PEDIMENTO. Construir obligatoriamente concatenando ANIO_PEDIMENTO de 2 dígitos + ADUANA_DESPACHO de 2 dígitos + PATENTE de 4 dígitos + NUMERO_CONSECUTIVO de 7 dígitos. El resultado debe tener exactamente 15 dígitos. Para este ejemplo: 26 + 07 + 0823 + 6001630 = 260708236001630.",
       "ANIO_PEDIMENTO": "Extraer únicamente los últimos 2 dígitos del año. Ejemplo: para 2026 devolver \"26\", no \"2026\".",
@@ -295,6 +295,12 @@
       "PARTIDAS"
     ],
     "validation_rules": [
+      {
+        "field": "NUMERO_PEDIMENTO",
+        "rule_type": "regex",
+        "pattern": "^\\d{15}$",
+        "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
+      },
       {
         "field": "NUMERO_PEDIMENTO_NORMALIZADO",
         "rule_type": "regex",

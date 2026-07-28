@@ -11,7 +11,9 @@ valores esperados vs. extraídos de un documento para decidir si hay un bug.
 | `pnpm test:pedimentos -- --file B2401416` | Igual a `pnpm comparar` pero sin el prompt de confirmación (útil en CI/scripts) | Sí                      | ~$0.02–0.35  |
 | `pnpm test:pedimentos -- --save /tmp/res` | Corre todo + guarda los JSON completos de resultado                            | Sí                      | —            |
 | `pnpm test-local --type INE`              | Motor de validación con entidades simuladas                                    | No                      | $0           |
-| `pnpm test-e2e --file doc.pdf`            | Pipeline desplegado end-to-end (API → S3 → SFN → EventBridge)                  | Sí (stack desplegado)   | centavos     |
+| `pnpm test-e2e --file doc.pdf`            | Pipeline desplegado end-to-end genérico (API → S3 → SFN → EventBridge), sin comparar contra ground truth | Sí (stack desplegado) | centavos     |
+| `pnpm test:e2e:pedimento -- --file normal_pend.pdf` | **E2E real de verdad**: sube por el stack desplegado (S3→SQS→SFN→Lambdas→DynamoDB/S3) Y compara contra el ground truth — ver [5](#5-e2e-real-contra-el-stack-desplegado) | Sí (stack desplegado) | ~$0.05–0.10 + minutos |
+| `pnpm schema:sensitivity -- --file normal_pend.pdf` | Experimento: qué tan preciso/impreciso se vuelve el resultado al cambiar el catálogo (hints, campos requeridos, tolerancias) — ver [6](#6-experimento-de-sensibilidad-del-schema) | Sí (parcial, ver abajo) | ~$0.05–0.15 |
 
 La verdad de terreno de los tests de pedimentos vive en
 `tests/integration/expected_pedimentos.json` — al agregar documentos de
@@ -91,7 +93,78 @@ fallando.
    el catálogo antes de gastar dinero.
 4. Corre `pnpm comparar -- tu_archivo.pdf` para ver el resultado real.
 
-## 4. Solución de problemas de tests
+## 5. E2E real contra el stack desplegado
+
+```bash
+pnpm test:e2e:pedimento -- --file normal_pend.pdf
+pnpm test:e2e:pedimento -- --file normal_pend.pdf --env dev --wait 900
+```
+
+`pnpm comparar`/`pnpm test:pedimentos` llaman `process_pdf()` directo en
+Python — **nunca tocan S3, SQS, Step Functions ni DynamoDB**. Son rápidos y
+baratos, pero no pueden detectar un bug de infraestructura (por ejemplo, el
+bug de `documentId` mal resuelto en clasificación manual que se arregló en
+esta misma etapa del proyecto, o una ejecución que muere en
+`ExecutionTimedOut` en vez de fallar limpio).
+
+`scripts/test-e2e-pedimento.py` sí pasa por el flujo real: sube el PDF por
+`POST /upload` al stack desplegado, espera la ejecución real de Step
+Functions, y valida:
+
+1. **Infra**: que la ejecución termine en `SUCCEEDED` (no timeout/error), y
+   que el archivo se haya movido de `raw/` a `processed/` (o `failed/`).
+2. **Ground truth**: la misma comparación campo por campo que `pnpm
+   comparar`, pero sobre el resultado que salió de verdad del pipeline
+   desplegado — reutiliza `_check_doc_expectation`/`_print_engine_checks` de
+   `test-pedimentos.py` en vez de duplicar la lógica.
+
+Corrida real verificada (2026-07-28, `normal_pend.pdf`, stack
+`DocumentValidationStack-Dev`): Step Functions `SUCCEEDED` en 64s, archivo
+movido correctamente a `processed/{documentId}-.../normal_pend.pdf`, y el
+mismo resultado campo por campo que la corrida en proceso — confirma que el
+Lambda desplegado y el código local están en sync (sin drift de deploy).
+
+## 6. Experimento de sensibilidad del schema
+
+```bash
+pnpm schema:sensitivity -- --list                       # ver mutaciones disponibles
+pnpm schema:sensitivity -- --file normal_pend.pdf        # corre todas (~$0.15)
+pnpm schema:sensitivity -- --file normal_pend.pdf --skip-paid   # solo las gratis
+pnpm schema:sensitivity -- --file normal_pend.pdf --only tighten_tolerance_incrementables
+```
+
+Responde "¿qué pasa si cambio un poco el catálogo?" con datos reales en vez
+de intuición. Corre UNA extracción baseline real y luego aplica mutaciones
+al catálogo de `PEDIMENTO_ADUANAL`, midiendo el efecto en el ground truth y
+en las reglas de validación. Dos categorías, con costo muy distinto **por
+diseño**:
+
+- **`validation` (gratis)**: tocan `validation_rules`, `required_fields` o
+  `min_confidence`. No cambian el prompt que ve el modelo, así que se
+  reevalúan sobre la MISMA extracción baseline — cero llamadas a Bedrock.
+- **`extraction` (paga, ~$0.05 c/u)**: tocan `extraction_hints` o
+  `extraction_fields` — cambian el prompt/tool-schema real, así que cada una
+  dispara una llamada nueva a Bedrock.
+
+Termina con una sección `Conclusiones` generada de los números reales de esa
+corrida (delta de ground-truth, checks que se rompieron o arreglaron, si
+cambió el status del documento) — no es texto fijo, cambia según el
+documento y el catálogo vigente al momento de correrlo.
+
+**Hallazgos de la corrida verificada (2026-07-28, `normal_pend.pdf`)** —
+válidos para ese documento y ese catálogo en esa fecha, no una garantía
+permanente:
+
+| Mutación | Resultado | Lectura |
+| --- | --- | --- |
+| `tighten_tolerance_incrementables` | sin cambio | la tolerancia de `TOTAL_INCREMENTABLES` no es el cuello de botella en este documento |
+| `loosen_tolerance_valor_aduana` (5→20000) | el check `VALOR_ADUANA` **sigue fallando** | la diferencia real entre el valor calculado y el impreso es mayor a 20,000 — no es un problema de redondeo, es un campo mal leído (confirma que `PRECIO_PAGADO_VALOR_COMERCIAL` está usando el valor de otro campo, no un valor "cercano pero impreciso") |
+| `drop_anio_pedimento_required` | sin cambio en `status` | el status del documento lo está determinando el check de fórmula fallido, no la ausencia de `ANIO_PEDIMENTO` como requerido |
+| `raise_min_confidence` (0.80→0.97) | sin cambio | el modelo reporta confianza ≥0.97 en todos los campos evaluados — **incluido el campo que está mal** (`PRECIO_PAGADO_VALOR_COMERCIAL`). La confianza reportada por el modelo no es una señal confiable de corrección aquí |
+| `disambiguate_valor_comercial_hint` (hint explícito distinguiendo de `VALOR_ADUANA`) | **no arregló el bug** | agregar texto aclaratorio al hint no fue suficiente para que el modelo distinga los dos valores en este documento — sugiere que el problema no es de nomenclatura sino de qué tan cerca están impresos en la página, o que amerita revisar si el ground truth (leído a mano) está describiendo el campo correcto |
+| `remove_anio_pedimento_hint` (quita el hint "solo 2 dígitos, no 2026") | **el bug NO volvió** | el año se sigue extrayendo bien sin el hint — la recuperación determinística en código (`_recover_references()`, agregada esta sesión) ya cubre este caso independientemente del prompt: hay defensa en profundidad, no solo dependencia del hint |
+
+## 7. Solución de problemas de tests
 
 | Síntoma | Causa probable | Solución |
 | --- | --- | --- |
@@ -99,3 +172,5 @@ fallando.
 | `no expectations defined for this file` | El PDF no tiene entrada en `expected_pedimentos.json` | Normal si es un documento sin ground truth aún — agrégalo (ver sección 3) |
 | `PROCESSING ERROR` al correr `pnpm comparar` | Error real del pipeline (credenciales AWS, modelo no habilitado, etc.) | Revisa que `aws sts get-caller-identity` funcione y que el modelo Bedrock esté habilitado (ver `GUIA_DESPLIEGUE_Y_USO.md` sección 1) |
 | `✗` en un campo pero el valor se ve razonable | Puede ser tolerancia de formato (mayúsculas/espacios en strings, 0.01 en números) | Revisa la nota impresa junto al `✗`: muestra el valor exacto extraído vs esperado |
+| `test:e2e:pedimento` se queda esperando y nunca aparece la ejecución | El SQS consumer no disparó Step Functions, o la Lambda de consumo falló | Revisa la SQS DLQ y los logs del consumer Lambda en CloudWatch |
+| `test:e2e:pedimento` dice `status != SUCCEEDED` | Falla real de infraestructura (timeout, error no atrapado) — justo lo que este test existe para detectar y que `pnpm comparar` no puede ver | `pnpm track --execution-arn <arn>` (el comando se imprime en la salida) |

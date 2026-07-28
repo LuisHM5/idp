@@ -11,6 +11,8 @@
     "test:unit": ".venv/bin/python -m pytest tests/unit -q",
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",
     "comparar": "bash scripts/comparar-documento.sh",
+    "test:e2e:pedimento": ".venv/bin/python scripts/test-e2e-pedimento.py",
+    "schema:sensitivity": ".venv/bin/python scripts/schema-sensitivity.py",
     "procesar": ".venv/bin/python scripts/procesar-docs.py",
     "resultado": ".venv/bin/python scripts/ver-resultado.py",
     "enviar": "bash scripts/enviar-documento.sh",
