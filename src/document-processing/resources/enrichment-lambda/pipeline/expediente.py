@@ -139,7 +139,7 @@ def _extract_segment(seg: Segment, pages: List[PageText], model_id: Optional[str
         "pageEnd": seg.page_end,
         "classificationConfidence": round(seg.confidence, 4),
     }
-    if seg.doc_type == "OTRO" or not entry.extraction_fields:
+    if seg.doc_type == "OTRO" or not (entry.extraction_fields or entry.field_tree):
         doc["status"] = engine.DOC_REVIEW if seg.doc_type == "OTRO" else engine.DOC_APPROVED
         doc["fields"] = {}
         doc["_entities"] = {}
@@ -244,7 +244,7 @@ def process_pdf(
         if doc.get("status") in (engine.DOC_ERROR,):
             continue
         entry = get_type_entry(doc["documentType"])
-        if not entry.extraction_fields:
+        if not entry.extraction_fields and not entry.field_tree:
             continue
         ctx = ValidationContext(
             expected_values=expected_values,
@@ -253,14 +253,33 @@ def process_pdf(
         )
         entity_map = doc.get("_entities", {})
         confidences = doc.get("_confidences", {})
-        checks = engine.run_rules(entity_map, entry, ctx)
-        resolved = engine.resolve_fields(entity_map, confidences, checks, entry)
-        doc["fields"] = resolved
-        doc["checks"] = _checks_json(checks)
-        doc["status"] = engine.document_status(resolved, checks, entry)
-        doc["businessDestination"] = entry.business_destination or None
-        conf_values = [f["confidence"] for f in resolved.values() if f.get("confidence") is not None]
-        doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else None
+        if entry.field_tree:
+            # Field-centric DSL (schema_version 4.x): one recursive structure
+            # IS the public result — no separate _public_entities/resolve_fields
+            # split (see catalog-dsl-v4-migration memory for why the legacy
+            # trio existed and why arrays/objects were unrepresentable there).
+            resolved_tree, checks = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
+            doc["extractedEntities"] = resolved_tree
+            doc["fields"] = {}
+            doc["checks"] = _checks_json(checks)
+            doc["status"] = engine.document_status_from_checks(checks)
+            doc["businessDestination"] = entry.business_destination or None
+            conf_values = [v for v in confidences.values() if v is not None]
+            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else None
+            # Persisted (not popped) — handler.py's envelope assembly needs to
+            # know, per document, whether `extractedEntities` is already the
+            # full recursive field-centric-DSL shape (pass through as-is) or
+            # the legacy raw-values view (needs its own compacting/filtering).
+            doc["fieldTreeShape"] = True
+        else:
+            checks = engine.run_rules(entity_map, entry, ctx)
+            resolved = engine.resolve_fields(entity_map, confidences, checks, entry)
+            doc["fields"] = resolved
+            doc["checks"] = _checks_json(checks)
+            doc["status"] = engine.document_status(resolved, checks, entry)
+            doc["businessDestination"] = entry.business_destination or None
+            conf_values = [f["confidence"] for f in resolved.values() if f.get("confidence") is not None]
+            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else None
 
     # ---- expediente-level cross-document rules
     cross_checks = _run_cross_document_rules(documents, expected_values)
@@ -272,7 +291,8 @@ def process_pdf(
         entities = doc.pop("_entities", {})
         if "fields" not in doc:
             doc["fields"] = {}
-        doc["extractedEntities"] = _public_entities(entities)
+        if not doc.get("fieldTreeShape"):
+            doc["extractedEntities"] = _public_entities(entities)
 
     statuses = [d.get("status") for d in documents if d.get("documentType") != "OTRO"]
     overall = _overall_status(statuses, cross_checks)
@@ -339,6 +359,12 @@ def _overall_status(statuses: List[str], cross_checks: List[Dict[str, Any]]) -> 
     return engine.DOC_APPROVED
 
 
+def _has_field(entry, name: str) -> bool:
+    """True when `name` is a declared top-level field, under either DSL —
+    legacy `extraction_fields` (list) or field-centric `field_tree` (dict)."""
+    return name in entry.extraction_fields or bool(entry.field_tree and name in entry.field_tree)
+
+
 def _recover_references(doc: Dict[str, Any], entry) -> None:
     """Deterministic post-extraction recovery for pedimento references.
 
@@ -353,7 +379,7 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     recovered: Dict[str, str] = {}
 
     for name in ("PEDIMENTO_REFERENCE", "NUMERO_PEDIMENTO"):
-        if name in entry.extraction_fields and entities.get(name) in (None, "", []):
+        if _has_field(entry, name) and entities.get(name) in (None, "", []):
             match = find_pedimento_reference(text)
             if match:
                 entities[name] = match
@@ -375,7 +401,7 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
             ("PATENTE", patente_c),
             ("NUMERO_CONSECUTIVO", consecutivo_c),
         ):
-            if name in entry.extraction_fields and entities.get(name) in (None, "", []):
+            if _has_field(entry, name) and entities.get(name) in (None, "", []):
                 entities[name] = comp_value
                 doc.setdefault("_confidences", {})[name] = 0.9
                 recovered[name] = comp_value
@@ -384,7 +410,7 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     # ("2026" instead of "26") despite the catalog hint saying otherwise —
     # collapsing it loses no information (same digits) so it's safe to fix
     # deterministically rather than leave it failing its own regex rule.
-    if "ANIO_PEDIMENTO" in entry.extraction_fields:
+    if _has_field(entry, "ANIO_PEDIMENTO"):
         anio_raw = entities.get("ANIO_PEDIMENTO")
         fixed_anio = normalize_year_2digit(anio_raw) if anio_raw not in (None, "", []) else None
         if fixed_anio and fixed_anio != str(anio_raw).strip():
@@ -404,7 +430,7 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     # drop or duplicate a digit the way regenerating the string can, so this
     # overrides the model's value whenever all 4 parts are present and each
     # already has its expected digit count.
-    if "NUMERO_PEDIMENTO_NORMALIZADO" in entry.extraction_fields:
+    if _has_field(entry, "NUMERO_PEDIMENTO_NORMALIZADO"):
         anio = digits_exact(entities.get("ANIO_PEDIMENTO"), 2)
         aduana = digits_exact(entities.get("ADUANA_DESPACHO"), 2)
         patente = digits_exact(entities.get("PATENTE"), 4)

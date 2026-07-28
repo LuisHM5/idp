@@ -34,12 +34,36 @@ def _load_expected() -> dict:
     return json.loads(EXPECTED_FILE.read_text(encoding="utf-8"))
 
 
+def _field_tree_names(field_tree: dict) -> set[str]:
+    """Every dotted path in a field-centric-DSL field_tree (schema_version
+    4.x, see catalogs/_TEMPLATE.json): each field's own path, plus object
+    subfields and array row subfields recursively — the same "ARRAY.SUBFIELD"
+    convention the legacy repeatable_fields dict used."""
+    names: set[str] = set()
+
+    def walk(tree: dict, prefix: str) -> None:
+        for name, spec in tree.items():
+            path = f"{prefix}{name}"
+            names.add(path)
+            if spec.type == "object":
+                walk(spec.fields, path + ".")
+            elif spec.type == "array" and spec.item_fields:
+                walk(spec.item_fields, path + ".")
+
+    walk(field_tree, "")
+    return names
+
+
 def _known_fields(type_id: str) -> set[str]:
     """Every name resolve_fields()/matching logic can compare against for a
     type: scalar extraction_fields, plus repeatable-array subfield paths in
     "ARRAY.SUBFIELD" form (how expected_pedimentos.json's "A|B" aliases and
-    scripts/test-pedimentos.py's dot-path lookups reference them)."""
+    scripts/test-pedimentos.py's dot-path lookups reference them). Types on
+    the field-centric DSL (field_tree set) use `_field_tree_names` instead —
+    extraction_fields/repeatable_fields are intentionally empty for those."""
     entry = dc.get_type_entry(type_id)
+    if entry.field_tree:
+        return _field_tree_names(entry.field_tree)
     names = set(entry.extraction_fields)
     for array_name, subfields in entry.repeatable_fields.items():
         names.add(array_name)

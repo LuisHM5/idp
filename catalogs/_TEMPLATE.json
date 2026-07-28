@@ -1,44 +1,90 @@
 {
+  "__NOTAS__": "Plantilla del nuevo DSL field-centric (schema_version 4.x). Copia este archivo, renombra NUEVO_TIPO, borra esta clave __NOTAS__ y las claves __COMENTARIO__ (son solo documentación, no las lea el loader). Cada campo aparece UNA sola vez como llave de `fields`: su hint, si es obligatorio, sus reglas de validación y su tipo viven juntos ahí — ya no hay que repetir el nombre en 5 estructuras paralelas distintas.",
+
   "NUEVO_TIPO": {
-    "schema_version": "1.0.0",
+    "schema_version": "4.0.0",
     "display_name": "Nuevo tipo",
     "aliases": [],
-    "description": "Descripción breve y discriminante: encabezados, sellos, folios y rasgos que lo separan de documentos similares.",
+    "description": "Descripción breve y discriminante: encabezados, sellos, folios y rasgos que lo separan de documentos similares. Se usa para clasificar.",
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "field_sets": [],
-    "extraction_fields": [
-      "ENCABEZADO",
-      "DETALLES"
-    ],
-    "extraction_hints": {
-      "ENCABEZADO": "Extrae los datos principales visibles en el encabezado.",
-      "DETALLES": "Extrae una fila por elemento y conserva el orden del documento."
-    },
-    "required_fields": [
-      "ENCABEZADO.FOLIO"
-    ],
-    "structured_fields": {
-      "ENCABEZADO": {
-        "FOLIO": null,
-        "FECHA": null
-      },
-      "DETALLES": []
-    },
-    "repeatable_fields": {
-      "DETALLES": [
-        "CONCEPTO",
-        "IMPORTE",
-        "PAGINA"
-      ]
-    },
-    "derived_fields": {},
-    "validation_rules": [],
-    "output_aliases": {},
     "validator_module": null,
     "custom_validator": null,
     "business_destination": null,
     "pipeline": "single_document",
     "min_confidence": 0.8,
-    "form_mapping": {}
+    "form_mapping": {},
+
+    "__COMENTARIO_fields__": "Un campo escalar. `type` decide qué shape de salida arma el pipeline: string/number/boolean/date -> {value, confidence, valid, reason}. `hint` es texto libre en español: dónde vive el dato o cómo derivarlo (antes vivía en extraction_hints, ahora junto al campo). `required` reemplaza a la lista required_fields. `validation` reemplaza las entradas de validation_rules que tenían `\"field\": \"NOMBRE\"` — ya no hace falta repetir el nombre, es implícito por estar anidado aquí.",
+    "fields": {
+      "FOLIO": {
+        "type": "string",
+        "required": true,
+        "hint": "Número de folio impreso en el encabezado, junto a la etiqueta FOLIO o NO.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9-]{3,20}$",
+            "message": "El folio tiene un formato inválido"
+          }
+        ]
+      },
+      "FECHA": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de emisión del documento, normalmente junto al folio.",
+        "validation": []
+      },
+
+      "__COMENTARIO_object__": "Un campo tipo objeto (antes vivía repartido entre structured_fields para los defaults y extraction_hints para el texto). Trae sus propios subcampos anidados en `fields`, con el mismo shape recursivo. `validation` aquí es a nivel del OBJETO completo (ej. una fórmula que cruza dos subcampos), no de un subcampo individual.",
+      "ENCABEZADO": {
+        "type": "object",
+        "required": true,
+        "hint": "Bloque de datos principales visibles en el encabezado del documento.",
+        "validation": [],
+        "fields": {
+          "EMISOR": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre o razón social de quien emite el documento.",
+            "validation": []
+          },
+          "TOTAL": {
+            "type": "number",
+            "required": true,
+            "hint": "Importe total impreso, sin símbolo de moneda.",
+            "validation": [
+              { "rule_type": "greater_than", "value": 0, "message": "El total debe ser mayor que cero" }
+            ]
+          }
+        }
+      },
+
+      "__COMENTARIO_array__": "Un campo repetible (antes repeatable_fields, con VALOR_CRUDO/PAGINA/ORDEN/CONFIANZA repetidos a mano en decenas de grupos). `item_fields` describe UNA fila; el pipeline la aplica a todas las filas detectadas. `$common` inyecta subcampos compartidos definidos en _shared.json (_common_item_fields) sin volver a escribirlos — así es como se elimina la repetición de PAGINA/ORDEN/CONFIANZA/VALOR_CRUDO en cada grupo.",
+      "DETALLES": {
+        "type": "array",
+        "required": false,
+        "hint": "Extrae una fila por elemento/concepto, conserva el orden del documento. Continúa la misma tabla si sigue en la página siguiente.",
+        "validation": [],
+        "item_fields": {
+          "$common": ["PAGINA", "ORDEN", "VALOR_CRUDO"],
+          "CONCEPTO": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción del concepto o elemento de la fila.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "hint": "Importe de la fila, sin símbolo de moneda.",
+            "validation": []
+          }
+        }
+      }
+    },
+
+    "__COMENTARIO_cross_field__": "Reglas que cruzan VARIOS campos (fórmulas, sumas de arrays) no pueden vivir dentro de un solo campo porque por definición referencian a más de uno. Estas se quedan en una lista aparte a nivel del tipo, igual que hoy — la única diferencia es que ya no incluye reglas de un solo campo (esas se movieron dentro de `fields`).",
+    "cross_field_validation": []
   }
 }

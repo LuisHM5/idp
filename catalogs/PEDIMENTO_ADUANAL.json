@@ -1,350 +1,4257 @@
 {
   "PEDIMENTO_ADUANAL": {
-    "schema_version": "3.2.0",
+    "schema_version": "4.0.0",
+    "display_name": "Pedimento Aduanal",
+    "aliases": [
+      "pedimento",
+      "pedimento de importacion",
+      "pedimento de exportacion"
+    ],
     "description": "Pedimento aduanal mexicano y sus anexos. Se distingue por los encabezados 'PEDIMENTO' o 'ANEXO DEL PEDIMENTO', el número de pedimento compuesto por año, aduana, patente/autorización y consecutivo, y por bloques como T.OPER, CVE.PEDIMENTO, REGIMEN, DATOS DEL IMPORTADOR/EXPORTADOR, TASAS A NIVEL PEDIMENTO, CUADRO DE LIQUIDACION, DEPOSITO REFERENCIADO, DATOS DEL PROVEEDOR O COMPRADOR, TRANSPORTE, IDENTIFICADORES, OBSERVACIONES, PARTIDAS y AGENTE ADUANAL. El esquema extrae tanto filas normalizadas como la disposición cruda de tablas de doble columna, conserva continuaciones entre páginas y evita perder celdas ambiguas.",
-    "extraction_fields": [
-      "TIPO_DOCUMENTO",
-      "SUBTIPO_PEDIMENTO",
-      "REFERENCIA_PEDIMENTO",
-      "REFERENCIA_COMPLEMENTO",
-      "NUMERO_PAGINAS",
-      "PAGINAS_DETECTADAS",
-      "VERSION_FORMATO",
-      "LEYENDA_DESTINO_ORIGEN",
-      "USUARIO_IMPRESION",
-      "FECHA_HORA_IMPRESION",
-      "NUMERO_PEDIMENTO",
-      "NUMERO_PEDIMENTO_NORMALIZADO",
-      "ANIO_PEDIMENTO",
-      "ADUANA_DESPACHO",
-      "SECCION_ADUANERA",
-      "NOMBRE_SECCION_ADUANERA",
-      "PATENTE",
-      "NUMERO_CONSECUTIVO",
-      "TIPO_OPERACION",
-      "TIPO_OPERACION_NORMALIZADO",
-      "CLAVE_PEDIMENTO",
-      "REGIMEN_ADUANERO",
-      "DESTINO_ORIGEN",
-      "TIPO_CAMBIO",
-      "PESO_BRUTO",
-      "ADUANA_ENTRADA_SALIDA",
-      "MEDIO_TRANSPORTE_ENTRADA_SALIDA",
-      "MEDIO_TRANSPORTE_ARRIBO",
-      "MEDIO_TRANSPORTE_SALIDA",
-      "CODIGO_ACEPTACION",
-      "CODIGO_BARRAS_PEDIMENTO",
-      "MARCAS_NUMEROS_TOTAL_BULTOS",
-      "TOTAL_BULTOS",
-      "CERTIFICACIONES_TEXTO",
-      "CERTIFICACIONES",
-      "VALOR_DOLARES",
-      "VALOR_ADUANA",
-      "VALOR_COMERCIAL_PESOS",
-      "PRECIO_PAGADO_VALOR_COMERCIAL",
-      "RFC_IMPORTADOR_EXPORTADOR",
-      "CURP_IMPORTADOR_EXPORTADOR",
-      "NOMBRE_IMPORTADOR_EXPORTADOR",
-      "DOMICILIO_IMPORTADOR_EXPORTADOR",
-      "CALLE_IMPORTADOR_EXPORTADOR",
-      "NUMERO_EXTERIOR_IMPORTADOR_EXPORTADOR",
-      "NUMERO_INTERIOR_IMPORTADOR_EXPORTADOR",
-      "COLONIA_IMPORTADOR_EXPORTADOR",
-      "CODIGO_POSTAL_IMPORTADOR_EXPORTADOR",
-      "MUNICIPIO_IMPORTADOR_EXPORTADOR",
-      "ENTIDAD_FEDERATIVA_IMPORTADOR_EXPORTADOR",
-      "PAIS_IMPORTADOR_EXPORTADOR",
-      "PAIS_IMPORTADOR_EXPORTADOR_NOMBRE",
-      "PAIS_VENDEDOR_COMPRADOR",
-      "PAIS_ORIGEN_DESTINO",
-      "PAIS_ORIGEN_PRINCIPAL",
-      "VALOR_SEGUROS",
-      "SEGUROS",
-      "FLETES",
-      "EMBALAJES",
-      "OTROS_INCREMENTABLES",
-      "TOTAL_INCREMENTABLES",
-      "TRANSPORTE_DECREMENTABLE",
-      "SEGURO_DECREMENTABLE",
-      "CARGA_DECREMENTABLE",
-      "DESCARGA_DECREMENTABLE",
-      "OTROS_DECREMENTABLES",
-      "TOTAL_DECREMENTABLES",
-      "FECHA_ENTRADA",
-      "FECHA_PAGO",
-      "FECHA_PRESENTACION",
-      "FECHAS",
-      "TASAS_NIVEL_PEDIMENTO",
-      "CUADRO_LIQUIDACION",
-      "LIQUIDACION_NORMALIZADA",
-      "CONTRIBUCIONES",
-      "TASAS_LIQUIDACION_VINCULADAS",
-      "TOTAL_EFECTIVO",
-      "TOTAL_OTROS",
-      "TOTAL_PEDIMENTO",
-      "PAGO_ELECTRONICO_PRESENTE",
-      "TIPO_PAGO_TEXTO",
-      "LINEA_CAPTURA",
-      "BANCO",
-      "PATENTE_PAGO",
-      "PEDIMENTO_PAGO",
-      "ADUANA_PAGO",
-      "IMPORTE_PAGADO",
-      "FECHA_PAGO_BANCARIO",
-      "OPERACION_BANCARIA",
-      "TRANSACCION_SAT",
-      "MEDIO_PRESENTACION",
-      "MEDIO_RECEPCION_COBRO",
-      "CODIGO_BARRAS_PAGO",
-      "CODIGO_QR_PAGO",
-      "PROVEEDORES_COMPRADORES",
-      "DESTINATARIOS",
-      "FACTURAS",
-      "FACTURAS_FILAS_IMPRESAS",
-      "COVES_EDOCUMENTS",
-      "TOTAL_FACTURAS_DOLARES",
-      "TOTAL_FACTURAS_PESOS",
-      "TRANSPORTISTA",
-      "TRANSPORTE_IDENTIFICACION",
-      "TRANSPORTE_PAIS",
-      "VEHICULO_TRANSPORTE",
-      "GUIAS_DOCUMENTOS_TRANSPORTE",
-      "CONTENEDORES",
-      "CONTENEDORES_FILAS_IMPRESAS",
-      "EQUIPOS_TRANSPORTE",
-      "CANDADOS_SELLOS",
-      "IDENTIFICADORES",
-      "IDENTIFICADORES_FILAS_IMPRESAS",
-      "CUENTAS_ADUANERAS_GARANTIA",
-      "DESCARGOS",
-      "COMPENSACIONES",
-      "PEDIMENTOS_RELACIONADOS",
-      "RECTIFICACION",
-      "CONSOLIDACION",
-      "DIFERENCIAS_CONTRIBUCIONES",
-      "OBSERVACIONES",
-      "DOCUMENTOS_DIGITALIZADOS",
-      "REGULACIONES_RESTRICCIONES",
-      "CANDADO_FISCAL",
-      "PARTIDAS",
-      "PARTIDAS_FILAS_IMPRESAS",
-      "NUMERO_TOTAL_PARTIDAS",
-      "CLAVE_PREVALIDADOR",
-      "AGENTE_ADUANAL",
-      "NUMERO_SERIE_CERTIFICADO",
-      "FIRMA_ELECTRONICA",
-      "FIRMA_AUTOGRAFA_PRESENTE",
-      "FIRMA_AUTOGRAFA_DETECTADA",
-      "DECLARACION_ARTICULO_81_PRESENTE",
-      "OTROS_BLOQUES_DOCUMENTO",
-      "METADATOS_EXTRACCION",
-      "TABLAS_DETECTADAS"
-    ],
-    "extraction_hints": {
-      "TIPO_DOCUMENTO": "Valor fijo PEDIMENTO_ADUANAL cuando se confirme que el documento contiene el encabezado PEDIMENTO o ANEXO DEL PEDIMENTO.",
-      "SUBTIPO_PEDIMENTO": "Clasificar por el texto y estructura impresos: PEDIMENTO, ANEXO_DEL_PEDIMENTO, SIMPLIFICADO, RECTIFICACION, COMPLEMENTARIO, CONSOLIDADO u OTRO.",
-      "REFERENCIA_PEDIMENTO": "Campo REF ubicado normalmente en la franja superior de cada página. Conservar ceros a la izquierda.",
-      "REFERENCIA_COMPLEMENTO": "Texto o número adicional impreso junto a REF, cuando exista. No mezclarlo con el número de pedimento.",
-      "NUMERO_PAGINAS": "Total indicado por leyendas como 'Página 1 de 3'. Usar el mayor total consistente observado.",
-      "PAGINAS_DETECTADAS": "Registrar cada página detectada con número, total, tipo de página, referencia y pedimento para detectar faltantes.",
-      "VERSION_FORMATO": "Versión, revisión o formato impreso si aparece; de lo contrario null.",
-      "LEYENDA_DESTINO_ORIGEN": "Leyenda del pie como 'DESTINO/ORIGEN. INTERIOR DEL PAÍS'. Conservar texto completo.",
-      "USUARIO_IMPRESION": "Nombre mostrado junto a 'Usuario:' en el pie.",
-      "FECHA_HORA_IMPRESION": "Fecha y hora del pie. Normalizar a ISO 8601 cuando se pueda leer completa.",
-      "NUMERO_PEDIMENTO": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito.",
-
-      "NUMERO_PEDIMENTO_NORMALIZADO": "No copiar directamente NUMERO_PEDIMENTO. Construir obligatoriamente concatenando ANIO_PEDIMENTO de 2 dígitos + ADUANA_DESPACHO de 2 dígitos + PATENTE de 4 dígitos + NUMERO_CONSECUTIVO de 7 dígitos. El resultado debe tener exactamente 15 dígitos. Para este ejemplo: 26 + 07 + 0823 + 6001630 = 260708236001630.",
-      "ANIO_PEDIMENTO": "Extraer únicamente los últimos 2 dígitos del año. Ejemplo: para 2026 devolver \"26\", no \"2026\".",
-      "ADUANA_DESPACHO": "Extraer exactamente 2 dígitos. Conservar ceros a la izquierda.",
-      "PATENTE": "Extraer exactamente 4 dígitos como string. Conservar ceros a la izquierda.",
-      "NUMERO_CONSECUTIVO": "Extraer exactamente 7 dígitos como string. Conservar ceros tanto a la izquierda como a la derecha. Nunca convertir a número ni truncar.",
-      "SECCION_ADUANERA": "Clave impresa en 'CLAVE DE LA SECCION ADUANERA DE DESPACHO'; puede tener 2 o 3 dígitos según impresión.",
-      "NOMBRE_SECCION_ADUANERA": "Nombre situado junto a la clave de sección aduanera, por ejemplo SAN JERONIMO STA. TERESA.",
-      "TIPO_OPERACION": "Campo T.OPER o TIPO OPER; conservar el código impreso, normalmente IMP o EXP.",
-      "TIPO_OPERACION_NORMALIZADO": "Derivar IMPORTACION para IMP y EXPORTACION para EXP; para otros códigos conservar OTRO.",
-      "CLAVE_PEDIMENTO": "Campo CVE.PEDIMENTO/CVE.PEDIM, normalmente A1, R1, V1, K1, etc. No confundir con régimen.",
-      "REGIMEN_ADUANERO": "Campo REGIMEN del encabezado, por ejemplo IMD. Conservar código impreso.",
-      "DESTINO_ORIGEN": "Campo DESTINO del encabezado o leyenda equivalente; conservar como string.",
-      "TIPO_CAMBIO": "Campo TIPO CAMBIO del encabezado. Número decimal mayor que cero cuando esté impreso.",
-      "PESO_BRUTO": "Campo PESO BRUTO del encabezado. Extraer como decimal sin separadores de miles.",
-      "ADUANA_ENTRADA_SALIDA": "Campo ADUANA E/S del encabezado. Es independiente de ADUANA_DESPACHO y SECCION_ADUANERA.",
-      "MEDIO_TRANSPORTE_ENTRADA_SALIDA": "Primera columna del bloque MEDIOS DE TRANSPORTE: ENTRADA/SALIDA.",
-      "MEDIO_TRANSPORTE_ARRIBO": "Segunda columna del bloque MEDIOS DE TRANSPORTE: ARRIBO.",
-      "MEDIO_TRANSPORTE_SALIDA": "Tercera columna del bloque MEDIOS DE TRANSPORTE: SALIDA.",
-      "CODIGO_ACEPTACION": "Texto alfanumérico situado junto a 'CODIGO DE ACEPTACIÓN' y su código de barras/QR. No confundir con línea de captura.",
-      "CODIGO_BARRAS_PEDIMENTO": "Valor legible del código de barras principal cuando se pueda decodificar o leer impreso.",
-      "MARCAS_NUMEROS_TOTAL_BULTOS": "Texto completo del renglón MARCAS, NUMEROS Y TOTAL DE BULTOS.",
-      "TOTAL_BULTOS": "Extraer el número total de bultos del renglón de marcas/bultos cuando sea separable con confianza.",
-      "CERTIFICACIONES_TEXTO": "Texto del bloque CERTIFICACIONES. No resumir; null si el bloque está vacío.",
-      "VALOR_DOLARES": "Campo VALOR DOLARES del encabezado. No sustituirlo por la suma de facturas.",
-      "VALOR_ADUANA": "Campo VALOR ADUANA del encabezado, normalmente en MXN.",
-      "VALOR_COMERCIAL_PESOS": "Campo PRECIO PAGADO/VALOR COMERCIAL del encabezado, normalmente en MXN.",
-      "PRECIO_PAGADO_VALOR_COMERCIAL": "Alias compatible de VALOR_COMERCIAL_PESOS; devolver el mismo valor normalizado.",
-      "RFC_IMPORTADOR_EXPORTADOR": "Clave en el RFC dentro de DATOS DEL IMPORTADOR/EXPORTADOR.",
-      "CURP_IMPORTADOR_EXPORTADOR": "CURP del importador/exportador si está impresa. No tomar la CURP del agente.",
-      "NOMBRE_IMPORTADOR_EXPORTADOR": "NOMBRE, DENOMINACION O RAZON SOCIAL del bloque DATOS DEL IMPORTADOR/EXPORTADOR.",
-      "DOMICILIO_IMPORTADOR_EXPORTADOR": "Domicilio completo tal como aparece, unido en una sola cadena sin resumir.",
-      "CALLE_IMPORTADOR_EXPORTADOR": "Derivar de DOMICILIO_IMPORTADOR_EXPORTADOR solo cuando la calle sea separable con alta confianza.",
-      "NUMERO_EXTERIOR_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de NO.EXT, NUM EXT o equivalente.",
-      "NUMERO_INTERIOR_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de NO.INT, NUM INT o equivalente; null si no aparece.",
-      "COLONIA_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de COLONIA/COL.",
-      "CODIGO_POSTAL_IMPORTADOR_EXPORTADOR": "Derivar del domicilio a partir de C.P./CP; conservar ceros iniciales.",
-      "MUNICIPIO_IMPORTADOR_EXPORTADOR": "Municipio o ciudad del domicilio, solo si es separable.",
-      "ENTIDAD_FEDERATIVA_IMPORTADOR_EXPORTADOR": "Estado o entidad del domicilio, solo si es separable.",
-      "PAIS_IMPORTADOR_EXPORTADOR": "Clave o nombre de país impreso en el domicilio; preferir clave si existe.",
-      "PAIS_IMPORTADOR_EXPORTADOR_NOMBRE": "Nombre normalizado del país mediante catálogo, sin reemplazar el valor impreso.",
-      "PAIS_VENDEDOR_COMPRADOR": "País vendedor/comprador a nivel encabezado o valor principal derivado de proveedor y partidas. No autoseleccionar si existen varios.",
-      "PAIS_ORIGEN_DESTINO": "País de origen/destino principal observado en las partidas. Conservar null si hay múltiples valores sin uno dominante.",
-      "PAIS_ORIGEN_PRINCIPAL": "Derivar solo cuando todas las partidas con país de origen/destino comparten la misma clave; en caso contrario null.",
-      "VALOR_SEGUROS": "Campo VAL. SEGUROS. Es valor informativo y no debe sumarse como prima de seguro.",
-      "SEGUROS": "Campo SEGUROS del bloque de incrementables; esta sí es la prima incrementable.",
-      "FLETES": "Campo FLETES del bloque de incrementables.",
-      "EMBALAJES": "Campo EMBALAJES del bloque de incrementables.",
-      "OTROS_INCREMENTABLES": "Campo OTROS INCREMENTABLES.",
-      "TOTAL_INCREMENTABLES": "Derivar como SEGUROS + FLETES + EMBALAJES + OTROS_INCREMENTABLES. No sumar VALOR_SEGUROS.",
-      "TRANSPORTE_DECREMENTABLE": "Campo TRANSPORTE DECREMENTABLES.",
-      "SEGURO_DECREMENTABLE": "Campo SEGUROS DECREMENTABLES.",
-      "CARGA_DECREMENTABLE": "Campo CARGA DECREMENTABLES.",
-      "DESCARGA_DECREMENTABLE": "Campo DESCARGA DECREMENTABLES.",
-      "OTROS_DECREMENTABLES": "Campo OTROS DECREMENTABLES.",
-      "TOTAL_DECREMENTABLES": "Campo VALOR DECREMENTABLES o suma de los cinco conceptos decrementables.",
-      "FECHA_ENTRADA": "Fecha identificada como ENTRADA en el bloque FECHAS. Normalizar YYYY-MM-DD.",
-      "FECHA_PAGO": "Fecha identificada como PAGO en el bloque FECHAS del pedimento.",
-      "FECHA_PRESENTACION": "Fecha de presentación cuando aparezca como fecha adicional.",
-      "FECHAS": "Extraer todas las filas del bloque FECHAS, conservando tipo, fecha normalizada y valor crudo.",
-      "TASAS_NIVEL_PEDIMENTO": "Tabla TASAS A NIVEL PEDIMENTO: extraer una fila por contribución con clave cruda y normalizada, CVE T. TASA, tasa numérica o textual, unidad/tipo, página, orden y confianza. TASA puede ser porcentaje, cuota o texto como Ex.",
-      "CUADRO_LIQUIDACION": "Extraer la tabla completa en tres vistas: FILAS_IMPRESAS conserva las dos mitades visuales de cada renglón; CONCEPTOS crea un registro normalizado por concepto con F.P e importe; TOTALES conserva EFECTIVO, OTROS y TOTAL como filas. Leer ambas mitades de izquierda a derecha y no perder conceptos vacíos o no catalogados.",
-      "LIQUIDACION_NORMALIZADA": "Vista derivada por código normalizado, sin perder el concepto crudo. Mantener IVA y IVA PRV separados canónicamente.",
-      "CONTRIBUCIONES": "Vista normalizada que relaciona tasas a nivel pedimento, conceptos del cuadro de liquidación y contribuciones de partidas sin duplicar importes.",
-      "TOTAL_EFECTIVO": "Total EFECTIVO impreso en el cuadro de liquidación.",
-      "TOTAL_OTROS": "Total OTROS impreso en el cuadro de liquidación.",
-      "TOTAL_PEDIMENTO": "TOTAL impreso en el cuadro de liquidación.",
-      "PAGO_ELECTRONICO_PRESENTE": "true cuando exista DEPOSITO REFERENCIADO, LINEA DE CAPTURA o leyenda PAGO ELECTRÓNICO.",
-      "TIPO_PAGO_TEXTO": "Leyenda del tipo de pago, por ejemplo PAGO ELECTRÓNICO.",
-      "LINEA_CAPTURA": "Cadena alfanumérica del bloque DEPOSITO REFERENCIADO - LINEA DE CAPTURA.",
-      "BANCO": "NOMBRE DE LA INSTITUCION BANCARIA.",
-      "PATENTE_PAGO": "PATENTE dentro del bloque de pago.",
-      "PEDIMENTO_PAGO": "PEDIMENTO/consecutivo dentro del bloque de pago.",
-      "ADUANA_PAGO": "ADUANA dentro del bloque de pago.",
-      "IMPORTE_PAGADO": "IMPORTE PAGADO del bloque bancario, sin símbolo de moneda.",
-      "FECHA_PAGO_BANCARIO": "FECHA DE PAGO del bloque bancario.",
-      "OPERACION_BANCARIA": "NUMERO DE OPERACION BANCARIA.",
-      "TRANSACCION_SAT": "NUMERO DE TRANSACCION SAT.",
-      "MEDIO_PRESENTACION": "MEDIO DE PRESENTACION del bloque bancario.",
-      "MEDIO_RECEPCION_COBRO": "MEDIO DE RECEPCION/COBRO.",
-      "CODIGO_BARRAS_PAGO": "Valor legible bajo el código de barras de la línea de captura.",
-      "CODIGO_QR_PAGO": "Contenido del QR cuando sea decodificable; si no, null y registrar presencia en metadatos.",
-      "PROVEEDORES_COMPRADORES": "Extraer todos los bloques DATOS DEL PROVEEDOR O COMPRADOR, incluso si las facturas continúan en otra página.",
-      "DESTINATARIOS": "Extraer destinatario, comprador, vendedor u otra parte mencionada explícitamente en bloques u observaciones.",
-      "FACTURAS": "Extraer todas las facturas y vincularlas con proveedor/comprador. Conservar exactamente NUM. FACTURA, FECHA, INCOTERM, MONEDA, VAL. MON. FACT, FACTOR MON. FACT y VAL. DOLARES. Un COVE/e-document puede aparecer en un renglón inferior y la tabla puede comenzar en la página siguiente al proveedor.",
-      "COVES_EDOCUMENTS": "Extraer todos los COVE o e-document, indicando si se vincularon a una factura, identificador o permiso.",
-      "TOTAL_FACTURAS_DOLARES": "Derivar SUM(FACTURAS.VALOR_DOLARES) solo cuando todas las facturas estén completas.",
-      "TOTAL_FACTURAS_PESOS": "Derivar TOTAL_FACTURAS_DOLARES * TIPO_CAMBIO sin redondear prematuramente.",
-      "TRANSPORTISTA": "Bloque TRANSPORTISTA del anexo: nombre, RFC/CURP y domicilio.",
-      "TRANSPORTE_IDENTIFICACION": "Campo IDENTIFICACION del bloque TRANSPORTE.",
-      "TRANSPORTE_PAIS": "Campo PAIS del bloque TRANSPORTE.",
-      "VEHICULO_TRANSPORTE": "Datos de placas, serie/VIN, modelo o número económico cuando se impriman a nivel transporte.",
-      "GUIAS_DOCUMENTOS_TRANSPORTE": "Todas las guías, conocimientos de embarque, manifiestos u otros documentos de transporte.",
-      "CONTENEDORES": "Normalizar cada par número/tipo del bloque NUMERO/TIPO DE CONTENEDOR. Como una fila puede contener varios pares, usar CONTENEDORES_FILAS_IMPRESAS para preservar posición y tokens; si el pareo es ambiguo, dejar los campos normalizados en null y conservar VALOR_CRUDO.",
-      "EQUIPOS_TRANSPORTE": "Contenedores, carros, remolques u otros equipos; conservar tokens y valor crudo cuando no pueda separarse número/tipo.",
-      "CANDADOS_SELLOS": "Todos los candados o sellos fiscales/comerciales y su tipo cuando aparezca.",
-      "IDENTIFICADORES": "Extraer todos los identificadores a nivel pedimento con clave, posible complemento del identificador y complementos 1, 2 y 3. Conservar la fila física para evitar desplazamientos de columnas.",
-      "CUENTAS_ADUANERAS_GARANTIA": "Todos los bloques de cuenta aduanera o garantía a nivel pedimento.",
-      "DESCARGOS": "Todos los pedimentos/operaciones originales descargados y cantidades asociadas.",
-      "COMPENSACIONES": "Todos los datos de compensación, gravamen e importe compensado.",
-      "PEDIMENTOS_RELACIONADOS": "Pedimentos originales, complementarios, consolidados, rectificados o relacionados.",
-      "RECTIFICACION": "Datos del pedimento original y diferencias cuando la clave/estructura corresponda a rectificación.",
-      "CONSOLIDACION": "Datos de aviso consolidado, periodo, operación o relación cuando el pedimento sea consolidado.",
-      "DIFERENCIAS_CONTRIBUCIONES": "Diferencias de contribuciones por concepto y forma de pago, principalmente en rectificaciones/complementarios.",
-      "OBSERVACIONES": "Texto completo de OBSERVACIONES, unido entre renglones y páginas, sin resumir.",
-      "PARTIDAS": "Extraer todas las partidas y sus subtablas. Conservar SEC, FRACCION, SUBD/NICO, VINC., MET VAL, UMC/CANTIDAD UMC, UMT/CANTIDAD UMT, P.V/C, P.O/D, descripción, contribuciones, VAL. ADU/USD, IMP. PRECIO PAG., PRECIO UNIT., VAL. AGREG., MARCA, MODELO, CODIGO PRODUCTO, permisos e identificadores. Continuar la misma partida si los identificadores aparecen en la página siguiente.",
-      "NUMERO_TOTAL_PARTIDAS": "Número impreso en FIN DE PEDIMENTO.",
-      "CLAVE_PREVALIDADOR": "Clave impresa junto a CLAVE PREVALIDADOR, normalmente 3 dígitos.",
-      "AGENTE_ADUANAL": "Bloque AGENTE ADUANAL/AGENCIA/APODERADO: tipo de figura, patente, RFC, CURP, nombre y domicilio si existe.",
-      "NUMERO_SERIE_CERTIFICADO": "Número de serie del certificado del bloque de firma.",
-      "FIRMA_ELECTRONICA": "Cadena completa de e.firma. No truncar ni normalizar caracteres base64.",
-      "FIRMA_AUTOGRAFA_PRESENTE": "Indica que el formato contiene la etiqueta o el espacio destinado a FIRMA AUTOGRAFA. No confirma que exista una firma manuscrita; para eso usar FIRMA_AUTOGRAFA_DETECTADA.",
-      "DECLARACION_ARTICULO_81_PRESENTE": "true cuando se detecte la declaración bajo protesta relacionada con el artículo 81.",
-      "OTROS_BLOQUES_DOCUMENTO": "Guardar cualquier bloque, tabla o texto no cubierto por el esquema para no perder información.",
-      "METADATOS_EXTRACCION": "Trazabilidad por campo: valor crudo, página, confianza, método, bbox, advertencias, páginas faltantes y bloques ambiguos.",
-      "CERTIFICACIONES": "Extraer cada certificación del bloque CERTIFICACIONES como registro independiente con tipo, texto, folio, fecha, sello/cadena, emisor, página y valor crudo. Si el recuadro está presente pero vacío, devolver [] y registrar BLOQUE_PRESENTE en TABLAS_DETECTADAS.",
-      "TASAS_LIQUIDACION_VINCULADAS": "Relacionar, cuando sea posible, cada tasa de TASAS_NIVEL_PEDIMENTO con su concepto del CUADRO_LIQUIDACION. Conservar por separado la fuente de la tasa y la fuente del importe; no inventar vínculos cuando existan varios conceptos candidatos.",
-      "FACTURAS_FILAS_IMPRESAS": "Preservar la tabla física de facturas por renglón, incluidos renglones inferiores que contienen COVE/e-document. Esto permite reconstruir facturas que continúan desde la página del proveedor hacia el anexo.",
-      "CONTENEDORES_FILAS_IMPRESAS": "Preservar cada fila del bloque NUMERO/TIPO DE CONTENEDOR con todos los pares impresos en la misma línea. No asumir que cuatro tokens corresponden a un solo contenedor; guardar posición, tokens y valor crudo.",
-      "IDENTIFICADORES_FILAS_IMPRESAS": "Preservar las filas físicas de la tabla CLAVE/COMPL. IDENTIFICADOR y sus complementos 1, 2 y 3, además de la lista normalizada IDENTIFICADORES.",
-      "DOCUMENTOS_DIGITALIZADOS": "Extraer referencias explícitas a facturas, COVE, e-document, certificados, dictámenes u otros documentos digitalizados mencionados en OBSERVACIONES, con número, fecha, tipo y relación.",
-      "REGULACIONES_RESTRICCIONES": "Extraer regulaciones, permisos, certificados o inspecciones mencionados en tablas u observaciones, por ejemplo certificado fitosanitario, NOM, dictamen documental o autoridad competente. Conservar texto fuente y no inferir un número que no esté impreso.",
-      "CANDADO_FISCAL": "Estructurar la presencia o ausencia de candado fiscal, motivo, texto fuente, números de candado/sello y equipo relacionado. Distinguir 'SIN CANDADO FISCAL' de un número de candado efectivamente impreso.",
-      "PARTIDAS_FILAS_IMPRESAS": "Preservar filas físicas de la tabla PARTIDAS, incluyendo encabezado principal, descripción, valores, permisos, identificadores y continuaciones de página. La salida normalizada permanece en PARTIDAS.",
-      "FIRMA_AUTOGRAFA_DETECTADA": "true únicamente si se detecta trazo o firma manuscrita; no marcar true solo porque exista la etiqueta 'FIRMA AUTOGRAFA' o el espacio destinado a firmar.",
-      "TABLAS_DETECTADAS": "Inventario de tablas detectadas con nombre, página inicial/final, encabezados, número de filas, continuación, confianza y bbox. Sirve para confirmar que no se omitieron CUADRO DE LIQUIDACION, FACTURAS, IDENTIFICADORES o PARTIDAS."
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "field_sets": [],
+    "validator_module": "validators.customs.pedimento",
+    "custom_validator": null,
+    "business_destination": "PEDIMENTO",
+    "pipeline": "expediente",
+    "min_confidence": 0.8,
+    "fields": {
+      "TIPO_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Valor fijo PEDIMENTO_ADUANAL cuando se confirme que el documento contiene el encabezado PEDIMENTO o ANEXO DEL PEDIMENTO.",
+        "validation": []
+      },
+      "SUBTIPO_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Clasificar por el texto y estructura impresos: PEDIMENTO, ANEXO_DEL_PEDIMENTO, SIMPLIFICADO, RECTIFICACION, COMPLEMENTARIO, CONSOLIDADO u OTRO.",
+        "validation": []
+      },
+      "REFERENCIA_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo REF ubicado normalmente en la franja superior de cada página. Conservar ceros a la izquierda.",
+        "validation": []
+      },
+      "REFERENCIA_COMPLEMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Texto o número adicional impreso junto a REF, cuando exista. No mezclarlo con el número de pedimento.",
+        "validation": []
+      },
+      "NUMERO_PAGINAS": {
+        "type": "number",
+        "required": false,
+        "hint": "Total indicado por leyendas como 'Página 1 de 3'. Usar el mayor total consistente observado.",
+        "validation": [
+          {
+            "rule_type": "greater_than",
+            "value": 0,
+            "skip_if_missing": true,
+            "message": "El número total de páginas debe ser mayor que cero"
+          }
+        ]
+      },
+      "PAGINAS_DETECTADAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Registrar cada página detectada con número, total, tipo de página, referencia y pedimento para detectar faltantes.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "VALOR_CRUDO",
+            "CONFIANZA"
+          ],
+          "NUMERO_PAGINA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_PAGINAS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_PAGINA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "REFERENCIA_PEDIMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO_NORMALIZADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ES_CONTINUACION": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "VERSION_FORMATO": {
+        "type": "string",
+        "required": false,
+        "hint": "Versión, revisión o formato impreso si aparece; de lo contrario null.",
+        "validation": []
+      },
+      "LEYENDA_DESTINO_ORIGEN": {
+        "type": "string",
+        "required": false,
+        "hint": "Leyenda del pie como 'DESTINO/ORIGEN. INTERIOR DEL PAÍS'. Conservar texto completo.",
+        "validation": []
+      },
+      "USUARIO_IMPRESION": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre mostrado junto a 'Usuario:' en el pie.",
+        "validation": []
+      },
+      "FECHA_HORA_IMPRESION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha y hora del pie. Normalizar a ISO 8601 cuando se pueda leer completa.",
+        "validation": []
+      },
+      "NUMERO_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{15}$",
+            "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
+          }
+        ]
+      },
+      "NUMERO_PEDIMENTO_NORMALIZADO": {
+        "type": "string",
+        "required": true,
+        "hint": "No copiar directamente NUMERO_PEDIMENTO. Construir obligatoriamente concatenando ANIO_PEDIMENTO de 2 dígitos + ADUANA_DESPACHO de 2 dígitos + PATENTE de 4 dígitos + NUMERO_CONSECUTIVO de 7 dígitos. El resultado debe tener exactamente 15 dígitos. Para este ejemplo: 26 + 07 + 0823 + 6001630 = 260708236001630.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{15}$",
+            "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
+          }
+        ]
+      },
+      "ANIO_PEDIMENTO": {
+        "type": "string",
+        "required": true,
+        "hint": "Extraer únicamente los últimos 2 dígitos del año. Ejemplo: para 2026 devolver \"26\", no \"2026\".",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "El año del pedimento debe contener 2 dígitos"
+          }
+        ]
+      },
+      "ADUANA_DESPACHO": {
+        "type": "string",
+        "required": true,
+        "hint": "Extraer exactamente 2 dígitos. Conservar ceros a la izquierda.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La aduana del número de pedimento debe contener 2 dígitos"
+          }
+        ]
+      },
+      "SECCION_ADUANERA": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave impresa en 'CLAVE DE LA SECCION ADUANERA DE DESPACHO'; puede tener 2 o 3 dígitos según impresión.",
+        "validation": []
+      },
+      "NOMBRE_SECCION_ADUANERA": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre situado junto a la clave de sección aduanera, por ejemplo SAN JERONIMO STA. TERESA.",
+        "validation": []
+      },
+      "PATENTE": {
+        "type": "string",
+        "required": true,
+        "hint": "Extraer exactamente 4 dígitos como string. Conservar ceros a la izquierda.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}$",
+            "message": "La patente o autorización debe contener 4 dígitos"
+          }
+        ]
+      },
+      "NUMERO_CONSECUTIVO": {
+        "type": "string",
+        "required": true,
+        "hint": "Extraer exactamente 7 dígitos como string. Conservar ceros tanto a la izquierda como a la derecha. Nunca convertir a número ni truncar.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{7}$",
+            "message": "El consecutivo del pedimento debe contener 7 dígitos"
+          }
+        ]
+      },
+      "TIPO_OPERACION": {
+        "type": "string",
+        "required": true,
+        "hint": "Campo T.OPER o TIPO OPER; conservar el código impreso, normalmente IMP o EXP.",
+        "validation": []
+      },
+      "TIPO_OPERACION_NORMALIZADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar IMPORTACION para IMP y EXPORTACION para EXP; para otros códigos conservar OTRO.",
+        "validation": []
+      },
+      "CLAVE_PEDIMENTO": {
+        "type": "string",
+        "required": true,
+        "hint": "Campo CVE.PEDIMENTO/CVE.PEDIM, normalmente A1, R1, V1, K1, etc. No confundir con régimen.",
+        "validation": []
+      },
+      "REGIMEN_ADUANERO": {
+        "type": "string",
+        "required": true,
+        "hint": "Campo REGIMEN del encabezado, por ejemplo IMD. Conservar código impreso.",
+        "validation": []
+      },
+      "DESTINO_ORIGEN": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo DESTINO del encabezado o leyenda equivalente; conservar como string.",
+        "validation": []
+      },
+      "TIPO_CAMBIO": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo TIPO CAMBIO del encabezado. Número decimal mayor que cero cuando esté impreso.",
+        "validation": [
+          {
+            "rule_type": "greater_than",
+            "value": 0,
+            "skip_if_missing": true,
+            "message": "El tipo de cambio debe ser mayor que cero cuando esté impreso"
+          }
+        ]
+      },
+      "PESO_BRUTO": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo PESO BRUTO del encabezado. Extraer como decimal sin separadores de miles.",
+        "validation": [
+          {
+            "rule_type": "greater_than",
+            "value": 0,
+            "skip_if_missing": true,
+            "message": "El peso bruto debe ser mayor que cero cuando esté impreso"
+          }
+        ]
+      },
+      "ADUANA_ENTRADA_SALIDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo ADUANA E/S del encabezado. Es independiente de ADUANA_DESPACHO y SECCION_ADUANERA.",
+        "validation": []
+      },
+      "MEDIO_TRANSPORTE_ENTRADA_SALIDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Primera columna del bloque MEDIOS DE TRANSPORTE: ENTRADA/SALIDA.",
+        "validation": []
+      },
+      "MEDIO_TRANSPORTE_ARRIBO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segunda columna del bloque MEDIOS DE TRANSPORTE: ARRIBO.",
+        "validation": []
+      },
+      "MEDIO_TRANSPORTE_SALIDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Tercera columna del bloque MEDIOS DE TRANSPORTE: SALIDA.",
+        "validation": []
+      },
+      "CODIGO_ACEPTACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Texto alfanumérico situado junto a 'CODIGO DE ACEPTACIÓN' y su código de barras/QR. No confundir con línea de captura.",
+        "validation": []
+      },
+      "CODIGO_BARRAS_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Valor legible del código de barras principal cuando se pueda decodificar o leer impreso.",
+        "validation": []
+      },
+      "MARCAS_NUMEROS_TOTAL_BULTOS": {
+        "type": "string",
+        "required": false,
+        "hint": "Texto completo del renglón MARCAS, NUMEROS Y TOTAL DE BULTOS.",
+        "validation": []
+      },
+      "TOTAL_BULTOS": {
+        "type": "number",
+        "required": false,
+        "hint": "Extraer el número total de bultos del renglón de marcas/bultos cuando sea separable con confianza.",
+        "validation": []
+      },
+      "CERTIFICACIONES_TEXTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Texto del bloque CERTIFICACIONES. No resumir; null si el bloque está vacío.",
+        "validation": []
+      },
+      "CERTIFICACIONES": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer cada certificación del bloque CERTIFICACIONES como registro independiente con tipo, texto, folio, fecha, sello/cadena, emisor, página y valor crudo. Si el recuadro está presente pero vacío, devolver [] y registrar BLOQUE_PRESENTE en TABLAS_DETECTADAS.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "TIPO_CERTIFICACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TEXTO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FOLIO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "EMISOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SELLO_CADENA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "VALOR_DOLARES": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo VALOR DOLARES del encabezado. No sustituirlo por la suma de facturas.",
+        "validation": []
+      },
+      "VALOR_ADUANA": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo VALOR ADUANA del encabezado, normalmente en MXN.",
+        "validation": []
+      },
+      "VALOR_COMERCIAL_PESOS": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo PRECIO PAGADO/VALOR COMERCIAL del encabezado, normalmente en MXN.",
+        "validation": []
+      },
+      "PRECIO_PAGADO_VALOR_COMERCIAL": {
+        "type": "number",
+        "required": false,
+        "hint": "Alias compatible de VALOR_COMERCIAL_PESOS; devolver el mismo valor normalizado.",
+        "validation": []
+      },
+      "RFC_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave en el RFC dentro de DATOS DEL IMPORTADOR/EXPORTADOR.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "skip_if_missing": true,
+            "message": "El RFC del importador o exportador tiene un formato inválido"
+          }
+        ]
+      },
+      "CURP_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP del importador/exportador si está impresa. No tomar la CURP del agente.",
+        "validation": []
+      },
+      "NOMBRE_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": true,
+        "hint": "NOMBRE, DENOMINACION O RAZON SOCIAL del bloque DATOS DEL IMPORTADOR/EXPORTADOR.",
+        "validation": []
+      },
+      "DOMICILIO_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio completo tal como aparece, unido en una sola cadena sin resumir.",
+        "validation": []
+      },
+      "CALLE_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar de DOMICILIO_IMPORTADOR_EXPORTADOR solo cuando la calle sea separable con alta confianza.",
+        "validation": []
+      },
+      "NUMERO_EXTERIOR_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar del domicilio a partir de NO.EXT, NUM EXT o equivalente.",
+        "validation": []
+      },
+      "NUMERO_INTERIOR_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar del domicilio a partir de NO.INT, NUM INT o equivalente; null si no aparece.",
+        "validation": []
+      },
+      "COLONIA_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar del domicilio a partir de COLONIA/COL.",
+        "validation": []
+      },
+      "CODIGO_POSTAL_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar del domicilio a partir de C.P./CP; conservar ceros iniciales.",
+        "validation": []
+      },
+      "MUNICIPIO_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Municipio o ciudad del domicilio, solo si es separable.",
+        "validation": []
+      },
+      "ENTIDAD_FEDERATIVA_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Estado o entidad del domicilio, solo si es separable.",
+        "validation": []
+      },
+      "PAIS_IMPORTADOR_EXPORTADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave o nombre de país impreso en el domicilio; preferir clave si existe.",
+        "validation": []
+      },
+      "PAIS_IMPORTADOR_EXPORTADOR_NOMBRE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre normalizado del país mediante catálogo, sin reemplazar el valor impreso.",
+        "validation": []
+      },
+      "PAIS_VENDEDOR_COMPRADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "País vendedor/comprador a nivel encabezado o valor principal derivado de proveedor y partidas. No autoseleccionar si existen varios.",
+        "validation": []
+      },
+      "PAIS_ORIGEN_DESTINO": {
+        "type": "string",
+        "required": false,
+        "hint": "País de origen/destino principal observado en las partidas. Conservar null si hay múltiples valores sin uno dominante.",
+        "validation": []
+      },
+      "PAIS_ORIGEN_PRINCIPAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Derivar solo cuando todas las partidas con país de origen/destino comparten la misma clave; en caso contrario null.",
+        "validation": []
+      },
+      "VALOR_SEGUROS": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo VAL. SEGUROS. Es valor informativo y no debe sumarse como prima de seguro.",
+        "validation": []
+      },
+      "SEGUROS": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo SEGUROS del bloque de incrementables; esta sí es la prima incrementable.",
+        "validation": []
+      },
+      "FLETES": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo FLETES del bloque de incrementables.",
+        "validation": []
+      },
+      "EMBALAJES": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo EMBALAJES del bloque de incrementables.",
+        "validation": []
+      },
+      "OTROS_INCREMENTABLES": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo OTROS INCREMENTABLES.",
+        "validation": []
+      },
+      "TOTAL_INCREMENTABLES": {
+        "type": "number",
+        "required": false,
+        "hint": "Derivar como SEGUROS + FLETES + EMBALAJES + OTROS_INCREMENTABLES. No sumar VALOR_SEGUROS.",
+        "validation": []
+      },
+      "TRANSPORTE_DECREMENTABLE": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo TRANSPORTE DECREMENTABLES.",
+        "validation": []
+      },
+      "SEGURO_DECREMENTABLE": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo SEGUROS DECREMENTABLES.",
+        "validation": []
+      },
+      "CARGA_DECREMENTABLE": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo CARGA DECREMENTABLES.",
+        "validation": []
+      },
+      "DESCARGA_DECREMENTABLE": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo DESCARGA DECREMENTABLES.",
+        "validation": []
+      },
+      "OTROS_DECREMENTABLES": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo OTROS DECREMENTABLES.",
+        "validation": []
+      },
+      "TOTAL_DECREMENTABLES": {
+        "type": "number",
+        "required": false,
+        "hint": "Campo VALOR DECREMENTABLES o suma de los cinco conceptos decrementables.",
+        "validation": []
+      },
+      "FECHA_ENTRADA": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha identificada como ENTRADA en el bloque FECHAS. Normalizar YYYY-MM-DD.",
+        "validation": []
+      },
+      "FECHA_PAGO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha identificada como PAGO en el bloque FECHAS del pedimento.",
+        "validation": []
+      },
+      "FECHA_PRESENTACION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de presentación cuando aparezca como fecha adicional.",
+        "validation": []
+      },
+      "FECHAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer todas las filas del bloque FECHAS, conservando tipo, fecha normalizada y valor crudo.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "VALOR_CRUDO",
+            "PAGINA"
+          ],
+          "TIPO_FECHA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "TASAS_NIVEL_PEDIMENTO": {
+        "type": "array",
+        "required": false,
+        "hint": "Tabla TASAS A NIVEL PEDIMENTO: extraer una fila por contribución con clave cruda y normalizada, CVE T. TASA, tasa numérica o textual, unidad/tipo, página, orden y confianza. TASA puede ser porcentaje, cuota o texto como Ex.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "ID_TASA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_FILA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_CONTRIBUCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_CONTRIBUCION_CRUDA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_CONTRIBUCION_NORMALIZADA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_TIPO_TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_TASA_DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA_NUMERICA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA_TEXTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "UNIDAD_TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "CUADRO_LIQUIDACION": {
+        "type": "object",
+        "required": false,
+        "hint": "Extraer la tabla completa en tres vistas: FILAS_IMPRESAS conserva las dos mitades visuales de cada renglón; CONCEPTOS crea un registro normalizado por concepto con F.P e importe; TOTALES conserva EFECTIVO, OTROS y TOTAL como filas. Leer ambas mitades de izquierda a derecha y no perder conceptos vacíos o no catalogados.",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
+            "tolerance": 1,
+            "skip_if_missing": true,
+            "message": "El total del cuadro de liquidación no coincide con la suma de conceptos",
+            "subfield": "TOTAL"
+          },
+          {
+            "rule_type": "custom_formula",
+            "formula": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO + CUADRO_LIQUIDACION.TOTAL_OTROS",
+            "tolerance": 1,
+            "skip_if_missing": true,
+            "message": "El total del cuadro de liquidación no coincide con efectivo más otros",
+            "subfield": "TOTAL"
+          },
+          {
+            "rule_type": "sum_array",
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
+            "tolerance": 1,
+            "skip_if_missing": true,
+            "message": "TOTAL_CONCEPTOS no coincide con la suma de los conceptos normalizados del cuadro de liquidación",
+            "subfield": "TOTAL_CONCEPTOS"
+          },
+          {
+            "rule_type": "equals_field",
+            "source": "CUADRO_LIQUIDACION.TOTAL_CONCEPTOS",
+            "tolerance": 1,
+            "skip_if_missing": true,
+            "message": "El total impreso del cuadro de liquidación no coincide con TOTAL_CONCEPTOS",
+            "subfield": "TOTAL"
+          }
+        ],
+        "fields": {
+          "FILAS_IMPRESAS": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla FILAS_IMPRESAS dentro de CUADRO_LIQUIDACION.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "PAGINA",
+                "ORDEN",
+                "CONFIANZA",
+                "VALOR_CRUDO"
+              ],
+              "NUMERO_FILA": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CONCEPTO_IZQUIERDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_IZQUIERDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE_IZQUIERDA": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CONCEPTO_DERECHA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_DERECHA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE_DERECHA": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "CONCEPTOS": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla CONCEPTOS dentro de CUADRO_LIQUIDACION.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "PAGINA",
+                "ORDEN",
+                "CONFIANZA",
+                "VALOR_CRUDO"
+              ],
+              "ID_CONCEPTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "NUMERO_FILA_IMPRESA": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "LADO_TABLA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_CONCEPTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_CONCEPTO_CRUDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_CONCEPTO_NORMALIZADA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TIPO_CONCEPTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "NIVEL": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_CRUDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLASIFICACION_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "MONEDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "ID_TASA_NIVEL_PEDIMENTO": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_TIPO_TASA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TASA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TASA_TEXTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "TOTALES": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla TOTALES dentro de CUADRO_LIQUIDACION.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "PAGINA",
+                "ORDEN",
+                "CONFIANZA",
+                "VALOR_CRUDO"
+              ],
+              "TIPO_TOTAL": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "ETIQUETA_CRUDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "MONEDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "POR_FORMA_PAGO": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla POR_FORMA_PAGO dentro de CUADRO_LIQUIDACION.",
+            "validation": [],
+            "item_fields": {
+              "FORMA_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLASIFICACION_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE_TOTAL": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CANTIDAD_CONCEPTOS": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CONCEPTOS_ORIGEN": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "MONEDA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_CONCEPTOS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_EFECTIVO": {
+            "type": "number",
+            "required": false,
+            "hint": "Total EFECTIVO impreso en el cuadro de liquidación.",
+            "validation": []
+          },
+          "TOTAL_OTROS": {
+            "type": "number",
+            "required": false,
+            "hint": "Total OTROS impreso en el cuadro de liquidación.",
+            "validation": []
+          },
+          "TOTAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DIFERENCIA_CONCEPTOS_TOTAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DIFERENCIA_EFECTIVO_OTROS_TOTAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TABLA_COMPLETA": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "LIQUIDACION_NORMALIZADA": {
+        "type": "object",
+        "required": false,
+        "hint": "Calculado deterministicamente por pipeline/liquidacion.py a partir de CUADRO_LIQUIDACION y CONTRIBUCIONES; no se le pide al modelo.",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "LIQUIDACION_NORMALIZADA.CONCEPTOS.IMPORTE_TOTAL",
+            "tolerance": 1,
+            "skip_if_missing": true,
+            "message": "El total de la liquidación normalizada no coincide con sus conceptos agrupados",
+            "subfield": "TOTAL_CONCEPTOS"
+          }
+        ],
+        "fields": {
+          "CONCEPTOS": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla CONCEPTOS dentro de LIQUIDACION_NORMALIZADA.",
+            "validation": [],
+            "item_fields": {
+              "CLAVE_CONCEPTO_NORMALIZADA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE_TOTAL": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMAS_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CONCEPTOS_ORIGEN": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "POR_FORMA_PAGO": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla POR_FORMA_PAGO dentro de LIQUIDACION_NORMALIZADA.",
+            "validation": [],
+            "item_fields": {
+              "FORMA_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLASIFICACION_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE_TOTAL": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CANTIDAD_CONCEPTOS": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CONCEPTOS_ORIGEN": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "CONCEPTOS_NO_CATALOGADOS": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla CONCEPTOS_NO_CATALOGADOS dentro de LIQUIDACION_NORMALIZADA.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "PAGINA",
+                "ORDEN",
+                "VALOR_CRUDO"
+              ],
+              "CLAVE_CONCEPTO_CRUDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "DTA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IGI": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PRV": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ECI": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MT": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CC": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "REC": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IVA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IVA_PRV": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IEPS_8": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IEPS_25_CAFEINA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IEPS_26_5": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IEPS_30": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IEPS_50": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "OTROS_IEPS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FORMA_PAGO_IEPS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_EFECTIVO": {
+            "type": "number",
+            "required": false,
+            "hint": "Total EFECTIVO impreso en el cuadro de liquidación.",
+            "validation": []
+          },
+          "TOTAL_OTROS": {
+            "type": "number",
+            "required": false,
+            "hint": "Total OTROS impreso en el cuadro de liquidación.",
+            "validation": []
+          },
+          "TOTAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_CONCEPTOS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DIFERENCIA_TOTAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        },
+        "computed": true
+      },
+      "CONTRIBUCIONES": {
+        "type": "array",
+        "required": false,
+        "hint": "Vista normalizada que relaciona tasas a nivel pedimento, conceptos del cuadro de liquidación y contribuciones de partidas sin duplicar importes.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "NIVEL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PARTIDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_CONTRIBUCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_TIPO_TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_TASA_DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA_TEXTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FORMA_PAGO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FORMA_PAGO_DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FUENTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "TASAS_LIQUIDACION_VINCULADAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Relacionar, cuando sea posible, cada tasa de TASAS_NIVEL_PEDIMENTO con su concepto del CUADRO_LIQUIDACION. Conservar por separado la fuente de la tasa y la fuente del importe; no inventar vínculos cuando existan varios conceptos candidatos.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "CONFIANZA"
+          ],
+          "ID_VINCULO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ID_TASA_NIVEL_PEDIMENTO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ID_CONCEPTO_LIQUIDACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_CONTRIBUCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_CONCEPTO_LIQUIDACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_TIPO_TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TASA_TEXTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FORMA_PAGO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FUENTE_TASA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FUENTE_IMPORTE": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_VINCULO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ADVERTENCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "TOTAL_EFECTIVO": {
+        "type": "number",
+        "required": false,
+        "hint": "Total EFECTIVO impreso en el cuadro de liquidación.",
+        "validation": []
+      },
+      "TOTAL_OTROS": {
+        "type": "number",
+        "required": false,
+        "hint": "Total OTROS impreso en el cuadro de liquidación.",
+        "validation": []
+      },
+      "TOTAL_PEDIMENTO": {
+        "type": "number",
+        "required": false,
+        "hint": "TOTAL impreso en el cuadro de liquidación.",
+        "validation": []
+      },
+      "PAGO_ELECTRONICO_PRESENTE": {
+        "type": "boolean",
+        "required": false,
+        "hint": "true cuando exista DEPOSITO REFERENCIADO, LINEA DE CAPTURA o leyenda PAGO ELECTRÓNICO.",
+        "validation": []
+      },
+      "TIPO_PAGO_TEXTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Leyenda del tipo de pago, por ejemplo PAGO ELECTRÓNICO.",
+        "validation": []
+      },
+      "LINEA_CAPTURA": {
+        "type": "string",
+        "required": false,
+        "hint": "Cadena alfanumérica del bloque DEPOSITO REFERENCIADO - LINEA DE CAPTURA.",
+        "validation": []
+      },
+      "BANCO": {
+        "type": "string",
+        "required": false,
+        "hint": "NOMBRE DE LA INSTITUCION BANCARIA.",
+        "validation": []
+      },
+      "PATENTE_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "PATENTE dentro del bloque de pago.",
+        "validation": []
+      },
+      "PEDIMENTO_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "PEDIMENTO/consecutivo dentro del bloque de pago.",
+        "validation": []
+      },
+      "ADUANA_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "ADUANA dentro del bloque de pago.",
+        "validation": []
+      },
+      "IMPORTE_PAGADO": {
+        "type": "number",
+        "required": false,
+        "hint": "IMPORTE PAGADO del bloque bancario, sin símbolo de moneda.",
+        "validation": []
+      },
+      "FECHA_PAGO_BANCARIO": {
+        "type": "date",
+        "required": false,
+        "hint": "FECHA DE PAGO del bloque bancario.",
+        "validation": []
+      },
+      "OPERACION_BANCARIA": {
+        "type": "string",
+        "required": false,
+        "hint": "NUMERO DE OPERACION BANCARIA.",
+        "validation": []
+      },
+      "TRANSACCION_SAT": {
+        "type": "string",
+        "required": false,
+        "hint": "NUMERO DE TRANSACCION SAT.",
+        "validation": []
+      },
+      "MEDIO_PRESENTACION": {
+        "type": "string",
+        "required": false,
+        "hint": "MEDIO DE PRESENTACION del bloque bancario.",
+        "validation": []
+      },
+      "MEDIO_RECEPCION_COBRO": {
+        "type": "string",
+        "required": false,
+        "hint": "MEDIO DE RECEPCION/COBRO.",
+        "validation": []
+      },
+      "CODIGO_BARRAS_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Valor legible bajo el código de barras de la línea de captura.",
+        "validation": []
+      },
+      "CODIGO_QR_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Contenido del QR cuando sea decodificable; si no, null y registrar presencia en metadatos.",
+        "validation": []
+      },
+      "PROVEEDORES_COMPRADORES": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer todos los bloques DATOS DEL PROVEEDOR O COMPRADOR, incluso si las facturas continúan en otra página.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "PAGINA"
+          ],
+          "TIPO_PARTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ID_FISCAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "RFC_TAX_ID": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NOMBRE_RAZON_SOCIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DOMICILIO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_EXTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_INTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COLONIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CODIGO_POSTAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CIUDAD_MUNICIPIO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ESTADO_PROVINCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_CLAVE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VINCULACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "DESTINATARIOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer destinatario, comprador, vendedor u otra parte mencionada explícitamente en bloques u observaciones.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA"
+          ],
+          "TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "RFC_TAX_ID": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NOMBRE_RAZON_SOCIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DOMICILIO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_EXTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_INTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COLONIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CODIGO_POSTAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CIUDAD_MUNICIPIO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ESTADO_PROVINCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_CLAVE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FUENTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "FACTURAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer todas las facturas y vincularlas con proveedor/comprador. Conservar exactamente NUM. FACTURA, FECHA, INCOTERM, MONEDA, VAL. MON. FACT, FACTOR MON. FACT y VAL. DOLARES. Un COVE/e-document puede aparecer en un renglón inferior y la tabla puede comenzar en la página siguiente al proveedor.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO",
+            "PAGINA",
+            "CONFIANZA"
+          ],
+          "NUMERO_FACTURA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_FACTURA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "INCOTERM": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MONEDA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_MONEDA_EXTRANJERA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FACTOR_MONEDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_DOLARES": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COVE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "EDOCUMENT": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ID_FISCAL_PROVEEDOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NOMBRE_PROVEEDOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DOMICILIO_PROVEEDOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_PROVEEDOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VINCULACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "INDICE_PROVEEDOR_COMPRADOR": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_INICIO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_FIN": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_RENGLON": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_RENGLON": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ES_CONTINUACION": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "FACTURAS_FILAS_IMPRESAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Preservar la tabla física de facturas por renglón, incluidos renglones inferiores que contienen COVE/e-document. Esto permite reconstruir facturas que continúan desde la página del proveedor hacia el anexo.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "NUMERO_FILA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_FACTURA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "INCOTERM": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MONEDA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_MONEDA_FACTURA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FACTOR_MONEDA_FACTURA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_DOLARES": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COVE_EDOCUMENT_RENGLON_INFERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "COVES_EDOCUMENTS": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer todos los COVE o e-document, indicando si se vincularon a una factura, identificador o permiso.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN"
+          ],
+          "TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VINCULADO_A": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "INDICE_FACTURA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_IDENTIFICADOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "TOTAL_FACTURAS_DOLARES": {
+        "type": "number",
+        "required": false,
+        "hint": "Derivar SUM(FACTURAS.VALOR_DOLARES) solo cuando todas las facturas estén completas.",
+        "validation": []
+      },
+      "TOTAL_FACTURAS_PESOS": {
+        "type": "number",
+        "required": false,
+        "hint": "Derivar TOTAL_FACTURAS_DOLARES * TIPO_CAMBIO sin redondear prematuramente.",
+        "validation": []
+      },
+      "TRANSPORTISTA": {
+        "type": "object",
+        "required": false,
+        "hint": "Bloque TRANSPORTISTA del anexo: nombre, RFC/CURP y domicilio.",
+        "validation": [],
+        "fields": {
+          "IDENTIFICACION_TRANSPORTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "RFC": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CURP": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NOMBRE_RAZON_SOCIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DOMICILIO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_EXTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_INTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COLONIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CODIGO_POSTAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CIUDAD_MUNICIPIO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ESTADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "TRANSPORTE_IDENTIFICACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo IDENTIFICACION del bloque TRANSPORTE.",
+        "validation": []
+      },
+      "TRANSPORTE_PAIS": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo PAIS del bloque TRANSPORTE.",
+        "validation": []
+      },
+      "VEHICULO_TRANSPORTE": {
+        "type": "object",
+        "required": false,
+        "hint": "Datos de placas, serie/VIN, modelo o número económico cuando se impriman a nivel transporte.",
+        "validation": [],
+        "fields": {
+          "PLACAS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_PLACAS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_SERIE_VIN": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MODELO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ANIO_MODELO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_ECONOMICO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "GUIAS_DOCUMENTOS_TRANSPORTE": {
+        "type": "array",
+        "required": false,
+        "hint": "Todas las guías, conocimientos de embarque, manifiestos u otros documentos de transporte.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "VALOR_CRUDO",
+            "ORDEN"
+          ],
+          "TIPO_DOCUMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_DOCUMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IDENTIFICADOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "EMISOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "CONTENEDORES": {
+        "type": "array",
+        "required": false,
+        "hint": "Normalizar cada par número/tipo del bloque NUMERO/TIPO DE CONTENEDOR. Como una fila puede contener varios pares, usar CONTENEDORES_FILAS_IMPRESAS para preservar posición y tokens; si el pareo es ambiguo, dejar los campos normalizados en null y conservar VALOR_CRUDO.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "VALOR_CRUDO",
+            "ORDEN",
+            "PAGINA",
+            "CONFIANZA"
+          ],
+          "NUMERO_CONTENEDOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_CONTENEDOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SELLO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SELLOS_ADICIONALES": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PARSEO_CONFIABLE": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_FILA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "POSICION_EN_FILA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "CONTENEDORES_FILAS_IMPRESAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Preservar cada fila del bloque NUMERO/TIPO DE CONTENEDOR con todos los pares impresos en la misma línea. No asumir que cuatro tokens corresponden a un solo contenedor; guardar posición, tokens y valor crudo.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "NUMERO_FILA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PARES_NUMERO_TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOKENS_CRUDOS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CANTIDAD_PARES_ESPERADOS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PARSEO_CONFIABLE": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "EQUIPOS_TRANSPORTE": {
+        "type": "array",
+        "required": false,
+        "hint": "Contenedores, carros, remolques u otros equipos; conservar tokens y valor crudo cuando no pueda separarse número/tipo.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "VALOR_CRUDO",
+            "ORDEN"
+          ],
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_CLAVE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SELLOS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOKENS_CRUDOS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PARSEO_CONFIABLE": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "CANDADOS_SELLOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Todos los candados o sellos fiscales/comerciales y su tipo cuando aparezca.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "NUMERO_CANDADO_SELLO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "EMISOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "EQUIPO_RELACIONADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "IDENTIFICADORES": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer todos los identificadores a nivel pedimento con clave, posible complemento del identificador y complementos 1, 2 y 3. Conservar la fila física para evitar desplazamientos de columnas.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "CONFIANZA",
+            "ORDEN",
+            "PAGINA",
+            "VALOR_CRUDO"
+          ],
+          "NIVEL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_IDENTIFICADOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_IDENTIFICADOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_FILA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ES_CONTINUACION": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_1": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_2": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_3": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "IDENTIFICADORES_FILAS_IMPRESAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Preservar las filas físicas de la tabla CLAVE/COMPL. IDENTIFICADOR y sus complementos 1, 2 y 3, además de la lista normalizada IDENTIFICADORES.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "NUMERO_FILA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_O_COMPLEMENTO_IDENTIFICADOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_1": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_2": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COMPLEMENTO_3": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "CUENTAS_ADUANERAS_GARANTIA": {
+        "type": "array",
+        "required": false,
+        "hint": "Todos los bloques de cuenta aduanera o garantía a nivel pedimento.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "NIVEL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_CUENTA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_GARANTIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "INSTITUCION_EMISORA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_CUENTA_CONTRATO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FOLIO_CONSTANCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_CONSTANCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_DEPOSITO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SALDO_DISPONIBLE": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE_GARANTIZADO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "DESCARGOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Todos los pedimentos/operaciones originales descargados y cantidades asociadas.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "PATENTE_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ADUANA_SECCION_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_PEDIMENTO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_OPERACION_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FRACCION_ARANCELARIA_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "UNIDAD_MEDIDA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CANTIDAD_DESCARGADA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "COMPENSACIONES": {
+        "type": "array",
+        "required": false,
+        "hint": "Todos los datos de compensación, gravamen e importe compensado.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "PATENTE_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ADUANA_SECCION_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_PAGO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_GRAVAMEN": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FORMA_PAGO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE_COMPENSADO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "PEDIMENTOS_RELACIONADOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Pedimentos originales, complementarios, consolidados, rectificados o relacionados.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "TIPO_RELACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO_NORMALIZADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ANIO_PEDIMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ADUANA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PATENTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CONSECUTIVO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_PEDIMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_PAGO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "RECTIFICACION": {
+        "type": "object",
+        "required": false,
+        "hint": "Datos del pedimento original y diferencias cuando la clave/estructura corresponda a rectificación.",
+        "validation": [],
+        "fields": {
+          "ES_RECTIFICACION": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PEDIMENTO_ORIGINAL_NORMALIZADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE_PEDIMENTO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_PAGO_ORIGINAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MOTIVO_RECTIFICACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DIFERENCIAS_CONTRIBUCIONES": {
+            "type": "array",
+            "required": false,
+            "hint": "Diferencias de contribuciones por concepto y forma de pago, principalmente en rectificaciones/complementarios.",
+            "validation": [],
+            "item_type": "string"
+          }
+        }
+      },
+      "CONSOLIDACION": {
+        "type": "object",
+        "required": false,
+        "hint": "Datos de aviso consolidado, periodo, operación o relación cuando el pedimento sea consolidado.",
+        "validation": [],
+        "fields": {
+          "ES_CONSOLIDADO": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_AVISO_CONSOLIDADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PERIODO_INICIO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PERIODO_FIN": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TOTAL_REMESAS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "REMESAS": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla REMESAS dentro de CONSOLIDACION.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "ORDEN",
+                "VALOR_CRUDO"
+              ],
+              "NUMERO_REMESA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FECHA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DOCUMENTO_RELACIONADO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "VALOR": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "MONEDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          }
+        }
+      },
+      "DIFERENCIAS_CONTRIBUCIONES": {
+        "type": "array",
+        "required": false,
+        "hint": "Diferencias de contribuciones por concepto y forma de pago, principalmente en rectificaciones/complementarios.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN"
+          ],
+          "CLAVE_CONTRIBUCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FORMA_PAGO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE_ORIGINAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE_RECTIFICADO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DIFERENCIA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "OBSERVACIONES": {
+        "type": "array",
+        "required": false,
+        "hint": "Texto completo de OBSERVACIONES, unido entre renglones y páginas, sin resumir.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN"
+          ],
+          "TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TEXTO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_INICIO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_FIN": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "DOCUMENTOS_DIGITALIZADOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer referencias explícitas a facturas, COVE, e-document, certificados, dictámenes u otros documentos digitalizados mencionados en OBSERVACIONES, con número, fecha, tipo y relación.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "TIPO_DOCUMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_DOCUMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FECHA_DOCUMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COVE_EDOCUMENT": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIENE_INCREMENTABLES": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "RELACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FUENTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "REGULACIONES_RESTRICCIONES": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer regulaciones, permisos, certificados o inspecciones mencionados en tablas u observaciones, por ejemplo certificado fitosanitario, NOM, dictamen documental o autoridad competente. Conservar texto fuente y no inferir un número que no esté impreso.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "TIPO_REGULACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CLAVE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_DOCUMENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "AUTORIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ESTATUS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MERCANCIA_RELACIONADA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_PARTIDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FUENTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "CANDADO_FISCAL": {
+        "type": "object",
+        "required": false,
+        "hint": "Estructurar la presencia o ausencia de candado fiscal, motivo, texto fuente, números de candado/sello y equipo relacionado. Distinguir 'SIN CANDADO FISCAL' de un número de candado efectivamente impreso.",
+        "validation": [],
+        "fields": {
+          "ESTATUS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PRESENTE": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "LEYENDA_SIN_CANDADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MOTIVO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMEROS_CANDADO_SELLO": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "EQUIPO_RELACIONADO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_CRUDO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "PARTIDAS": {
+        "type": "array",
+        "required": true,
+        "hint": "Extraer todas las partidas y sus subtablas. Conservar SEC, FRACCION, SUBD/NICO, VINC., MET VAL, UMC/CANTIDAD UMC, UMT/CANTIDAD UMT, P.V/C, P.O/D, descripción, contribuciones, VAL. ADU/USD, IMP. PRECIO PAG., PRECIO UNIT., VAL. AGREG., MARCA, MODELO, CODIGO PRODUCTO, permisos e identificadores. Continuar la misma partida si los identificadores aparecen en la página siguiente.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "CONFIANZA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "NUMERO_PARTIDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SECUENCIA_PARTIDA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "FRACCION_ARANCELARIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SUBDIVISION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NICO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "SUBDIVISION_NICO_CRUDO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VINCULACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "METODO_VALORACION": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "UNIDAD_UMC": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CANTIDAD_UMC": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "UNIDAD_UMT": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CANTIDAD_UMT": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_VENDEDOR_COMPRADOR": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_VENDEDOR_COMPRADOR_NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_ORIGEN_DESTINO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAIS_ORIGEN_DESTINO_NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DESCRIPCION_MERCANCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DESCRIPCION_RENGLONES": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_ADUANA_USD": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_ADUANA_DOLARES_IMPRESO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_ADUANA_MXN": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_DOLARES_PARTIDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_VALOR_PRINCIPAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_ADUANA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MONEDA_VALOR_ADUANA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "IMPORTE_PRECIO_PAGADO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PRECIO_UNITARIO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "VALOR_AGREGADO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MARCA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "MODELO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CODIGO_PRODUCTO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_SERIE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "LOTE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ESPECIE": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CONTRIBUCIONES_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla CONTRIBUCIONES_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "PAGINA",
+                "CONFIANZA",
+                "ORDEN",
+                "VALOR_CRUDO"
+              ],
+              "CLAVE_CONTRIBUCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "ID_CONTRIBUCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_CONTRIBUCION_CRUDA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_CONTRIBUCION_NORMALIZADA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "NIVEL": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TASA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TASA_TEXTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_TIPO_TASA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TIPO_TASA_DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FORMA_PAGO_DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "PERMISOS_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla PERMISOS_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "PAGINA",
+                "CONFIANZA",
+                "ORDEN",
+                "VALOR_CRUDO"
+              ],
+              "CLAVE_PERMISO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TIPO_REGULACION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "PAIS_EMISOR": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "NUMERO_PERMISO_NOM": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FIRMA_DESCARGO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "VALOR_COMERCIAL_DOLARES": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CANTIDAD_UMT_C": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "EDOCUMENT": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FECHA_VIGENCIA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "IDENTIFICADORES_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla IDENTIFICADORES_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "CONFIANZA",
+                "ORDEN",
+                "VALOR_CRUDO"
+              ],
+              "CLAVE_IDENTIFICADOR": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "COMPLEMENTO_IDENTIFICADOR": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "PAGINA_INICIO": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "PAGINA_FIN": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "ES_CONTINUACION": {
+                "type": "boolean",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "COMPLEMENTO_1": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "COMPLEMENTO_2": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "COMPLEMENTO_3": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "CUENTAS_ADUANERAS_GARANTIA_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla CUENTAS_ADUANERAS_GARANTIA_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "VALOR_CRUDO"
+              ],
+              "INSTITUCION_EMISORA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "NUMERO_CUENTA_CONTRATO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FOLIO_CONSTANCIA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "FECHA_CONSTANCIA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLAVE_GARANTIA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "VALOR_UNITARIO_TITULO": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "IMPORTE_TOTAL_GARANTIA": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CANTIDAD_UMC": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "DATOS_VEHICULO_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla DATOS_VEHICULO_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "VALOR_CRUDO"
+              ],
+              "VIN_NUMERO_SERIE": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "KILOMETRAJE": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "MARCA": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "MODELO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "ANIO_MODELO": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "COLOR": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "TIPO_VEHICULO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "DATOS_MERCANCIA_PELIGROSA_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla DATOS_MERCANCIA_PELIGROSA_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "VALOR_CRUDO"
+              ],
+              "NUMERO_ONU": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CLASE_DIVISION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "GRUPO_EMBALAJE": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "DESCRIPCION": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "CANTIDAD": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "UNIDAD": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "GUIAS_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla GUIAS_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "ORDEN",
+                "VALOR_CRUDO"
+              ],
+              "TIPO_DOCUMENTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "NUMERO_DOCUMENTO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "OBSERVACIONES_PARTIDA": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla OBSERVACIONES_PARTIDA dentro de PARTIDAS.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "ORDEN"
+              ],
+              "TEXTO_COMPLETO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "PAGINA_INICIO": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "PAGINA_FIN": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "PAGINA_INICIO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_FIN": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINAS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ES_CONTINUACION": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PARTIDA_COMPLETA": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "PARTIDAS_FILAS_IMPRESAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Preservar filas físicas de la tabla PARTIDAS, incluyendo encabezado principal, descripción, valores, permisos, identificadores y continuaciones de página. La salida normalizada permanece en PARTIDAS.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "CONFIANZA",
+            "VALOR_CRUDO"
+          ],
+          "NUMERO_PARTIDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TIPO_FILA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "COLUMNAS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ORDEN_EN_PARTIDA": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ES_CONTINUACION": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "NUMERO_TOTAL_PARTIDAS": {
+        "type": "number",
+        "required": true,
+        "hint": "Número impreso en FIN DE PEDIMENTO.",
+        "validation": []
+      },
+      "CLAVE_PREVALIDADOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave impresa junto a CLAVE PREVALIDADOR, normalmente 3 dígitos.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{3}$",
+            "skip_if_missing": true,
+            "message": "La clave del prevalidador debe contener 3 dígitos"
+          }
+        ]
+      },
+      "AGENTE_ADUANAL": {
+        "type": "object",
+        "required": true,
+        "hint": "Bloque AGENTE ADUANAL/AGENCIA/APODERADO: tipo de figura, patente, RFC, CURP, nombre y domicilio si existe.",
+        "validation": [],
+        "fields": {
+          "TIPO_FIGURA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PATENTE_AUTORIZACION": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "RFC": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CURP": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NOMBRE_RAZON_SOCIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "DOMICILIO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_SERIE_CERTIFICADO": {
+            "type": "string",
+            "required": false,
+            "hint": "Número de serie del certificado del bloque de firma.",
+            "validation": []
+          },
+          "FIRMA_ELECTRONICA": {
+            "type": "string",
+            "required": false,
+            "hint": "Cadena completa de e.firma. No truncar ni normalizar caracteres base64.",
+            "validation": []
+          }
+        }
+      },
+      "NUMERO_SERIE_CERTIFICADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de serie del certificado del bloque de firma.",
+        "validation": []
+      },
+      "FIRMA_ELECTRONICA": {
+        "type": "string",
+        "required": false,
+        "hint": "Cadena completa de e.firma. No truncar ni normalizar caracteres base64.",
+        "validation": []
+      },
+      "FIRMA_AUTOGRAFA_PRESENTE": {
+        "type": "boolean",
+        "required": false,
+        "hint": "Indica que el formato contiene la etiqueta o el espacio destinado a FIRMA AUTOGRAFA. No confirma que exista una firma manuscrita; para eso usar FIRMA_AUTOGRAFA_DETECTADA.",
+        "validation": []
+      },
+      "FIRMA_AUTOGRAFA_DETECTADA": {
+        "type": "boolean",
+        "required": false,
+        "hint": "true únicamente si se detecta trazo o firma manuscrita; no marcar true solo porque exista la etiqueta 'FIRMA AUTOGRAFA' o el espacio destinado a firmar.",
+        "validation": []
+      },
+      "DECLARACION_ARTICULO_81_PRESENTE": {
+        "type": "boolean",
+        "required": false,
+        "hint": "true cuando se detecte la declaración bajo protesta relacionada con el artículo 81.",
+        "validation": []
+      },
+      "OTROS_BLOQUES_DOCUMENTO": {
+        "type": "array",
+        "required": false,
+        "hint": "Guardar cualquier bloque, tabla o texto no cubierto por el esquema para no perder información.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "ORDEN"
+          ],
+          "TITULO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CAMPOS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TEXTO_CRUDO": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_INICIO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_FIN": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      },
+      "METADATOS_EXTRACCION": {
+        "type": "object",
+        "required": false,
+        "hint": "Trazabilidad por campo: valor crudo, página, confianza, método, bbox, advertencias, páginas faltantes y bloques ambiguos.",
+        "validation": [],
+        "fields": {
+          "CAMPOS": {
+            "type": "array",
+            "required": false,
+            "hint": "Subtabla CAMPOS dentro de METADATOS_EXTRACCION.",
+            "validation": [],
+            "item_fields": {
+              "$common": [
+                "VALOR_CRUDO",
+                "PAGINA",
+                "CONFIANZA"
+              ],
+              "CAMPO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "PATH": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "VALOR_NORMALIZADO": {
+                "type": "number",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "METODO": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "BBOX": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              },
+              "ADVERTENCIAS": {
+                "type": "string",
+                "required": false,
+                "hint": "",
+                "validation": []
+              }
+            }
+          },
+          "ADVERTENCIAS": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "ERRORES_LECTURA": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "BLOQUES_NO_CLASIFICADOS": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "PAGINAS_FALTANTES": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "DOCUMENTO_COMPLETO": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CONFIANZA_GLOBAL": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TABLAS": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "FILAS_AMBIGUAS": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          },
+          "CELDAS_NO_ASIGNADAS": {
+            "type": "array",
+            "required": false,
+            "hint": "",
+            "validation": [],
+            "item_type": "string"
+          }
+        }
+      },
+      "TABLAS_DETECTADAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Inventario de tablas detectadas con nombre, página inicial/final, encabezados, número de filas, continuación, confianza y bbox. Sirve para confirmar que no se omitieron CUADRO DE LIQUIDACION, FACTURAS, IDENTIFICADORES o PARTIDAS.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "CONFIANZA"
+          ],
+          "NOMBRE_TABLA": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_INICIO": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "PAGINA_FIN": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ENCABEZADOS_DETECTADOS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "NUMERO_FILAS": {
+            "type": "number",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "CONTINUA_EN_SIGUIENTE_PAGINA": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "TABLA_COMPLETA": {
+            "type": "boolean",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "BBOX": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          },
+          "ADVERTENCIAS": {
+            "type": "string",
+            "required": false,
+            "hint": "",
+            "validation": []
+          }
+        }
+      }
     },
-    "required_fields": [
-      "NUMERO_PEDIMENTO_NORMALIZADO",
-      "ANIO_PEDIMENTO",
-      "ADUANA_DESPACHO",
-      "PATENTE",
-      "NUMERO_CONSECUTIVO",
-      "TIPO_OPERACION",
-      "CLAVE_PEDIMENTO",
-      "REGIMEN_ADUANERO",
-      "RFC_IMPORTADOR_EXPORTADOR",
-      "NOMBRE_IMPORTADOR_EXPORTADOR",
-      "AGENTE_ADUANAL",
-      "NUMERO_TOTAL_PARTIDAS",
-      "PARTIDAS"
-    ],
-    "validation_rules": [
-      {
-        "field": "NUMERO_PEDIMENTO",
-        "rule_type": "regex",
-        "pattern": "^\\d{15}$",
-        "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
-      },
-      {
-        "field": "NUMERO_PEDIMENTO_NORMALIZADO",
-        "rule_type": "regex",
-        "pattern": "^\\d{15}$",
-        "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
-      },
-      {
-        "field": "ANIO_PEDIMENTO",
-        "rule_type": "regex",
-        "pattern": "^\\d{2}$",
-        "message": "El año del pedimento debe contener 2 dígitos"
-      },
-      {
-        "field": "ADUANA_DESPACHO",
-        "rule_type": "regex",
-        "pattern": "^\\d{2}$",
-        "message": "La aduana del número de pedimento debe contener 2 dígitos"
-      },
-      {
-        "field": "PATENTE",
-        "rule_type": "regex",
-        "pattern": "^\\d{4}$",
-        "message": "La patente o autorización debe contener 4 dígitos"
-      },
-      {
-        "field": "NUMERO_CONSECUTIVO",
-        "rule_type": "regex",
-        "pattern": "^\\d{7}$",
-        "message": "El consecutivo del pedimento debe contener 7 dígitos"
-      },
-      {
-        "field": "RFC_IMPORTADOR_EXPORTADOR",
-        "rule_type": "regex",
-        "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
-        "skip_if_missing": true,
-        "message": "El RFC del importador o exportador tiene un formato inválido"
-      },
-      {
-        "field": "TIPO_CAMBIO",
-        "rule_type": "greater_than",
-        "value": 0,
-        "skip_if_missing": true,
-        "message": "El tipo de cambio debe ser mayor que cero cuando esté impreso"
-      },
+    "cross_field_validation": [
       {
         "field": "TOTAL_INCREMENTABLES",
         "rule_type": "custom_formula",
@@ -384,22 +4291,6 @@
         "tolerance": 5,
         "skip_if_missing": true,
         "message": "El valor comercial no coincide con las facturas convertidas a pesos; aplicar solo si se extrajeron todas las facturas"
-      },
-      {
-        "field": "CUADRO_LIQUIDACION.TOTAL",
-        "rule_type": "sum_array",
-        "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
-        "tolerance": 1,
-        "skip_if_missing": true,
-        "message": "El total del cuadro de liquidación no coincide con la suma de conceptos"
-      },
-      {
-        "field": "CUADRO_LIQUIDACION.TOTAL",
-        "rule_type": "custom_formula",
-        "formula": "CUADRO_LIQUIDACION.TOTAL_EFECTIVO + CUADRO_LIQUIDACION.TOTAL_OTROS",
-        "tolerance": 1,
-        "skip_if_missing": true,
-        "message": "El total del cuadro de liquidación no coincide con efectivo más otros"
       },
       {
         "field": "TOTAL_PEDIMENTO",
@@ -455,51 +4346,6 @@
         "message": "La suma del precio pagado de las partidas no coincide con el encabezado"
       },
       {
-        "field": "CLAVE_PREVALIDADOR",
-        "rule_type": "regex",
-        "pattern": "^\\d{3}$",
-        "skip_if_missing": true,
-        "message": "La clave del prevalidador debe contener 3 dígitos"
-      },
-      {
-        "field": "NUMERO_PAGINAS",
-        "rule_type": "greater_than",
-        "value": 0,
-        "skip_if_missing": true,
-        "message": "El número total de páginas debe ser mayor que cero"
-      },
-      {
-        "field": "PESO_BRUTO",
-        "rule_type": "greater_than",
-        "value": 0,
-        "skip_if_missing": true,
-        "message": "El peso bruto debe ser mayor que cero cuando esté impreso"
-      },
-      {
-        "field": "CUADRO_LIQUIDACION.TOTAL_CONCEPTOS",
-        "rule_type": "sum_array",
-        "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
-        "tolerance": 1,
-        "skip_if_missing": true,
-        "message": "TOTAL_CONCEPTOS no coincide con la suma de los conceptos normalizados del cuadro de liquidación"
-      },
-      {
-        "field": "CUADRO_LIQUIDACION.TOTAL",
-        "rule_type": "equals_field",
-        "source": "CUADRO_LIQUIDACION.TOTAL_CONCEPTOS",
-        "tolerance": 1,
-        "skip_if_missing": true,
-        "message": "El total impreso del cuadro de liquidación no coincide con TOTAL_CONCEPTOS"
-      },
-      {
-        "field": "LIQUIDACION_NORMALIZADA.TOTAL_CONCEPTOS",
-        "rule_type": "sum_array",
-        "source": "LIQUIDACION_NORMALIZADA.CONCEPTOS.IMPORTE_TOTAL",
-        "tolerance": 1,
-        "skip_if_missing": true,
-        "message": "El total de la liquidación normalizada no coincide con sus conceptos agrupados"
-      },
-      {
         "field": "LIQUIDACION_NORMALIZADA.TOTAL",
         "rule_type": "equals_field",
         "source": "CUADRO_LIQUIDACION.TOTAL",
@@ -508,734 +4354,6 @@
         "message": "El total de la liquidación normalizada no coincide con el total impreso"
       }
     ],
-    "validator_module": "validators.customs.pedimento",
-    "custom_validator": null,
-    "business_destination": "PEDIMENTO",
-    "pipeline": "expediente",
-    "min_confidence": 0.8,
-    "repeatable_fields": {
-      "PAGINAS_DETECTADAS": [
-        "NUMERO_PAGINA",
-        "TOTAL_PAGINAS",
-        "TIPO_PAGINA",
-        "REFERENCIA_PEDIMENTO",
-        "NUMERO_PEDIMENTO_NORMALIZADO",
-        "ES_CONTINUACION",
-        "VALOR_CRUDO",
-        "CONFIANZA"
-      ],
-      "FECHAS": ["TIPO_FECHA", "FECHA", "VALOR_CRUDO", "PAGINA"],
-      "TASAS_NIVEL_PEDIMENTO": [
-        "ID_TASA",
-        "NUMERO_FILA",
-        "CLAVE_CONTRIBUCION",
-        "CLAVE_CONTRIBUCION_CRUDA",
-        "CLAVE_CONTRIBUCION_NORMALIZADA",
-        "DESCRIPCION",
-        "CLAVE_TIPO_TASA",
-        "TIPO_TASA_DESCRIPCION",
-        "TASA",
-        "TASA_NUMERICA",
-        "TASA_TEXTO",
-        "UNIDAD_TASA",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "CUADRO_LIQUIDACION.CONCEPTOS": [
-        "ID_CONCEPTO",
-        "NUMERO_FILA_IMPRESA",
-        "LADO_TABLA",
-        "CLAVE_CONCEPTO",
-        "CLAVE_CONCEPTO_CRUDA",
-        "CLAVE_CONCEPTO_NORMALIZADA",
-        "DESCRIPCION",
-        "TIPO_CONCEPTO",
-        "NIVEL",
-        "FORMA_PAGO",
-        "FORMA_PAGO_CRUDA",
-        "FORMA_PAGO_DESCRIPCION",
-        "CLASIFICACION_PAGO",
-        "IMPORTE",
-        "MONEDA",
-        "ID_TASA_NIVEL_PEDIMENTO",
-        "CLAVE_TIPO_TASA",
-        "TASA",
-        "TASA_TEXTO",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "LIQUIDACION_NORMALIZADA.CONCEPTOS": [
-        "CLAVE_CONCEPTO_NORMALIZADA",
-        "DESCRIPCION",
-        "IMPORTE_TOTAL",
-        "FORMAS_PAGO",
-        "CONCEPTOS_ORIGEN"
-      ],
-      "PROVEEDORES_COMPRADORES": [
-        "TIPO_PARTE",
-        "ID_FISCAL",
-        "RFC_TAX_ID",
-        "NOMBRE_RAZON_SOCIAL",
-        "DOMICILIO_COMPLETO",
-        "CALLE",
-        "NUMERO_EXTERIOR",
-        "NUMERO_INTERIOR",
-        "COLONIA",
-        "CODIGO_POSTAL",
-        "CIUDAD_MUNICIPIO",
-        "ESTADO_PROVINCIA",
-        "PAIS_CLAVE",
-        "PAIS_NOMBRE",
-        "VINCULACION",
-        "ORDEN",
-        "PAGINA"
-      ],
-      "DESTINATARIOS": [
-        "TIPO",
-        "RFC_TAX_ID",
-        "NOMBRE_RAZON_SOCIAL",
-        "DOMICILIO_COMPLETO",
-        "CALLE",
-        "NUMERO_EXTERIOR",
-        "NUMERO_INTERIOR",
-        "COLONIA",
-        "CODIGO_POSTAL",
-        "CIUDAD_MUNICIPIO",
-        "ESTADO_PROVINCIA",
-        "PAIS_CLAVE",
-        "PAIS_NOMBRE",
-        "FUENTE",
-        "PAGINA"
-      ],
-      "FACTURAS": [
-        "NUMERO_FACTURA",
-        "FECHA_FACTURA",
-        "INCOTERM",
-        "MONEDA",
-        "VALOR_MONEDA_EXTRANJERA",
-        "FACTOR_MONEDA",
-        "VALOR_DOLARES",
-        "COVE",
-        "EDOCUMENT",
-        "ID_FISCAL_PROVEEDOR",
-        "NOMBRE_PROVEEDOR",
-        "DOMICILIO_PROVEEDOR",
-        "PAIS_PROVEEDOR",
-        "VINCULACION",
-        "INDICE_PROVEEDOR_COMPRADOR",
-        "ORDEN",
-        "PAGINA_INICIO",
-        "PAGINA_FIN",
-        "VALOR_CRUDO",
-        "NUMERO_RENGLON",
-        "TIPO_RENGLON",
-        "ES_CONTINUACION",
-        "PAGINA",
-        "CONFIANZA"
-      ],
-      "COVES_EDOCUMENTS": [
-        "TIPO",
-        "NUMERO",
-        "VINCULADO_A",
-        "INDICE_FACTURA",
-        "CLAVE_IDENTIFICADOR",
-        "PAGINA",
-        "ORDEN"
-      ],
-      "GUIAS_DOCUMENTOS_TRANSPORTE": [
-        "TIPO_DOCUMENTO",
-        "NUMERO_DOCUMENTO",
-        "IDENTIFICADOR",
-        "EMISOR",
-        "FECHA",
-        "VALOR_CRUDO",
-        "ORDEN"
-      ],
-      "CONTENEDORES": [
-        "NUMERO_CONTENEDOR",
-        "TIPO_CONTENEDOR",
-        "SELLO",
-        "SELLOS_ADICIONALES",
-        "VALOR_CRUDO",
-        "ORDEN",
-        "PARSEO_CONFIABLE",
-        "NUMERO_FILA",
-        "POSICION_EN_FILA",
-        "PAGINA",
-        "CONFIANZA"
-      ],
-      "EQUIPOS_TRANSPORTE": [
-        "NUMERO_IDENTIFICACION",
-        "TIPO_CLAVE",
-        "TIPO_DESCRIPCION",
-        "SELLOS",
-        "TOKENS_CRUDOS",
-        "VALOR_CRUDO",
-        "ORDEN",
-        "PARSEO_CONFIABLE"
-      ],
-      "CANDADOS_SELLOS": [
-        "NUMERO_CANDADO_SELLO",
-        "TIPO",
-        "EMISOR",
-        "EQUIPO_RELACIONADO",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "IDENTIFICADORES": [
-        "NIVEL",
-        "CLAVE_IDENTIFICADOR",
-        "COMPLEMENTO_IDENTIFICADOR",
-        "NUMERO_FILA",
-        "ES_CONTINUACION",
-        "CONFIANZA",
-        "DESCRIPCION",
-        "COMPLEMENTO_1",
-        "COMPLEMENTO_2",
-        "COMPLEMENTO_3",
-        "ORDEN",
-        "PAGINA",
-        "VALOR_CRUDO"
-      ],
-      "CUENTAS_ADUANERAS_GARANTIA": [
-        "NIVEL",
-        "TIPO_CUENTA",
-        "CLAVE_GARANTIA",
-        "INSTITUCION_EMISORA",
-        "NUMERO_CUENTA_CONTRATO",
-        "FOLIO_CONSTANCIA",
-        "FECHA_CONSTANCIA",
-        "TOTAL_DEPOSITO",
-        "SALDO_DISPONIBLE",
-        "IMPORTE_GARANTIZADO",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "DESCARGOS": [
-        "PATENTE_ORIGINAL",
-        "NUMERO_PEDIMENTO_ORIGINAL",
-        "ADUANA_SECCION_ORIGINAL",
-        "CLAVE_PEDIMENTO_ORIGINAL",
-        "FECHA_OPERACION_ORIGINAL",
-        "FRACCION_ARANCELARIA_ORIGINAL",
-        "UNIDAD_MEDIDA",
-        "CANTIDAD_DESCARGADA",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "COMPENSACIONES": [
-        "PATENTE_ORIGINAL",
-        "NUMERO_PEDIMENTO_ORIGINAL",
-        "ADUANA_SECCION_ORIGINAL",
-        "FECHA_PAGO_ORIGINAL",
-        "CLAVE_GRAVAMEN",
-        "FORMA_PAGO",
-        "IMPORTE_COMPENSADO",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "PEDIMENTOS_RELACIONADOS": [
-        "TIPO_RELACION",
-        "NUMERO_PEDIMENTO",
-        "NUMERO_PEDIMENTO_NORMALIZADO",
-        "ANIO_PEDIMENTO",
-        "ADUANA",
-        "PATENTE",
-        "CONSECUTIVO",
-        "CLAVE_PEDIMENTO",
-        "FECHA_PAGO",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "DIFERENCIAS_CONTRIBUCIONES": [
-        "CLAVE_CONTRIBUCION",
-        "FORMA_PAGO",
-        "IMPORTE_ORIGINAL",
-        "IMPORTE_RECTIFICADO",
-        "DIFERENCIA",
-        "ORDEN"
-      ],
-      "OBSERVACIONES": [
-        "TIPO",
-        "TEXTO_COMPLETO",
-        "PAGINA_INICIO",
-        "PAGINA_FIN",
-        "ORDEN"
-      ],
-      "PARTIDAS": [
-        "NUMERO_PARTIDA",
-        "SECUENCIA_PARTIDA",
-        "FRACCION_ARANCELARIA",
-        "SUBDIVISION",
-        "NICO",
-        "SUBDIVISION_NICO_CRUDO",
-        "VINCULACION",
-        "METODO_VALORACION",
-        "UNIDAD_UMC",
-        "CANTIDAD_UMC",
-        "UNIDAD_UMT",
-        "CANTIDAD_UMT",
-        "PAIS_VENDEDOR_COMPRADOR",
-        "PAIS_VENDEDOR_COMPRADOR_NOMBRE",
-        "PAIS_ORIGEN_DESTINO",
-        "PAIS_ORIGEN_DESTINO_NOMBRE",
-        "DESCRIPCION_MERCANCIA",
-        "DESCRIPCION_RENGLONES",
-        "VALOR_ADUANA_USD",
-        "VALOR_ADUANA_DOLARES_IMPRESO",
-        "VALOR_ADUANA_MXN",
-        "VALOR_DOLARES_PARTIDA",
-        "TIPO_VALOR_PRINCIPAL",
-        "VALOR_ADUANA",
-        "MONEDA_VALOR_ADUANA",
-        "IMPORTE_PRECIO_PAGADO",
-        "PRECIO_UNITARIO",
-        "VALOR_AGREGADO",
-        "MARCA",
-        "MODELO",
-        "CODIGO_PRODUCTO",
-        "NUMERO_SERIE",
-        "LOTE",
-        "ESPECIE",
-        "CALIDAD",
-        "CONTRIBUCIONES_PARTIDA",
-        "PERMISOS_PARTIDA",
-        "IDENTIFICADORES_PARTIDA",
-        "CUENTAS_ADUANERAS_GARANTIA_PARTIDA",
-        "DATOS_VEHICULO_PARTIDA",
-        "DATOS_MERCANCIA_PELIGROSA_PARTIDA",
-        "GUIAS_PARTIDA",
-        "OBSERVACIONES_PARTIDA",
-        "PAGINA_INICIO",
-        "PAGINA_FIN",
-        "PAGINAS",
-        "ES_CONTINUACION",
-        "PARTIDA_COMPLETA",
-        "CONFIANZA",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.CONTRIBUCIONES_PARTIDA": [
-        "CLAVE_CONTRIBUCION",
-        "ID_CONTRIBUCION",
-        "CLAVE_CONTRIBUCION_CRUDA",
-        "CLAVE_CONTRIBUCION_NORMALIZADA",
-        "NIVEL",
-        "PAGINA",
-        "CONFIANZA",
-        "DESCRIPCION",
-        "TASA",
-        "TASA_TEXTO",
-        "CLAVE_TIPO_TASA",
-        "TIPO_TASA_DESCRIPCION",
-        "FORMA_PAGO",
-        "FORMA_PAGO_DESCRIPCION",
-        "IMPORTE",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.PERMISOS_PARTIDA": [
-        "CLAVE_PERMISO",
-        "DESCRIPCION",
-        "TIPO_REGULACION",
-        "PAIS_EMISOR",
-        "PAGINA",
-        "CONFIANZA",
-        "NUMERO_PERMISO_NOM",
-        "FIRMA_DESCARGO",
-        "VALOR_COMERCIAL_DOLARES",
-        "CANTIDAD_UMT_C",
-        "EDOCUMENT",
-        "FECHA_VIGENCIA",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.IDENTIFICADORES_PARTIDA": [
-        "CLAVE_IDENTIFICADOR",
-        "COMPLEMENTO_IDENTIFICADOR",
-        "PAGINA_INICIO",
-        "PAGINA_FIN",
-        "ES_CONTINUACION",
-        "CONFIANZA",
-        "DESCRIPCION",
-        "COMPLEMENTO_1",
-        "COMPLEMENTO_2",
-        "COMPLEMENTO_3",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.CUENTAS_ADUANERAS_GARANTIA_PARTIDA": [
-        "INSTITUCION_EMISORA",
-        "NUMERO_CUENTA_CONTRATO",
-        "FOLIO_CONSTANCIA",
-        "FECHA_CONSTANCIA",
-        "CLAVE_GARANTIA",
-        "VALOR_UNITARIO_TITULO",
-        "IMPORTE_TOTAL_GARANTIA",
-        "CANTIDAD_UMC",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.DATOS_VEHICULO_PARTIDA": [
-        "VIN_NUMERO_SERIE",
-        "KILOMETRAJE",
-        "MARCA",
-        "MODELO",
-        "ANIO_MODELO",
-        "COLOR",
-        "TIPO_VEHICULO",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.DATOS_MERCANCIA_PELIGROSA_PARTIDA": [
-        "NUMERO_ONU",
-        "CLASE_DIVISION",
-        "GRUPO_EMBALAJE",
-        "DESCRIPCION",
-        "CANTIDAD",
-        "UNIDAD",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.GUIAS_PARTIDA": [
-        "TIPO_DOCUMENTO",
-        "NUMERO_DOCUMENTO",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS.OBSERVACIONES_PARTIDA": [
-        "TEXTO_COMPLETO",
-        "ORDEN",
-        "PAGINA_INICIO",
-        "PAGINA_FIN"
-      ],
-      "OTROS_BLOQUES_DOCUMENTO": [
-        "TITULO",
-        "CAMPOS",
-        "TEXTO_CRUDO",
-        "PAGINA_INICIO",
-        "PAGINA_FIN",
-        "ORDEN"
-      ],
-      "METADATOS_EXTRACCION.CAMPOS": [
-        "CAMPO",
-        "PATH",
-        "VALOR_CRUDO",
-        "VALOR_NORMALIZADO",
-        "PAGINA",
-        "CONFIANZA",
-        "METODO",
-        "BBOX",
-        "ADVERTENCIAS"
-      ],
-      "CONTRIBUCIONES": [
-        "NIVEL",
-        "NUMERO_PARTIDA",
-        "CLAVE_CONTRIBUCION",
-        "DESCRIPCION",
-        "CLAVE_TIPO_TASA",
-        "TIPO_TASA_DESCRIPCION",
-        "TASA",
-        "TASA_TEXTO",
-        "FORMA_PAGO",
-        "FORMA_PAGO_DESCRIPCION",
-        "IMPORTE",
-        "FUENTE",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "CUADRO_LIQUIDACION.FILAS_IMPRESAS": [
-        "NUMERO_FILA",
-        "CONCEPTO_IZQUIERDA",
-        "FORMA_PAGO_IZQUIERDA",
-        "IMPORTE_IZQUIERDA",
-        "CONCEPTO_DERECHA",
-        "FORMA_PAGO_DERECHA",
-        "IMPORTE_DERECHA",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "CUADRO_LIQUIDACION.TOTALES": [
-        "TIPO_TOTAL",
-        "ETIQUETA_CRUDA",
-        "IMPORTE",
-        "MONEDA",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "CUADRO_LIQUIDACION.POR_FORMA_PAGO": [
-        "FORMA_PAGO",
-        "FORMA_PAGO_DESCRIPCION",
-        "CLASIFICACION_PAGO",
-        "IMPORTE_TOTAL",
-        "CANTIDAD_CONCEPTOS",
-        "CONCEPTOS_ORIGEN"
-      ],
-      "TASAS_LIQUIDACION_VINCULADAS": [
-        "ID_VINCULO",
-        "ID_TASA_NIVEL_PEDIMENTO",
-        "ID_CONCEPTO_LIQUIDACION",
-        "CLAVE_CONTRIBUCION",
-        "CLAVE_CONCEPTO_LIQUIDACION",
-        "CLAVE_TIPO_TASA",
-        "TASA",
-        "TASA_TEXTO",
-        "FORMA_PAGO",
-        "IMPORTE",
-        "FUENTE_TASA",
-        "FUENTE_IMPORTE",
-        "TIPO_VINCULO",
-        "CONFIANZA",
-        "ADVERTENCIA"
-      ],
-      "FACTURAS_FILAS_IMPRESAS": [
-        "NUMERO_FILA",
-        "NUMERO_FACTURA",
-        "FECHA",
-        "INCOTERM",
-        "MONEDA",
-        "VALOR_MONEDA_FACTURA",
-        "FACTOR_MONEDA_FACTURA",
-        "VALOR_DOLARES",
-        "COVE_EDOCUMENT_RENGLON_INFERIOR",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "CONTENEDORES_FILAS_IMPRESAS": [
-        "NUMERO_FILA",
-        "PARES_NUMERO_TIPO",
-        "TOKENS_CRUDOS",
-        "CANTIDAD_PARES_ESPERADOS",
-        "PAGINA",
-        "ORDEN",
-        "PARSEO_CONFIABLE",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "IDENTIFICADORES_FILAS_IMPRESAS": [
-        "NUMERO_FILA",
-        "CLAVE_O_COMPLEMENTO_IDENTIFICADOR",
-        "COMPLEMENTO_1",
-        "COMPLEMENTO_2",
-        "COMPLEMENTO_3",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "PARTIDAS_FILAS_IMPRESAS": [
-        "NUMERO_PARTIDA",
-        "TIPO_FILA",
-        "COLUMNAS",
-        "PAGINA",
-        "ORDEN_EN_PARTIDA",
-        "ES_CONTINUACION",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "CERTIFICACIONES": [
-        "TIPO_CERTIFICACION",
-        "TEXTO_COMPLETO",
-        "FOLIO",
-        "FECHA",
-        "EMISOR",
-        "SELLO_CADENA",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "DOCUMENTOS_DIGITALIZADOS": [
-        "TIPO_DOCUMENTO",
-        "NUMERO_DOCUMENTO",
-        "FECHA_DOCUMENTO",
-        "COVE_EDOCUMENT",
-        "TIENE_INCREMENTABLES",
-        "RELACION",
-        "FUENTE",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "REGULACIONES_RESTRICCIONES": [
-        "TIPO_REGULACION",
-        "CLAVE",
-        "NUMERO_DOCUMENTO",
-        "AUTORIDAD",
-        "ESTATUS",
-        "DESCRIPCION",
-        "MERCANCIA_RELACIONADA",
-        "NUMERO_PARTIDA",
-        "FUENTE",
-        "PAGINA",
-        "ORDEN",
-        "CONFIANZA",
-        "VALOR_CRUDO"
-      ],
-      "CONSOLIDACION.REMESAS": [
-        "NUMERO_REMESA",
-        "FECHA",
-        "DOCUMENTO_RELACIONADO",
-        "VALOR",
-        "MONEDA",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ],
-      "TABLAS_DETECTADAS": [
-        "NOMBRE_TABLA",
-        "PAGINA_INICIO",
-        "PAGINA_FIN",
-        "ENCABEZADOS_DETECTADOS",
-        "NUMERO_FILAS",
-        "CONTINUA_EN_SIGUIENTE_PAGINA",
-        "TABLA_COMPLETA",
-        "BBOX",
-        "CONFIANZA",
-        "ADVERTENCIAS"
-      ],
-      "LIQUIDACION_NORMALIZADA.POR_FORMA_PAGO": [
-        "FORMA_PAGO",
-        "FORMA_PAGO_DESCRIPCION",
-        "CLASIFICACION_PAGO",
-        "IMPORTE_TOTAL",
-        "CANTIDAD_CONCEPTOS",
-        "CONCEPTOS_ORIGEN"
-      ],
-      "LIQUIDACION_NORMALIZADA.CONCEPTOS_NO_CATALOGADOS": [
-        "CLAVE_CONCEPTO_CRUDA",
-        "DESCRIPCION",
-        "FORMA_PAGO",
-        "IMPORTE",
-        "PAGINA",
-        "ORDEN",
-        "VALOR_CRUDO"
-      ]
-    },
-    "structured_fields": {
-      "CUADRO_LIQUIDACION": {
-        "FILAS_IMPRESAS": [],
-        "CONCEPTOS": [],
-        "TOTALES": [],
-        "POR_FORMA_PAGO": [],
-        "MONEDA": "MXN",
-        "TOTAL_CONCEPTOS": null,
-        "TOTAL_EFECTIVO": null,
-        "TOTAL_OTROS": null,
-        "TOTAL": null,
-        "DIFERENCIA_CONCEPTOS_TOTAL": null,
-        "DIFERENCIA_EFECTIVO_OTROS_TOTAL": null,
-        "TABLA_COMPLETA": null
-      },
-      "LIQUIDACION_NORMALIZADA": {
-        "CONCEPTOS": [],
-        "POR_FORMA_PAGO": [],
-        "CONCEPTOS_NO_CATALOGADOS": [],
-        "DTA": null,
-        "IGI": null,
-        "PRV": null,
-        "ECI": null,
-        "MT": null,
-        "CC": null,
-        "REC": null,
-        "IVA": null,
-        "IVA_PRV": null,
-        "IEPS_8": null,
-        "IEPS_25_CAFEINA": null,
-        "IEPS_26_5": null,
-        "IEPS_30": null,
-        "IEPS_50": null,
-        "OTROS_IEPS": null,
-        "FORMA_PAGO_IEPS": null,
-        "TOTAL_EFECTIVO": null,
-        "TOTAL_OTROS": null,
-        "TOTAL": null,
-        "TOTAL_CONCEPTOS": null,
-        "DIFERENCIA_TOTAL": null
-      },
-      "TRANSPORTISTA": {
-        "IDENTIFICACION_TRANSPORTE": null,
-        "PAIS": null,
-        "RFC": null,
-        "CURP": null,
-        "NOMBRE_RAZON_SOCIAL": null,
-        "DOMICILIO_COMPLETO": null,
-        "CALLE": null,
-        "NUMERO_EXTERIOR": null,
-        "NUMERO_INTERIOR": null,
-        "COLONIA": null,
-        "CODIGO_POSTAL": null,
-        "CIUDAD_MUNICIPIO": null,
-        "ESTADO": null
-      },
-      "VEHICULO_TRANSPORTE": {
-        "PLACAS": null,
-        "PAIS_PLACAS": null,
-        "NUMERO_SERIE_VIN": null,
-        "MODELO": null,
-        "ANIO_MODELO": null,
-        "NUMERO_ECONOMICO": null,
-        "TIPO": null
-      },
-      "RECTIFICACION": {
-        "ES_RECTIFICACION": false,
-        "NUMERO_PEDIMENTO_ORIGINAL": null,
-        "NUMERO_PEDIMENTO_ORIGINAL_NORMALIZADO": null,
-        "CLAVE_PEDIMENTO_ORIGINAL": null,
-        "FECHA_PAGO_ORIGINAL": null,
-        "MOTIVO_RECTIFICACION": null,
-        "DIFERENCIAS_CONTRIBUCIONES": []
-      },
-      "CONSOLIDACION": {
-        "ES_CONSOLIDADO": false,
-        "NUMERO_AVISO_CONSOLIDADO": null,
-        "PERIODO_INICIO": null,
-        "PERIODO_FIN": null,
-        "TOTAL_REMESAS": null,
-        "REMESAS": []
-      },
-      "AGENTE_ADUANAL": {
-        "TIPO_FIGURA": null,
-        "PATENTE_AUTORIZACION": null,
-        "RFC": null,
-        "CURP": null,
-        "NOMBRE_RAZON_SOCIAL": null,
-        "DOMICILIO_COMPLETO": null,
-        "NUMERO_SERIE_CERTIFICADO": null,
-        "FIRMA_ELECTRONICA": null
-      },
-      "METADATOS_EXTRACCION": {
-        "CAMPOS": [],
-        "ADVERTENCIAS": [],
-        "ERRORES_LECTURA": [],
-        "BLOQUES_NO_CLASIFICADOS": [],
-        "PAGINAS_FALTANTES": [],
-        "DOCUMENTO_COMPLETO": null,
-        "CONFIANZA_GLOBAL": null,
-        "TABLAS": [],
-        "FILAS_AMBIGUAS": [],
-        "CELDAS_NO_ASIGNADAS": []
-      },
-      "CANDADO_FISCAL": {
-        "ESTATUS": null,
-        "PRESENTE": null,
-        "LEYENDA_SIN_CANDADO": null,
-        "MOTIVO": null,
-        "NUMEROS_CANDADO_SELLO": [],
-        "EQUIPO_RELACIONADO": null,
-        "PAGINA": null,
-        "VALOR_CRUDO": null
-      },
-      "CERTIFICACIONES": [],
-      "TABLAS_DETECTADAS": []
-    },
     "form_mapping": {
       "CAPTURA_PEDIMENTOS_GENERALES": {
         "path": "Costos/Pedimentos/c_Pedimento_Captura.aspx",
@@ -1254,7 +4372,10 @@
           "CLASIFICACION_CAPTURA": {
             "source_type": "LOOKUP",
             "source": "classification_rules.document_or_merchandise_type",
-            "allowed_values": ["MERCANCIAS", "EQUIPO_Y_SERVICIOS"]
+            "allowed_values": [
+              "MERCANCIAS",
+              "EQUIPO_Y_SERVICIOS"
+            ]
           },
           "ESTADO": {
             "source_type": "CONTEXT",
@@ -1264,12 +4385,19 @@
           "TIPO_REGISTRO": {
             "source_type": "CONTEXT",
             "source": "request_context.tipo_registro",
-            "allowed_values": ["GASTOS", "ANTICIPOS", "POLIZA"]
+            "allowed_values": [
+              "GASTOS",
+              "ANTICIPOS",
+              "POLIZA"
+            ]
           },
           "ESTATUS_CAPTURA": {
             "source_type": "CONTEXT",
             "source": "request_context.estatus_captura",
-            "allowed_values": ["PREVIO", "PENDIENTE"]
+            "allowed_values": [
+              "PREVIO",
+              "PENDIENTE"
+            ]
           },
           "CLAVE_PEDIMENTO": {
             "source_type": "DOCUMENT",
@@ -1331,7 +4459,9 @@
           "VALOR_COMERCIAL_PESOS": {
             "source_type": "DOCUMENT",
             "source": "VALOR_COMERCIAL_PESOS",
-            "aliases": ["PRECIO_PAGADO_VALOR_COMERCIAL"],
+            "aliases": [
+              "PRECIO_PAGADO_VALOR_COMERCIAL"
+            ],
             "required": true
           },
           "TIPO_PAGO": {
@@ -1389,7 +4519,9 @@
           "DTA": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["DTA"],
+            "concept_aliases": [
+              "DTA"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1397,7 +4529,11 @@
           "IGI": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["IGI", "IGE", "IGI/IGE"],
+            "concept_aliases": [
+              "IGI",
+              "IGE",
+              "IGI/IGE"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1405,7 +4541,9 @@
           "PRV": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["PRV"],
+            "concept_aliases": [
+              "PRV"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1413,7 +4551,9 @@
           "ECI": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["ECI"],
+            "concept_aliases": [
+              "ECI"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1421,7 +4561,9 @@
           "MT": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["MT"],
+            "concept_aliases": [
+              "MT"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1429,7 +4571,9 @@
           "CC": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["CC"],
+            "concept_aliases": [
+              "CC"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1437,7 +4581,9 @@
           "REC": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["REC"],
+            "concept_aliases": [
+              "REC"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "default": 0
@@ -1445,7 +4591,11 @@
           "IVA": {
             "source_type": "DERIVED",
             "source": "CUADRO_LIQUIDACION.CONCEPTOS",
-            "concept_aliases": ["IVA", "IVA PRV", "IVA/PRV"],
+            "concept_aliases": [
+              "IVA",
+              "IVA PRV",
+              "IVA/PRV"
+            ],
             "value_field": "IMPORTE",
             "aggregate": "SUM",
             "rule": "El almacenamiento canónico conserva IVA e IVA PRV separados; el formulario destino los concentra en IVA.",
@@ -1511,7 +4661,13 @@
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
             "filters": {
               "CLAVE_CONTRIBUCION": "IEPS",
-              "TASA_NOT_IN": [8, 25, 26.5, 30, 50]
+              "TASA_NOT_IN": [
+                8,
+                25,
+                26.5,
+                30,
+                50
+              ]
             },
             "value_field": "IMPORTE",
             "aggregate": "SUM",

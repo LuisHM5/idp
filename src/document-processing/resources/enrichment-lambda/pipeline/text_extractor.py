@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from document_catalog import TypeRegistryEntry
+from document_catalog import FieldSpec, TypeRegistryEntry
 
 from .bedrock import converse_structured
 from .pdf_pages import PageText
@@ -288,12 +288,236 @@ def _merge_arrays(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]
     return merged
 
 
+_JSON_TYPE_MAP = {"string": "string", "number": "number", "boolean": "boolean", "date": "string"}
+
+
+def _field_tree_schema_lines(tree: Dict[str, FieldSpec], indent: int = 0) -> List[str]:
+    lines: List[str] = []
+    pad = "  " * indent
+    for name, spec in tree.items():
+        if spec.computed:
+            continue
+        req = " (OBLIGATORIO)" if spec.required else ""
+        hint = f": {spec.hint}" if spec.hint else ""
+        if spec.type == "object":
+            lines.append(f"{pad}- {name}{req} [objeto]{hint}")
+            lines.extend(_field_tree_schema_lines(spec.fields, indent + 1))
+        elif spec.type == "array":
+            lines.append(f"{pad}- {name}{req} [lista, extrae TODAS las filas visibles]{hint}")
+            if spec.item_fields:
+                lines.extend(_field_tree_schema_lines(spec.item_fields, indent + 1))
+        else:
+            lines.append(f"{pad}- {name}{req}{hint}")
+    return lines
+
+
+def _field_tree_schema_block(field_tree: Dict[str, FieldSpec]) -> str:
+    return "CAMPOS:\n" + "\n".join(_field_tree_schema_lines(field_tree))
+
+
+def _field_tree_tool_props(tree: Dict[str, FieldSpec]) -> Dict[str, Any]:
+    """Recursive tool-schema properties from a field_tree — real support for
+    arbitrarily nested objects/arrays, which the legacy `_tool_schema` (flat
+    scalars + one level of arrays) cannot express. `computed` fields (e.g.
+    LIQUIDACION_NORMALIZADA) are omitted: a deterministic post-extraction step
+    fills them, so asking the model for a value that gets overwritten anyway
+    would just be wasted output tokens."""
+    props: Dict[str, Any] = {}
+    for name, spec in tree.items():
+        if spec.computed:
+            continue
+        if spec.type == "object":
+            props[name] = {"type": "object", "properties": _field_tree_tool_props(spec.fields)}
+        elif spec.type == "array":
+            if spec.item_fields:
+                item_schema = {"type": "object", "properties": _field_tree_tool_props(spec.item_fields)}
+            else:
+                item_schema = {"type": _JSON_TYPE_MAP.get(spec.item_type or "string", "string")}
+            props[name] = {"type": "array", "items": item_schema}
+        else:
+            json_type = _JSON_TYPE_MAP.get(spec.type, "string")
+            props[name] = {
+                "type": "object",
+                "properties": {"value": {"type": [json_type, "null"]}, "confidence": {"type": "number"}},
+            }
+    return props
+
+
+def _field_tree_tool_schema(field_tree: Dict[str, FieldSpec]) -> Dict[str, Any]:
+    return {"type": "object", "properties": _field_tree_tool_props(field_tree)}
+
+
+def _build_field_tree_prompts(type_entry: TypeRegistryEntry, pages: List[PageText]) -> Tuple[str, str]:
+    cache_prefix = (
+        f"Documento clasificado como {type_entry.type_id}. {type_entry.description}\n\n"
+        "Extrae los campos del schema.\n\n"
+        f"{_field_tree_schema_block(type_entry.field_tree)}\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "- NUNCA inventes un valor. Si el dato no aparece en el texto, usa null.\n"
+        "- Copia los valores tal cual aparecen impresos (montos con comas, fechas en su formato original).\n"
+        "- No calcules ni derives valores que no esten impresos.\n"
+        "- En los campos tipo lista extrae TODAS las filas visibles en estas paginas; una fila por objeto.\n"
+        "- Reporta confidence 0.0-1.0 por campo escalar: 1.0 = el dato es textual e inequivoco; "
+        "baja el valor si el OCR se ve corrupto o hay ambiguedad.\n\n"
+        "FORMATO DE RESPUESTA (solo JSON, sin markdown), siguiendo exactamente la forma del schema: "
+        "escalares como {\"value\": ...|null, \"confidence\": 0.95}, objetos con sus subcampos anidados, "
+        "listas como arreglo de objetos con sus subcampos anidados."
+    )
+    user_text = "TEXTO DEL DOCUMENTO:\n\n" + _pages_block(pages)
+    return cache_prefix, user_text
+
+
+def _parse_field_tree_response(
+    raw: Any, tree: Dict[str, FieldSpec], seg_conf: float, prefix: str = ""
+) -> Tuple[Dict[str, Any], Dict[str, float]]:
+    """Recursively turn one tool-call response (or one array row) into a
+    nested plain-value entity dict plus a flat {dotted.path: confidence} map.
+    Mirrors the scalar-handling of the legacy loop in `extract_document`
+    (str/None coercion, confidence clamped and combined with OCR confidence)."""
+    entity: Dict[str, Any] = {}
+    confidences: Dict[str, float] = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    for name, spec in tree.items():
+        path = f"{prefix}{name}"
+        if spec.computed:
+            entity[name] = None
+            continue
+        node = raw.get(name)
+        if spec.type == "object":
+            sub_entity, sub_conf = _parse_field_tree_response(node, spec.fields, seg_conf, path + ".")
+            entity[name] = sub_entity
+            confidences.update(sub_conf)
+        elif spec.type == "array":
+            items = node if isinstance(node, list) else []
+            if spec.item_fields:
+                rows = []
+                for item in items:
+                    row_entity, _row_conf = _parse_field_tree_response(item, spec.item_fields, seg_conf)
+                    rows.append(row_entity)
+                entity[name] = rows
+            else:
+                entity[name] = [i for i in items if i not in (None, "")]
+            if entity[name]:
+                confidences[path] = round(seg_conf, 4)
+        else:
+            if isinstance(node, dict):
+                value, llm_conf = node.get("value"), node.get("confidence")
+            else:
+                value, llm_conf = node, None
+            if value in (None, "", "null"):
+                entity[name] = None
+                continue
+            entity[name] = str(value).strip() if spec.type in ("string", "date") else value
+            try:
+                llm_conf = float(llm_conf) if llm_conf is not None else 0.85
+            except (TypeError, ValueError):
+                llm_conf = 0.85
+            confidences[path] = round(max(0.0, min(1.0, llm_conf)) * seg_conf, 4)
+    return entity, confidences
+
+
+def _merge_field_tree_entities(
+    base: Dict[str, Any], extra: Dict[str, Any], tree: Dict[str, FieldSpec]
+) -> Dict[str, Any]:
+    """Merge two chunks' nested entity dicts: scalars first-non-null-wins,
+    arrays concatenate+dedup, objects recurse — the nested-tree equivalent of
+    `_merge_fields`/`_merge_arrays` combined."""
+    merged = dict(base or {})
+    for name, spec in tree.items():
+        b, e = merged.get(name), (extra or {}).get(name)
+        if spec.type == "object":
+            merged[name] = _merge_field_tree_entities(b or {}, e or {}, spec.fields)
+        elif spec.type == "array":
+            combined = list(b) if isinstance(b, list) else []
+            for item in (e if isinstance(e, list) else []):
+                if item not in combined:
+                    combined.append(item)
+            merged[name] = combined
+        else:
+            if b in (None, "") and e not in (None, ""):
+                merged[name] = e
+            elif name not in merged:
+                merged[name] = b
+    return merged
+
+
+def _call_model_field_tree(
+    type_entry: TypeRegistryEntry,
+    pages: List[PageText],
+    model_id: Optional[str],
+    cache: bool = False,
+) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, int]]:
+    """Field-tree equivalent of `_call_model` — same overflow split-in-half
+    retry on `max_tokens`, same caching rule, but a genuinely nested response
+    shape (objects/arrays nest for real, not via a flat dotted-key convention)."""
+    cache_prefix, user_text = _build_field_tree_prompts(type_entry, pages)
+    schema = _field_tree_tool_schema(type_entry.field_tree)
+    parsed, meta = converse_structured(
+        user_text,
+        tool_schema=schema,
+        tool_name="extract_document_fields",
+        tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
+        model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
+        cache_system=cache_prefix if cache else None,
+    )
+    usage: Dict[str, int] = {k: v for k, v in (meta.get("usage") or {}).items() if isinstance(v, int)}
+
+    if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
+        mid = len(pages) // 2
+        left_e, left_c, left_u = _call_model_field_tree(type_entry, pages[:mid], model_id, cache=True)
+        right_e, right_c, right_u = _call_model_field_tree(type_entry, pages[mid:], model_id, cache=True)
+        merged_entity = _merge_field_tree_entities(left_e, right_e, type_entry.field_tree)
+        merged_conf = {**left_c, **right_c}
+        return merged_entity, merged_conf, _merge_usage(_merge_usage(usage, left_u), right_u)
+
+    seg_conf = _segment_confidence(pages)
+    entity, confidences = _parse_field_tree_response(parsed or {}, type_entry.field_tree, seg_conf)
+    return entity, confidences, usage
+
+
+def _extract_document_field_tree(
+    pages: List[PageText], type_entry: TypeRegistryEntry, model_id: Optional[str] = None
+) -> ExtractedDoc:
+    chunks = _chunk_pages(pages)
+    use_cache = len(chunks) > 1
+    workers = min(_CHUNK_WORKERS, len(chunks)) or 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(
+            lambda chunk: _call_model_field_tree(type_entry, chunk, model_id=model_id, cache=use_cache),
+            chunks,
+        ))
+
+    usage: Dict[str, int] = {}
+    entity_map: Dict[str, Any] = {}
+    confidences: Dict[str, float] = {}
+    for entity, conf, chunk_usage in results:
+        entity_map = _merge_field_tree_entities(entity_map, entity, type_entry.field_tree)
+        confidences.update(conf)
+        usage = _merge_usage(usage, chunk_usage)
+
+    seg_conf = _segment_confidence(pages)
+    return ExtractedDoc(
+        entity_map=entity_map,
+        confidences=confidences,
+        meta={
+            "chunks": len(chunks),
+            "pages": [p.number for p in pages],
+            "usage": usage,
+            "segmentConfidence": round(seg_conf, 4),
+        },
+    )
+
+
 def extract_document(
     pages: List[PageText],
     type_entry: TypeRegistryEntry,
     model_id: Optional[str] = None,
 ) -> ExtractedDoc:
     """Extract the catalog schema from a document's pages."""
+    if type_entry.field_tree:
+        return _extract_document_field_tree(pages, type_entry, model_id)
+
     chunks = _chunk_pages(pages)
 
     # Cache the static prefix only when it will be reused: >1 chunk means the

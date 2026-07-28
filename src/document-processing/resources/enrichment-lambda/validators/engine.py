@@ -94,20 +94,37 @@ def _is_empty(value: Any) -> bool:
 
 
 def _get_field(entity_map: Dict[str, Any], path: str) -> Any:
-    """Resolve "FIELD" or "ARRAY.SUBFIELD" (the latter returns a list of values)."""
+    """Resolve a dotted path against an entity map, walking every segment.
+
+    "FIELD" returns that field's value. "ARRAY.SUBFIELD" returns a list (one
+    value per row) when ARRAY is a list — the legacy convention field-centric
+    rules (sum_array, custom_formula) rely on. "OBJECT.SUBFIELD" descends
+    into a nested object (the field-centric DSL's `type: "object"` fields,
+    see catalogs/_TEMPLATE.json) and returns the scalar there. Longer chains
+    like "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE" walk each segment in turn:
+    dict → descend by key, list → collect that key from every row (so a
+    trailing list step still yields "one value per row", same as the
+    single-segment case). Backward compatible with the old single-split
+    behavior for exactly 2 segments over a top-level list.
+    """
     if "." not in path:
         return entity_map.get(path)
-    root, sub = path.split(".", 1)
-    items = entity_map.get(root)
-    if not isinstance(items, list):
-        return None
-    values = []
-    for item in items:
-        if isinstance(item, dict):
-            values.append(item.get(sub))
+    parts = path.split(".")
+    current: Any = entity_map.get(parts[0])
+    for part in parts[1:]:
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list):
+            values = []
+            for item in current:
+                if isinstance(item, dict):
+                    values.append(item.get(part))
+                else:
+                    values.append(item)
+            current = values
         else:
-            values.append(item)
-    return values
+            return None
+    return current
 
 
 def _sum_path(entity_map: Dict[str, Any], path: str) -> Tuple[float, int, int]:
@@ -254,7 +271,7 @@ def _check_minimum_items(rule: ValidationRule, value: Any) -> RuleCheck:
 
 def _check_formula(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleCheck:
     formula = rule.params.get("formula", "")
-    declared = parse_amount(entity_map.get(rule.field))
+    declared = parse_amount(_get_field(entity_map, rule.field) if "." in rule.field else entity_map.get(rule.field))
     if declared is None:
         return RuleCheck(
             rule.field, rule.rule_type, False,
@@ -281,7 +298,7 @@ def _check_formula(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleChec
 def _check_sum_array(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleCheck:
     source = rule.params.get("source", "")
     comparison_field = rule.params.get("comparison_field") or rule.field
-    declared = parse_amount(entity_map.get(comparison_field))
+    declared = parse_amount(_get_field(entity_map, comparison_field) if "." in comparison_field else entity_map.get(comparison_field))
     total, counted, skipped = _sum_path(entity_map, source)
     if declared is None:
         return RuleCheck(
@@ -303,6 +320,52 @@ def _check_sum_array(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleCh
         f"{comparison_field}={declared} matches sum of {source} ({total:.2f})" if ok
         else (rule.message or f"{comparison_field}={declared} differs from sum {total:.2f} by {diff:.2f}"),
         details={"sum": round(total, 4), "items": counted, "ignored": skipped, "tolerance": tol},
+    )
+
+
+def _check_equals_field(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleCheck:
+    """`equals_field`: this field's value must equal another field/path's
+    value (e.g. TOTAL_PEDIMENTO must equal CUADRO_LIQUIDACION.TOTAL). Was
+    declared in catalogs but had no handler — silently skipped as an
+    unknown rule type — until `_get_field`'s multi-segment resolution made
+    nested-object comparisons like this meaningful."""
+    source = rule.params.get("source", "")
+    declared = parse_amount(_get_field(entity_map, rule.field) if "." in rule.field else entity_map.get(rule.field))
+    other = parse_amount(_get_field(entity_map, source) if "." in source else entity_map.get(source))
+    if declared is None or other is None:
+        return RuleCheck(
+            rule.field, "equals_field", False,
+            f"'{rule.field}' or '{source}' has no numeric value to compare", skipped=True,
+        )
+    tol = _tolerance(rule)
+    diff = abs(declared - other)
+    ok = diff <= tol
+    return RuleCheck(
+        rule.field, "equals_field", ok,
+        f"{rule.field}={declared} matches {source} ({other})" if ok
+        else (rule.message or f"{rule.field}={declared} differs from {source}={other} by {diff:.2f}"),
+        details={"declared": declared, "other": other, "tolerance": tol},
+    )
+
+
+def _check_array_length(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleCheck:
+    """`array_length`: this field's declared count must equal the length of
+    another array field (e.g. NUMERO_TOTAL_PARTIDAS vs len(PARTIDAS))."""
+    source = rule.params.get("source", "")
+    declared = parse_amount(entity_map.get(rule.field))
+    values = _get_field(entity_map, source) if "." in source else entity_map.get(source)
+    count = len(values) if isinstance(values, list) else 0
+    if declared is None:
+        return RuleCheck(
+            rule.field, "array_length", False,
+            f"'{rule.field}' has no numeric value to compare", skipped=True,
+        )
+    ok = int(declared) == count
+    return RuleCheck(
+        rule.field, "array_length", ok,
+        f"{rule.field}={int(declared)} matches {source} length ({count})" if ok
+        else (rule.message or f"{rule.field}={int(declared)} does not match {source} length ({count})"),
+        details={"declared": int(declared), "counted": count},
     )
 
 
@@ -456,6 +519,54 @@ def _check_boolean_true(rule: ValidationRule, value: Any) -> RuleCheck:
 # ---------------------------------------------------------------- engine
 
 
+def _dispatch_rule(
+    rule: ValidationRule, value: Any, entity_map: Dict[str, Any], ctx: ValidationContext
+) -> Optional[RuleCheck]:
+    """Run one rule against its already-resolved `value` and return the
+    outcome (or None when the rule type has no verdict for this value, e.g.
+    an empty optional field). Shared by `run_rules` and `resolve_field_tree`
+    so the field-centric DSL path evaluates rules identically instead of
+    duplicating this dispatch."""
+    try:
+        rt = rule.rule_type
+        if rt == "regex":
+            return _check_regex(rule, value)
+        if rt == "regex_each":
+            return _check_regex_each(rule, entity_map)
+        if rt == "presence":
+            present = not _is_empty(value)
+            return RuleCheck(rule.field, "presence", present,
+                              rule.message if (rule.message and not present) else
+                              (f"'{rule.field}' present" if present else f"'{rule.field}' missing"))
+        if rt == "boolean_true":
+            return _check_boolean_true(rule, value)
+        if rt == "date_expiry":
+            return _check_date_expiry(rule, value, ctx)
+        if rt == "date_max_age":
+            return _check_date_max_age(rule, value, ctx)
+        if rt == "minimum_items":
+            return _check_minimum_items(rule, value)
+        if rt in ("custom_formula", "cfdi_total"):
+            return _check_formula(rule, entity_map)
+        if rt == "sum_array":
+            return _check_sum_array(rule, entity_map)
+        if rt == "equals_field":
+            return _check_equals_field(rule, entity_map)
+        if rt == "array_length":
+            return _check_array_length(rule, entity_map)
+        if rt in ("cross_document_match", "cross_document_amount"):
+            return _check_cross_document(rule, value, ctx)
+        if rt == "negative_keyword":
+            return _check_negative_keyword(rule, value, ctx)
+        if rt == "expected_value_by_app":
+            return _check_expected_value_by_app(rule, value, ctx)
+        if rt == "page_ranges_no_overlap":
+            return _check_page_ranges(rule, value)
+        return RuleCheck(rule.field, rt, True, f"unknown rule type '{rt}' skipped", severity="warning", skipped=True)
+    except Exception as e:  # a bad rule must never kill the document
+        return RuleCheck(rule.field, rule.rule_type, False, f"rule error: {e}", severity="warning", skipped=True)
+
+
 def run_rules(
     entity_map: Dict[str, Any],
     type_entry: TypeRegistryEntry,
@@ -477,46 +588,7 @@ def run_rules(
 
     for rule in type_entry.validation_rules:
         value = _get_field(entity_map, rule.field) if "." in rule.field else entity_map.get(rule.field)
-        result: Optional[RuleCheck] = None
-        try:
-            rt = rule.rule_type
-            if rt == "regex":
-                result = _check_regex(rule, value)
-            elif rt == "regex_each":
-                result = _check_regex_each(rule, entity_map)
-            elif rt == "presence":
-                present = not _is_empty(value)
-                result = RuleCheck(rule.field, "presence", present,
-                                   rule.message if (rule.message and not present) else
-                                   (f"'{rule.field}' present" if present else f"'{rule.field}' missing"))
-            elif rt == "boolean_true":
-                result = _check_boolean_true(rule, value)
-            elif rt == "date_expiry":
-                result = _check_date_expiry(rule, value, ctx)
-            elif rt == "date_max_age":
-                result = _check_date_max_age(rule, value, ctx)
-            elif rt == "minimum_items":
-                result = _check_minimum_items(rule, value)
-            elif rt in ("custom_formula", "cfdi_total"):
-                result = _check_formula(rule, entity_map)
-            elif rt == "sum_array":
-                result = _check_sum_array(rule, entity_map)
-            elif rt in ("cross_document_match", "cross_document_amount"):
-                result = _check_cross_document(rule, value, ctx)
-            elif rt == "negative_keyword":
-                result = _check_negative_keyword(rule, value, ctx)
-            elif rt == "expected_value_by_app":
-                result = _check_expected_value_by_app(rule, value, ctx)
-            elif rt == "page_ranges_no_overlap":
-                result = _check_page_ranges(rule, value)
-            else:
-                result = RuleCheck(
-                    rule.field, rt, True,
-                    f"unknown rule type '{rt}' skipped",
-                    severity="warning", skipped=True,
-                )
-        except Exception as e:  # a bad rule must never kill the document
-            result = RuleCheck(rule.field, rule.rule_type, False, f"rule error: {e}", severity="warning", skipped=True)
+        result = _dispatch_rule(rule, value, entity_map, ctx)
         if result is not None:
             checks.append(result)
 
@@ -591,6 +663,159 @@ def resolve_fields(
 
         resolved[name] = entry
     return resolved
+
+
+def _flatten_field_tree_rules(field_tree: Dict[str, Any]) -> Tuple[List[ValidationRule], List[str]]:
+    """Collect every field's own `validation` rules + required-field paths,
+    recursively, from a field-centric DSL field_tree. Array `item_fields` are
+    NOT included here — a row's rules are evaluated per-row inside
+    `resolve_field_tree` (a flat `NAME` would otherwise collide across rows)."""
+    rules: List[ValidationRule] = []
+    required: List[str] = []
+
+    def walk(tree: Dict[str, Any], prefix: str) -> None:
+        for name, spec in tree.items():
+            path = f"{prefix}{name}"
+            rules.extend(spec.validation)
+            if spec.required:
+                required.append(path)
+            if spec.type == "object":
+                walk(spec.fields, path + ".")
+
+    walk(field_tree, "")
+    return rules, required
+
+
+def resolve_field_tree(
+    entity_map: Dict[str, Any],
+    confidences: Dict[str, float],
+    type_entry: TypeRegistryEntry,
+    ctx: Optional[ValidationContext] = None,
+    computed_field_names: Optional[set] = None,
+) -> Tuple[Dict[str, Any], List[RuleCheck]]:
+    """Field-centric DSL (schema_version 4.x) equivalent of
+    `resolve_fields()` — walks `type_entry.field_tree` and returns ONE
+    recursive structure per field instead of the legacy trio of raw values
+    (`_public_entities`) + scalars-only value/valid (`resolve_fields`) +
+    compact-envelope filtering (`_scalar_entities`/`_fields_validity`) that
+    used to represent the same field in three different shapes (see the
+    catalog-dsl-v4-migration memory for why). Shape, matching what the
+    consumer confirmed:
+    - scalar  -> {value, confidence, valid, reason, source}
+    - object  -> {valid, reason, fields: {SUBFIELD: {...same shape...}}}
+    - array   -> {items: [ {...same shape per row...} ]}
+
+    `source` is "NORMALIZED" when `pipeline.normalize.normalize_field`
+    changed the value, or when the field's whole subtree belongs to
+    `computed_field_names` (deterministic post-extraction fields such as
+    LIQUIDACION_NORMALIZADA — see FieldSpec.computed); otherwise
+    "MODEL_EXTRACTION".
+    """
+    ctx = ctx or ValidationContext()
+    computed_field_names = computed_field_names or set()
+    own_rules, own_required = _flatten_field_tree_rules(type_entry.field_tree)
+
+    checks: List[RuleCheck] = []
+    for name in own_required:
+        value = _get_field(entity_map, name) if "." in name else entity_map.get(name)
+        present = not _is_empty(value)
+        checks.append(RuleCheck(
+            name, "presence", present,
+            f"required field '{name}' present" if present else f"required field '{name}' missing or empty",
+        ))
+    for rule in own_rules + type_entry.validation_rules:
+        value = _get_field(entity_map, rule.field) if "." in rule.field else entity_map.get(rule.field)
+        result = _dispatch_rule(rule, value, entity_map, ctx)
+        if result is not None:
+            checks.append(result)
+
+    checks_by_field: Dict[str, List[RuleCheck]] = {}
+    for c in checks:
+        if not c.skipped:
+            checks_by_field.setdefault(c.field, []).append(c)
+
+    def valid_reason(path: str) -> Tuple[bool, Optional[str]]:
+        failed = [c for c in checks_by_field.get(path, []) if not c.valid]
+        if not failed:
+            return True, None
+        return False, "; ".join(c.message for c in failed)
+
+    def source_for(leaf_name: str, value: Any, computed: bool) -> str:
+        if computed:
+            return "NORMALIZED"
+        if value is not None and normalize_field(leaf_name, value) != value:
+            return "NORMALIZED"
+        return "MODEL_EXTRACTION"
+
+    def walk_node(spec: Any, path: str, value: Any, computed: bool, fallback_conf: Optional[float]) -> Dict[str, Any]:
+        computed = computed or spec.computed
+        if spec.type == "object":
+            valid, reason = valid_reason(path)
+            sub_value = value if isinstance(value, dict) else {}
+            return {
+                "valid": valid,
+                "reason": reason,
+                "fields": {
+                    sub_name: walk_node(sub_spec, f"{path}.{sub_name}", sub_value.get(sub_name), computed, fallback_conf)
+                    for sub_name, sub_spec in spec.fields.items()
+                },
+            }
+        if spec.type == "array":
+            items = value if isinstance(value, list) else []
+            array_conf = confidences.get(path, fallback_conf)
+            if spec.item_fields:
+                rendered = []
+                for row in items:
+                    row = row if isinstance(row, dict) else {}
+                    rendered.append({
+                        "valid": True,
+                        "reason": None,
+                        "fields": {
+                            sub_name: walk_node(sub_spec, f"{path}.{sub_name}", row.get(sub_name), computed, array_conf)
+                            for sub_name, sub_spec in spec.item_fields.items()
+                        },
+                    })
+                return {"items": rendered}
+            return {
+                "items": [
+                    {
+                        "value": v, "confidence": array_conf, "valid": True, "reason": None,
+                        "source": source_for(spec.name, v, computed),
+                    }
+                    for v in items
+                ]
+            }
+        # scalar
+        valid, reason = valid_reason(path)
+        confidence = confidences.get(path, fallback_conf)
+        if valid and confidence is not None and confidence < type_entry.min_confidence:
+            valid, reason = False, f"confidence {confidence} below minimum {type_entry.min_confidence}"
+        return {
+            "value": value,
+            "confidence": confidence,
+            "valid": valid,
+            "reason": reason,
+            "source": source_for(spec.name, value, computed),
+        }
+
+    result = {
+        name: walk_node(spec, name, entity_map.get(name), name in computed_field_names, None)
+        for name, spec in type_entry.field_tree.items()
+    }
+    return result, checks
+
+
+def document_status_from_checks(checks: List[RuleCheck]) -> str:
+    """Document-level status from a flat check list alone — the
+    `resolve_field_tree` counterpart of `document_status` (which needs the
+    VALIDATED/INVALID/... status enum `resolve_fields` produces per scalar,
+    something the recursive field-tree shape doesn't have)."""
+    hard_failures = [c for c in checks if not c.valid and not c.skipped and c.severity == "error"]
+    if hard_failures:
+        return DOC_PARTIAL if len(hard_failures) < len(checks) else DOC_REJECTED
+    if any(not c.valid and c.severity == "warning" and not c.skipped for c in checks):
+        return DOC_REVIEW
+    return DOC_APPROVED
 
 
 def document_status(

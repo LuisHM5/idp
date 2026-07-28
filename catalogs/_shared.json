@@ -128,6 +128,33 @@
     "ratio_tolerance": 0.02,
     "skip_if_missing": true
   },
+  "_common_item_fields": {
+    "__COMENTARIO__": "Subcampos que se repiten en casi todos los grupos repetibles del DSL nuevo (schema_version 4.x). Un item_fields los referencia por nombre con \"$common\": [...] en vez de volver a escribir su hint/type/validation cada vez. Solo los usan los tipos que ya migraron al DSL field-centric (ver catalogs/_TEMPLATE.json) — los tipos con el schema viejo (parallel arrays) los ignoran.",
+    "PAGINA": {
+      "type": "number",
+      "required": false,
+      "hint": "Número de página del documento donde aparece esta fila.",
+      "validation": []
+    },
+    "ORDEN": {
+      "type": "number",
+      "required": false,
+      "hint": "Posición de la fila dentro de su tabla, en el orden en que aparece impresa.",
+      "validation": []
+    },
+    "CONFIANZA": {
+      "type": "number",
+      "required": false,
+      "hint": "Confianza 0.0-1.0 reportada por el modelo para esta fila.",
+      "validation": []
+    },
+    "VALOR_CRUDO": {
+      "type": "string",
+      "required": false,
+      "hint": "Texto tal como aparece impreso en la fila, sin normalizar, para trazabilidad cuando el parseo estructurado sea ambiguo.",
+      "validation": []
+    }
+  },
   "cross_document_validation_rules": [
     {
       "rule_type": "same_pedimento",

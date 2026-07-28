@@ -5,12 +5,16 @@
  *
  * `catalogs/` is the ONE source of truth:
  *   - catalogs/_shared.json  → { _field_sets, cross_document_validation_rules,
- *                                _global_output_fields }  (shared globals)
+ *                                _global_output_fields, _common_item_fields }
+ *                                (shared globals; _common_item_fields is the
+ *                                field-centric DSL's reusable item_fields, see
+ *                                catalogs/_TEMPLATE.json)
  *   - catalogs/_TEMPLATE.json → template for new types (ignored here)
  *   - catalogs/<TYPE_ID>.json → one document type, shape { "<TYPE_ID>": { ... } }
  *
  * Output: config/catalogs.json in the customs shape the loaders understand:
- *   { _global_output_fields, _field_sets, document_types, cross_document_validation_rules }
+ *   { _global_output_fields, _field_sets, _common_item_fields, document_types,
+ *     cross_document_validation_rules }
  *
  * Runs as part of `pnpm build`. Editing a type in `catalogs/` and rebuilding is
  * all that is needed to bake it into the deployed Lambda.
@@ -96,6 +100,7 @@ function main() {
   const combined = {
     _global_output_fields: shared._global_output_fields || [],
     _field_sets: shared._field_sets || {},
+    _common_item_fields: shared._common_item_fields || {},
     document_types: documentTypes,
     cross_document_validation_rules: shared.cross_document_validation_rules || [],
   };

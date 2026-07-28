@@ -43,6 +43,39 @@ class ValidationRule:
 
 
 @dataclass
+class FieldSpec:
+    """One field in the field-centric DSL (schema_version 4.x, see
+    catalogs/_TEMPLATE.json) — hint, requiredness and validation live TOGETHER
+    on the field instead of being spread across extraction_fields/
+    extraction_hints/required_fields/validation_rules like the legacy DSL.
+
+    `type` is one of "string"|"number"|"boolean"|"date" (scalar), "object"
+    (recurses into `fields`) or "array" (recurses into `item_fields` — one
+    row's schema — or, for arrays of plain scalars, just `item_type`).
+    `validation` rules for object/array fields never carry a `field` key in
+    the JSON: the field name is already the dict key, so `ValidationRule.field`
+    is synthesized as `NAME` (scalar/object-level) or `NAME.SUBFIELD` (object
+    rules with an explicit `subfield`) when parsed.
+    """
+    name: str
+    type: str
+    required: bool = False
+    hint: str = ""
+    validation: List[ValidationRule] = field(default_factory=list)
+    fields: Dict[str, "FieldSpec"] = field(default_factory=dict)       # type == "object"
+    item_fields: Dict[str, "FieldSpec"] = field(default_factory=dict)  # type == "array" of rows
+    item_type: Optional[str] = None                                   # type == "array" of scalars
+    # True when a deterministic post-extraction step (not the model) fills
+    # this field — e.g. LIQUIDACION_NORMALIZADA, built by
+    # pipeline.liquidacion.build_liquidacion_normalizada from CUADRO_LIQUIDACION
+    # + CONTRIBUCIONES and unconditionally overwritten after extraction. Such
+    # fields are left out of the Bedrock prompt/tool-schema entirely (asking
+    # the model to guess a value that gets discarded wastes output tokens)
+    # and their resolved output is tagged source="NORMALIZED".
+    computed: bool = False
+
+
+@dataclass
 class TypeRegistryEntry:
     """Registry entry defining a document type's extraction and validation config."""
     type_id: str
@@ -96,6 +129,16 @@ class TypeRegistryEntry:
     # Per-form field mappings, including `cuadro_liquidacion_fields` used to
     # normalize the customs liquidation table into LIQUIDACION_NORMALIZADA.
     form_mapping: Dict[str, Any] = field(default_factory=dict)
+    # Field-centric DSL (schema_version 4.x): populated ONLY when the type's
+    # JSON declares a top-level "fields" key (see catalogs/_TEMPLATE.json).
+    # When set, this is authoritative and extraction_fields/extraction_hints/
+    # required_fields/repeatable_fields/structured_fields are left empty —
+    # consumers (text_extractor, engine.resolve_fields, expediente assembly)
+    # must check `field_tree` first and only fall back to the legacy flat
+    # attributes when it is None. `validation_rules` is still populated (from
+    # `cross_field_validation`) since cross-field rules use the exact same
+    # ValidationRule shape either way.
+    field_tree: Optional[Dict[str, "FieldSpec"]] = None
 
 
 @dataclass
@@ -129,6 +172,7 @@ _SCHEMA_VERSIONS: Dict[str, str] = {}
 
 
 _RULE_CORE_KEYS = {"field", "rule_type", "pattern", "message"}
+_FIELD_SPEC_CORE_KEYS = {"type", "required", "hint", "validation", "fields", "item_fields", "item_type", "subfield"}
 
 
 def _parse_rules(rules_data: List[Dict[str, Any]]) -> List[ValidationRule]:
@@ -145,17 +189,106 @@ def _parse_rules(rules_data: List[Dict[str, Any]]) -> List[ValidationRule]:
     ]
 
 
+def _parse_field_validation(owner_name: str, rules_data: List[Dict[str, Any]]) -> List[ValidationRule]:
+    """Parse the `validation` list nested inside a field-centric DSL field.
+
+    Unlike top-level `validation_rules`/`cross_field_validation`, these entries
+    never carry a `field` key in the JSON (the field name is already the dict
+    key they live under) — it's synthesized here as `owner_name`, or
+    `owner_name.subfield` when the rule declares an explicit `subfield` (used
+    by object-level rules that check one of the object's own subfields, e.g.
+    CUADRO_LIQUIDACION's `validation` checking its `TOTAL` subfield).
+    """
+    rules = []
+    for r in rules_data or []:
+        target = f"{owner_name}.{r['subfield']}" if r.get("subfield") else owner_name
+        rules.append(
+            ValidationRule(
+                field=target,
+                rule_type=r.get("rule_type", ""),
+                pattern=r.get("pattern"),
+                message=r.get("message", ""),
+                params={k: v for k, v in r.items() if k not in _RULE_CORE_KEYS and k != "subfield"},
+            )
+        )
+    return rules
+
+
+def _parse_field_spec(name: str, data: Dict[str, Any], common_item_fields: Dict[str, Any]) -> FieldSpec:
+    ftype = data.get("type", "string")
+    spec = FieldSpec(
+        name=name,
+        type=ftype,
+        required=bool(data.get("required", False)),
+        hint=data.get("hint", ""),
+        validation=_parse_field_validation(name, data.get("validation", [])),
+        computed=bool(data.get("computed", False)),
+    )
+    if ftype == "object":
+        spec.fields = _parse_field_tree(data.get("fields", {}), common_item_fields)
+    elif ftype == "array":
+        if "item_fields" in data:
+            spec.item_fields = _parse_field_tree(data["item_fields"], common_item_fields)
+        else:
+            spec.item_type = data.get("item_type", "string")
+    return spec
+
+
+def _parse_field_tree(
+    fields_data: Dict[str, Any], common_item_fields: Dict[str, Any]
+) -> Dict[str, FieldSpec]:
+    """Parse a `fields` (or `item_fields`) block, expanding `$common` refs.
+
+    `"$common": ["PAGINA", "ORDEN", ...]` pulls those subfield definitions
+    from `_shared.json`'s `_common_item_fields` instead of repeating them —
+    see catalogs/_TEMPLATE.json for the convention.
+    """
+    result: Dict[str, FieldSpec] = {}
+    for name, raw in fields_data.items():
+        if name == "$common":
+            for common_name in raw:
+                common_raw = common_item_fields.get(common_name)
+                if common_raw:
+                    result[common_name] = _parse_field_spec(common_name, common_raw, common_item_fields)
+            continue
+        result[name] = _parse_field_spec(name, raw, common_item_fields)
+    return result
+
+
 def _parse_entry(
     type_id: str,
     data: Dict[str, Any],
     field_sets: Optional[Dict[str, List[str]]] = None,
+    common_item_fields: Optional[Dict[str, Any]] = None,
 ) -> TypeRegistryEntry:
     """Parse a single type entry from JSON config.
 
     `field_sets` resolves the customs-catalog `field_sets` mechanism: named
     lists of shared fields (e.g. COMMON_CFDI_FIELDS) prepended to the type's
-    own extraction_fields.
+    own extraction_fields. Types written in the field-centric DSL (top-level
+    "fields" key present, schema_version 4.x — see catalogs/_TEMPLATE.json)
+    are parsed into `field_tree` instead of the legacy flat attributes;
+    `common_item_fields` resolves their `$common` references.
     """
+    if "fields" in data:
+        return TypeRegistryEntry(
+            type_id=type_id,
+            extraction_fields=[],
+            required_fields=[],
+            validation_rules=_parse_rules(data.get("cross_field_validation", [])),
+            validator_module=data.get("validator_module"),
+            custom_validator=data.get("custom_validator"),
+            description=data.get("description", ""),
+            display_name=data.get("display_name", "") or "",
+            aliases=data.get("aliases", []) or [],
+            business_destination=data.get("business_destination", ""),
+            min_confidence=float(data.get("min_confidence", 0.70)),
+            schema_version=data.get("schema_version"),
+            form_mapping=data.get("form_mapping", {}) or {},
+            pipeline=data.get("pipeline"),
+            field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
+        )
+
     fields: List[str] = []
     for set_name in data.get("field_sets", []) or []:
         for name in (field_sets or {}).get(set_name, []):
@@ -190,6 +323,10 @@ def _parse_entry(
 
 
 _CROSS_DOC_RULES: List[Dict[str, Any]] = []
+# _shared.json's _common_item_fields, cached at module scope so the
+# DynamoDB hot-reload path (_load_from_dynamodb, which parses one item at a
+# time with no access to the bundled file) can resolve `$common` refs too.
+_COMMON_ITEM_FIELDS: Dict[str, Any] = {}
 
 
 def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
@@ -197,7 +334,7 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
 
     - Classic: {"types": {TYPE_ID: {...}}}
     - Customs: {"document_types": {TYPE_ID: {...}}, "_field_sets": {...},
-                "cross_document_validation_rules": [...]}
+                "_common_item_fields": {...}, "cross_document_validation_rules": [...]}
     """
     raw = path.read_bytes()
     data = json.loads(raw)
@@ -211,10 +348,15 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
 
     types_data = data.get("types") or data.get("document_types") or {}
     field_sets = data.get("_field_sets", {}) or {}
+    common_item_fields = data.get("_common_item_fields", {}) or {}
+    if common_item_fields:
+        _COMMON_ITEM_FIELDS.update(
+            {k: v for k, v in common_item_fields.items() if not k.startswith("__")}
+        )
 
     catalog: Dict[str, TypeRegistryEntry] = {}
     for type_id, type_data in types_data.items():
-        catalog[type_id] = _parse_entry(type_id, type_data, field_sets)
+        catalog[type_id] = _parse_entry(type_id, type_data, field_sets, _COMMON_ITEM_FIELDS)
 
     for rule in data.get("cross_document_validation_rules", []) or []:
         if rule not in _CROSS_DOC_RULES:
@@ -270,7 +412,7 @@ def _load_from_dynamodb() -> Dict[str, TypeRegistryEntry]:
             if not item.get("enabled", True):
                 continue
             type_id = item["type_id"]
-            catalog[type_id] = _parse_entry(type_id, item)
+            catalog[type_id] = _parse_entry(type_id, item, common_item_fields=_COMMON_ITEM_FIELDS)
 
         # Handle pagination
         while "LastEvaluatedKey" in response:
@@ -317,6 +459,7 @@ def reload_catalog() -> None:
     _CATALOG_CACHE = None
     _CROSS_DOC_RULES.clear()
     _SCHEMA_VERSIONS.clear()
+    _COMMON_ITEM_FIELDS.clear()
 
 
 def get_schema_info() -> Dict[str, Any]:

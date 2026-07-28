@@ -429,7 +429,7 @@ def _run_expediente(
     return {
         "documentId": document_id,
         "documentClassification": final_classification,
-        "extractedEntities": _scalar_entities((main or {}).get("extractedEntities", {})),
+        "extractedEntities": _entities_for_envelope(main or {}),
         "validation": {
             "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
             "summary": f"expediente: {result.get('status')} ({len(result.get('documents', []))} documents)",
@@ -444,6 +444,23 @@ def _run_expediente(
 def _scalar_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
     """Entity map without repeatable arrays (kept small for the envelope)."""
     return {k: v for k, v in entities.items() if not isinstance(v, (list, dict))}
+
+
+def _entities_for_envelope(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Top-level `extractedEntities` for the returned envelope.
+
+    Field-centric DSL documents (schema_version 4.x, `doc["fieldTreeShape"]`
+    set by `pipeline/expediente.py`) already carry the full recursive
+    {value|fields|items, confidence, valid, reason, source} structure from
+    `engine.resolve_field_tree` for every field, arrays and nested objects
+    included — passed through as-is. Legacy-DSL documents keep the historical
+    scalars-only raw-value view (`_scalar_entities`), since their per-field
+    valid/reason detail lives separately in `expediente.fieldsValidity`.
+    """
+    entities = doc.get("extractedEntities", {})
+    if doc.get("fieldTreeShape"):
+        return entities
+    return _scalar_entities(entities)
 
 
 def _fields_validity(fields: Dict[str, Any]) -> Dict[str, Any]:
@@ -479,6 +496,18 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
     docs = []
     for d in result.get("documents", []):
         entities = d.get("extractedEntities", {})
+        if d.get("fieldTreeShape"):
+            # Field-centric DSL: `extractedEntities` already IS the full
+            # recursive value/confidence/valid/reason/source structure for
+            # every field (scalars, objects and arrays alike) — no separate
+            # fieldsValidity/arrayCounts split needed, unlike the legacy DSL.
+            per_doc_entities: Dict[str, Any] = entities
+            fields_validity: Dict[str, Any] = {}
+            array_counts: Dict[str, int] = {}
+        else:
+            per_doc_entities = _scalar_entities(entities)
+            fields_validity = _fields_validity(d.get("fields") or {})
+            array_counts = {k: len(v) for k, v in entities.items() if isinstance(v, list)}
         docs.append(
             {
                 "documentType": d.get("documentType"),
@@ -488,11 +517,9 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
                 "status": d.get("status"),
                 "confidence": d.get("confidence"),
                 "businessDestination": d.get("businessDestination"),
-                "extractedEntities": _scalar_entities(entities),
-                "fieldsValidity": _fields_validity(d.get("fields") or {}),
-                "arrayCounts": {
-                    k: len(v) for k, v in entities.items() if isinstance(v, list)
-                },
+                "extractedEntities": per_doc_entities,
+                **({"fieldsValidity": fields_validity} if fields_validity else {}),
+                **({"arrayCounts": array_counts} if array_counts else {}),
                 **({"recoveredFields": d["recoveredFields"]} if d.get("recoveredFields") else {}),
                 **({"liquidacionNormalizada": d["liquidacionNormalizada"]} if d.get("liquidacionNormalizada") else {}),
             }

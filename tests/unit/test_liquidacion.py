@@ -28,10 +28,17 @@ class TestLiquidacionNormalizada:
         assert liq["IVA"] == 0
 
     def test_ieps_from_contribuciones_filter(self):
+        # IEPS is declared per PARTIDA (form_mapping source
+        # "PARTIDAS.CONTRIBUCIONES_PARTIDA"), not at the pedimento-level
+        # CONTRIBUCIONES array — the rows live inside each partida.
         entity_map = {
-            "CONTRIBUCIONES": [
-                {"CLAVE_CONTRIBUCION": "IEPS", "TASA": "8", "FORMA_PAGO": "0", "IMPORTE": "150"},
-                {"CLAVE_CONTRIBUCION": "IEPS", "TASA": "30", "FORMA_PAGO": "0", "IMPORTE": "42"},
+            "PARTIDAS": [
+                {
+                    "CONTRIBUCIONES_PARTIDA": [
+                        {"CLAVE_CONTRIBUCION": "IEPS", "TASA": "8", "FORMA_PAGO": "0", "IMPORTE": "150"},
+                        {"CLAVE_CONTRIBUCION": "IEPS", "TASA": "30", "FORMA_PAGO": "0", "IMPORTE": "42"},
+                    ]
+                },
             ],
         }
         liq = build_liquidacion_normalizada(entity_map, _entry())
