@@ -387,21 +387,27 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
                 recovered[name] = match
 
     # Fill any of the 4 atomic pedimento-number components the model left
-    # empty, by splitting the full "AA ADUANA PATENTE CONSECUTIVO" reference
-    # (the same 15-digit pattern used for PEDIMENTO_REFERENCE/NUMERO_PEDIMENTO
-    # recovery above) when it appears in the segment text — e.g.
-    # ADUANA_DESPACHO regularly comes back empty even when the full
-    # reference containing that same 2-digit group was extracted elsewhere.
+    # empty OR extracted with the wrong digit count, by splitting the full
+    # "AA ADUANA PATENTE CONSECUTIVO" reference (the same 15-digit pattern
+    # used for PEDIMENTO_REFERENCE/NUMERO_PEDIMENTO recovery above) when it
+    # appears in the segment text — e.g. ADUANA_DESPACHO regularly comes back
+    # empty even when the full reference containing that same 2-digit group
+    # was extracted elsewhere, and NUMERO_CONSECUTIVO has been observed
+    # missing a trailing digit (7 expected, model wrote 6) even though the
+    # full reference in the text has all 7. Each regex group's width is
+    # fixed by `_PED_FULL_RE` itself, so `comp_value` is always exactly the
+    # expected length when found — safe to override a wrong-length value,
+    # never just an empty one.
     components = find_pedimento_components(text)
     if components:
         anio_c, aduana_c, patente_c, consecutivo_c = components
-        for name, comp_value in (
-            ("ANIO_PEDIMENTO", anio_c),
-            ("ADUANA_DESPACHO", aduana_c),
-            ("PATENTE", patente_c),
-            ("NUMERO_CONSECUTIVO", consecutivo_c),
+        for name, comp_value, expected_len in (
+            ("ANIO_PEDIMENTO", anio_c, 2),
+            ("ADUANA_DESPACHO", aduana_c, 2),
+            ("PATENTE", patente_c, 4),
+            ("NUMERO_CONSECUTIVO", consecutivo_c, 7),
         ):
-            if _has_field(entry, name) and entities.get(name) in (None, "", []):
+            if _has_field(entry, name) and not digits_exact(entities.get(name), expected_len):
                 entities[name] = comp_value
                 doc.setdefault("_confidences", {})[name] = 0.9
                 recovered[name] = comp_value
