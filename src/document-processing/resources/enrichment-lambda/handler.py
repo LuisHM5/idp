@@ -609,18 +609,27 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         processing_result = event.get("processingResult", {})
 
         classification = classification_result.get("documentClassification", "OTRO")
+        type_entry = get_type_entry(classification)
 
-        # Customs/pedimento types go through the full expediente pipeline:
-        # per-page text (native + Textract), segmentation, catalog-schema
-        # extraction with repeatable fields, and the dynamic rule engine
-        # (formulas, sums, cross-document checks). The Bedrock-native
-        # single-shot extraction upstream is not reliable for these documents.
-        if is_customs_type(classification) or event.get("expediente"):
+        # Route through the expediente pipeline (per-page text, optional
+        # Textract, catalog-schema extraction, dynamic rule engine) whenever
+        # EITHER is true:
+        # - `is_customs_type`: the type opted into the multi-document customs
+        #   pipeline (segmentation candidacy in an unlabeled expediente PDF,
+        #   cross-document rules) via `"pipeline": "expediente"`.
+        # - `type_entry.field_tree is not None`: the type's catalog entry uses
+        #   the field-centric DSL (top-level `"fields"` key). The upstream
+        #   Bedrock-native blueprint prompt (generated at CDK synth time,
+        #   src/document-catalog.ts) only understands the legacy
+        #   extraction_fields/extraction_hints DSL, so it never emits a
+        #   prompt for field-centric types — without this branch they would
+        #   fall through to that flow and extract nothing. `pipeline:
+        #   expediente` is an orthogonal, additional opt-in on top of this,
+        #   not a precondition for extraction to work at all.
+        if is_customs_type(classification) or event.get("expediente") or type_entry.field_tree is not None:
             expediente_result = _run_expediente(event, document_id, classification)
             if expediente_result is not None:
                 return expediente_result
-
-        type_entry = get_type_entry(classification)
 
         entities = processing_result.get("result", {}).get("entities", [])
         entity_map = entities_to_map(entities)

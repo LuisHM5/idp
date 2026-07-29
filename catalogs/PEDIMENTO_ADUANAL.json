@@ -4,13 +4,12 @@
     "display_name": "Pedimento Aduanal",
     "description": "Esquema mínimo para alimentar la captura general del pedimento, el cuadro de liquidación, las facturas relacionadas y el reporte de pedimento.",
     "prompt_profile": "CLAUDE_HAIKU_JSON",
-    "pipeline": "expediente",
     "min_confidence": 0.8,
     "fields": {
       "NUMERO_PEDIMENTO_NORMALIZADO": {
         "type": "string",
         "required": true,
-        "hint": "Construir concatenando ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO. Debe contener exactamente 15 dígitos y conservar todos los ceros.",
+        "hint": "Construir concatenando ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO. Debe contener exactamente 15 dígitos y conservar todos los ceros (ej. 20260708236001130).",
         "validation": [
           {
             "rule_type": "regex",

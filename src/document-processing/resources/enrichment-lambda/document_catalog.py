@@ -514,9 +514,18 @@ def get_cross_document_rules() -> List[Dict[str, Any]]:
 
 
 def is_customs_type(doc_type: str) -> bool:
-    """True when the type is routed through the expediente (customs) pipeline.
+    """True when the type opted into the multi-document customs pipeline.
 
     Declared per type with `"pipeline": "expediente"` in its catalog file.
+    This gates two EXTRA behaviors on top of plain field extraction: (1)
+    candidacy for auto-segmentation inside an unlabeled multi-document PDF
+    (`segmenter._candidate_types`), and (2) cross-document validation rules.
+    It does NOT gate whether a type's fields get extracted at all — any type
+    whose catalog entry uses the field-centric DSL (`field_tree` populated
+    from a top-level "fields" key) is routed through the expediente
+    pipeline's extractor regardless of this flag, since that pipeline is the
+    only one that understands the field-centric DSL (see handler.py's
+    `_process`).
     """
     return get_type_entry(doc_type).pipeline == "expediente"
 
