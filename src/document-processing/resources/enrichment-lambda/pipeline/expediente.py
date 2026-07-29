@@ -444,9 +444,19 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
                 doc.get("_confidences", {}).get("NUMERO_CONSECUTIVO", 0.9)
             )
             recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = computed
-        elif not computed and current in (None, "", []):
-            # Fallback for when the atomic fields aren't all usable: try the
-            # raw NUMERO_PEDIMENTO/PEDIMENTO_REFERENCE string instead.
+        elif not computed and not digits_exact(current, 15):
+            # Fallback for when the atomic fields aren't all usable. Also
+            # fires when the model's OWN concatenation attempt is present but
+            # invalid (wrong digit count) — not just when it's empty: a real
+            # run left NUMERO_CONSECUTIVO one digit short (so `computed` above
+            # is None) AND the model's direct NUMERO_PEDIMENTO_NORMALIZADO
+            # guess was also short, while NUMERO_PEDIMENTO itself (a
+            # different field) had the correct, complete 15-digit reference
+            # with spaces. The previous `current in (None, "", [])` guard
+            # skipped this recovery entirely whenever the model wrote
+            # *anything* here, even a wrong value — only overwrite when the
+            # fallback source verifiably yields exactly 15 digits, so a bad
+            # guess is never replaced by an equally unverified one.
             source = entities.get("NUMERO_PEDIMENTO") or entities.get("PEDIMENTO_REFERENCE")
             digits = normalize_pedimento(source) if source else None
             if digits and len(digits) == 15:

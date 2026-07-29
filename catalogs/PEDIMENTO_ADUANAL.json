@@ -6,10 +6,22 @@
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "min_confidence": 0.8,
     "fields": {
+      "NUMERO_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{15}$",
+            "message": "El número de pedimento normalizado debe contener exactamente 15 dígitos"
+          }
+        ]
+      },
       "NUMERO_PEDIMENTO_NORMALIZADO": {
         "type": "string",
         "required": true,
-        "hint": "Construir concatenando ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO. Debe contener exactamente 15 dígitos y conservar todos los ceros (ej. 20260708236001130).",
+        "hint": "Construir concatenando ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO. Debe contener exactamente 15 dígitos y conservar todos los ceros de la derecha 26 + 07 + 0823 + 6001630 = 260708236001630 (si no da el numero de digitos usar NUMERO_PEDIMENTO y quitar los espacios).",
         "validation": [
           {
             "rule_type": "regex",
@@ -304,7 +316,7 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS"},
+            "filters": { "CLAVE_CONTRIBUCION": "IEPS" },
             "hint": "Importe total de los conceptos IEPS ordinarios.",
             "validation": []
           },
@@ -313,7 +325,7 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 8},
+            "filters": { "CLAVE_CONTRIBUCION": "IEPS", "TASA": 8 },
             "hint": "IEPS correspondiente a la tasa del 8%.",
             "validation": []
           },
@@ -322,7 +334,7 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 26.5},
+            "filters": { "CLAVE_CONTRIBUCION": "IEPS", "TASA": 26.5 },
             "hint": "IEPS correspondiente a la tasa del 26.5%.",
             "validation": []
           },
@@ -331,7 +343,7 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 30},
+            "filters": { "CLAVE_CONTRIBUCION": "IEPS", "TASA": 30 },
             "hint": "IEPS correspondiente a la tasa del 30%.",
             "validation": []
           },
@@ -340,7 +352,7 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 50},
+            "filters": { "CLAVE_CONTRIBUCION": "IEPS", "TASA": 50 },
             "hint": "IEPS correspondiente a la tasa del 50%.",
             "validation": []
           },
@@ -349,7 +361,7 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 25},
+            "filters": { "CLAVE_CONTRIBUCION": "IEPS", "TASA": 25 },
             "hint": "IEPS correspondiente al campo 25% CAFEÍNA.",
             "validation": []
           },
@@ -358,7 +370,10 @@
             "required": false,
             "default": 0,
             "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
-            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA_NOT_IN": [8, 25, 26.5, 30, 50]},
+            "filters": {
+              "CLAVE_CONTRIBUCION": "IEPS",
+              "TASA_NOT_IN": [8, 25, 26.5, 30, 50]
+            },
             "hint": "IEPS con una tasa distinta de 8, 25, 26.5, 30 o 50.",
             "validation": []
           },

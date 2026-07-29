@@ -740,12 +740,23 @@ def resolve_field_tree(
             return True, None
         return False, "; ".join(c.message for c in failed)
 
-    def source_for(leaf_name: str, value: Any, computed: bool) -> str:
+    def resolve_leaf(leaf_name: str, value: Any, computed: bool) -> Tuple[Any, str]:
+        """Resolve a scalar leaf's OUTPUT value together with its source tag.
+
+        Previously this only decided the tag (`source_for`) while the caller
+        kept returning the raw, un-normalized `value` regardless — so a field
+        could come back tagged "NORMALIZED" while `value` still showed the
+        dirty original (e.g. NUMERO_PEDIMENTO with spaces, tagged NORMALIZED,
+        `value` still "26 07 0823 6001630" instead of the digit-only form).
+        The tag must describe what's actually in `value`.
+        """
         if computed:
-            return "NORMALIZED"
-        if value is not None and normalize_field(leaf_name, value) != value:
-            return "NORMALIZED"
-        return "MODEL_EXTRACTION"
+            return value, "NORMALIZED"
+        if value is not None:
+            normalized = normalize_field(leaf_name, value)
+            if normalized != value:
+                return normalized, "NORMALIZED"
+        return value, "MODEL_EXTRACTION"
 
     def walk_node(spec: Any, path: str, value: Any, computed: bool, fallback_conf: Optional[float]) -> Dict[str, Any]:
         computed = computed or spec.computed
@@ -776,26 +787,26 @@ def resolve_field_tree(
                         },
                     })
                 return {"items": rendered}
-            return {
-                "items": [
-                    {
-                        "value": v, "confidence": array_conf, "valid": True, "reason": None,
-                        "source": source_for(spec.name, v, computed),
-                    }
-                    for v in items
-                ]
-            }
+            rendered_items = []
+            for v in items:
+                resolved_v, source = resolve_leaf(spec.name, v, computed)
+                rendered_items.append({
+                    "value": resolved_v, "confidence": array_conf, "valid": True, "reason": None,
+                    "source": source,
+                })
+            return {"items": rendered_items}
         # scalar
         valid, reason = valid_reason(path)
+        resolved_value, source = resolve_leaf(spec.name, value, computed)
         confidence = confidences.get(path, fallback_conf)
         if valid and confidence is not None and confidence < type_entry.min_confidence:
             valid, reason = False, f"confidence {confidence} below minimum {type_entry.min_confidence}"
         return {
-            "value": value,
+            "value": resolved_value,
             "confidence": confidence,
             "valid": valid,
             "reason": reason,
-            "source": source_for(spec.name, value, computed),
+            "source": source,
         }
 
     result = {
