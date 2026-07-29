@@ -41,11 +41,38 @@ def _norm(text: Any) -> str:
 
 
 def _find_cuadro_config(form_mapping: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Locate `cuadro_liquidacion_fields` inside any declared form."""
+    """Locate `cuadro_liquidacion_fields` inside any declared form (legacy DSL:
+    a separate `form_mapping` block alongside `structured_fields`)."""
     for form in (form_mapping or {}).values():
         if isinstance(form, dict) and form.get("cuadro_liquidacion_fields"):
             return form["cuadro_liquidacion_fields"]
     return None
+
+
+def _config_from_field_tree(entry) -> Optional[Dict[str, Any]]:
+    """Derive the same target -> {source, concept_aliases, value_field,
+    filters, default} mapping straight from the field-centric DSL, when the
+    type declares no separate `form_mapping` block. Each subfield of the
+    computed `LIQUIDACION_NORMALIZADA` object carries its own mapping keys
+    directly (see catalogs/PEDIMENTO_ADUANAL.json) instead of duplicating the
+    field name in a parallel config structure — `FieldSpec.params` already
+    holds every JSON key beyond type/required/hint/validation. A bare
+    `concept_aliases` with no explicit `source` defaults to summing
+    CUADRO_LIQUIDACION.CONCEPTOS (the common case: DTA, IGI, IVA, ...).
+    """
+    field_tree = getattr(entry, "field_tree", None) or {}
+    node = field_tree.get("LIQUIDACION_NORMALIZADA")
+    if node is None or node.type != "object":
+        return None
+    config: Dict[str, Any] = {}
+    for sub_name, sub_spec in node.fields.items():
+        params = dict(sub_spec.params)
+        if not params:
+            continue
+        if "concept_aliases" in params and "source" not in params:
+            params["source"] = "CUADRO_LIQUIDACION.CONCEPTOS"
+        config[sub_name] = params
+    return config or None
 
 
 def _resolve_path(entity_map: Dict[str, Any], path: str) -> Any:
@@ -128,6 +155,10 @@ def _row_matches(row: Dict[str, Any], filters: Dict[str, Any]) -> bool:
             got = parse_amount(row.get("TASA"))
             if got is None or abs(got - float(expected)) > 0.01:
                 return False
+        elif key == "TASA_NOT_IN":
+            got = parse_amount(row.get("TASA"))
+            if got is None or any(abs(got - float(v)) <= 0.01 for v in expected):
+                return False
         elif _norm(row.get(key)) != _norm(expected):
             return False
     return True
@@ -150,10 +181,14 @@ def _first_by_path(entity_map: Dict[str, Any], path: str) -> Optional[str]:
 def build_liquidacion_normalizada(entity_map: Dict[str, Any], entry) -> Optional[Dict[str, Any]]:
     """Build LIQUIDACION_NORMALIZADA from the catalog's cuadro config.
 
-    Returns None when the type declares no cuadro_liquidacion_fields, so callers
-    only attach the object for types that actually define the mapping.
+    The mapping is read from `form_mapping.<FORM>.cuadro_liquidacion_fields`
+    (legacy DSL) when present, else derived straight from the field-centric
+    DSL's own subfield params (`_config_from_field_tree`). Returns None when
+    the type declares neither, so callers only attach the object for types
+    that actually define the mapping.
     """
-    config = _find_cuadro_config(getattr(entry, "form_mapping", {}) or {})
+    config = (_find_cuadro_config(getattr(entry, "form_mapping", {}) or {})
+              or _config_from_field_tree(entry))
     if not config:
         return None
 

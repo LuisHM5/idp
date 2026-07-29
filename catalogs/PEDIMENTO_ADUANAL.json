@@ -247,6 +247,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["DTA"],
             "hint": "Suma de conceptos DTA.",
             "validation": []
           },
@@ -254,6 +255,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["IGI", "IGE", "IGI/IGE"],
             "hint": "Suma de conceptos IGI, IGE o IGI/IGE.",
             "validation": []
           },
@@ -261,6 +263,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["PRV"],
             "hint": "Suma de conceptos PRV.",
             "validation": []
           },
@@ -268,6 +271,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["ECI"],
             "hint": "Suma de conceptos ECI.",
             "validation": []
           },
@@ -275,6 +279,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["MT"],
             "hint": "Suma de conceptos MT.",
             "validation": []
           },
@@ -282,6 +287,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["CC"],
             "hint": "Suma de conceptos CC.",
             "validation": []
           },
@@ -289,6 +295,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["IVA", "IVA PRV", "IVA/PRV"],
             "hint": "Suma de IVA, IVA PRV e IVA/PRV. La pantalla concentra estos conceptos en un solo campo IVA.",
             "validation": []
           },
@@ -296,6 +303,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS"},
             "hint": "Importe total de los conceptos IEPS ordinarios.",
             "validation": []
           },
@@ -303,6 +312,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 8},
             "hint": "IEPS correspondiente a la tasa del 8%.",
             "validation": []
           },
@@ -310,6 +321,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 26.5},
             "hint": "IEPS correspondiente a la tasa del 26.5%.",
             "validation": []
           },
@@ -317,6 +330,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 30},
             "hint": "IEPS correspondiente a la tasa del 30%.",
             "validation": []
           },
@@ -324,6 +339,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 50},
             "hint": "IEPS correspondiente a la tasa del 50%.",
             "validation": []
           },
@@ -331,6 +348,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA": 25},
             "hint": "IEPS correspondiente al campo 25% CAFEÍNA.",
             "validation": []
           },
@@ -338,6 +357,8 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {"CLAVE_CONTRIBUCION": "IEPS", "TASA_NOT_IN": [8, 25, 26.5, 30, 50]},
             "hint": "IEPS con una tasa distinta de 8, 25, 26.5, 30 o 50.",
             "validation": []
           },
@@ -345,6 +366,7 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["F.IEPS", "FIEPS"],
             "hint": "Importe del concepto impreso como F.IEPS o FIEPS. Es numérico; no representa la forma de pago.",
             "validation": []
           },
@@ -352,12 +374,14 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "concept_aliases": ["2IF"],
             "hint": "Importe del concepto impreso como 2IF.",
             "validation": []
           },
           "TOTAL_CONTRIBUCIONES": {
             "type": "number",
             "required": true,
+            "source": "CUADRO_LIQUIDACION.TOTAL",
             "hint": "TOTAL impreso en el cuadro de liquidación.",
             "validation": []
           }

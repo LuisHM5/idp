@@ -31,9 +31,15 @@ export interface DocumentTypeEntry {
   /** Per-field hints telling Bedrock where/how to find each field in the document */
   extractionHints?: Record<string, string>;
   /**
-   * Customs (pedimentos) types are classified upstream but extracted by the
-   * enrichment Lambda's expediente pipeline, so they carry no extraction
-   * fields here (keeps the processing prompt inside the 4KB env var limit).
+   * True for types the enrichment Lambda's Python pipeline extracts itself
+   * instead of the Bedrock-native blueprint prompt — either customs types
+   * (`pipeline: "expediente"`) or any type using the field-centric DSL
+   * (top-level `fields` key, schema_version 4.x+). Both carry no
+   * extractionFields here on purpose: the Bedrock extraction prompt
+   * generated from this catalog never learned the field-centric DSL's
+   * recursive shape, and listing ~50 fields per type would blow the 4KB
+   * env var limit anyway. See handler.py's `_process` for the runtime
+   * routing this mirrors.
    */
   isCustoms?: boolean;
 }
@@ -51,6 +57,10 @@ interface RawTypeConfig {
   }>;
   validator_module?: string | null;
   custom_validator?: string | null;
+  /** Presence (not shape) is all this file checks — the field-centric DSL
+   * tree itself is only parsed on the Python side (document_catalog.py). */
+  fields?: Record<string, unknown>;
+  pipeline?: string;
 }
 
 /**
@@ -79,15 +89,15 @@ export function loadCatalog(): DocumentTypeEntry[] {
   }
 
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-  const types: Record<string, RawTypeConfig & { pipeline?: string }> =
-    raw.document_types || raw.types || {};
+  const types: Record<string, RawTypeConfig> = raw.document_types || raw.types || {};
 
   const entries: DocumentTypeEntry[] = [];
   for (const [typeId, config] of Object.entries(types)) {
-    if (config.pipeline === "expediente") {
-      // Customs types: classification prompt only. extractionFields stays empty
-      // on purpose — the expediente pipeline in the Lambda does the real
-      // extraction, and listing ~50 fields per type would blow the prompt limit.
+    if (config.pipeline === "expediente" || config.fields) {
+      // Customs types (`pipeline: expediente`) AND any type using the
+      // field-centric DSL (`fields` key) get classification-prompt-only
+      // treatment: extractionFields stays empty on purpose, see
+      // DocumentTypeEntry.isCustoms above for why.
       entries.push({
         typeId,
         description:

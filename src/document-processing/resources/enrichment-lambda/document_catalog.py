@@ -73,6 +73,13 @@ class FieldSpec:
     # the model to guess a value that gets discarded wastes output tokens)
     # and their resolved output is tagged source="NORMALIZED".
     computed: bool = False
+    # Every JSON key beyond the known FieldSpec attributes, kept verbatim so
+    # config-driven consumers can declare their own per-field extras without a
+    # dataclass change — e.g. `pipeline.liquidacion.build_liquidacion_normalizada`
+    # reads `concept_aliases`/`source`/`value_field`/`filters`/`default` off a
+    # LIQUIDACION_NORMALIZADA subfield's `params` instead of a separate
+    # form_mapping block (see catalogs/PEDIMENTO_ADUANAL.json).
+    params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -172,7 +179,7 @@ _SCHEMA_VERSIONS: Dict[str, str] = {}
 
 
 _RULE_CORE_KEYS = {"field", "rule_type", "pattern", "message"}
-_FIELD_SPEC_CORE_KEYS = {"type", "required", "hint", "validation", "fields", "item_fields", "item_type", "subfield"}
+_FIELD_SPEC_CORE_KEYS = {"type", "required", "hint", "validation", "fields", "item_fields", "item_type", "subfield", "computed"}
 
 
 def _parse_rules(rules_data: List[Dict[str, Any]]) -> List[ValidationRule]:
@@ -223,6 +230,7 @@ def _parse_field_spec(name: str, data: Dict[str, Any], common_item_fields: Dict[
         hint=data.get("hint", ""),
         validation=_parse_field_validation(name, data.get("validation", [])),
         computed=bool(data.get("computed", False)),
+        params={k: v for k, v in data.items() if k not in _FIELD_SPEC_CORE_KEYS},
     )
     if ftype == "object":
         spec.fields = _parse_field_tree(data.get("fields", {}), common_item_fields)

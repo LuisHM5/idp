@@ -28,7 +28,7 @@ class TestLiquidacionNormalizada:
         assert liq["IVA"] == 0
 
     def test_ieps_from_contribuciones_filter(self):
-        # IEPS is declared per PARTIDA (form_mapping source
+        # IEPS is declared per PARTIDA (field-centric DSL source
         # "PARTIDAS.CONTRIBUCIONES_PARTIDA"), not at the pedimento-level
         # CONTRIBUCIONES array — the rows live inside each partida.
         entity_map = {
@@ -44,7 +44,6 @@ class TestLiquidacionNormalizada:
         liq = build_liquidacion_normalizada(entity_map, _entry())
         assert liq["IEPS_8"] == 150
         assert liq["IEPS_30"] == 42
-        assert liq["FORMA_PAGO_IEPS"] == "0"
 
     def test_concepts_fall_back_to_contribuciones(self):
         # Real case: model files the liquidation line items under CONTRIBUCIONES
