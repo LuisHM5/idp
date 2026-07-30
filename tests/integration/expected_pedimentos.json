@@ -63,10 +63,17 @@
       ]
     },
     "26 07 3435 6041248 CG.pdf": {
-      "description": "Expediente digital de 86 páginas (factura agencia + pedimento + COVE + acuses VUCEM + manifestación de valor). Solo se verifica la porción PEDIMENTO_ADUANAL: los demás tipos de ese expediente (factura de agencia, cuenta de gastos, acuse VUCEM) ya no tienen catálogo propio.",
+      "description": "Expediente digital de 86 páginas (factura agencia + pedimento + COVE + acuses VUCEM + manifestación de valor). Solo se verifica la porción PEDIMENTO_ADUANAL: los demás tipos de ese expediente (factura de agencia, cuenta de gastos, acuse VUCEM) ya no tienen catálogo propio. La página 1 del pedimento trae el QR SOIANET (pa=3435, dn=6041248, ap=2026, pad=070) usado por el recovery de qr_recovery.py — verificado decodificando la página real con OpenCV antes de escribir este ground truth.",
       "expect_documents": [
         {
           "type": ["PEDIMENTO_ADUANAL"],
+          "fields": {
+            "NUMERO_PEDIMENTO_NORMALIZADO": "260734356041248",
+            "ANIO_PEDIMENTO": "26",
+            "ADUANA_DESPACHO": "07",
+            "PATENTE": "3435",
+            "NUMERO_CONSECUTIVO": "6041248"
+          },
           "pedimento_consecutivo": "6041248"
         }
       ]

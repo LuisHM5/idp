@@ -1,2 +1,8 @@
 # Runtime dependencies bundled into the enrichment Lambda (see stack bundling)
 pypdf==6.14.2
+# QR-code recovery (pipeline/qr_recovery.py): pypdfium2 rasterizes a page
+# (pure manylinux wheel, no system poppler needed); opencv-python-headless
+# decodes the QR via cv2.QRCodeDetector (no libzbar/system deps either) —
+# both verified against real pedimento QR codes before adding here.
+pypdfium2==5.12.1
+opencv-python-headless==5.0.0.93

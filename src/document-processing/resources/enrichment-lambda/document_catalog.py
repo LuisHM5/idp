@@ -146,6 +146,14 @@ class TypeRegistryEntry:
     # `cross_field_validation`) since cross-field rules use the exact same
     # ValidationRule shape either way.
     field_tree: Optional[Dict[str, "FieldSpec"]] = None
+    # Optional declarative QR-code recovery (pipeline/qr_recovery.py): when
+    # set, the pipeline rasterizes the first page of a matched segment,
+    # decodes any QR code found, and maps its URL query params onto fields
+    # per this spec — e.g. the pedimento's embedded SAT/SOIANET verification
+    # QR. Shape: {"confidence": float, "fields": {NAME: {"param", "digits",
+    # "slice"?}}}. None (the default) means the type has no QR to recover
+    # from; nothing in the generic pipeline is coupled to which type this is.
+    qr_recovery: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -295,6 +303,7 @@ def _parse_entry(
             form_mapping=data.get("form_mapping", {}) or {},
             pipeline=data.get("pipeline"),
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
+            qr_recovery=data.get("qr_recovery"),
         )
 
     fields: List[str] = []
@@ -327,6 +336,7 @@ def _parse_entry(
         structured_fields=data.get("structured_fields", {}) or {},
         form_mapping=data.get("form_mapping", {}) or {},
         pipeline=data.get("pipeline"),
+        qr_recovery=data.get("qr_recovery"),
     )
 
 

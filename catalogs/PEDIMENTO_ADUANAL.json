@@ -5,6 +5,15 @@
     "description": "Esquema mínimo para alimentar la captura general del pedimento, el cuadro de liquidación, las facturas relacionadas y el reporte de pedimento.",
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "min_confidence": 0.8,
+    "qr_recovery": {
+      "confidence": 0.99,
+      "fields": {
+        "PATENTE": { "param": "pa", "digits": 4 },
+        "NUMERO_CONSECUTIVO": { "param": "dn", "digits": 7 },
+        "ANIO_PEDIMENTO": { "param": "ap", "digits": 2, "slice": "-2:" },
+        "ADUANA_DESPACHO": { "param": "pad", "digits": 2, "slice": ":2" }
+      }
+    },
     "fields": {
       "NUMERO_PEDIMENTO": {
         "type": "string",
@@ -77,6 +86,13 @@
             "message": "El consecutivo debe contener 7 dígitos"
           }
         ]
+      },
+      "QR_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "hint": "Texto completo decodificado del código QR de verificación SAT/SOIANET impreso en la página 1 del pedimento (URL con parámetros pa/dn/ap/pad). Nunca inferir ni completar este campo: se llena únicamente de forma determinista al decodificar el QR (pipeline/qr_recovery.py); queda vacío cuando no se detecta o no se puede decodificar.",
+        "validation": []
       },
       "FECHA_ENTRADA": {
         "type": "date",

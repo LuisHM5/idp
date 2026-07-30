@@ -124,11 +124,19 @@ _IMPORTER_RFC_FIELDS = (
 )
 
 
-def _extract_segment(seg: Segment, pages: List[PageText], model_id: Optional[str]) -> Dict[str, Any]:
+def _extract_segment(
+    seg: Segment,
+    pages: List[PageText],
+    model_id: Optional[str],
+    reader: Optional[Any] = None,
+) -> Dict[str, Any]:
     """Extract one segment into a document dict. Runs in a worker thread.
 
     Self-contained (reads only its own pages + catalog entry) so it can be mapped
-    concurrently over all segments without shared mutable state.
+    concurrently over all segments without shared mutable state. `reader` is a
+    shared pypdf.PdfReader over the whole file (same sharing pattern
+    pdf_pages.load_pages already uses across its OCR worker threads) — only
+    read from when the segment's type declares `qr_recovery`.
     """
     seg_pages = [p for p in pages if seg.page_start <= p.number <= seg.page_end]
     entry = get_type_entry(seg.doc_type)
@@ -151,6 +159,7 @@ def _extract_segment(seg: Segment, pages: List[PageText], model_id: Optional[str
         doc["_confidences"] = extracted.confidences
         doc["_text"] = "\n".join(p.text for p in seg_pages)
         doc["extractionMeta"] = extracted.meta
+        _recover_from_qr(doc, entry, seg, reader)
         _recover_references(doc, entry)
         # Deterministic customs liquidation normalization (config-driven):
         # DTA/IGI/IVA/PRV/IEPS_* from CUADRO_LIQUIDACION.CONCEPTOS + CONTRIBUCIONES.
@@ -225,6 +234,18 @@ def process_pdf(
 
     segments = segment_pages(pages, declared_type=declared_type, model_id=model_id)
 
+    # Shared reader for QR-recovery rasterization only (see qr_recovery.py) —
+    # same reader-shared-across-threads pattern pdf_pages.load_pages already
+    # uses for its own Textract OCR workers. None when the PDF can't be
+    # re-read here; `_recover_from_qr` no-ops in that case.
+    try:
+        from pypdf import PdfReader as _PdfReader
+
+        qr_reader = _PdfReader(io.BytesIO(pdf_bytes))
+    except Exception as e:
+        logger.warning("could not open PDF for QR recovery: %s", e)
+        qr_reader = None
+
     # ---- extraction pass (all documents first, so cross-doc rules see siblings).
     # Segments are extracted concurrently (each is an independent Bedrock call);
     # ThreadPoolExecutor.map preserves segment order, so `documents` stays in
@@ -232,7 +253,7 @@ def process_pdf(
     workers = min(_EXTRACT_WORKERS, len(segments)) or 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
         documents: List[Dict[str, Any]] = list(
-            pool.map(lambda seg: _extract_segment(seg, pages, model_id), segments)
+            pool.map(lambda seg: _extract_segment(seg, pages, model_id, qr_reader), segments)
         )
 
     # ---- validation pass (with sibling context)
@@ -259,6 +280,27 @@ def process_pdf(
             # split (see catalog-dsl-v4-migration memory for why the legacy
             # trio existed and why arrays/objects were unrepresentable there).
             resolved_tree, checks = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
+            if entry.qr_recovery:
+                # Surfaces requirement #1 ("validate the QR exists") as a
+                # first-class check, not just a silent best-effort recovery —
+                # a missing/undecodable QR is a warning (review-worthy), not
+                # an error, since some legitimate scans may lack a usable one.
+                qr_info = doc.get("qrRecovery") or {}
+                qr_present = bool(qr_info.get("qrPresent"))
+                fields_recovered = qr_info.get("fieldsRecovered") or []
+                checks.append(RuleCheck(
+                    field="qrRecovery",
+                    rule="qr_present",
+                    valid=qr_present,
+                    severity="warning",
+                    message=(
+                        f"código QR detectado; {len(fields_recovered)} campo(s) recuperado(s): {', '.join(fields_recovered)}"
+                        if qr_present and fields_recovered
+                        else "código QR detectado pero no aportó campos reconocidos"
+                        if qr_present
+                        else "no se detectó código QR en la página esperada del pedimento"
+                    ),
+                ))
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
             doc["checks"] = _checks_json(checks)
@@ -363,6 +405,62 @@ def _has_field(entry, name: str) -> bool:
     """True when `name` is a declared top-level field, under either DSL —
     legacy `extraction_fields` (list) or field-centric `field_tree` (dict)."""
     return name in entry.extraction_fields or bool(entry.field_tree and name in entry.field_tree)
+
+
+def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[Any]) -> None:
+    """Deterministic recovery from an embedded QR code (e.g. the pedimento's
+    SAT/SOIANET verification QR), when the type declares `qr_recovery` in
+    its catalog config (see catalogs/PEDIMENTO_ADUANAL.json). No-op for any
+    type that doesn't declare it — nothing here is coupled to a specific
+    document type.
+
+    Runs BEFORE `_recover_references` so the regex-based recovery there only
+    fires for whatever the QR didn't provide (its own `not digits_exact(...)`
+    guard already skips fields the QR left in a valid, exact-length state).
+
+    Unlike that regex recovery, a QR-sourced value overrides the model's own
+    value unconditionally, not just when empty or the wrong length — trusting
+    data the SAT itself embedded over anything OCR/LLM-derived is the whole
+    point of this recovery source, so it always wins.
+    """
+    if reader is None or not entry.qr_recovery:
+        return
+    from .qr_recovery import extract_qr_recovery
+
+    result = extract_qr_recovery(reader, seg.page_start - 1, entry.qr_recovery)
+    # No leading underscore: unlike _entities/_confidences/_text (popped
+    # before the result is returned, see the "assemble" pass in process_pdf),
+    # this is meant to survive into the full result for audit — same
+    # convention as recoveredFields/checks/extractionMeta.
+    doc["qrRecovery"] = {
+        "qrPresent": result["qrPresent"],
+        "decodedText": result["decodedText"],
+        "fieldsRecovered": sorted(result["fields"]),
+    }
+
+    entities = doc.setdefault("_entities", {})
+    confidences = doc.setdefault("_confidences", {})
+    confidence = float(entry.qr_recovery.get("confidence", 0.99))
+
+    # The raw QR payload itself, exposed as a regular (computed) catalog
+    # field when the type declares one — e.g. QR_PEDIMENTO — so the literal
+    # data read from the QR is visible in extractedEntities, not just this
+    # internal audit dict. Populated whenever a QR decoded at all, even if
+    # its params didn't map onto any of the fields below.
+    if result["decodedText"] and _has_field(entry, "QR_PEDIMENTO"):
+        entities["QR_PEDIMENTO"] = result["decodedText"]
+        confidences["QR_PEDIMENTO"] = confidence
+
+    if not result["fields"]:
+        return
+
+    recovered = doc.setdefault("recoveredFields", {})
+    for name, value in result["fields"].items():
+        if not _has_field(entry, name):
+            continue
+        entities[name] = value
+        confidences[name] = confidence
+        recovered[name] = value
 
 
 def _recover_references(doc: Dict[str, Any], entry) -> None:
