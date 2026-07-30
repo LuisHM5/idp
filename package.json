@@ -2,6 +2,9 @@
   "name": "documents-validator",
   "version": "1.0.0",
   "description": "Sistema extensible de validacion documental con Amazon Bedrock",
+  "maintainers": [
+    "lhernandezm"
+  ],
   "main": "dist/document-validation-stack.js",
   "scripts": {
     "build": "node scripts/sync-catalogs.mjs && node scripts/patch-construct.mjs && tsc",

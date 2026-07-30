@@ -160,8 +160,23 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
             tryBundle(outputDir: string): boolean {
               const { execSync } = require("child_process");
               try {
+                // --platform/--python-version/--implementation/--abi force pip
+                // to fetch manylinux cp312 wheels regardless of which Python
+                // this machine's own `pip3` happens to be (a real bug we hit:
+                // opencv-python-headless pulls in numpy, and a dev machine on
+                // Python 3.13 silently resolved a cp313 numpy wheel that
+                // loaded fine locally but failed at runtime on the actual
+                // Python 3.12 Lambda — "Importing the numpy C-extensions
+                // failed ... incompatible with python 'cpython-312'").
+                // --only-binary=:all: is required alongside --platform (pip
+                // refuses to build an sdist for a platform that isn't the
+                // host). pypdf/pypdfium2/opencv-python-headless all ship
+                // manylinux2014 cp312 wheels, so this never falls back to
+                // building from source.
                 execSync(
-                  `pip3 install -r "${enrichmentDir}/requirements.txt" -t "${outputDir}" --no-cache-dir --quiet` +
+                  `pip3 install -r "${enrichmentDir}/requirements.txt" -t "${outputDir}"` +
+                    ` --no-cache-dir --quiet --only-binary=:all:` +
+                    ` --platform manylinux2014_x86_64 --python-version 3.12 --implementation cp --abi cp312` +
                     ` && cp -r "${enrichmentDir}/." "${outputDir}/"` +
                     ` && find "${outputDir}" -name __pycache__ -type d -exec rm -rf {} +`,
                   { stdio: "pipe", shell: "/bin/bash" }

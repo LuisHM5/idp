@@ -46,22 +46,22 @@ Key pieces:
 
 Run everything with pnpm from the repo root.
 
-| Command | Purpose |
-|---|---|
-| `pnpm build` | Combine `catalogs/*.json` → `config/catalogs.json`, patch the construct, `tsc`. Run before `deploy` / `diff` / `synth`. |
-| `pnpm sync` | **Push the whole `catalogs/` folder to DynamoDB (hot-reload, no redeploy).** |
-| `pnpm sync:one -- <selector>` | **Push ONE type: `--type TYPE_ID`, `--file path`, or a fuzzy name.** Add `--dry-run` to preview. |
-| `pnpm synth` | Produce CloudFormation via `npx cdk synth`. |
-| `pnpm run diff` | Show pending changes vs deployed stack. |
-| `pnpm run deploy` | Deploy (`--require-approval never`). Defaults to **dev** (safe: never touches prod). |
-| `pnpm run deploy:dev` / `deploy:prod` | Deploy a specific environment (`-c env=dev\|prod`). Prod is explicit. See below. |
-| `pnpm run import-cert` | Import/renew the TLS cert into ACM for the custom domain. |
-| `pnpm run destroy` / `pnpm run destroy:full` | Tear down stack (full variant cleans lingering resources). |
-| `pnpm preview-prompts` | Render the actual prompts Bedrock will receive. Run after catalog edits (needs `pnpm build` first). |
-| `pnpm backfill:index` | Rebuild the indexed type columns on documents processed before they existed (`-- --dry-run`, `-- --force`). |
-| `pnpm setup:python` | Create the test venv. |
-| `pnpm test-local` / `pnpm test-e2e` | Local handler tests and end-to-end pipeline tests. |
-| `pnpm track` | Track a Step Functions execution. |
+| Command                                      | Purpose                                                                                                                 |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `pnpm build`                                 | Combine `catalogs/*.json` → `config/catalogs.json`, patch the construct, `tsc`. Run before `deploy` / `diff` / `synth`. |
+| `pnpm sync`                                  | **Push the whole `catalogs/` folder to DynamoDB (hot-reload, no redeploy).**                                            |
+| `pnpm sync:one -- <selector>`                | **Push ONE type: `--type TYPE_ID`, `--file path`, or a fuzzy name.** Add `--dry-run` to preview.                        |
+| `pnpm synth`                                 | Produce CloudFormation via `npx cdk synth`.                                                                             |
+| `pnpm run diff`                              | Show pending changes vs deployed stack.                                                                                 |
+| `pnpm run deploy`                            | Deploy (`--require-approval never`). Defaults to **dev** (safe: never touches prod).                                    |
+| `pnpm run deploy:dev` / `deploy:prod`        | Deploy a specific environment (`-c env=dev\|prod`). Prod is explicit. See below.                                        |
+| `pnpm run import-cert`                       | Import/renew the TLS cert into ACM for the custom domain.                                                               |
+| `pnpm run destroy` / `pnpm run destroy:full` | Tear down stack (full variant cleans lingering resources).                                                              |
+| `pnpm preview-prompts`                       | Render the actual prompts Bedrock will receive. Run after catalog edits (needs `pnpm build` first).                     |
+| `pnpm backfill:index`                        | Rebuild the indexed type columns on documents processed before they existed (`-- --dry-run`, `-- --force`).             |
+| `pnpm setup:python`                          | Create the test venv.                                                                                                   |
+| `pnpm test-local` / `pnpm test-e2e`          | Local handler tests and end-to-end pipeline tests.                                                                      |
+| `pnpm track`                                 | Track a Step Functions execution.                                                                                       |
 
 **Schema/catalog management is exactly two commands: `pnpm sync` (all) and `pnpm sync:one` (one).** There is no `add-type`, `db-sync`, `list-types`, etc. anymore — edit files under `catalogs/` and sync.
 
@@ -70,6 +70,7 @@ Run everything with pnpm from the repo root.
 ## Environments & API security
 
 Two environments via CDK context (`bin/app.ts` reads `-c env=dev|prod`, **default dev**, loads `.env.dev` / `.env.production`):
+
 - **dev** (default) → stack `DocumentValidationStack-Dev`, **open** API on the random execute-api URL. For testing. A bare `pnpm run deploy` targets dev.
 - **prod** → stack `DocumentValidationStack`, hardened: **API keys** (`x-api-key`) required on every method, **WAFv2** (rate-based + AWS managed rules), and a **custom domain** (`idp.alsuper.com`) when `DOMAIN_NAME`+`CERT_ARN` are set. All prod hardening is gated on `environment === "prod"` in `src/document-validation-stack.ts`.
 
@@ -91,7 +92,7 @@ A type is routed to the multi-document customs pipeline (segmenter + cross-docum
 Pick the lowest-impact path that solves the request:
 
 1. **New document type** → copy `catalogs/_TEMPLATE.json` to `catalogs/<TYPE_ID>.json`, edit it, then either `pnpm sync:one -- --type <TYPE_ID>` (immediate, DynamoDB) or `pnpm run build && pnpm run deploy` (bundled baseline). Full guide: `catalogs/README.md`. Re-syncing a type overwrites its DynamoDB row entirely.
-2. **New extraction field or hint** → add it to `extraction_fields` / `extraction_hints` in that type's file under `catalogs/`. Hints are free-form Spanish describing *where* on the document the field lives.
+2. **New extraction field or hint** → add it to `extraction_fields` / `extraction_hints` in that type's file under `catalogs/`. Hints are free-form Spanish describing _where_ on the document the field lives.
 3. **New rule type beyond regex / date_expiry / presence / boolean_true** → extend `validators/base.py` and the corresponding module under `validators/`.
 4. **External API calls, cross-field checks, check digits** → create a `custom_validators/<name>.mjs` exporting `async function validate(entityMap, context)` that returns `[{ field, rule, valid, message }]`. Reference it via `custom_validator` in the type's catalog entry.
 
@@ -133,3 +134,11 @@ After changes, at minimum:
 2. If the catalog changed, `pnpm preview-prompts` to confirm prompts still render correctly.
 3. If Python code changed, run `pnpm test-local` when feasible.
 4. Mention any deploy or `db-put-type` steps the user still needs to execute.
+
+## Authors
+
+This project is authored by:
+
+Luis Hernández M.
+
+## Contributors
