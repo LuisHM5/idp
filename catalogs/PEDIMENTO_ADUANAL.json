@@ -123,7 +123,7 @@
       "PAIS_ORIGEN": {
         "type": "string",
         "required": false,
-        "hint": "País de origen principal de las mercancías. Utilizarlo solamente cuando las partidas compartan el mismo país.",
+        "hint": "País de origen principal de las mercancías, tal como aparece en la columna PAIS ORIGEN/PAIS VENTA de cada partida. Utilizarlo solamente cuando las partidas compartan el mismo país. NUNCA tomarlo de un bloque de domicilio (proveedor, importador o transportista); copiar el código/valor literal impreso en la partida (ej. USA), sin traducir ni expandir.",
         "validation": []
       },
       "VALOR_DOLARES": {
@@ -136,12 +136,19 @@
         "type": "number",
         "required": true,
         "hint": "Campo VALOR ADUANA, normalmente expresado en pesos mexicanos.",
-        "validation": []
+        "validation": [
+          {
+            "rule_type": "custom_formula",
+            "formula": "PRECIO_PAGADO_VALOR_COMERCIAL + FLETES + SEGUROS + EMBALAJES + OTROS_INCREMENTABLES",
+            "tolerance": 5,
+            "message": "VALOR_ADUANA no cuadra con PRECIO_PAGADO_VALOR_COMERCIAL + incrementables — posible confusión entre estos dos campos"
+          }
+        ]
       },
       "PRECIO_PAGADO_VALOR_COMERCIAL": {
         "type": "number",
         "required": true,
-        "hint": "Campo PRECIO PAGADO/VALOR COMERCIAL. Se utiliza como Valor Comercial Pesos en la pantalla de captura.",
+        "hint": "Campo PRECIO PAGADO/VALOR COMERCIAL:. Se utiliza como Valor Comercial Pesos en la pantalla de captura. (No confundir con VALOR_ADUANA)",
         "validation": []
       },
       "VALOR_SEGUROS": {
@@ -417,13 +424,13 @@
           "NUMERO_FACTURA": {
             "type": "string",
             "required": true,
-            "hint": "Número de factura impreso en el pedimento.",
+            "hint": "Número de factura impreso en la tabla DATOS DEL PROVEEDOR O COMPRADOR (columna NUM. FACTURA), junto al ID FISCAL y nombre del proveedor de esa fila. NUNCA el número de factura mencionado en el texto de OBSERVACIONES (frases como 'SE DIGITALIZA FACTURA(S) CON INCREMENTABLES NO. ...') — esas son facturas de flete/seguro, no de mercancía.",
             "validation": []
           },
           "FECHA": {
             "type": "date",
             "required": true,
-            "hint": "Fecha de la factura. Normalizar a YYYY-MM-DD.",
+            "hint": "Fecha de la factura impresa en la misma fila de la tabla DATOS DEL PROVEEDOR O COMPRADOR (columna FECHA, junto a NUM. FACTURA). Normalizar a YYYY-MM-DD. NUNCA la fecha mencionada en OBSERVACIONES para facturas de incrementables.",
             "validation": []
           },
           "PROVEEDOR_ID_FISCAL": {

@@ -16,7 +16,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cmp_to_key, lru_cache
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,22 @@ class PageText:
 import re
 
 _HSPACE_RE = re.compile(r" {5,}")
+
+# pypdf's `layout` mode occasionally renders two adjacent numeric columns on
+# the same line glued together with no separator — observed on a real
+# pedimento where "VALOR ADUANA: 435730" and "PRECIO PAGADO/VALOR COMERCIAL:
+# 421841" (two distinct boxes, side by side in the PDF) came out as
+# "421841.00435730.00", and the extraction model then guessed the same
+# number for both fields instead of picking the right one per label. A
+# genuine printed amount never abuts another amount without at least a
+# space/newline, so this pattern reliably flags the corruption (verified: 0
+# false positives across the rest of that same document) without needing to
+# know which fields are involved.
+_GLUED_AMOUNTS_RE = re.compile(r"\d\.\d{2}\d{3,}\.\d{2}")
+
+
+def _looks_corrupted(text: str) -> bool:
+    return bool(_GLUED_AMOUNTS_RE.search(text))
 
 
 def _native_text(page, index: int) -> str:
@@ -88,12 +104,28 @@ def _ocr_page(reader, index: int) -> PageText:
         logger.error("Textract failed on page %d: %s", index + 1, e)
         return PageText(index + 1, "", "empty", 0.0)
 
+    # Sort LINE blocks by position (top-to-bottom, then left-to-right within
+    # a row) instead of trusting Textract's raw block order — this is what
+    # keeps multi-column layouts (tables, side-by-side boxes) from
+    # interleaving. Blocks within 0.006 of each other's Top are treated as
+    # the same visual row (tiny bounding-box jitter) and broken by Left
+    # instead; a plain sort-by-Top would fail exactly this case, since two
+    # blocks on the same row rarely share the identical Top value.
+    line_blocks = [b for b in response.get("Blocks", []) if b.get("BlockType") == "LINE"]
+
+    def _compare(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+        box_a = a.get("Geometry", {}).get("BoundingBox", {})
+        box_b = b.get("Geometry", {}).get("BoundingBox", {})
+        vertical = box_a.get("Top", 0.0) - box_b.get("Top", 0.0)
+        return vertical if abs(vertical) > 0.006 else box_a.get("Left", 0.0) - box_b.get("Left", 0.0)
+
+    line_blocks.sort(key=cmp_to_key(_compare))
+
     lines: List[str] = []
     confs: List[float] = []
-    for block in response.get("Blocks", []):
-        if block.get("BlockType") == "LINE":
-            lines.append(block.get("Text", ""))
-            confs.append(float(block.get("Confidence", 0.0)))
+    for block in line_blocks:
+        lines.append(block.get("Text", ""))
+        confs.append(float(block.get("Confidence", 0.0)))
     text = "\n".join(lines)
     confidence = (sum(confs) / len(confs) / 100.0) if confs else 0.0
     return PageText(index + 1, text, "textract" if text else "empty", round(confidence, 4))
@@ -109,9 +141,14 @@ def load_pages(pdf_bytes: bytes, use_ocr: bool = True) -> List[PageText]:
 
     for i, page in enumerate(reader.pages):
         text = _native_text(page, i)
-        if len(text.strip()) >= _MIN_NATIVE_CHARS:
+        if len(text.strip()) >= _MIN_NATIVE_CHARS and not _looks_corrupted(text):
             pages[i] = PageText(i + 1, text, "native", 0.98)
         else:
+            if text.strip():
+                logger.warning(
+                    "page %d: native text layer looks corrupted (glued numeric "
+                    "columns), falling back to Textract", i + 1,
+                )
             scanned_indices.append(i)
 
     if scanned_indices and use_ocr:

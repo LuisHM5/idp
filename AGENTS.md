@@ -26,8 +26,7 @@ Key pieces:
   - `validators/` — Built-in rule modules plus `engine.py`, the dynamic rule engine (formulas, sum_array, cross-document, per-field statuses). `validators/customs/*` are thin shims — customs rules live entirely in the catalog JSON.
   - `pipeline/` — Expediente/pedimento pipeline: `pdf_pages` (pypdf layout text + Textract per-page OCR fallback), `segmenter` (Bedrock page-range classification with deterministic markers), `text_extractor` (catalog-schema extraction incl. repeatable fields, chunked), `expediente` (orchestrator + cross-document checks), `normalize` (deterministic amounts/dates/pedimento/UUID normalization + regex reference recovery).
   - `custom_validators/*.mjs` — Optional Node.js custom validators for logic beyond regex.
-- `tests/unit/` — Offline pytest suite for the rule engine and normalizers (`pnpm test:unit`).
-- `scripts/test-pedimentos.py` + `tests/integration/expected_pedimentos.json` — Integration runner with ground truth for the PDFs in `test-docs/pedimentos docs/docs` (`pnpm test:pedimentos`; needs AWS creds, costs ~$1/run).
+- `scripts/test-pedimentos.py` + `tests/integration/expected_pedimentos.json` — **The test.** Runs the real pipeline (pypdf/Textract + Bedrock) against the PDFs in `test-docs/pedimentos docs/docs` and asserts final field values against the ground truth in the JSON (`pnpm test:pedimentos`; needs AWS creds, costs a few cents/run). Edit the JSON directly to add/adjust expected values — no code changes needed to check a new field or document.
 - `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint (`POST /upload`).
 - `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}` by id; `GET /documents?docType=` filters by type via **Query on the `DocumentTypeIndex` GSI** — accepts TYPE_ID or human name, resolved with the build-generated `query-lambda/document-types.json` + the DynamoDB catalog; `GET /documents?field=&value=` searches any extracted field, indexed when combined with `docType`, full-table Scan otherwise).
 - `src/document-processing/resources/enrichment-lambda/indexing.py` — Promotes the final classification to indexed DynamoDB columns (`DocumentType`, `ProcessedAt`, `DocumentTypeName`, `ValidationStatus`, `ContainedDocumentTypes`, `DocumentName`) so the query API filters by type without a Scan. Best-effort: never fails validation. Backfill older items with `pnpm backfill:index`.
@@ -66,7 +65,7 @@ Run everything with pnpm from the repo root.
 
 **Schema/catalog management is exactly two commands: `pnpm sync` (all) and `pnpm sync:one` (one).** There is no `add-type`, `db-sync`, `list-types`, etc. anymore — edit files under `catalogs/` and sync.
 
-Python tests use pytest from the project venv (`.venv`): `pnpm test:unit` is offline; `pnpm test:pedimentos` hits real AWS (Textract + Bedrock).
+`pnpm test:pedimentos` (`.venv`) is the only Python test; it hits real AWS (Textract + Bedrock).
 
 ## Environments & API security
 

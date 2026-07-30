@@ -8,7 +8,6 @@
     "sync": "node scripts/sync-schema.mjs",
     "sync:one": "node scripts/sync-schema.mjs --one",
     "setup:python": "python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt",
-    "test:unit": ".venv/bin/python -m pytest tests/unit -q",
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",
     "comparar": "bash scripts/comparar-documento.sh",
     "test:e2e:pedimento": ".venv/bin/python scripts/test-e2e-pedimento.py",

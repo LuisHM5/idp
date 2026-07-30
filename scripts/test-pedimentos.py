@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
 LAMBDA_DIR = REPO / "src" / "document-processing" / "resources" / "enrichment-lambda"
@@ -37,19 +39,44 @@ def _norm_str(v) -> str:
     return str(v).strip().upper()
 
 
-def _match_field(doc_fields: dict, entities: dict, name: str, expected) -> tuple[bool, str]:
-    """Check one expected field. `name` may be 'A|B' (any alias matches).
+_PATH_SEG_RE = re.compile(r"^([A-Z0-9_]+)(?:\[(\d+)\])?$")
 
-    Compares against the field's normalizedValue (fallback extractedValue).
-    Numbers use 0.01 tolerance.
+
+def _leaf_value(entities: dict, path: str) -> Any:
+    """Resolve a dotted/indexed path (e.g. 'CUADRO_LIQUIDACION.TOTAL',
+    'FACTURAS[0].NUMERO_FACTURA') against `doc["extractedEntities"]`'s
+    field-centric-DSL recursive shape (see validators/engine.py's
+    resolve_field_tree docstring) and return the leaf's plain value.
+
+    Shape: scalar leaf -> {value, confidence, valid, reason, source};
+    object -> {valid, reason, fields: {...}}; array -> {items: [...]} (each
+    item shaped like an object node). Returns None when the path doesn't
+    resolve at all — a ground-truth typo and a genuine extraction miss look
+    the same on purpose, since both need a human to look.
     """
+    node: Any = entities
+    for i, seg in enumerate(path.split(".")):
+        m = _PATH_SEG_RE.match(seg)
+        if not m or not isinstance(node, dict):
+            return None
+        name, index = m.group(1), m.group(2)
+        node = node.get(name) if i == 0 else (node.get("fields") or {}).get(name)
+        if node is None:
+            return None
+        if index is not None:
+            items = node.get("items") if isinstance(node, dict) else None
+            if not isinstance(items, list) or int(index) >= len(items):
+                return None
+            node = items[int(index)]
+    return node.get("value") if isinstance(node, dict) and "value" in node else None
+
+
+def _match_field(entities: dict, name: str, expected) -> tuple[bool, str]:
+    """Check one expected field. `name` may be 'A|B' (any alias matches) and
+    may be a dotted/indexed path (see `_leaf_value`). Numbers use 0.01
+    tolerance."""
     for alias in name.split("|"):
-        slot = doc_fields.get(alias) or {}
-        value = slot.get("normalizedValue")
-        if value in (None, ""):
-            value = slot.get("extractedValue")
-        if value in (None, ""):
-            value = entities.get(alias)
+        value = _leaf_value(entities, alias)
         if value in (None, "", []):
             continue
         if isinstance(expected, (int, float)):
@@ -88,17 +115,16 @@ def _check_doc_expectation(exp: dict, documents: list) -> tuple[bool, list[str],
     for doc in candidates:
         notes: list[str] = []
         ok = True
-        fields = doc.get("fields", {})
         entities = doc.get("extractedEntities", {})
 
         for fname, fexpected in (exp.get("fields") or {}).items():
-            passed, note = _match_field(fields, entities, fname, fexpected)
+            passed, note = _match_field(entities, fname, fexpected)
             notes.append(("✓ " if passed else "✗ ") + note)
             ok = ok and passed
 
         if "pedimento_consecutivo" in exp:
             refs = [
-                entities.get(n)
+                _leaf_value(entities, n)
                 for n in ("NUMERO_PEDIMENTO_NORMALIZADO", "NUMERO_PEDIMENTO", "PEDIMENTO_REFERENCE")
             ]
             consecutivos = {pedimento_consecutivo(r) for r in refs if r} - {None}
@@ -108,9 +134,8 @@ def _check_doc_expectation(exp: dict, documents: list) -> tuple[bool, list[str],
             ok = ok and passed
 
         for req in exp.get("required_present", []):
-            slot = fields.get(req) or {}
-            present = slot.get("extractedValue") not in (None, "", []) or entities.get(req) not in (None, "", [])
-            notes.append(("✓ " if present else "✗ ") + f"{req} present" if present else f"✗ {req} MISSING")
+            present = _leaf_value(entities, req) not in (None, "", [])
+            notes.append(("✓ " if present else "✗ ") + (f"{req} present" if present else f"{req} MISSING"))
             ok = ok and present
 
         if ok:
