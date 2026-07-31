@@ -159,7 +159,7 @@ def _extract_segment(
         doc["_confidences"] = extracted.confidences
         doc["_text"] = "\n".join(p.text for p in seg_pages)
         doc["extractionMeta"] = extracted.meta
-        _recover_from_qr(doc, entry, seg, reader)
+        _recover_from_qr(doc, entry, seg, reader, seg_pages)
         _recover_references(doc, entry)
         # Deterministic customs liquidation normalization (config-driven):
         # DTA/IGI/IVA/PRV/IEPS_* from CUADRO_LIQUIDACION.CONCEPTOS + CONTRIBUCIONES.
@@ -279,28 +279,13 @@ def process_pdf(
             # IS the public result — no separate _public_entities/resolve_fields
             # split (see catalog-dsl-v4-migration memory for why the legacy
             # trio existed and why arrays/objects were unrepresentable there).
+            # requirement #1 ("validate the QR exists") is now a first-class,
+            # catalog-declared check — DEPOSITO_REFERENCIADO_QR_VALIDO (set by
+            # _recover_from_qr below) carries a `boolean_true` validation rule
+            # in the catalog, so resolve_field_tree's normal rule dispatch
+            # already produces the presence/validity check here; no special
+            # casing needed in this generic pipeline code.
             resolved_tree, checks = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
-            if entry.qr_recovery:
-                # Surfaces requirement #1 ("validate the QR exists") as a
-                # first-class check, not just a silent best-effort recovery —
-                # a missing/undecodable QR is a warning (review-worthy), not
-                # an error, since some legitimate scans may lack a usable one.
-                qr_info = doc.get("qrRecovery") or {}
-                qr_present = bool(qr_info.get("qrPresent"))
-                fields_recovered = qr_info.get("fieldsRecovered") or []
-                checks.append(RuleCheck(
-                    field="qrRecovery",
-                    rule="qr_present",
-                    valid=qr_present,
-                    severity="warning",
-                    message=(
-                        f"código QR detectado; {len(fields_recovered)} campo(s) recuperado(s): {', '.join(fields_recovered)}"
-                        if qr_present and fields_recovered
-                        else "código QR detectado pero no aportó campos reconocidos"
-                        if qr_present
-                        else "no se detectó código QR en la página esperada del pedimento"
-                    ),
-                ))
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
             doc["checks"] = _checks_json(checks)
@@ -407,12 +392,20 @@ def _has_field(entry, name: str) -> bool:
     return name in entry.extraction_fields or bool(entry.field_tree and name in entry.field_tree)
 
 
-def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[Any]) -> None:
+def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[Any], seg_pages: List[PageText]) -> None:
     """Deterministic recovery from an embedded QR code (e.g. the pedimento's
     SAT/SOIANET verification QR), when the type declares `qr_recovery` in
     its catalog config (see catalogs/PEDIMENTO_ADUANAL.json). No-op for any
     type that doesn't declare it — nothing here is coupled to a specific
     document type.
+
+    Page selection is text-anchored, not position-assumed: `qr_recovery.
+    extract_qr_recovery` looks for the catalog's declared `page_marker`
+    (the DEPOSITO REFERENCIADO / LINEA DE CAPTURA box's heading) across
+    `seg_pages` and decodes from THAT page — the real pedimento layout puts
+    the QR there, on whichever page NUM. PEDIMENTO is printed on, which isn't
+    reliably the segment's first page (`seg.page_start` is still tried as a
+    fallback when no marker page is found or it doesn't decode).
 
     Runs BEFORE `_recover_references` so the regex-based recovery there only
     fires for whatever the QR didn't provide (its own `not digits_exact(...)`
@@ -427,7 +420,7 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
         return
     from .qr_recovery import extract_qr_recovery
 
-    result = extract_qr_recovery(reader, seg.page_start - 1, entry.qr_recovery)
+    result = extract_qr_recovery(seg_pages, seg.page_start, reader, entry.qr_recovery)
     # No leading underscore: unlike _entities/_confidences/_text (popped
     # before the result is returned, see the "assemble" pass in process_pdf),
     # this is meant to survive into the full result for audit — same
@@ -436,6 +429,8 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
         "qrPresent": result["qrPresent"],
         "decodedText": result["decodedText"],
         "fieldsRecovered": sorted(result["fields"]),
+        "markerPageFound": result["markerPageFound"],
+        "pageChecked": result["pageChecked"],
     }
 
     entities = doc.setdefault("_entities", {})
@@ -450,6 +445,15 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
     if result["decodedText"] and _has_field(entry, "QR_PEDIMENTO"):
         entities["QR_PEDIMENTO"] = result["decodedText"]
         confidences["QR_PEDIMENTO"] = confidence
+
+    # Formal "the deposit box + its QR really are there" signal — a required
+    # boolean field (catalog validation: `boolean_true`) rather than just the
+    # best-effort audit dict above, so a missing/undecodable QR surfaces as a
+    # real validation failure, not something only visible by inspecting
+    # qrRecovery by hand.
+    if _has_field(entry, "DEPOSITO_REFERENCIADO_QR_VALIDO"):
+        entities["DEPOSITO_REFERENCIADO_QR_VALIDO"] = bool(result["fields"])
+        confidences["DEPOSITO_REFERENCIADO_QR_VALIDO"] = confidence
 
     if not result["fields"]:
         return
@@ -476,13 +480,32 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     text = doc.get("_text", "")
     recovered: Dict[str, str] = {}
 
-    for name in ("PEDIMENTO_REFERENCE", "NUMERO_PEDIMENTO"):
-        if _has_field(entry, name) and entities.get(name) in (None, "", []):
-            match = find_pedimento_reference(text)
-            if match:
-                entities[name] = match
-                doc.setdefault("_confidences", {})[name] = 0.95
-                recovered[name] = match
+    # PEDIMENTO_REFERENCE legitimately takes several shapes on other document
+    # types (find_pedimento_reference itself falls back to shorter
+    # patente+consecutivo or bare-consecutivo forms), so it's only filled
+    # when the model left it empty. NUMERO_PEDIMENTO is different: this
+    # catalog's own validation requires exactly 15 digits, but a real,
+    # observed model failure mode grabs the WRONG same-page field — the
+    # pedimento form prints both "NUM. PEDIMENTO: 26 07 0823 6001630" in the
+    # header AND a separate "PEDIMENTO: 6001630" (bare consecutivo only) in
+    # the PAGO ELECTRÓNICO box, and the model sometimes reads the second one
+    # into this field. That's a non-empty but wrong-length value, so it needs
+    # the same "not digits_exact" override the 4 atomic fields already get
+    # below, not just an empty-value fill.
+    if _has_field(entry, "PEDIMENTO_REFERENCE") and entities.get("PEDIMENTO_REFERENCE") in (None, "", []):
+        match = find_pedimento_reference(text)
+        if match:
+            entities["PEDIMENTO_REFERENCE"] = match
+            doc.setdefault("_confidences", {})["PEDIMENTO_REFERENCE"] = 0.95
+            recovered["PEDIMENTO_REFERENCE"] = match
+
+    if _has_field(entry, "NUMERO_PEDIMENTO") and not digits_exact(entities.get("NUMERO_PEDIMENTO"), 15):
+        match = find_pedimento_reference(text)
+        digits = digits_exact(match, 15) if match else None
+        if digits:
+            entities["NUMERO_PEDIMENTO"] = digits
+            doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO"] = 0.95
+            recovered["NUMERO_PEDIMENTO"] = digits
 
     # Fill any of the 4 atomic pedimento-number components the model left
     # empty OR extracted with the wrong digit count, by splitting the full
@@ -569,6 +592,27 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
                     doc.get("_confidences", {}).get("NUMERO_PEDIMENTO", 0.9)
                 )
                 recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
+
+    # NUMERO_PEDIMENTO_NORMALIZADO at >=0.99 confidence means it's QR-sourced
+    # (see qr_recovery's confidence, typically 0.99) — fully trusted, not a
+    # model guess. Copy it onto NUMERO_PEDIMENTO too: the model sometimes
+    # leaves that field holding only a fragment of what's printed (e.g. just
+    # the 7-digit consecutivo "6001630" instead of the full 15-digit
+    # reference), even when NORMALIZADO itself is the complete, correct
+    # value — no reason to trust the model's own NUMERO_PEDIMENTO over data
+    # already confirmed by the QR.
+    if _has_field(entry, "NUMERO_PEDIMENTO"):
+        normalizado_confidence = doc.get("_confidences", {}).get("NUMERO_PEDIMENTO_NORMALIZADO")
+        normalizado_value = digits_exact(entities.get("NUMERO_PEDIMENTO_NORMALIZADO"), 15)
+        if (
+            normalizado_confidence is not None
+            and normalizado_confidence >= 0.99
+            and normalizado_value
+            and entities.get("NUMERO_PEDIMENTO") != normalizado_value
+        ):
+            entities["NUMERO_PEDIMENTO"] = normalizado_value
+            doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO"] = normalizado_confidence
+            recovered["NUMERO_PEDIMENTO"] = normalizado_value
 
     if recovered:
         doc["recoveredFields"] = recovered

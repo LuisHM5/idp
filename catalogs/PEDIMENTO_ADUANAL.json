@@ -7,6 +7,22 @@
     "min_confidence": 0.8,
     "qr_recovery": {
       "confidence": 0.99,
+      "page_marker_min_matches": 2,
+      "short_segment_max_pages": 3,
+      "page_markers": [
+        "NUM\\.?\\s*PEDIMENTO",
+        "CVE\\.?\\s*PEDIM",
+        "DEP[OÓ]SITO REFERENCIADO",
+        "L[IÍ]NEA DE CAPTURA",
+        "PAGO ELECTR[OÓ]NICO",
+        "NOMBRE DE LA INSTITUCI[OÓ]N BANCARIA",
+        "IMPORTE PAGADO",
+        "N[UÚ]MERO DE OPERACI[OÓ]N BANCARIA",
+        "N[UÚ]MERO DE TRANSACCI[OÓ]N SAT",
+        "MEDIO DE PRESENTACI[OÓ]N",
+        "MEDIO DE RECEPCI[OÓ]N"
+      ],
+      "url_contains": "aplicacionesc.mat.sat.gob.mx",
       "fields": {
         "PATENTE": { "param": "pa", "digits": 4 },
         "NUMERO_CONSECUTIVO": { "param": "dn", "digits": 7 },
@@ -18,7 +34,7 @@
       "NUMERO_PEDIMENTO": {
         "type": "string",
         "required": false,
-        "hint": "Extraer el valor completo impreso en NUM. PEDIMENTO como string. Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito.",
+        "hint": "Extraer el valor completo impreso en el campo 'NUM. PEDIMENTO' del ENCABEZADO/parte superior del documento (formato AA AA NNNN NNNNNNN: año + aduana + patente + consecutivo, 15 dígitos en total). Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito. ADVERTENCIA: más abajo, en el recuadro DEPÓSITO REFERENCIADO / PAGO ELECTRÓNICO, existe un campo DISTINTO etiquetado solo 'PEDIMENTO:' (sin 'NUM.') que muestra ÚNICAMENTE el consecutivo de 7 dígitos (ej. '6001630'), porque ahí PATENTE y ADUANA ya se muestran por separado. NUNCA tomar ese valor corto para NUMERO_PEDIMENTO — son dos campos con nombre parecido en el mismo documento; el de NUM. PEDIMENTO en el encabezado es siempre el correcto, de 15 dígitos.",
         "validation": [
           {
             "rule_type": "regex",
@@ -93,6 +109,18 @@
         "computed": true,
         "hint": "Texto completo decodificado del código QR de verificación SAT/SOIANET impreso en la página 1 del pedimento (URL con parámetros pa/dn/ap/pad). Nunca inferir ni completar este campo: se llena únicamente de forma determinista al decodificar el QR (pipeline/qr_recovery.py); queda vacío cuando no se detecta o no se puede decodificar.",
         "validation": []
+      },
+      "DEPOSITO_REFERENCIADO_QR_VALIDO": {
+        "type": "boolean",
+        "required": true,
+        "computed": true,
+        "hint": "Verificación determinista, nunca inferida por el modelo: true solo cuando se localizó el recuadro DEPÓSITO REFERENCIADO - LÍNEA DE CAPTURA / PAGO ELECTRÓNICO y su código QR decodificó correctamente patente, año, aduana y consecutivo (pipeline/qr_recovery.py).",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "No se localizó o no se pudo decodificar el código QR del recuadro DEPÓSITO REFERENCIADO - LÍNEA DE CAPTURA del pedimento"
+          }
+        ]
       },
       "FECHA_ENTRADA": {
         "type": "date",

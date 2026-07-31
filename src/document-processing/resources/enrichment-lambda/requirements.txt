@@ -1,8 +1,17 @@
 # Runtime dependencies bundled into the enrichment Lambda (see stack bundling)
 pypdf==6.14.2
 # QR-code recovery (pipeline/qr_recovery.py): pypdfium2 rasterizes a page
-# (pure manylinux wheel, no system poppler needed); opencv-python-headless
-# decodes the QR via cv2.QRCodeDetector (no libzbar/system deps either) —
-# both verified against real pedimento QR codes before adding here.
+# (pure manylinux wheel, no system poppler needed); zxing-cpp decodes the
+# QR (also no system libzbar dep — unlike pyzbar). Replaced an earlier
+# opencv-python-headless (cv2.QRCodeDetector) attempt: cv2's detector proved
+# far too brittle on real degraded scans — one real pedimento scan only
+# decoded at exactly 250dpi and failed at 150/200/300/400/500/600, and image
+# preprocessing (grayscale/Otsu/adaptive-threshold/denoise/sharpen) barely
+# helped. zxing-cpp decoded that same page correctly at every DPI tried, at
+# 1/45th opencv's installed size (~2MB vs ~90MB) with zero declared deps.
+# numpy is explicit here (not just pulled in transitively via opencv/cv2
+# anymore) since pypdfium2's own to_numpy() lazily imports it without
+# declaring it as a dependency.
 pypdfium2==5.12.1
-opencv-python-headless==5.0.0.93
+zxing-cpp==2.2.0
+numpy==2.2.6
