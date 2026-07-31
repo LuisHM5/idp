@@ -149,6 +149,17 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       handler: "handler.handler",
       code: lambda.Code.fromAsset(enrichmentDir, {
         exclude: ["__pycache__", "**/__pycache__", "*.pyc"],
+        // CDK's default AssetHashType.SOURCE hashes only enrichmentDir's own
+        // files, not the bundling command/environment that turns
+        // requirements.txt into installed packages. That silently bit us: a
+        // fix to the bundling command below (forcing manylinux cp312 wheels)
+        // changed no file inside enrichmentDir, so the asset hash stayed
+        // identical to the previous (broken cp313-numpy) build, and `cdk
+        // deploy` kept reusing that already-published S3 object no matter
+        // how many times it ran or how thoroughly cdk.out was cleared.
+        // OUTPUT hashes the bundled result instead, so any change to how
+        // dependencies get resolved always produces a new asset.
+        assetHashType: cdk.AssetHashType.OUTPUT,
         bundling: {
           image: lambda.Runtime.PYTHON_3_12.bundlingImage,
           command: [
