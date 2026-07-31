@@ -4,97 +4,158 @@ Guidance for AI coding agents working in this repository.
 
 ## Project Overview
 
-**Documents Validator** is an extensible Mexican document validation and extraction system built on AWS. It combines Amazon Bedrock (Claude) for classification and field extraction with a Python Lambda that applies deterministic validation rules defined in a JSON catalog (optionally hot-reloadable via DynamoDB).
+**Documents Validator** is a document validation and extraction system on AWS: Amazon Bedrock (Claude) classifies and extracts fields, a Python Lambda applies deterministic validation rules defined in a JSON catalog (hot-reloadable via DynamoDB, no redeploy needed).
 
-Supported document types out of the box: INE, Pasaporte, Constancia de Situación Fiscal (CSF), Carta NOM-35, CURP, and custom internal formats.
+The engine is generic (any document type can be added via `catalogs/`), but **as of 2026-07-24 the project pivoted to Mexican customs (aduanal) documents**. The only catalog type currently active — read by `pnpm build`/`pnpm sync` — is `PEDIMENTO_ADUANAL` (`catalogs/PEDIMENTO_ADUANAL.json`), processed by a dedicated multi-document "expediente" pipeline (pedimentos, CFDIs, permits, VUCEM acknowledgements, etc., all inside one PDF). The older generic ID-document types (INE, Pasaporte, CSF, CURP, NOM-35, internal formats...) still exist as JSON but were moved to **`catalogs/save/`**, a folder the build/sync tooling does not read — they are parked, not deleted, and not part of the live system. Do not describe them as "supported out of the box" unless they're moved back into `catalogs/`.
+
+## Documentation Map
+
+This repo documents itself extensively in Spanish — **read the relevant doc instead of re-deriving things from code**, and update it in the same change if you touch what it describes.
+
+| Doc | Covers |
+|---|---|
+| `README.md` | Human-facing entry point: what the project is, quickstart, links to everything below. |
+| `catalogs/README.md` | **The catalog DSL spec** (field-centric v4) — field shapes, every `rule_type`, computed fields, `pipeline: "expediente"` semantics, gotchas. Read before touching any `catalogs/*.json`. |
+| `documentacion/COMO_FUNCIONA.md` | High-level architecture walkthrough with diagrams — best first read to understand the system without reading code. |
+| `documentacion/FLUJO_EJECUCION.md` | Code-level execution trace, file:line references, both pipeline branches, dataflow table, and a ranked list of known dataflow inefficiencies. Read before touching `handler.py` or `pipeline/`. |
+| `documentacion/GUIA_DESPLIEGUE_Y_USO.md` | Full operational guide: install, deploy, update/delete catalogs, troubleshooting table, file map of what to edit vs. never touch. |
+| `documentacion/API_USO.md` | **REST API reference — keep in sync automatically, see below.** |
+| `documentacion/AMBIENTES_Y_SEGURIDAD.md` | dev vs prod stacks, custom domain, API keys, WAF. |
+| `documentacion/TESTS.md` | Every test command, what it checks, cost, and how to read `pnpm comparar` output to diagnose a bug. |
+| `documentacion/COSTOS.md` | Measured (not estimated) Bedrock/Textract/infra costs, per page/doc/month. |
+| `documentacion/ENVIAR_DOCUMENTO_API.md` | How to send a document and read back a result via the CLI scripts or curl. |
+| `catalogs/tipos-docs.md` | Informal notes mapping business document names to `TYPE_ID`s (customs domain). |
+| `custom_validators/README.md` (inside enrichment-lambda) | How to write a Node.js custom validator. |
 
 ## Architecture
 
 ```
-Upload API → S3 (raw/) → Bedrock Classification → Bedrock Extraction
-           → Enrichment Lambda (deterministic + custom validators)
+Upload API → S3 (raw/) → Step Functions (blueprint)
+           → Bedrock Classification → Bedrock Extraction   [standard flow only]
+           → Enrichment Lambda (handler.py) — branches on document type:
+               ├── expediente pipeline (pipeline/) — customs, multi-document PDFs
+               └── standard flow — single document, reuses Bedrock's extraction
            → EventBridge (APROBADO / RECHAZADO / REQUIERE_REVISION)
 ```
 
+The Step Functions state machine itself comes from `@cdklabs/cdk-appmod-catalog-blueprints`; this repo only supplies the enrichment Lambda and the upload/query Lambdas. See `documentacion/FLUJO_EJECUCION.md` for the full trace with file:line references.
+
 Key pieces:
 
-- `bin/app.ts` — CDK entry point. Loads `.env.production` and instantiates the stack.
-- `src/document-validation-stack.ts` — Main CDK stack. Wires Upload Lambda, Bedrock pipeline (via `@cdklabs/cdk-appmod-catalog-blueprints`), Enrichment Lambda, optional DynamoDB catalog, and EventBridge broker.
-- `src/prompt-generator.ts` / `src/document-catalog.ts` — Generate Bedrock classification and extraction prompts from the JSON catalog at synth time, injecting `extraction_hints` so the model knows where to look for each field.
-- `src/document-processing/resources/enrichment-lambda/` — Python 3.12 validation engine (do not modify `handler.py` lightly; extend via config and validators instead).
-  - `config/catalogs.json` — **Bundled catalog. GENERATED — do not edit.** Produced by `pnpm build` (scripts/sync-catalogs.mjs) from the `catalogs/` folder. Edit the source in `catalogs/`, never this file.
-  - `validators/` — Built-in rule modules plus `engine.py`, the dynamic rule engine (formulas, sum_array, cross-document, per-field statuses). `validators/customs/*` are thin shims — customs rules live entirely in the catalog JSON.
-  - `pipeline/` — Expediente/pedimento pipeline: `pdf_pages` (pypdf layout text + Textract per-page OCR fallback), `segmenter` (Bedrock page-range classification with deterministic markers), `text_extractor` (catalog-schema extraction incl. repeatable fields, chunked), `expediente` (orchestrator + cross-document checks), `normalize` (deterministic amounts/dates/pedimento/UUID normalization + regex reference recovery).
-  - `custom_validators/*.mjs` — Optional Node.js custom validators for logic beyond regex.
-- `scripts/test-pedimentos.py` + `tests/integration/expected_pedimentos.json` — **The test.** Runs the real pipeline (pypdf/Textract + Bedrock) against the PDFs in `test-docs/pedimentos docs/docs` and asserts final field values against the ground truth in the JSON (`pnpm test:pedimentos`; needs AWS creds, costs a few cents/run). Edit the JSON directly to add/adjust expected values — no code changes needed to check a new field or document.
-- `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint (`POST /upload`).
-- `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}` by id; `GET /documents?docType=` filters by type via **Query on the `DocumentTypeIndex` GSI** — accepts TYPE_ID or human name, resolved with the build-generated `query-lambda/document-types.json` + the DynamoDB catalog; `GET /documents?field=&value=` searches any extracted field, indexed when combined with `docType`, full-table Scan otherwise).
-- `src/document-processing/resources/enrichment-lambda/indexing.py` — Promotes the final classification to indexed DynamoDB columns (`DocumentType`, `ProcessedAt`, `DocumentTypeName`, `ValidationStatus`, `ContainedDocumentTypes`, `DocumentName`) so the query API filters by type without a Scan. Best-effort: never fails validation. Backfill older items with `pnpm backfill:index`.
-- `documentacion/API_USO.md` — **User-facing API reference (all endpoints).** Keep it in sync — see "API Documentation" below.
-- `catalogs/` — **THE single source of truth for document types.** One JSON per type (`<TYPE_ID>.json`, shape `{ "TYPE_ID": { ...entry } }`), plus `catalogs/_shared.json` (globals: `_field_sets`, `cross_document_validation_rules`, `_global_output_fields`) and `catalogs/_TEMPLATE.json` (copy this to create a new type). See `catalogs/README.md` for the full guide. `pnpm run build` combines this folder into the bundled `config/catalogs.json`; `pnpm sync` pushes it to DynamoDB for hot-reload.
-- `scripts/` — CLI tooling (add types, preview prompts, DynamoDB hot-reload, end-to-end tests).
+- `bin/app.ts` — CDK entry point. Reads `-c env=dev|prod` (default dev), loads `.env.dev`/`.env.production`, instantiates the stack.
+- `src/document-validation-stack.ts` — Main CDK stack. Wires Upload/Query Lambdas, the Bedrock pipeline, Enrichment Lambda, DynamoDB catalog, EventBridge broker, and prod-only hardening (API keys, WAFv2, custom domain).
+- `src/prompt-generator.ts` / `src/document-catalog.ts` — Generate Bedrock classification/extraction prompts at synth time from the **legacy DSL only** (`extraction_fields`/`extraction_hints`). They do not understand the field-centric `fields` DSL — `pnpm preview-prompts` shows no extraction fields for a field-centric type even though extraction works fine (it happens Python-side, not through this prompt).
+- `src/document-processing/resources/enrichment-lambda/` — Python 3.12 validation engine (do not modify `handler.py` lightly; extend via catalog config and validators instead).
+  - `config/catalogs.json` — **Bundled catalog. GENERATED — do not edit, gitignored.** Produced by `pnpm build` (`scripts/sync-catalogs.mjs`) from `catalogs/*.json`.
+  - `document_catalog.py` — Loads catalog entries (bundled JSON + DynamoDB overrides); detects which DSL a type uses by the presence of the `"fields"` key.
+  - `validators/` — `engine.py` is the dynamic rule engine and the sole arbiter of which `rule_type`s exist (`_dispatch_rule`). `base.py`/`identification.py`/`fiscal.py`/`internal_formats.py` back the legacy/standard flow's `validator_module` mechanism. `validators/customs/*` are thin shims — customs rule *logic* lives in the catalog JSON and in `pipeline/expediente.py`.
+  - `pipeline/` — the expediente pipeline: `pdf_pages.py` (pypdf layout text + parallel Textract OCR fallback per scanned page), `segmenter.py` (Bedrock page-range classification with deterministic markers, or a single segment if the caller declared the type), `text_extractor.py` (catalog-schema extraction incl. nested/repeatable fields, chunked, parallel per-chunk), `expediente.py` (orchestrator: per-segment extraction — parallelized via `ThreadPoolExecutor`, `EXTRACT_WORKERS` env var — cross-document checks, tracking/provenance), `liquidacion.py` (fills `LIQUIDACION_NORMALIZADA` computed fields via concept-alias/source/filter mapping declared directly on catalog fields), `normalize.py` (deterministic amounts/dates/pedimento-number/UUID normalization + regex reference recovery), `qr_recovery.py` (corrects PATENTE/NUMERO_CONSECUTIVO/ANIO_PEDIMENTO/ADUANA_DESPACHO from the pedimento's embedded QR, gated by `QR_RECOVERY_ENABLED`).
+  - `extractors/` — Textract wrappers (`textract_analyze_id.py`, `textract_bedrock.py`) used by the standard flow's optional re-extraction fallback.
+  - `indexing.py` — Promotes the final classification to indexed DynamoDB columns (`DocumentType`, `ProcessedAt`, `DocumentTypeName`, `ValidationStatus`, `ContainedDocumentTypes`, `DocumentName`) so the query API filters by type without a Scan. Best-effort: never fails validation. Backfill older items with `pnpm backfill:index`.
+  - `custom_validators/*.mjs` — Optional Node.js custom validators for logic beyond regex (standard flow only, see below).
+- `src/document-processing/resources/upload-lambda/index.mjs` — Node.js 20 REST upload endpoint (`POST /upload`, inline or S3-presigned).
+- `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}`, `GET /documents?docType=...&field=...&value=...`).
+- `catalogs/` — **THE single source of truth for document types**, but only for files that live directly in this folder (no subfolders are read). See "Catalog DSL" below and `catalogs/README.md` for the full spec.
+- `scripts/` — CLI tooling: catalog sync, prompt preview, local/e2e processing, comparisons, backfill. See the Commands table.
 - `patches/default-bedrock-invoke-index.py` — Patch applied by `scripts/patch-construct.mjs` during `pnpm build`.
+
+## Catalog DSL (field-centric v4)
+
+`PEDIMENTO_ADUANAL.json` uses the current DSL: each field is declared **once**, as a key of a `fields` dict, carrying its type, whether it's required, its extraction hint, and its own `validation` — instead of being repeated across `extraction_fields`/`extraction_hints`/`required_fields`/`validation_rules` (the legacy DSL, still supported by the engine for types that use it, but no active type does today).
+
+```jsonc
+"NOMBRE_DEL_CAMPO": {
+  "type": "string",              // string | number | boolean | date | object | array
+  "required": true,
+  "hint": "Dónde vive el dato en el documento, en español.",
+  "validation": [ { "rule_type": "regex", "pattern": "...", "message": "..." } ],
+  "fields": { /* only if type == "object": same shape, recursive */ },
+  "item_fields": { "$common": [...], /* only if type == "array" of rows */ },
+  "computed": true                 // only if the pipeline fills it, not the model
+}
+```
+
+- The DSL a type uses is detected purely by the presence of the `"fields"` key in its raw JSON (`document_catalog.py`) — never hardcode logic to a specific `TYPE_ID`; detect by DSL shape so any future type gets the same support for free.
+- A type with `"fields"` is routed to the expediente pipeline automatically (extraction requires it — the legacy prompt generator can't read `fields`), even without `pipeline: "expediente"`. That flag still controls two separate things: auto-segmentation candidacy for undeclared uploads, and eligibility for cross-document rules. See `catalogs/README.md` → "`pipeline: 'expediente'`: qué controla realmente" for the exact rules.
+- `validators/engine.py` is the only place that knows real `rule_type`s. An unrecognized `rule_type` doesn't error — it's silently recorded as `skipped: true, severity: "warning"`. Always check for `"skipped": true` in returned checks before assuming a new rule is miscalibrated.
+- Full spec (every `rule_type`, the `LIQUIDACION_NORMALIZADA` computed-field convention, `$common` item fields, cross-document rules, gotchas): **`catalogs/README.md`**.
+
+## Output shape
+
+Each resolved field — scalar, object, or array, at any nesting depth — resolves recursively:
+- scalar → `{value, confidence, valid, reason, source}`
+- object → `{valid, reason, fields: {SUBCAMPO: {...recursive...}}}`
+- array → `{items: [ {...recursive per row...} ]}`
+
+`source` is `"MODEL_EXTRACTION"` or `"NORMALIZED"` (computed/recovered post-extraction) — distinct from a field's `hint`, which is catalog input describing where the value lives on the document for the prompt. `extractedValue` is always the verbatim model output (or `null` — never invented); `normalizedValue`/computed values are a deterministic derivation that never overwrites it. Full request/response shapes, including the DynamoDB-compact-vs-S3-complete split: `documentacion/API_USO.md`.
 
 ## Environment
 
 - Node.js 20+, pnpm 10+ (package manager pinned: `pnpm@10.20.0`).
 - AWS CDK v2 (`aws-cdk-lib ^2.252.0`), deployed via `npx cdk`.
-- Python 3.12 for the enrichment Lambda.
-- `.env.production` (copied from `.env.example`) holds `BEDROCK_MODEL_ID`, `CDK_DEFAULT_ACCOUNT`, `CDK_DEFAULT_REGION`, `CATALOG_TABLE`, `AWS_REGION`.
+- Python 3.12 for the enrichment Lambda; local test venv via `pnpm setup:python`.
+- `.env.dev` / `.env.production` (gitignored, template `.env.example`) hold `BEDROCK_MODEL_ID`, `CDK_DEFAULT_ACCOUNT`, `CDK_DEFAULT_REGION`, `CATALOG_TABLE`, `AWS_REGION`, prod-only `DOMAIN_NAME`/`CERT_ARN`, and `QR_RECOVERY_ENABLED`.
 
 ## Commands
 
 Run everything with pnpm from the repo root.
 
-| Command                                      | Purpose                                                                                                                 |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `pnpm build`                                 | Combine `catalogs/*.json` → `config/catalogs.json`, patch the construct, `tsc`. Run before `deploy` / `diff` / `synth`. |
-| `pnpm sync`                                  | **Push the whole `catalogs/` folder to DynamoDB (hot-reload, no redeploy).**                                            |
-| `pnpm sync:one -- <selector>`                | **Push ONE type: `--type TYPE_ID`, `--file path`, or a fuzzy name.** Add `--dry-run` to preview.                        |
-| `pnpm synth`                                 | Produce CloudFormation via `npx cdk synth`.                                                                             |
-| `pnpm run diff`                              | Show pending changes vs deployed stack.                                                                                 |
-| `pnpm run deploy`                            | Deploy (`--require-approval never`). Defaults to **dev** (safe: never touches prod).                                    |
-| `pnpm run deploy:dev` / `deploy:prod`        | Deploy a specific environment (`-c env=dev\|prod`). Prod is explicit. See below.                                        |
-| `pnpm run import-cert`                       | Import/renew the TLS cert into ACM for the custom domain.                                                               |
-| `pnpm run destroy` / `pnpm run destroy:full` | Tear down stack (full variant cleans lingering resources).                                                              |
-| `pnpm preview-prompts`                       | Render the actual prompts Bedrock will receive. Run after catalog edits (needs `pnpm build` first).                     |
-| `pnpm backfill:index`                        | Rebuild the indexed type columns on documents processed before they existed (`-- --dry-run`, `-- --force`).             |
-| `pnpm setup:python`                          | Create the test venv.                                                                                                   |
-| `pnpm test-local` / `pnpm test-e2e`          | Local handler tests and end-to-end pipeline tests.                                                                      |
-| `pnpm track`                                 | Track a Step Functions execution.                                                                                       |
+| Command | Purpose |
+| --- | --- |
+| `pnpm build` | Combine `catalogs/*.json` → `config/catalogs.json`, patch the construct, `tsc`. Run before `deploy`/`diff`/`synth`. |
+| `pnpm sync` | **Push the whole `catalogs/` folder to DynamoDB (hot-reload, no redeploy).** |
+| `pnpm sync:one -- <selector>` | **Push ONE type: `--type TYPE_ID`, `--file path`, or a fuzzy name.** Add `--dry-run` to preview. |
+| `pnpm synth` | Produce CloudFormation via `npx cdk synth`. |
+| `pnpm run diff` / `diff:dev` / `diff:prod` | Show pending changes vs. the deployed stack (default/dev/prod). |
+| `pnpm run deploy` | `pnpm build` + deploy. Defaults to **dev** (safe: never touches prod). |
+| `pnpm run deploy:dev` / `deploy:prod` | Deploy a specific environment. Prod is explicit. See `documentacion/AMBIENTES_Y_SEGURIDAD.md`. |
+| `pnpm run import-cert` | Import/renew the TLS cert into ACM for the prod custom domain. |
+| `pnpm run destroy` / `destroy:full` | Tear down stack (full variant also removes the DynamoDB catalog table — irreversible for DynamoDB-only types). |
+| `pnpm preview-prompts` | Render the Bedrock prompts the **standard flow** will receive (legacy DSL only; doesn't reflect field-centric types). Run after catalog edits, needs `pnpm build` first. |
+| `pnpm backfill:index` | Rebuild indexed type columns on documents processed before they existed (`-- --dry-run`, `-- --force`). |
+| `pnpm setup:python` | Create the `.venv` test environment. |
+| `pnpm test:unit` | Offline pytest: rule engine, normalizers, catalog/ground-truth sanity. Free. |
+| `pnpm test:pedimentos` | Real pipeline (`process_pdf()` in-process — no S3/SQS/Step Functions) against `test-docs/pedimentos docs/docs`, asserts against `tests/integration/expected_pedimentos.json`. AWS creds needed, ~$1/full run. `-- --file <name>` for one doc, `-- --save <dir>` to keep full JSON results. |
+| `pnpm comparar` (`scripts/comparar-documento.sh`) | Same comparison as `test:pedimentos` but for a single document with a confirmation prompt — the go-to for "is this a bug" triage. |
+| `pnpm procesar` (`scripts/procesar-docs.py`) | Run the real pipeline locally against your own docs (no stack needed, your AWS creds), no assertions — dumps `resultados/<file>.json` + `_resumen.md` for human review. `-- --file`/`--dir`/`--importer RFC`/`--out`. |
+| `pnpm resultado` (`scripts/ver-resultado.py`) | Fetch and pretty-print a document's result from a deployed stack by id/prefix. `-- --id <id> [--wait] [--save dir] [--env prod]`. |
+| `pnpm enviar` (`scripts/enviar-documento.sh`) | Upload a document to a deployed stack's API (auto-picks inline vs. S3-presigned by size). `pnpm enviar file.pdf TYPE [--env dev\|prod]`. |
+| `pnpm test-local` / `test-e2e` | Local handler tests with mocked entities; end-to-end test against a deployed stack's real API (no ground truth comparison). |
+| `pnpm test:e2e:pedimento` (`scripts/test-e2e-pedimento.py`) | **Real infra E2E**: uploads via `POST /upload` to a deployed stack, waits for the actual Step Functions execution, checks it `SUCCEEDED` (catches infra bugs `pnpm comparar` can't see), *and* compares against ground truth. |
+| `pnpm schema:sensitivity` (`scripts/schema-sensitivity.py`) | Mutates the catalog and re-measures ground-truth/rule outcomes to answer "what does changing this do" with data. `validation`-category mutations are free (re-evaluated on one baseline extraction); `extraction`-category mutations each cost a real Bedrock call (~$0.05). `-- --list`/`--file`/`--only`/`--skip-paid`. |
+| `pnpm track` (`scripts/track-execution.mjs`) | Follow a Step Functions execution (`--latest --follow`, or `--execution-arn`). |
 
-**Schema/catalog management is exactly two commands: `pnpm sync` (all) and `pnpm sync:one` (one).** There is no `add-type`, `db-sync`, `list-types`, etc. anymore — edit files under `catalogs/` and sync.
-
-`pnpm test:pedimentos` (`.venv`) is the only Python test; it hits real AWS (Textract + Bedrock).
+Full test matrix with costs and troubleshooting: **`documentacion/TESTS.md`**.
 
 ## Environments & API security
 
-Two environments via CDK context (`bin/app.ts` reads `-c env=dev|prod`, **default dev**, loads `.env.dev` / `.env.production`):
+Two environments via CDK context (`bin/app.ts` reads `-c env=dev|prod`, **default dev**, loads `.env.dev`/`.env.production`):
 
 - **dev** (default) → stack `DocumentValidationStack-Dev`, **open** API on the random execute-api URL. For testing. A bare `pnpm run deploy` targets dev.
-- **prod** → stack `DocumentValidationStack`, hardened: **API keys** (`x-api-key`) required on every method, **WAFv2** (rate-based + AWS managed rules), and a **custom domain** (`idp.alsuper.com`) when `DOMAIN_NAME`+`CERT_ARN` are set. All prod hardening is gated on `environment === "prod"` in `src/document-validation-stack.ts`.
+- **prod** → stack `DocumentValidationStack`, hardened: **API keys** (`x-api-key`) required on every method, **WAFv2** (rate-based + AWS managed rules), and a **custom domain** (`idp.alsuper.com`) when `DOMAIN_NAME`+`CERT_ARN` are set. All prod hardening is gated on `environment === "prod"` in `src/document-validation-stack.ts` (`isProd`, `src/document-validation-stack.ts:96`).
 
-Missing/invalid key → native 403 from API Gateway **without invoking the Lambda** (no backend cost for 401/403/404). Cert is bring-your-own: import with `scripts/import-cert.mjs` (renew in place with `--renew --arn` — zero downtime, no redeploy). External DNS: add a CNAME to the `CustomDomainTarget` output. Full guide: **`documentacion/AMBIENTES_Y_SEGURIDAD.md`**.
+Each environment is a fully isolated stack (own Lambdas, Step Functions, S3, DynamoDB tracking table, KMS, EventBus) with a `-dev` resource suffix for globally-unique names; both share the imported `document-validation-catalog` DynamoDB table. Missing/invalid key → native 403 from API Gateway **without invoking the Lambda** (no backend cost for 401/403/404). Cert is bring-your-own: import with `scripts/import-cert.mjs` (renew in place with `--renew --arn` — zero downtime, no redeploy). Full guide: **`documentacion/AMBIENTES_Y_SEGURIDAD.md`**.
 
 ## Catalog Loading Precedence
 
 When the enrichment Lambda runs, it loads types in this order (last wins):
 
 1. `config/catalogs.json` — the single bundled catalog (built from `catalogs/*.json`), shipped with the Lambda code.
-2. DynamoDB (`CATALOG_TABLE` env var) — overrides bundled entries when `enableDynamoCatalog: true`. This is what `pnpm sync` writes to.
+2. DynamoDB (`CATALOG_TABLE` env var) — overrides bundled entries when `enableDynamoCatalog: true` (default in `bin/app.ts`). This is what `pnpm sync`/`sync:one` write to.
 
-`forceReloadCatalog: true` reloads on every invocation (small perf cost, immediate DynamoDB effect).
+`forceReloadCatalog: true` (default) reloads on every invocation (small perf cost, immediate DynamoDB effect).
 
-A type is routed to the multi-document customs pipeline (segmenter + cross-document rules) iff its entry declares `"pipeline": "expediente"`; otherwise it uses the standard single-document flow (`is_customs_type` reads this field).
+Routing to the expediente pipeline (`pipeline/expediente.py`) happens if **any** of: `pipeline == "expediente"`, the event declares `expediente: true` explicitly, or the type declares `fields` (field-centric DSL — see above). Auto-segmentation candidacy for undeclared uploads and eligibility for cross-document rules still depend exclusively on `pipeline: "expediente"`.
 
 ## How To Extend
 
 Pick the lowest-impact path that solves the request:
 
-1. **New document type** → copy `catalogs/_TEMPLATE.json` to `catalogs/<TYPE_ID>.json`, edit it, then either `pnpm sync:one -- --type <TYPE_ID>` (immediate, DynamoDB) or `pnpm run build && pnpm run deploy` (bundled baseline). Full guide: `catalogs/README.md`. Re-syncing a type overwrites its DynamoDB row entirely.
-2. **New extraction field or hint** → add it to `extraction_fields` / `extraction_hints` in that type's file under `catalogs/`. Hints are free-form Spanish describing _where_ on the document the field lives.
-3. **New rule type beyond regex / date_expiry / presence / boolean_true** → extend `validators/base.py` and the corresponding module under `validators/`.
-4. **External API calls, cross-field checks, check digits** → create a `custom_validators/<name>.mjs` exporting `async function validate(entityMap, context)` that returns `[{ field, rule, valid, message }]`. Reference it via `custom_validator` in the type's catalog entry.
+1. **New document type** → `cp catalogs/_TEMPLATE.json catalogs/<TYPE_ID>.json`, edit using the field-centric DSL (see `catalogs/README.md`), then `pnpm sync:one -- --type <TYPE_ID>` (immediate, DynamoDB) or `pnpm run build && pnpm run deploy` (bundled baseline). Re-syncing a type overwrites its DynamoDB row entirely. A type parked in `catalogs/save/` can be revived by moving its file back into `catalogs/` — but review it against the current field-centric DSL first, since those files predate it.
+2. **New/changed extraction field or hint** → edit `fields.<NOMBRE>.hint`/`type`/`required` in that type's file under `catalogs/`. Hints are free-form Spanish describing *where* on the document the field lives.
+3. **New `rule_type`** → extend `validators/engine.py` (`_dispatch_rule` + a `_check_<name>` function). Applies to every type automatically, config-driven from then on.
+4. **New cross-document rule** (compares sibling documents inside one expediente) → needs real code, not just JSON: add a `rule_type` to `_shared.json` → `cross_document_validation_rules` *and* its logic in `pipeline/expediente.py::_run_cross_document_rules`.
+5. **External API calls, cross-field checks, check digits — standard flow only** → create a `custom_validators/<name>.mjs` exporting `async function validate(entityMap, context)`, reference it via `custom_validator` in the type's catalog entry. Does **not** run for field-centric/expediente types (`PEDIMENTO_ADUANAL` included) — for those, use `cross_field_validation` in the catalog, a cross-document rule, or extend `engine.py` directly.
 
 Avoid editing `handler.py` for feature work. It is the engine; features live in the catalog (`catalogs/`) and validators.
 
@@ -102,9 +163,9 @@ Avoid editing `handler.py` for feature work. It is the engine; features live in 
 
 `documentacion/API_USO.md` is the single source of truth for how to call the app's REST API. **Whenever you change the API surface, update that doc in the same change — do not defer it.** This applies when you:
 
-- add, remove, or rename a route in `src/document-validation-stack.ts` (the `DocumentUploadApi` RestApi — `addResource` / `addMethod`);
+- add, remove, or rename a route in `src/document-validation-stack.ts` (the `DocumentUploadApi` RestApi — `addResource`/`addMethod`);
 - change a handler's request or response shape in `src/document-processing/resources/upload-lambda/` or `query-lambda/` (body fields, query params, status codes, response JSON);
-- change auth, payload limits, or the base URL / stage.
+- change auth, payload limits, or the base URL/stage.
 
 For each such change: edit the matching section of `API_USO.md` (endpoint table + the per-endpoint request/response/examples), keep the curl and `pnpm` examples runnable, and match the existing Spanish tone. The doc carries a maintenance header comment repeating this rule.
 
@@ -114,26 +175,27 @@ For each such change: edit the matching section of `API_USO.md` (endpoint table 
 
 - TypeScript strict-ish CDK code, 2-space indent, double quotes, semicolons (see `src/document-validation-stack.ts`).
 - Python is type-hinted and docstring-heavy (see `handler.py`). Keep it that way.
-- Document IDs, field names, and classification labels in catalog entries are UPPER_SNAKE_CASE and Spanish (`NOMBRE_COMPLETO`, `CURP`, `CONSTANCIA_SITUACION_FISCAL`).
+- Document IDs, field names, and classification labels in catalog entries are UPPER_SNAKE_CASE and Spanish (`NUMERO_PEDIMENTO`, `RFC_IMPORTADOR_EXPORTADOR`, `PEDIMENTO_ADUANAL`).
 - User-facing messages and docs in the existing codebase are Spanish; match that when editing existing files. New files may be English if the user asks.
-- Canonical validation status values: `APROBADO`, `RECHAZADO`, `REQUIERE_REVISION`. Do not invent new ones.
-- Do not commit `.env.production` or anything under `cdk.out/`, `dist/`, `node_modules/`.
+- Canonical validation status values: `APROBADO`, `RECHAZADO`, `REQUIERE_REVISION` (top-level); expediente/document-level uses `APPROVED`/`REJECTED`/`PARTIALLY_APPROVED`/`REVIEW_REQUIRED`/`PROCESSING_ERROR`; field-level uses `VALIDATED`/`INVALID`/`LOW_CONFIDENCE`/`NOT_FOUND`/`NOT_APPLICABLE`/`REVIEW_REQUIRED`. Do not invent new ones.
+- Do not commit `.env.dev`, `.env.production`, or anything under `cdk.out/`, `dist/`, `node_modules/`, `config/catalogs.json`.
 
 ## Safety Notes For Agents
 
-- This stack touches AWS (Bedrock, Lambda, API Gateway, DynamoDB, EventBridge, S3). Treat `pnpm run deploy`, `pnpm run destroy`, and `db-put-type` against a real account as high-risk and confirm with the user before running.
-- The DynamoDB catalog table has `RETAIN` semantics (imported via `fromTableName`). It is not destroyed with the stack; do not assume `destroy` removes it.
+- This stack touches AWS (Bedrock, Textract, Lambda, API Gateway, DynamoDB, EventBridge, S3, WAFv2, ACM). Treat `pnpm run deploy*`, `pnpm run destroy*`, and any `aws dynamodb`/`aws apigateway` write command against a real account as high-risk and confirm with the user before running.
+- The DynamoDB catalog table (`document-validation-catalog`) has `RETAIN` semantics (imported via `fromTableName`, shared across dev/prod). `pnpm run destroy` does not remove it; `pnpm run destroy:full` does — irreversible for types that only ever existed in DynamoDB.
 - `iam-policy.json` defines the broad Bedrock invoke permissions the pipeline needs. Do not narrow it without verifying inference-profile ARNs still resolve.
 - Test documents under `test-docs/` and events under `test-events/` are for local testing only; keep any PII out of commits.
+- Most AWS-touching test/CLI commands cost real money (Bedrock + Textract) — see the cost column in `documentacion/TESTS.md` and the measured figures in `documentacion/COSTOS.md` before running a full suite repeatedly.
 
 ## Validation Before Handing Off
 
 After changes, at minimum:
 
 1. `pnpm build` to ensure TypeScript and the patch script succeed.
-2. If the catalog changed, `pnpm preview-prompts` to confirm prompts still render correctly.
-3. If Python code changed, run `pnpm test-local` when feasible.
-4. Mention any deploy or `db-put-type` steps the user still needs to execute.
+2. If the catalog changed: `pnpm sync:one -- --type <TYPE_ID> --dry-run` to validate marshalling, and — only if it's a legacy-DSL type — `pnpm preview-prompts` to confirm prompts still render (field-centric types won't show anything meaningful there).
+3. If Python code changed, run `pnpm test:unit` (free) and, when the change could affect extraction/validation of pedimentos, `pnpm test:unit` first then flag to the user that `pnpm test:pedimentos`/`pnpm comparar` cost real money and should be run deliberately.
+4. Mention any deploy, `sync`, or DynamoDB steps the user still needs to execute.
 
 ## Authors
 

@@ -310,7 +310,7 @@ pnpm run destroy:full   # elimina stack + tabla DynamoDB (pide confirmación)
 Notas:
 
 - El bucket S3 de documentos lo gestiona el blueprint; si un destroy falla por bucket no vacío, vaciarlo primero (`aws s3 rm s3://<bucket> --recursive`).
-- `pnpm run destroy:full` es **irreversible** para los tipos que solo existían en DynamoDB: exporta antes con `pnpm db-list-types`.
+- `pnpm run destroy:full` es **irreversible** para los tipos que solo existían en DynamoDB: exporta antes con `aws dynamodb scan --table-name document-validation-catalog --region us-east-1 > catalogo-backup.json` (no hay comando `pnpm` dedicado para esto).
 
 ## 7. Pruebas
 

@@ -57,3 +57,6 @@ test-docs/**
 **/cdk.*
 # Resultados de procesamiento local
 resultados/
+
+
+/data
