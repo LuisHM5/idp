@@ -1,0 +1,51 @@
+%%{init: {'flowchart': {'nodeSpacing': 22, 'rankSpacing': 32, 'padding': 6, 'curve': 'basis'}, 'themeVariables': {'fontSize': '15px'}}}%%
+flowchart TB
+    CLIENTE["Cliente"]:::client
+
+    UP["POST /upload"]:::network
+    QG["GET /documents"]:::network
+
+    RAW[("S3 raw/")]:::storage
+    SQS["SQS"]:::integration
+
+    subgraph SFN["Step Functions (blueprint)"]
+        direction LR
+        INIT["Init"] --> CLS["Classification<br/>Bedrock"] --> PROC["Processing<br/>Bedrock"]
+    end
+
+    LAMBDA["★ Enrichment Lambda<br/>handler.py + pipeline/"]:::compute
+    TX["Textract<br/>OCR escaneadas"]:::ml
+
+    RES[("S3 results/<br/>+ processed·failed")]:::storage
+    DDBT[("DynamoDB<br/>tracking")]:::database
+    DDBC[("DynamoDB<br/>catálogo")]:::database
+    EB["EventBridge<br/>idp-broker"]:::integration
+    KMSN[("KMS")]:::security
+    QL["Query Lambda"]:::compute
+
+    CLIENTE -->|"< 4 MB"| UP --> RAW
+    CLIENTE -->|"≥ 4 MB: PUT"| RAW
+    RAW --> SQS --> SFN --> LAMBDA
+    LAMBDA --> RES
+    LAMBDA --> DDBT
+    LAMBDA --> EB
+    LAMBDA -.-> TX
+    DDBC -.->|"gana sobre bundle"| LAMBDA
+    RAW -.-> KMSN
+
+    CLIENTE -->|"consulta"| QG --> QL
+    QL --> DDBT
+    QL --> RES
+
+    classDef compute fill:#ED7100,stroke:#9D4E00,color:#fff,font-weight:bold
+    classDef storage fill:#7AA116,stroke:#4B6B0B,color:#fff,font-weight:bold
+    classDef database fill:#3B48CC,stroke:#232B85,color:#fff,font-weight:bold
+    classDef integration fill:#E7157B,stroke:#99034F,color:#fff,font-weight:bold
+    classDef network fill:#8C4FFF,stroke:#5C2D99,color:#fff,font-weight:bold
+    classDef security fill:#DD344C,stroke:#8C1F30,color:#fff,font-weight:bold
+    classDef ml fill:#01A88D,stroke:#016657,color:#fff,font-weight:bold
+    classDef client fill:#232F3E,stroke:#0F1620,color:#fff,font-weight:bold
+
+    class INIT integration
+    class CLS,PROC ml
+    style SFN fill:transparent,stroke:#999,stroke-width:1px,stroke-dasharray: 3 3,color:#333

@@ -9,6 +9,7 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado en exp
 | Documento | Para qué |
 |---|---|
 | [`documentacion/COMO_FUNCIONA.md`](documentacion/COMO_FUNCIONA.md) | 🧭 Explicación general con diagramas — el mejor punto de partida. |
+| [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Diagrama de arquitectura AWS + diagrama de flujo de ejecución, y qué modelo de Bedrock se usa. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
 | [`documentacion/API_USO.md`](documentacion/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
@@ -21,77 +22,9 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado en exp
 
 ---
 
-## Modelo
+## Modelo y arquitectura
 
-El pipeline usa **Amazon Bedrock** con el perfil de inferencia cross-region `us.anthropic.claude-haiku-4-5-20251001-v1:0` (**Claude Haiku 4.5**) tanto para clasificar como para extraer campos — es el modelo desplegado hoy en dev y prod, verificado contra Cost Explorer (ver [`documentacion/COSTOS.md`](documentacion/COSTOS.md)). Es configurable sin tocar código vía `.env.dev`/`.env.production`:
-
-| Variable | Para qué | Default |
-|---|---|---|
-| `BEDROCK_MODEL_ID` | Modelo del flujo estándar (clasificación + extracción single-shot) | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
-| `BEDROCK_EXTRACTOR_MODEL_ID` | Modelo del pipeline de expediente (segmentación + extracción por documento) | igual a `BEDROCK_MODEL_ID` — se puede usar uno más fuerte solo ahí |
-
-Cambiar el modelo requiere redeploy del ambiente correspondiente (la variable se hornea en la Lambda al desplegar).
-
-## Arquitectura general
-
-```mermaid
-flowchart LR
-    subgraph Cliente["Tu aplicación"]
-        A[PDF / imagen]
-    end
-
-    subgraph AWS["AWS — stack DocumentValidationStack(-Dev)"]
-        B["API Gateway<br/>POST /upload"]
-        C[("S3<br/>raw/")]
-        D["SQS"]
-        E["Step Functions<br/>(orquestador, del blueprint)"]
-        F["Lambda Clasificación<br/>(Bedrock Haiku 4.5)"]
-        G["Lambda Extracción<br/>(Bedrock Haiku 4.5)"]
-        H["Lambda Enrichment ⭐<br/>pipeline de expediente<br/>+ motor de reglas<br/>(nuestro código)"]
-        I[("S3<br/>results/ — completo")]
-        J["EventBridge<br/>idp-broker"]
-        K[("DynamoDB<br/>catálogo hot-reload")]
-        L[("DynamoDB<br/>tracking — compacto")]
-    end
-
-    A -->|"< 4 MB: inline"| B --> C
-    A -->|"≥ 4 MB: URL prefirmada / directo"| C
-    C --> D --> E
-    E --> F --> G --> H
-    H -->|detalle completo| I
-    H -->|envelope compacto| L
-    H -->|resumen final| J
-    K -.->|tipos y reglas| H
-
-    M[Cliente] -->|"GET /documents/{id} o ?field="| N[Query Lambda]
-    N --> L
-    N --> I
-```
-
-## Flujo de ejecución
-
-```mermaid
-flowchart TD
-    U["Documento sube a S3 raw/"] --> SFN["Step Functions: Classification → Processing<br/>(Bedrock, del blueprint)"]
-    SFN --> H["Enrichment Lambda (handler.py)"]
-    H --> DEC{"¿Tipo declara 'fields'<br/>(DSL field-centric) o<br/>pipeline: expediente?"}
-
-    DEC -->|"Sí — PEDIMENTO_ADUANAL"| P1["1. pdf_pages: texto nativo (pypdf)<br/>+ Textract OCR paralelo solo páginas escaneadas"]
-    P1 --> P2["2. segmenter: Bedrock divide el PDF en<br/>rangos de página por tipo de documento"]
-    P2 --> P3["3. text_extractor: extracción por documento<br/>(schema del catálogo, chunked, paralelo)"]
-    P3 --> P4["4. normalize / liquidacion / qr_recovery:<br/>recuperación y normalización determinística"]
-    P4 --> P5["5. engine.py: motor de reglas por documento<br/>(regex, fórmulas, sumas)"]
-    P5 --> P6["6. reglas cross-documento:<br/>mismo pedimento, RFC importador, UUIDs, conciliación"]
-    P6 --> OUT
-
-    DEC -->|"No — tipos legacy en catalogs/save/"| S1["Reutiliza la extracción de Bedrock<br/>(ProcessingStep, single-shot)"]
-    S1 --> S2["validator_module / custom_validator<br/>(regex, fechas, presencia)"]
-    S2 --> OUT
-
-    OUT["Persistencia: S3 results/ (completo)<br/>+ DynamoDB (envelope compacto)"] --> EB["EventBridge: APROBADO / RECHAZADO / REQUIERE_REVISION"]
-```
-
-Recorrido detallado con referencias a archivo:línea: [`documentacion/FLUJO_EJECUCION.md`](documentacion/FLUJO_EJECUCION.md). Explicación general con más diagramas: [`documentacion/COMO_FUNCIONA.md`](documentacion/COMO_FUNCIONA.md).
+El pipeline usa **Amazon Bedrock** (Claude Haiku 4.5, `us.anthropic.claude-haiku-4-5-20251001-v1:0`) para clasificar y extraer, sobre una arquitectura 100% serverless en AWS. Diagrama de arquitectura AWS completo + diagrama de flujo de ejecución (los dos caminos de `handler.py`, con referencias a los módulos reales): **[`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md)**.
 
 Características clave del pipeline de expedientes:
 

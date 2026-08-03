@@ -17,6 +17,7 @@ This repo documents itself extensively in Spanish — **read the relevant doc in
 | `README.md` | Human-facing entry point: what the project is, quickstart, links to everything below. |
 | `catalogs/README.md` | **The catalog DSL spec** (field-centric v4) — field shapes, every `rule_type`, computed fields, `pipeline: "expediente"` semantics, gotchas. Read before touching any `catalogs/*.json`. |
 | `documentacion/COMO_FUNCIONA.md` | High-level architecture walkthrough with diagrams — best first read to understand the system without reading code. |
+| `documentacion/ARQUITECTURA.md` | **AWS architecture diagram + execution-flow diagram** (both pipeline branches) in one place, plus which Bedrock model is used. Update its diagrams in the same change if you touch stack infra (`document-validation-stack.ts`) or `handler.py` routing. |
 | `documentacion/FLUJO_EJECUCION.md` | Code-level execution trace, file:line references, both pipeline branches, dataflow table, and a ranked list of known dataflow inefficiencies. Read before touching `handler.py` or `pipeline/`. |
 | `documentacion/GUIA_DESPLIEGUE_Y_USO.md` | Full operational guide: install, deploy, update/delete catalogs, troubleshooting table, file map of what to edit vs. never touch. |
 | `documentacion/API_USO.md` | **REST API reference — keep in sync automatically, see below.** |
