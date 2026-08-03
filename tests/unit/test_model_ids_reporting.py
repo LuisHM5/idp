@@ -113,3 +113,75 @@ def test_registry_is_reset_between_invocations(monkeypatch):
     bedrock.reset_used_models()
 
     assert bedrock.used_models() == {}
+
+
+# --- per-request model override (dev only) -----------------------------------
+
+
+@pytest.fixture(autouse=True)
+def no_override(monkeypatch):
+    monkeypatch.delenv("ALLOW_MODEL_OVERRIDE", raising=False)
+
+
+def test_override_is_ignored_unless_the_deployment_allows_it(monkeypatch):
+    """Prod must not let an uploader choose the model: the value comes from
+    whoever uploaded the file."""
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+
+    handler._apply_model_override({"model-id": "attacker-chosen-model"})
+
+    assert bedrock.resolve_model("extractor") == "base-model"
+
+
+def test_override_applies_in_dev(monkeypatch):
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+
+    handler._apply_model_override({"model-id": "amazon.nova-pro-v1:0"})
+
+    assert bedrock.resolve_model("extractor") == "amazon.nova-pro-v1:0"
+
+
+def test_override_wins_over_every_per_stage_variable(monkeypatch):
+    """A one-off override is meant to test a model across the whole pipeline."""
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    monkeypatch.setenv("BEDROCK_SEGMENTER_MODEL_ID", "segmenter-model")
+
+    handler._apply_model_override({"model-id": "override-model"})
+
+    assert bedrock.resolve_model("segmenter") == "override-model"
+    assert bedrock.resolve_model("extractor") == "override-model"
+
+
+def test_the_override_is_recorded_in_model_ids(monkeypatch):
+    """Whatever ran must be reported, override included — that is the point."""
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    handler._apply_model_override({"model-id": "amazon.nova-pro-v1:0"})
+    bedrock.resolve_model("extractor")
+
+    assert handler._model_ids({}) == {"extractor": "amazon.nova-pro-v1:0"}
+
+
+def test_uploads_without_an_override_are_unaffected(monkeypatch):
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+
+    handler._apply_model_override({})  # no metadata on the object
+    handler._apply_model_override({"model-id": "   "})  # whitespace only
+
+    assert bedrock.resolve_model("extractor") == "base-model"
+
+
+def test_override_does_not_leak_into_the_next_invocation(monkeypatch):
+    """Warm containers reuse the process — a per-request override must not
+    silently apply to the next document."""
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    handler._apply_model_override({"model-id": "one-off-model"})
+    assert bedrock.resolve_model("extractor") == "one-off-model"
+
+    bedrock.reset_used_models()  # what handler() calls per invocation
+
+    assert bedrock.resolve_model("extractor") == "base-model"

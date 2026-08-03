@@ -2,7 +2,7 @@
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
-El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado en expedientes aduanales mexicanos**: el único tipo de catálogo activo hoy es `PEDIMENTO_ADUANAL`, procesado con un pipeline dedicado para PDFs multi-documento (pedimento + facturas + acuses + permisos, todo en un solo archivo). Los tipos genéricos de identificación (INE, Pasaporte, CSF, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
+El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay dos tipos de catálogo activos: `PEDIMENTO_ADUANAL`, procesado con el pipeline dedicado para PDFs multi-documento (pedimento + facturas + acuses + permisos, todo en un solo archivo), y `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT. Los demás tipos genéricos de identificación (INE, Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
 
 ## Documentación
 
@@ -130,7 +130,8 @@ documents-validator/
 ├── catalogs/
 │   ├── _shared.json                        # field_sets, reglas cross-documento, campos comunes
 │   ├── _TEMPLATE.json                      # plantilla DSL field-centric para tipos nuevos
-│   ├── PEDIMENTO_ADUANAL.json              # ← único tipo activo hoy
+│   ├── PEDIMENTO_ADUANAL.json              # tipo activo: expediente aduanal
+│   ├── CONSTANCIA_SITUACION_FISCAL.json    # tipo activo: constancia individual del SAT
 │   ├── save/                               # tipos legacy aparcados (no leídos por build/sync)
 │   └── README.md                           # spec completa del DSL
 ├── scripts/                                # CLI: sync, enviar, procesar, resultado, tests, track

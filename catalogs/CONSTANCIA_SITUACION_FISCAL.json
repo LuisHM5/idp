@@ -1,50 +1,324 @@
 {
   "CONSTANCIA_SITUACION_FISCAL": {
-    "description": "Constancia de Situacion Fiscal del SAT: logo SAT, RFC prominente (12-13 chars), secciones 'Regimenes' y 'Obligaciones', cadena original y QR",
-    "extraction_fields": [
-      "RFC",
-      "CURP",
-      "NOMBRE_O_RAZON_SOCIAL",
-      "REGIMEN_FISCAL",
-      "CODIGO_POSTAL",
-      "FECHA_EMISION",
-      "ESTATUS_EN_PADRON",
-      "ACTIVIDAD_ECONOMICA"
+    "schema_version": "5.0.0",
+    "display_name": "Constancia de Situación Fiscal",
+    "aliases": [
+      "CSF",
+      "constancia fiscal",
+      "constancia del SAT",
+      "constancia de RFC"
     ],
-    "extraction_hints": {
-      "RFC": "Registro Federal de Contribuyentes, 12 o 13 caracteres alfanumericos, aparece prominente en la parte superior del documento junto a 'RFC:'",
-      "CURP": "CURP de 18 caracteres, aparece debajo del RFC en la seccion de datos de identificacion",
-      "NOMBRE_O_RAZON_SOCIAL": "Nombre completo de la persona fisica o razon social de la empresa, campo 'Nombre, denominacion o razon social'",
-      "REGIMEN_FISCAL": "Regimen fiscal en el que esta inscrito, seccion 'Regimenes' del documento, puede haber multiples",
-      "CODIGO_POSTAL": "Codigo postal del domicilio fiscal, 5 digitos, en la seccion de ubicacion",
-      "FECHA_EMISION": "Fecha en que se genero la constancia, usualmente en la parte superior o inferior del documento",
-      "ESTATUS_EN_PADRON": "Estado del contribuyente: ACTIVO, SUSPENDIDO, etc. Campo 'Estatus en el padron'",
-      "ACTIVIDAD_ECONOMICA": "Actividad economica principal registrada ante el SAT"
-    },
-    "required_fields": [
-      "RFC",
-      "NOMBRE_O_RAZON_SOCIAL"
-    ],
-    "validation_rules": [
-      {
-        "field": "RFC",
-        "rule_type": "regex",
-        "pattern": "^[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}$",
-        "message": "RFC no cumple el formato valido"
+    "description": "Constancia de Situación Fiscal emitida por el SAT. Se distingue por los encabezados 'CONSTANCIA DE SITUACIÓN FISCAL' y 'CÉDULA DE IDENTIFICACIÓN FISCAL', el código QR, el RFC del contribuyente y las secciones 'Datos de Identificación del Contribuyente', 'Datos del domicilio registrado', 'Actividades Económicas', 'Regímenes' y 'Obligaciones'. No confundir con un CFDI, una Opinión del Cumplimiento ni una Cédula de Identificación Fiscal aislada.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "min_confidence": 0.8,
+    "fields": {
+      "RFC": {
+        "type": "string",
+        "required": true,
+        "hint": "Registro Federal de Contribuyentes impreso junto a la etiqueta 'RFC' en la Cédula de Identificación Fiscal y repetido en 'Datos de Identificación del Contribuyente'. Extraer 12 caracteres para persona moral o 13 para persona física, en mayúsculas, sin espacios, guiones ni prefijos. NUNCA tomar la CURP, el idCIF ni un RFC mencionado dentro de la cadena original.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC no cumple el formato de 12 o 13 caracteres"
+          }
+        ]
       },
-      {
-        "field": "CURP",
-        "rule_type": "regex",
-        "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
-        "message": "CURP no cumple el patron oficial"
+      "CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP de 18 caracteres de una persona física, visible únicamente en 'Datos de Identificación del Contribuyente'. Extraer en mayúsculas y sin espacios. Para personas morales este campo no existe y debe quedar null; NUNCA sustituirlo con el RFC.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
       },
-      {
-        "field": "FECHA_EMISION",
-        "rule_type": "date_max_age",
-        "pattern": "5",
-        "message": "La constancia tiene mas de 5 años de emision, se considera vencida"
+      "NOMBRE_O_RAZON_SOCIAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo visible en la Cédula de Identificación Fiscal o denominación/razón social impresa en los datos del contribuyente. Para persona física conservar nombres y apellidos tal como aparecen impresos; para persona moral conservar la denominación o razón social completa. No incluir el régimen de capital, RFC ni nombre comercial.",
+        "validation": []
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo 'Nombre (s)' dentro de 'Datos de Identificación del Contribuyente'. Aplica a persona física; no copiar aquí una denominación o razón social.",
+        "validation": []
+      },
+      "PRIMER_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo 'Primer Apellido' de una persona física. Debe quedar null para persona moral o cuando el documento no lo muestre.",
+        "validation": []
+      },
+      "SEGUNDO_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo 'Segundo Apellido' de una persona física. Debe quedar null cuando no aparezca; no inferirlo a partir del nombre completo.",
+        "validation": []
+      },
+      "REGIMEN_CAPITAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo 'Régimen Capital' de una persona moral, por ejemplo 'SOCIEDAD ANÓNIMA DE CAPITAL VARIABLE'. No confundir con los regímenes fiscales de la tabla 'Regímenes'.",
+        "validation": []
+      },
+      "NOMBRE_COMERCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Campo 'Nombre Comercial' dentro de los datos de identificación. Conservarlo literal; no repetir la razón social cuando este campo esté vacío.",
+        "validation": []
+      },
+      "ID_CIF": {
+        "type": "string",
+        "required": false,
+        "hint": "Identificador idCIF asociado a la Cédula de Identificación Fiscal o visible junto al código QR. Extraer únicamente si está impreso o decodificado en el texto; conservar todos los dígitos como string y no confundirlo con RFC, CURP o folio.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d+$",
+            "message": "El idCIF debe contener únicamente dígitos"
+          }
+        ]
+      },
+      "LUGAR_EMISION": {
+        "type": "string",
+        "required": false,
+        "hint": "Lugar que aparece en la línea 'Lugar y Fecha de Emisión' del encabezado. Extraer solamente la localidad y entidad anteriores a la fecha, sin incluir la fecha ni el texto de la etiqueta.",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de generación mostrada en 'Lugar y Fecha de Emisión' en la parte superior de la constancia. Normalizar a YYYY-MM-DD. NUNCA tomar la fecha de inicio de operaciones, la fecha de un régimen, actividad u obligación, ni una fecha contenida en la cadena original.",
+        "validation": [
+          {
+            "rule_type": "date_max_age",
+            "pattern": "5",
+            "message": "La constancia supera la antigüedad máxima configurada de 5 años"
+          }
+        ]
+      },
+      "FECHA_INICIO_OPERACIONES": {
+        "type": "date",
+        "required": false,
+        "hint": "Campo 'Fecha inicio de operaciones' dentro de 'Datos de Identificación del Contribuyente'. Normalizar a YYYY-MM-DD y no confundir con FECHA_EMISION.",
+        "validation": []
+      },
+      "ESTATUS_EN_PADRON": {
+        "type": "string",
+        "required": true,
+        "hint": "Valor literal del campo 'Estatus en el padrón', por ejemplo ACTIVO o SUSPENDIDO. Extraer únicamente el estatus, sin la etiqueta ni la fecha de cambio de estado.",
+        "validation": []
+      },
+      "FECHA_ULTIMO_CAMBIO_ESTADO": {
+        "type": "date",
+        "required": false,
+        "hint": "Campo 'Fecha de último cambio de estado' dentro de los datos de identificación. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "DOMICILIO_FISCAL": {
+        "type": "object",
+        "required": true,
+        "hint": "Bloque completo 'Datos del domicilio registrado'. Extraer cada dato de su etiqueta; no tomar direcciones presentes en sellos, cadenas originales u otros textos.",
+        "validation": [],
+        "fields": {
+          "CODIGO_POSTAL": {
+            "type": "string",
+            "required": true,
+            "hint": "Campo 'Código Postal' del domicilio registrado. Conservar exactamente 5 dígitos, incluidos ceros iniciales.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{5}$",
+                "message": "El código postal debe contener exactamente 5 dígitos"
+              }
+            ]
+          },
+          "TIPO_VIALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Tipo de Vialidad', por ejemplo CALLE, AVENIDA o CARRETERA.",
+            "validation": []
+          },
+          "NOMBRE_VIALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre de Vialidad' del domicilio registrado.",
+            "validation": []
+          },
+          "NUMERO_EXTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Número Exterior'. Extraer como string para conservar letras, guiones y ceros.",
+            "validation": []
+          },
+          "NUMERO_INTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Número Interior'. Dejar null cuando no esté informado; no copiar el número exterior.",
+            "validation": []
+          },
+          "NOMBRE_COLONIA": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre de la Colonia' del domicilio registrado.",
+            "validation": []
+          },
+          "NOMBRE_LOCALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre de la Localidad' del domicilio registrado.",
+            "validation": []
+          },
+          "MUNICIPIO_O_DEMARCACION_TERRITORIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre del Municipio o Demarcación Territorial'. No confundir con localidad o entidad federativa.",
+            "validation": []
+          },
+          "ENTIDAD_FEDERATIVA": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre de la Entidad Federativa' del domicilio registrado.",
+            "validation": []
+          },
+          "ENTRE_CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Entre Calle' del domicilio registrado.",
+            "validation": []
+          },
+          "Y_CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Y Calle' del domicilio registrado.",
+            "validation": []
+          }
+        }
+      },
+      "ACTIVIDADES_ECONOMICAS": {
+        "type": "array",
+        "required": true,
+        "hint": "Tabla 'Actividades Económicas'. Extraer una fila por cada actividad y conservar el orden impreso. Continuar la misma tabla si abarca más de una página. No resumir varias actividades en una sola cadena.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La constancia debe contener al menos una actividad económica"
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "ACTIVIDAD_ECONOMICA": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal de la columna 'Actividad Económica'.",
+            "validation": []
+          },
+          "PORCENTAJE": {
+            "type": "number",
+            "required": false,
+            "hint": "Valor de la columna 'Porcentaje', sin el símbolo %. Conservar los decimales impresos.",
+            "validation": []
+          },
+          "FECHA_INICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de inicio de esta actividad económica. Normalizar a YYYY-MM-DD.",
+            "validation": []
+          },
+          "FECHA_FIN": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de fin de esta actividad cuando esté informada. Normalizar a YYYY-MM-DD; dejar null si la celda está vacía.",
+            "validation": []
+          }
+        }
+      },
+      "REGIMENES_FISCALES": {
+        "type": "array",
+        "required": true,
+        "hint": "Tabla 'Regímenes'. Extraer una fila por cada régimen fiscal y conservar sus fechas en la misma fila. No confundir con 'Régimen Capital' ni devolver toda la tabla como una sola cadena.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La constancia debe contener al menos un régimen fiscal"
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "REGIMEN_FISCAL": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal de la columna 'Régimen'. Conservar la clave cuando esté impresa junto con la descripción.",
+            "validation": []
+          },
+          "FECHA_INICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de inicio del régimen de esta fila. Normalizar a YYYY-MM-DD.",
+            "validation": []
+          },
+          "FECHA_FIN": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de fin del régimen de esta fila. Normalizar a YYYY-MM-DD; dejar null si sigue vigente y la celda está vacía.",
+            "validation": []
+          }
+        }
+      },
+      "OBLIGACIONES_FISCALES": {
+        "type": "array",
+        "required": false,
+        "hint": "Tabla 'Obligaciones'. Extraer una fila por obligación, vinculando descripción, vencimiento y fechas. La descripción del vencimiento puede ser texto narrativo; no intentar convertirla en fecha ni resumir varias obligaciones.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "DESCRIPCION_OBLIGACION": {
+            "type": "string",
+            "required": true,
+            "hint": "Texto literal de la columna 'Descripción de la Obligación'.",
+            "validation": []
+          },
+          "DESCRIPCION_VENCIMIENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "Texto literal de la columna 'Descripción Vencimiento', por ejemplo una regla mensual o anual. No convertirlo a una fecha inventada.",
+            "validation": []
+          },
+          "FECHA_INICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de inicio de la obligación de esta fila. Normalizar a YYYY-MM-DD.",
+            "validation": []
+          },
+          "FECHA_FIN": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de fin de la obligación de esta fila. Normalizar a YYYY-MM-DD; dejar null cuando no esté informada.",
+            "validation": []
+          }
+        }
       }
-    ],
-    "validator_module": "validators.fiscal"
+    },
+    "cross_field_validation": []
   }
 }

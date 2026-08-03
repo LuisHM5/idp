@@ -5,16 +5,21 @@
 # cliente HTTP externo sin credenciales AWS.
 #
 # Uso:
-#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE]
+#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
 #
 # Ejemplos:
 #   scripts/enviar-documento.sh 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL
 #   scripts/enviar-documento.sh expediente.pdf            # sin tipo → Bedrock clasifica
 #   scripts/enviar-documento.sh expediente.pdf --env prod # manda al stack de prod
+#   scripts/enviar-documento.sh doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0
 #
 # Opciones:
 #   --env dev|prod    Ambiente destino (default: dev, igual que el deploy)
 #   --stack <NOMBRE>  Stack explícito (gana sobre --env)
+#   --model <ID>      Modelo de Bedrock solo para ESTE documento, sin redeploy.
+#                     Solo dev: el stack de prod ignora el valor a propósito
+#                     (ALLOW_MODEL_OVERRIDE), porque viene de quien sube el
+#                     archivo y decidiría costo y calidad de extracción.
 #
 # Requisitos:
 #   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar) — solo
@@ -47,8 +52,15 @@ API_MAX_BYTES=4000000   # ~4 MB reales; por encima el API responde HTTP 413
 
 FILE=""
 DOC_TYPE=""
+MODEL_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --model)
+      if [[ $# -lt 2 ]]; then
+        echo "Falta el valor de --model (ej. amazon.nova-pro-v1:0)." >&2
+        exit 2
+      fi
+      MODEL_ID="$2"; shift 2 ;;
     --env)
       if [[ $# -lt 2 ]]; then
         echo "Falta el valor de --env (dev o prod)." >&2
@@ -91,7 +103,7 @@ if [[ -z "$STACK_NAME" ]]; then
 fi
 
 if [[ -z "$FILE" ]]; then
-  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE]" >&2
+  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
   exit 2
 fi
 
@@ -107,6 +119,13 @@ if [[ ! -f "$FILE" ]]; then
 fi
 
 echo "Ambiente: $ENV (stack: $STACK_NAME)"
+if [[ -n "$MODEL_ID" ]]; then
+  if [[ "$ENV" == "prod" ]]; then
+    echo "AVISO: --model solo aplica en dev; el stack de prod lo ignora." >&2
+  else
+    echo "Modelo para este documento: $MODEL_ID"
+  fi
+fi
 
 RESULT_TARGET=(--env "$ENV")
 if [[ "$STACK_EXPLICIT" == true ]]; then
@@ -157,11 +176,12 @@ if (( SIZE > API_MAX_BYTES )); then
 
   REQ_BODY_FILE=$(mktemp)
   trap 'rm -f "$REQ_BODY_FILE"' EXIT
-  if [[ -n "$DOC_TYPE" ]]; then
-    printf '{"fileName":"%s","documentType":"%s"}' "$FILE_NAME" "$DOC_TYPE" > "$REQ_BODY_FILE"
-  else
-    printf '{"fileName":"%s"}' "$FILE_NAME" > "$REQ_BODY_FILE"
-  fi
+  {
+    printf '{"fileName":"%s"' "$FILE_NAME"
+    [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
+    [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
+    printf '}'
+  } > "$REQ_BODY_FILE"
 
   PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
     -H "Content-Type: application/json" \
@@ -176,8 +196,15 @@ if (( SIZE > API_MAX_BYTES )); then
     exit 1
   fi
 
+  # Cuando el upload lleva metadata, S3 la firmó dentro de la URL: el PUT
+  # debe reenviar los mismos headers o falla con SignatureDoesNotMatch.
+  PUT_HEADERS=()
+  if [[ -n "$MODEL_ID" ]]; then
+    PUT_HEADERS=(-H "x-amz-meta-model-id: $MODEL_ID")
+  fi
+
   echo "Subiendo directo a S3 vía URL prefirmada..."
-  curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
+  curl -sS --fail -X PUT --upload-file "$FILE" "${PUT_HEADERS[@]}" "$UPLOAD_URL"
 
   echo "documentId: $DOCID"
   printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"
@@ -196,11 +223,10 @@ trap 'rm -f "$BODY_FILE"' EXIT
 {
   printf '{"fileName":"%s","contentBase64":"' "$FILE_NAME"
   base64 -w0 "$FILE"
-  if [[ -n "$DOC_TYPE" ]]; then
-    printf '","documentType":"%s"}' "$DOC_TYPE"
-  else
-    printf '"}'
-  fi
+  printf '"'
+  [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
+  [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
+  printf '}'
 } > "$BODY_FILE"
 
 RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
