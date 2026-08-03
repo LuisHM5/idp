@@ -242,6 +242,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         ...(process.env.BEDROCK_RECOVERY_MODEL_ID && {
           BEDROCK_RECOVERY_MODEL_ID: process.env.BEDROCK_RECOVERY_MODEL_ID,
         }),
+        // Dev only: let an upload pick the model for its own request (via
+        // `pnpm enviar ... --model <id>`), so trying a model doesn't need a
+        // redeploy. Never set in prod — the value comes from whoever uploaded
+        // the file, so it would let a caller choose the model, and with it the
+        // cost and the extraction quality, on someone else's document.
+        ...(isProd ? {} : { ALLOW_MODEL_OVERRIDE: "true" }),
       },
     });
 

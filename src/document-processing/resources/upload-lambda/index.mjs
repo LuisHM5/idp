@@ -98,7 +98,7 @@ export async function handler(event) {
     return errorResponse(400, "INVALID_JSON", "Request body is not valid JSON");
   }
 
-  const { fileName, contentBase64, metadata, documentType } = body;
+  const { fileName, contentBase64, metadata, documentType, modelId } = body;
 
   if (!fileName) {
     return errorResponse(400, "MISSING_FIELD", "Field 'fileName' is required");
@@ -117,10 +117,18 @@ export async function handler(event) {
     ? `raw/${manualType}/${documentId}/${fileName}`
     : `raw/${documentId}/${fileName}`;
 
-  if (contentBase64 === undefined || contentBase64 === null) {
-    return handlePresigned(documentId, key, manualType);
+  // A per-request model override travels as S3 object metadata. The
+  // enrichment Lambda only honours it when the deployment allows it (dev), so
+  // accepting it here is inert in prod.
+  const objectMetadata = { ...(metadata || {}) };
+  if (typeof modelId === "string" && modelId.trim()) {
+    objectMetadata["model-id"] = modelId.trim();
   }
-  return handleInline(documentId, key, manualType, ext, contentBase64, metadata);
+
+  if (contentBase64 === undefined || contentBase64 === null) {
+    return handlePresigned(documentId, key, manualType, objectMetadata);
+  }
+  return handleInline(documentId, key, manualType, ext, contentBase64, objectMetadata);
 }
 
 /**
@@ -135,12 +143,19 @@ export async function handler(event) {
  * it unset costs nothing and keeps the presigned PUT usable from any client
  * (`curl -T`, a browser `fetch`, etc.) without extra header bookkeeping.
  */
-async function handlePresigned(documentId, key, manualType) {
+async function handlePresigned(documentId, key, manualType, objectMetadata = {}) {
   let uploadUrl;
   try {
     uploadUrl = await getSignedUrl(
       s3,
-      new PutObjectCommand({ Bucket: BUCKET, Key: key }),
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: key,
+        // Only bound into the signature when there is metadata to carry:
+        // binding it unconditionally would force every caller to echo the
+        // matching headers, which is exactly what this path avoids.
+        ...(Object.keys(objectMetadata).length ? { Metadata: objectMetadata } : {}),
+      }),
       { expiresIn: PRESIGN_EXPIRY_SECONDS }
     );
   } catch (err) {
@@ -159,6 +174,14 @@ async function handlePresigned(documentId, key, manualType) {
       classificationMode: manualType ? "manual" : "auto",
       uploadUrl,
       uploadMethod: "PUT",
+      // Headers the caller must echo on the PUT for the signature to match.
+      ...(Object.keys(objectMetadata).length
+        ? {
+            uploadHeaders: Object.fromEntries(
+              Object.entries(objectMetadata).map(([k, v]) => [`x-amz-meta-${k}`, v])
+            ),
+          }
+        : {}),
       uploadExpiresInSeconds: PRESIGN_EXPIRY_SECONDS,
       uploadedAt: new Date().toISOString(),
     }),

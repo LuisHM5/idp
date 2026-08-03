@@ -40,7 +40,7 @@ from document_catalog import (
 )
 from extractors import get_extractor
 from indexing import write_index_attributes
-from pipeline.bedrock import reset_used_models, used_models
+from pipeline.bedrock import reset_used_models, set_model_override, used_models
 
 logger = logging.getLogger(__name__)
 
@@ -219,13 +219,36 @@ def _declared_type_from_key(key: str) -> Optional[str]:
 
 
 def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str]:
-    """Download the raw document from S3 and return its bytes + MIME type."""
+    """Download the raw document from S3 and return its bytes + MIME type.
+
+    Also applies a per-request model override when the upload carried one and
+    the deployment allows it — see `_apply_model_override`.
+    """
     import boto3  # defer boto3 import; Lambda runtime provides it
 
     response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
     body = response["Body"].read()
     content_type = response.get("ContentType") or mimetypes.guess_type(key)[0] or ""
+    _apply_model_override(response.get("Metadata") or {})
     return body, content_type
+
+
+def _apply_model_override(s3_metadata: Dict[str, str]) -> None:
+    """Honour a `model-id` uploaded alongside the document, in dev only.
+
+    Lets a developer try a model per request instead of redeploying to change
+    an environment variable. Gated on `ALLOW_MODEL_OVERRIDE`, which the stack
+    sets only for the dev environment: the value arrives from whoever uploaded
+    the file, so in prod it would let a caller pick the model — and with it the
+    cost and the extraction quality — on someone else's document.
+    """
+    if os.environ.get("ALLOW_MODEL_OVERRIDE", "").lower() != "true":
+        return
+    # S3 lowercases metadata keys on the way out.
+    model_id = (s3_metadata.get("model-id") or "").strip()
+    if model_id:
+        logger.warning("model override from upload metadata: %s (dev only)", model_id)
+        set_model_override(model_id)
 
 
 def _try_reextract(
