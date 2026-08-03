@@ -3,14 +3,17 @@
  * Patches Lambdas bundled inside @cdklabs/cdk-appmod-catalog-blueprints that
  * we need to fix without forking the whole package:
  *
- * - default-bedrock-invoke: handles markdown-wrapped JSON responses and
- *   thinking blocks from newer Claude models.
  * - default-sqs-consumer: derives `documentId` from the uuid segment right
  *   before the filename instead of blindly stripping the `raw/` prefix, so
  *   manually classified uploads (raw/{TYPE}/{uuid}/{file}) keep the same
  *   documentId shape as auto-classified ones (raw/{uuid}/{file}) — otherwise
  *   GET /documents/{id}'s prefix lookup can never find them (documentId came
  *   out prefixed by TYPE instead of by the uuid the Upload API returned).
+ *
+ * The model-invoking Lambda used to be patched here too. It is now our own
+ * function, wired in through the construct's documented extension points —
+ * see `src/document-processing/multi-model-document-processing.ts`. Overwriting
+ * a file inside node_modules only held until the next dependency bump.
  */
 import { copyFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
@@ -20,11 +23,6 @@ import { execSync } from "child_process";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PATCHES = [
-  {
-    source: resolve(__dirname, "../patches/default-bedrock-invoke-index.py"),
-    relTarget: "lib/document-processing/resources/default-bedrock-invoke/index.py",
-    label: "Bedrock response parsing",
-  },
   {
     source: resolve(__dirname, "../patches/default-sqs-consumer-index.py"),
     relTarget: "lib/document-processing/resources/default-sqs-consumer/index.py",

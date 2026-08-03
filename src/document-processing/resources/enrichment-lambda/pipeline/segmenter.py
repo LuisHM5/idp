@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from document_catalog import TypeRegistryEntry, get_all_types, is_customs_type
 
-from .bedrock import converse, parse_json_response
+from .bedrock import converse, parse_json_response, resolve_model
 from .pdf_pages import PageText
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,9 @@ def segment_pages(
         return [Segment(declared_type, 1, total, 1.0)]
 
     prompt = _build_prompt(pages)
-    text, meta = converse(prompt, model_id=model_id, max_tokens=4096)
+    text, meta = converse(
+        prompt, model_id=model_id or resolve_model("segmenter"), max_tokens=4096
+    )
     try:
         parsed = parse_json_response(text)
     except (ValueError, json.JSONDecodeError) as e:

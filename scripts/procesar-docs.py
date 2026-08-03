@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -98,6 +100,13 @@ def main() -> int:
 
     expected_values = {"IMPORTER_RFC": args.importer} if args.importer else {}
     out_dir = Path(args.out)
+    # Comparing two models means two runs, and both would write
+    # <out>/<archivo>.json — the second silently overwrites the first. When a
+    # model is pinned for the run, give it its own subfolder so both survive.
+    model_slug = args.model or os.environ.get("BEDROCK_MODEL_ID")
+    if model_slug:
+        out_dir = out_dir / re.sub(r"[^A-Za-z0-9]+", "-", model_slug).strip("-")
+        print(f"salida de este modelo → {out_dir}/")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     resumen_md = [

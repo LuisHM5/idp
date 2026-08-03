@@ -12,11 +12,9 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
-import {
-  BedrockDocumentProcessing,
-  EventbridgeBroker,
-} from "@cdklabs/cdk-appmod-catalog-blueprints";
+import { EventbridgeBroker } from "@cdklabs/cdk-appmod-catalog-blueprints";
 import { Construct } from "constructs";
+import { MultiModelDocumentProcessing } from "./document-processing/multi-model-document-processing";
 import {
   generateClassificationPrompt,
   generateProcessingPrompt,
@@ -88,7 +86,23 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     const enableDynamo = props?.enableDynamoCatalog ?? false;
     const forceReload = props?.forceReloadCatalog ?? false;
-    const bedrockModel = process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+    // Base model for every step. Each step below can be pointed at a different
+    // Bedrock model — any model, not just Anthropic — to trade cost against
+    // accuracy per step. Unset overrides fall back to this one, so
+    // BEDROCK_MODEL_ID alone still configures the whole pipeline.
+    //
+    // Not every Bedrock model supports everything a step needs. Before moving
+    // a step, check the model offers: Converse; forced tool use (the enrichment
+    // extractor relies on it for 100+ field catalogs); prompt caching (ignored
+    // silently when unsupported — no error, but the cache discount is lost);
+    // and vision, which only the classification/extraction steps here need.
+    const bedrockModel =
+      process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+    // Vision-capable steps (they receive the document image/PDF itself).
+    const classificationModel =
+      process.env.BEDROCK_CLASSIFICATION_MODEL_ID || bedrockModel;
+    const processingModel =
+      process.env.BEDROCK_PROCESSING_MODEL_ID || bedrockModel;
 
     // Environment gate: prod hardens the API (keys + WAF + custom domain);
     // dev stays open on the random execute-api URL.
@@ -209,12 +223,25 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       environment: {
         ...(catalogTable && { CATALOG_TABLE: "document-validation-catalog" }),
         CATALOG_FORCE_RELOAD: forceReload ? "true" : "false",
-        // Model used by the Textract+Bedrock re-extraction fallback when a
-        // catalog entry sets extraction_strategy. Defaults to the classifier
-        // model when unset; override here to use a stronger vision model
-        // (e.g. sonnet) only for recovery without affecting the main pipeline.
-        BEDROCK_EXTRACTOR_MODEL_ID:
-          process.env.BEDROCK_EXTRACTOR_MODEL_ID || bedrockModel,
+        // Base model for the enrichment pipeline's own steps. All three are
+        // text-only (they run on Textract OCR / native PDF text, never on
+        // images), so a text-only model works here even when the vision steps
+        // above need a multimodal one.
+        BEDROCK_MODEL_ID: bedrockModel,
+        // Per-step overrides, each falling back to the base above:
+        //   segmenter — splits an expediente into typed page ranges
+        //   extractor — the field extraction that carries most of the tokens
+        //   recovery  — Textract+model re-extraction when a catalog entry sets
+        //               extraction_strategy
+        ...(process.env.BEDROCK_SEGMENTER_MODEL_ID && {
+          BEDROCK_SEGMENTER_MODEL_ID: process.env.BEDROCK_SEGMENTER_MODEL_ID,
+        }),
+        ...(process.env.BEDROCK_EXTRACTOR_MODEL_ID && {
+          BEDROCK_EXTRACTOR_MODEL_ID: process.env.BEDROCK_EXTRACTOR_MODEL_ID,
+        }),
+        ...(process.env.BEDROCK_RECOVERY_MODEL_ID && {
+          BEDROCK_RECOVERY_MODEL_ID: process.env.BEDROCK_RECOVERY_MODEL_ID,
+        }),
       },
     });
 
@@ -260,14 +287,14 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     );
 
     // Main document processing pipeline
-    const pipeline = new BedrockDocumentProcessing(this, "BedrockDocumentProcessing", {
+    const pipeline = new MultiModelDocumentProcessing(this, "BedrockDocumentProcessing", {
       classificationBedrockModel: {
         useCrossRegionInference: false,
-        customModelId: bedrockModel,
+        customModelId: classificationModel,
       },
       processingBedrockModel: {
         useCrossRegionInference: false,
-        customModelId: bedrockModel,
+        customModelId: processingModel,
       },
       eventbridgeBroker: broker,
       enableObservability: true,

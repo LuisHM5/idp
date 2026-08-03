@@ -45,6 +45,7 @@ from .normalize import (
     pedimento_consecutivo,
 )
 from .pdf_pages import PageText, load_pages, pages_summary
+from .bedrock import base_model_id, used_models
 from .segmenter import Segment, segment_pages
 from .text_extractor import extract_document
 
@@ -87,9 +88,14 @@ def _tracking(
     so a change to a type in DynamoDB is reflected here without a redeploy.
     """
     now = datetime.now(timezone.utc)
+    # Report the models that actually ran, not the caller's argument: it is
+    # normally None (each stage resolves its own model from the environment),
+    # which used to be reported as the literal "default" — useless for telling
+    # two models' results apart when comparing them.
+    ran = used_models()
     schema: Dict[str, Any] = {
         "pipelineVersion": PIPELINE_VERSION,
-        "model": model_id or "default",
+        "model": model_id or ran.get("extractor") or base_model_id(),
         **get_schema_info(),
     }
     type_versions = {}
@@ -343,6 +349,9 @@ def process_pdf(
         "processedAt": tracking["processingCompletedAt"],
         "processingSeconds": tracking["processingSeconds"],
         "tracking": tracking,
+        # Model per phase that actually ran. The handler merges in the
+        # classification/processing phases, which run in a different Lambda.
+        "modelIds": used_models(),
         "pages": pages_summary(pages),
         "status": overall,
         "reviewRequired": truncated or overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),
@@ -818,6 +827,9 @@ def _error_result(
         "processedAt": tracking["processingCompletedAt"],
         "processingSeconds": tracking["processingSeconds"],
         "tracking": tracking,
+        # Model per phase that actually ran. The handler merges in the
+        # classification/processing phases, which run in a different Lambda.
+        "modelIds": used_models(),
         "status": engine.DOC_ERROR,
         "reviewRequired": True,
         "documents": [],

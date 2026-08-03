@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from functools import lru_cache
 from typing import Any, Dict, List
 
@@ -26,22 +25,18 @@ import boto3
 
 from document_catalog import TypeRegistryEntry
 
+from pipeline.bedrock import converse, parse_json_response, resolve_model
+
 from .base import ExtractionResult, entities_from_dict
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 _DEFAULT_MAX_TOKENS = 1024
 
 
 @lru_cache(maxsize=1)
 def _textract_client(region: str):
     return boto3.client("textract", region_name=region)
-
-
-@lru_cache(maxsize=1)
-def _bedrock_client(region: str):
-    return boto3.client("bedrock-runtime", region_name=region)
 
 
 def _detect_text(document_bytes: bytes, region: str) -> Dict[str, Any]:
@@ -121,53 +116,6 @@ def _build_extraction_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-
-
-def _parse_model_json(raw_text: str) -> Dict[str, Any]:
-    """Extract the first JSON object the model emitted, tolerating fences."""
-    text = raw_text.strip()
-    if not text:
-        raise ValueError("Bedrock returned empty text")
-
-    fenced = _JSON_FENCE_RE.search(text)
-    if fenced:
-        text = fenced.group(1)
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("Bedrock response does not contain a JSON object")
-
-    return json.loads(text[start : end + 1])
-
-
-def _invoke_bedrock(
-    model_id: str,
-    region: str,
-    extraction_prompt: str,
-    max_tokens: int,
-) -> str:
-    """Call Bedrock Converse and return the aggregated response text."""
-    response = _bedrock_client(region).converse(
-        modelId=model_id,
-        messages=[
-            {
-                "role": "user",
-                "content": [{"text": extraction_prompt}],
-            }
-        ],
-        inferenceConfig={"maxTokens": max_tokens, "temperature": 0},
-    )
-    output = response.get("output", {}).get("message", {})
-    texts = [
-        block.get("text", "")
-        for block in output.get("content", [])
-        if "text" in block
-    ]
-    return "\n".join(texts).strip()
-
-
 def _flatten_values(parsed: Dict[str, Any]) -> Dict[str, str]:
     """Convert `{FIELD: {"value": "...", ...}}` → `{FIELD: "..."}`."""
     fields = parsed.get("extraction_fields")
@@ -198,7 +146,7 @@ class TextractBedrockExtractor:
         type_entry: TypeRegistryEntry,
     ) -> ExtractionResult:
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-        model_id = os.environ.get("BEDROCK_EXTRACTOR_MODEL_ID", _DEFAULT_MODEL_ID)
+        model_id = resolve_model("recovery")
         max_tokens = int(os.environ.get("BEDROCK_EXTRACTOR_MAX_TOKENS", str(_DEFAULT_MAX_TOKENS)))
 
         logger.info(
@@ -221,8 +169,8 @@ class TextractBedrockExtractor:
             )
 
         prompt = _build_extraction_prompt(type_entry, ocr_lines)
-        response_text = _invoke_bedrock(model_id, region, prompt, max_tokens)
-        parsed = _parse_model_json(response_text)
+        response_text, _ = converse(prompt, model_id=model_id, max_tokens=max_tokens)
+        parsed = parse_json_response(response_text)
         values = _flatten_values(parsed)
 
         logger.info(

@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import FieldSpec, TypeRegistryEntry
 
-from .bedrock import converse_structured
+from .bedrock import converse_structured, resolve_model
 from .pdf_pages import PageText
 
 logger = logging.getLogger(__name__)
@@ -226,7 +226,7 @@ def _call_model(
         tool_schema=schema,
         tool_name="extract_document_fields",
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
-        model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
+        model_id=model_id or resolve_model("extractor"), max_tokens=_MAX_OUTPUT_TOKENS,
         cache_system=cache_prefix if cache else None,
     )
     usage: Dict[str, int] = {
@@ -458,7 +458,7 @@ def _call_model_field_tree(
         tool_schema=schema,
         tool_name="extract_document_fields",
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
-        model_id=model_id, max_tokens=_MAX_OUTPUT_TOKENS,
+        model_id=model_id or resolve_model("extractor"), max_tokens=_MAX_OUTPUT_TOKENS,
         cache_system=cache_prefix if cache else None,
     )
     usage: Dict[str, int] = {k: v for k, v in (meta.get("usage") or {}).items() if isinstance(v, int)}

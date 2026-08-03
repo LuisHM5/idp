@@ -40,6 +40,7 @@ from document_catalog import (
 )
 from extractors import get_extractor
 from indexing import write_index_attributes
+from pipeline.bedrock import reset_used_models, used_models
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +68,32 @@ def determine_status(checks: List[CheckResult]) -> str:
     return "APROBADO"
 
 
+def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
+    """Which model ran in each phase of this invocation.
+
+    Phases live in two Lambdas: classification and processing run in the
+    model-invoke Lambda and report their model back through the Step Functions
+    payload; the expediente phases run here. Only phases that actually executed
+    are listed — a bypassed classification reports no model because none ran,
+    and the expediente phases are absent on the standard flow.
+    """
+    ids: Dict[str, str] = {}
+    for phase, key in (("classification", "classificationResult"),
+                       ("processing", "processingResult")):
+        model = (event.get(key) or {}).get("modelId")
+        if model:
+            ids[phase] = model
+    ids.update(used_models())
+    return ids
+
+
 def build_canonical_result(
     document_id: str,
     classification: str,
     entity_map: Dict[str, str],
     checks: List[CheckResult],
     status: str,
+    model_ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Assemble the Canonical_Result output JSON."""
     total = len(checks)
@@ -89,6 +110,7 @@ def build_canonical_result(
     return {
         "documentId": document_id,
         "documentClassification": classification,
+        **({"modelIds": model_ids} if model_ids else {}),
         "extractedEntities": entity_map,
         "validation": {
             "status": status,
@@ -429,6 +451,7 @@ def _run_expediente(
     return {
         "documentId": document_id,
         "documentClassification": final_classification,
+        "modelIds": _model_ids(event),
         "extractedEntities": _entities_for_envelope(main or {}),
         "validation": {
             "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
@@ -578,6 +601,9 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     API can filter by type with a GSI Query instead of a table Scan. Indexing
     is best-effort and never changes the returned result.
     """
+    # Lambda containers are reused, so the per-phase model registry must start
+    # empty or a warm invocation inherits the previous document's phases.
+    reset_used_models()
     result = _process(event, context)
     pointer = _extract_s3_pointer(event)
     write_index_attributes(result, source_key=pointer[1] if pointer else None)
@@ -667,7 +693,8 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         status = determine_status(checks)
 
         result = build_canonical_result(
-            document_id, classification, entity_map, checks, status
+            document_id, classification, entity_map, checks, status,
+            model_ids=_model_ids(event),
         )
         if reextraction_meta:
             result["validation"]["reextraction"] = reextraction_meta
