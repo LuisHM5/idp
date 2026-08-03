@@ -10,6 +10,25 @@ pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL --env prod
 # o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod]
 ```
 
+### Probar otro modelo sin redeploy (solo dev)
+
+`--model` corre **ese documento** con el modelo que le indiques, sin cambiar
+variables de entorno ni volver a desplegar:
+
+```bash
+pnpm enviar doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0
+```
+
+Aplica a todas las fases del pipeline y gana sobre `BEDROCK_*_MODEL_ID`. El
+resultado registra qué modelo corrió en cada fase (`modelIds`), así que puedes
+mandar el mismo archivo con dos modelos y comparar.
+
+**Solo funciona en dev.** El stack de prod no define `ALLOW_MODEL_OVERRIDE`, así
+que ignora el valor a propósito: viene de quien sube el archivo, y en prod
+dejaría que un tercero elija el modelo —y con él el costo y la calidad de
+extracción— sobre documentos ajenos. Si lo usas contra prod, el script avisa y
+el documento se procesa con el modelo configurado.
+
 El script hace todo: verifica tu sesión de AWS, obtiene el endpoint del stack,
 elige inline (chico) o URL prefirmada de S3 (grande) y te devuelve el
 `documentId`. Luego:

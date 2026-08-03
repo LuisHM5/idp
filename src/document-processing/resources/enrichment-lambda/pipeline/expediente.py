@@ -402,10 +402,10 @@ def _has_field(entry, name: str) -> bool:
 
 
 def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[Any], seg_pages: List[PageText]) -> None:
-    """Deterministic recovery from an embedded QR code (e.g. the pedimento's
-    SAT/SOIANET verification QR), when the type declares `qr_recovery` in
-    its catalog config (see catalogs/PEDIMENTO_ADUANAL.json). No-op for any
-    type that doesn't declare it — nothing here is coupled to a specific
+    """Deterministic recovery from an embedded QR code (e.g. a pedimento or
+    SAT fiscal certificate), when the type declares `qr_recovery` in its
+    catalog config. No-op for any type that doesn't declare it — field
+    mappings and output names are catalog-driven, not coupled to a specific
     document type.
 
     Page selection is text-anchored, not position-assumed: `qr_recovery.
@@ -434,8 +434,15 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
     # before the result is returned, see the "assemble" pass in process_pdf),
     # this is meant to survive into the full result for audit — same
     # convention as recoveredFields/checks/extractionMeta.
+    required_qr_fields = entry.qr_recovery.get("required_fields") or []
+    qr_valid = (
+        all(name in result["fields"] for name in required_qr_fields)
+        if required_qr_fields
+        else bool(result["fields"])
+    )
     doc["qrRecovery"] = {
         "qrPresent": result["qrPresent"],
+        "valid": qr_valid,
         "decodedText": result["decodedText"],
         "fieldsRecovered": sorted(result["fields"]),
         "markerPageFound": result["markerPageFound"],
@@ -447,22 +454,26 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
     confidence = float(entry.qr_recovery.get("confidence", 0.99))
 
     # The raw QR payload itself, exposed as a regular (computed) catalog
-    # field when the type declares one — e.g. QR_PEDIMENTO — so the literal
+    # field when the type declares one — e.g. QR_PEDIMENTO or QR_CONSTANCIA — so the literal
     # data read from the QR is visible in extractedEntities, not just this
     # internal audit dict. Populated whenever a QR decoded at all, even if
     # its params didn't map onto any of the fields below.
-    if result["decodedText"] and _has_field(entry, "QR_PEDIMENTO"):
-        entities["QR_PEDIMENTO"] = result["decodedText"]
-        confidences["QR_PEDIMENTO"] = confidence
+    decoded_text_field = str(entry.qr_recovery.get("decoded_text_field") or "QR_PEDIMENTO")
+    if result["decodedText"] and _has_field(entry, decoded_text_field):
+        entities[decoded_text_field] = result["decodedText"]
+        confidences[decoded_text_field] = confidence
 
     # Formal "the deposit box + its QR really are there" signal — a required
     # boolean field (catalog validation: `boolean_true`) rather than just the
     # best-effort audit dict above, so a missing/undecodable QR surfaces as a
     # real validation failure, not something only visible by inspecting
     # qrRecovery by hand.
-    if _has_field(entry, "DEPOSITO_REFERENCIADO_QR_VALIDO"):
-        entities["DEPOSITO_REFERENCIADO_QR_VALIDO"] = bool(result["fields"])
-        confidences["DEPOSITO_REFERENCIADO_QR_VALIDO"] = confidence
+    validity_field = str(
+        entry.qr_recovery.get("validity_field") or "DEPOSITO_REFERENCIADO_QR_VALIDO"
+    )
+    if _has_field(entry, validity_field):
+        entities[validity_field] = qr_valid
+        confidences[validity_field] = confidence
 
     if not result["fields"]:
         return

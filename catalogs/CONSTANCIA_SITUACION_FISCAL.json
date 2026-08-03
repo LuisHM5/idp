@@ -1,6 +1,6 @@
 {
   "CONSTANCIA_SITUACION_FISCAL": {
-    "schema_version": "5.0.0",
+    "schema_version": "5.1.0",
     "display_name": "Constancia de Situación Fiscal",
     "aliases": [
       "CSF",
@@ -12,6 +12,38 @@
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "pipeline": "single_document",
     "min_confidence": 0.8,
+    "qr_recovery": {
+      "confidence": 0.99,
+      "decoded_text_field": "QR_CONSTANCIA",
+      "validity_field": "CONSTANCIA_QR_VALIDO",
+      "required_fields": [
+        "ID_CIF",
+        "RFC"
+      ],
+      "page_marker_min_matches": 2,
+      "short_segment_max_pages": 8,
+      "page_markers": [
+        "C[ÉE]DULA DE IDENTIFICACI[ÓO]N FISCAL",
+        "CONSTANCIA DE SITUACI[ÓO]N FISCAL",
+        "LUGAR Y FECHA DE EMISI[ÓO]N",
+        "DATOS DE IDENTIFICACI[ÓO]N DEL CONTRIBUYENTE"
+      ],
+      "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf",
+      "fields": {
+        "ID_CIF": {
+          "param": "d3",
+          "split": "_",
+          "part": 0,
+          "pattern": "^\\d+$"
+        },
+        "RFC": {
+          "param": "d3",
+          "split": "_",
+          "part": -1,
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        }
+      }
+    },
     "fields": {
       "RFC": {
         "type": "string",
@@ -76,12 +108,31 @@
       "ID_CIF": {
         "type": "string",
         "required": false,
-        "hint": "Identificador idCIF asociado a la Cédula de Identificación Fiscal o visible junto al código QR. Extraer únicamente si está impreso o decodificado en el texto; conservar todos los dígitos como string y no confundirlo con RFC, CURP o folio.",
+        "hint": "Identificador idCIF asociado a la Cédula de Identificación Fiscal. Se recupera preferentemente de la parte anterior al guion bajo en el parámetro D3 del QR del SAT; si el QR no se decodifica, extraerlo únicamente cuando esté impreso. Conservar todos los dígitos como string y no confundirlo con RFC, CURP o folio.",
         "validation": [
           {
             "rule_type": "regex",
             "pattern": "^\\d+$",
             "message": "El idCIF debe contener únicamente dígitos"
+          }
+        ]
+      },
+      "QR_CONSTANCIA": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "hint": "URL completa decodificada del código QR de la Constancia de Situación Fiscal. Nunca inferir ni completar este campo: se llena determinísticamente desde el QR embebido y queda null cuando no puede decodificarse.",
+        "validation": []
+      },
+      "CONSTANCIA_QR_VALIDO": {
+        "type": "boolean",
+        "required": true,
+        "computed": true,
+        "hint": "Verificación determinística del QR: true únicamente cuando el código apunta al validador del SAT y permite recuperar tanto ID_CIF como RFC desde el parámetro D3.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "No se localizó un QR válido de Constancia de Situación Fiscal o no fue posible recuperar ID_CIF y RFC"
           }
         ]
       },

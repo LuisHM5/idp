@@ -150,10 +150,13 @@ def _apply_slice(value: str, slice_expr: Optional[str]) -> str:
 def apply_spec(params: Dict[str, str], fields_spec: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
     """Map declared catalog fields out of a parsed QR param dict.
 
-    A field is only returned when its (optionally sliced) value has exactly
-    the declared digit count — anything else is dropped rather than guessed
-    at, since a QR value is only trusted when it unambiguously matches the
-    shape the catalog expects.
+    A field may select a Python-style slice and/or one part of a delimited
+    parameter before applying its declared digit count or regex. Anything
+    that does not match is dropped rather than guessed at, since a QR value
+    is only trusted when it unambiguously matches the catalog declaration.
+
+    The split support covers SAT payloads such as a CSF's
+    ``D3=<idCIF>_<RFC>`` without coupling this module to that document type.
     """
     result: Dict[str, str] = {}
     for field_name, field_spec in fields_spec.items():
@@ -162,8 +165,23 @@ def apply_spec(params: Dict[str, str], fields_spec: Dict[str, Dict[str, Any]]) -
         if raw is None:
             continue
         sliced = _apply_slice(raw, field_spec.get("slice"))
+        delimiter = field_spec.get("split")
+        if delimiter is not None:
+            try:
+                parts = sliced.split(str(delimiter))
+                sliced = parts[int(field_spec.get("part", 0))]
+            except (IndexError, TypeError, ValueError):
+                continue
         expected_digits = field_spec.get("digits")
         value = digits_exact(sliced, expected_digits) if expected_digits else sliced.strip()
+        pattern = field_spec.get("pattern")
+        if value and pattern:
+            try:
+                if re.fullmatch(str(pattern), value) is None:
+                    continue
+            except re.error:
+                logger.warning("qr_recovery: invalid field pattern %r", pattern)
+                continue
         if value:
             result[field_name] = value
     return result

@@ -89,6 +89,7 @@ como en el DSL viejo.
 | `custom_validator` | sí, **solo en el flujo estándar** | Ídem. |
 | `business_destination` | sí | Metadato de ruteo de negocio; aparece como `businessDestination` en cada documento del expediente. Puramente informativo para el consumidor. |
 | `cross_field_validation` | sí | Reglas que cruzan **varios campos del mismo documento** (fórmulas, sumas de arrays) — no pueden vivir dentro de un solo campo. Mismo shape de regla que dentro de `fields[].validation`, pero con `"field"` explícito. |
+| `qr_recovery` | sí | Recuperación determinística de campos desde un QR embebido. Declara cómo localizar la página, filtrar la URL, mapear parámetros y publicar el payload/estado; ver la sección siguiente. |
 | `form_mapping` | sí, pero heredado | Mecanismo viejo para campos computados (ver más abajo) — hoy solo tiene sentido si no usas la convención `concept_aliases`/`source`/`filters` directo en `fields`. Para tipos nuevos, prefiere esa convención. |
 | `prompt_profile` | **no, reservado** | Se lee en `_shared.json._model_profiles` pero ningún código lo consume todavía. No lo confundas con algo funcional. |
 | `field_sets` | **no, ignorado en este DSL** | Solo aplica al DSL legado (tipos sin `fields`). En un tipo field-centric no hace nada — no lo agregues. |
@@ -139,6 +140,54 @@ como en el DSL viejo.
   hoy es `LIQUIDACION_NORMALIZADA` (ver próxima sección) — si marcas otro
   campo como `computed` sin que algo en `pipeline/` lo llene explícitamente,
   simplemente sale vacío/null, nadie lo calcula solo.
+
+### Recuperación determinística desde QR (`qr_recovery`)
+
+Un tipo puede declarar un bloque `qr_recovery` para localizar y decodificar
+el QR del PDF sin pedirle al modelo que lo interprete. El mapeo es por
+parámetros de URL y no está acoplado a un `TYPE_ID`:
+
+```jsonc
+"qr_recovery": {
+  "confidence": 0.99,
+  "decoded_text_field": "QR_CONSTANCIA",
+  "validity_field": "CONSTANCIA_QR_VALIDO",
+  "required_fields": ["ID_CIF", "RFC"],
+  "page_marker_min_matches": 2,
+  "short_segment_max_pages": 8,
+  "page_markers": ["C[ÉE]DULA DE IDENTIFICACI[ÓO]N FISCAL"],
+  "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf",
+  "fields": {
+    "ID_CIF": {
+      "param": "d3",
+      "split": "_",
+      "part": 0,
+      "pattern": "^\\d+$"
+    },
+    "RFC": {
+      "param": "d3",
+      "split": "_",
+      "part": -1,
+      "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+    }
+  }
+}
+```
+
+- `page_markers` y `page_marker_min_matches` eligen la página por texto;
+  para segmentos cortos también se intenta primero su página inicial.
+- `url_contains` evita aceptar otro QR presente en la misma página.
+- Cada entrada de `fields` admite `param`, `slice` (`":2"`, `"-2:"`),
+  `digits`, `split` + `part` (índices negativos permitidos) y `pattern`.
+- `decoded_text_field` recibe el payload/URL completo. Debe existir en
+  `fields` con `computed: true`.
+- `validity_field` recibe `true` solo cuando están todos los
+  `required_fields`; también debe ser un campo computado y normalmente lleva
+  una regla `boolean_true` para que un QR faltante o incompleto invalide el
+  documento.
+- Los campos recuperados desde el QR reemplazan la extracción del modelo y
+  quedan auditados en `qrRecovery` y `recoveredFields`.
+- `QR_RECOVERY_ENABLED=false` desactiva globalmente este mecanismo.
 
 ### Reglas de validación soportadas (`rule_type`)
 
