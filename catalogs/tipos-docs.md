@@ -1,4 +1,5 @@
 Pedimento PEDIMENTO_ADUANAL
+Factura de Honorarios / Honorarios de Agencia Aduanal FACTURA_HONORARIOS
 Factura Agencia Aduanal FACTURA_AGENCIA_ADUANAL o CUENTA_GASTOS_AGENTE_ADUANAL
 Honorarios Extranjeros FACTURA_PROVEEDOR_EXTRANJERO, con subtipo de honorarios, o crear FACTURA_HONORARIOS_EXTRANJEROS
 Operaciones Logísticas Internacionales FACTURA_LOGISTICA o DOCUMENTO_TRANSPORTE

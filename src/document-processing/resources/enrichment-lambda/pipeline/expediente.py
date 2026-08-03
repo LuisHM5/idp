@@ -142,7 +142,7 @@ def _extract_segment(
     concurrently over all segments without shared mutable state. `reader` is a
     shared pypdf.PdfReader over the whole file (same sharing pattern
     pdf_pages.load_pages already uses across its OCR worker threads) — only
-    read from when the segment's type declares `qr_recovery`.
+    read from when the segment's catalog declares a QR source.
     """
     seg_pages = [p for p in pages if seg.page_start <= p.number <= seg.page_end]
     entry = get_type_entry(seg.doc_type)
@@ -285,12 +285,10 @@ def process_pdf(
             # IS the public result — no separate _public_entities/resolve_fields
             # split (see catalog-dsl-v4-migration memory for why the legacy
             # trio existed and why arrays/objects were unrepresentable there).
-            # requirement #1 ("validate the QR exists") is now a first-class,
-            # catalog-declared check — DEPOSITO_REFERENCIADO_QR_VALIDO (set by
-            # _recover_from_qr below) carries a `boolean_true` validation rule
-            # in the catalog, so resolve_field_tree's normal rule dispatch
-            # already produces the presence/validity check here; no special
-            # casing needed in this generic pipeline code.
+            # QR presence/validity is also a first-class catalog field: any
+            # boolean with `qr_source: "valid"` can carry a `boolean_true`
+            # rule, so normal rule dispatch handles it without a TYPE_ID or
+            # output-field special case here.
             resolved_tree, checks = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
@@ -401,12 +399,41 @@ def _has_field(entry, name: str) -> bool:
     return name in entry.extraction_fields or bool(entry.field_tree and name in entry.field_tree)
 
 
+def _qr_spec_from_fields(entry) -> Dict[str, Any]:
+    """Merge field-level ``qr_source`` declarations into ``qr_recovery``.
+
+    New field-centric catalogs declare QR output where the field itself is
+    defined. The older top-level ``fields``/``decoded_text_field``/
+    ``validity_field`` shape remains supported so deployed catalogs such as
+    PEDIMENTO_ADUANAL do not need a coordinated migration.
+    """
+    spec = dict(entry.qr_recovery or {})
+    mappings = dict(spec.get("fields") or {})
+    validity_requires = None
+
+    for name, field_spec in (entry.field_tree or {}).items():
+        params = getattr(field_spec, "params", {}) or {}
+        source = params.get("qr_source")
+        if isinstance(source, dict):
+            mappings[name] = source
+        elif source in ("payload", "decoded_text"):
+            spec["decoded_text_field"] = name
+        elif source == "valid":
+            spec["validity_field"] = name
+            validity_requires = params.get("qr_requires")
+
+    if mappings:
+        spec["fields"] = mappings
+    if spec.get("validity_field") and not spec.get("required_fields"):
+        spec["required_fields"] = validity_requires or list(mappings)
+    return spec
+
+
 def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[Any], seg_pages: List[PageText]) -> None:
     """Deterministic recovery from an embedded QR code (e.g. a pedimento or
-    SAT fiscal certificate), when the type declares `qr_recovery` in its
-    catalog config. No-op for any type that doesn't declare it — field
-    mappings and output names are catalog-driven, not coupled to a specific
-    document type.
+    SAT fiscal certificate), when the type declares a field with `qr_source`
+    or the legacy top-level `qr_recovery` mapping. Field mappings and output
+    names are catalog-driven, not coupled to a specific document type.
 
     Page selection is text-anchored, not position-assumed: `qr_recovery.
     extract_qr_recovery` looks for the catalog's declared `page_marker`
@@ -425,20 +452,27 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
     data the SAT itself embedded over anything OCR/LLM-derived is the whole
     point of this recovery source, so it always wins.
     """
-    if reader is None or not entry.qr_recovery:
+    if reader is None:
         return
     from .qr_recovery import extract_qr_recovery
 
-    result = extract_qr_recovery(seg_pages, seg.page_start, reader, entry.qr_recovery)
+    qr_spec = _qr_spec_from_fields(entry)
+    if not qr_spec:
+        return
+    result = extract_qr_recovery(seg_pages, seg.page_start, reader, qr_spec)
     # No leading underscore: unlike _entities/_confidences/_text (popped
     # before the result is returned, see the "assemble" pass in process_pdf),
     # this is meant to survive into the full result for audit — same
     # convention as recoveredFields/checks/extractionMeta.
-    required_qr_fields = entry.qr_recovery.get("required_fields") or []
+    required_qr_fields = qr_spec.get("required_fields") or []
     qr_valid = (
         all(name in result["fields"] for name in required_qr_fields)
         if required_qr_fields
-        else bool(result["fields"])
+        else (
+            bool(result["fields"])
+            if qr_spec.get("fields")
+            else bool(result["qrPresent"])
+        )
     )
     doc["qrRecovery"] = {
         "qrPresent": result["qrPresent"],
@@ -451,25 +485,26 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
 
     entities = doc.setdefault("_entities", {})
     confidences = doc.setdefault("_confidences", {})
-    confidence = float(entry.qr_recovery.get("confidence", 0.99))
+    confidence = float(qr_spec.get("confidence", 0.99))
 
     # The raw QR payload itself, exposed as a regular (computed) catalog
-    # field when the type declares one — e.g. QR_PEDIMENTO or QR_CONSTANCIA — so the literal
-    # data read from the QR is visible in extractedEntities, not just this
-    # internal audit dict. Populated whenever a QR decoded at all, even if
-    # its params didn't map onto any of the fields below.
-    decoded_text_field = str(entry.qr_recovery.get("decoded_text_field") or "QR_PEDIMENTO")
+    # field when the type declares one — e.g. QR_PEDIMENTO or QR_CONSTANCIA —
+    # so the literal data read from the QR is visible in extractedEntities,
+    # not just this internal audit dict. Populated whenever a QR decoded at
+    # all, even if its params didn't map onto any of the fields below.
+    decoded_text_field = str(
+        qr_spec.get("decoded_text_field") or "QR_PEDIMENTO"
+    )
     if result["decodedText"] and _has_field(entry, decoded_text_field):
         entities[decoded_text_field] = result["decodedText"]
         confidences[decoded_text_field] = confidence
 
-    # Formal "the deposit box + its QR really are there" signal — a required
-    # boolean field (catalog validation: `boolean_true`) rather than just the
-    # best-effort audit dict above, so a missing/undecodable QR surfaces as a
-    # real validation failure, not something only visible by inspecting
-    # qrRecovery by hand.
+    # Formal "the expected QR and its required fields are present" signal —
+    # a required boolean field (catalog validation: `boolean_true`) rather
+    # than just the best-effort audit dict above, so a missing/incomplete QR
+    # surfaces as a real validation failure.
     validity_field = str(
-        entry.qr_recovery.get("validity_field") or "DEPOSITO_REFERENCIADO_QR_VALIDO"
+        qr_spec.get("validity_field") or "DEPOSITO_REFERENCIADO_QR_VALIDO"
     )
     if _has_field(entry, validity_field):
         entities[validity_field] = qr_valid
@@ -683,7 +718,7 @@ def _cross_same_pedimento(rule: Dict[str, Any], documents: List[Dict[str, Any]])
     involved = _docs_of(documents, rule.get("documents", []))
     refs: Dict[str, List[str]] = {}
     for d in involved:
-        entities = d.get("extractedEntities") or d.get("_entities") or {}
+        entities = d.get("_entities") or d.get("extractedEntities") or {}
         ref = _first_value(entities, _PEDIMENTO_REF_FIELDS)
         cons = pedimento_consecutivo(ref) if ref else None
         if cons:
@@ -715,7 +750,7 @@ def _cross_importer_rfc(
     found: Dict[str, List[str]] = {}
     weak: Dict[str, List[str]] = {}
     for d in documents:
-        entities = d.get("extractedEntities") or d.get("_entities") or {}
+        entities = d.get("_entities") or d.get("extractedEntities") or {}
         rfc = _first_value(entities, _IMPORTER_RFC_FIELDS)
         if rfc and rfc.strip().upper() not in _GENERIC_RFCS:
             bucket = weak if d["documentType"] in _WEAK_IMPORTER_EVIDENCE_TYPES else found
@@ -747,7 +782,7 @@ def _cross_unique_uuid(rule: Dict[str, Any], documents: List[Dict[str, Any]]) ->
     involved = _docs_of(documents, rule.get("documents", []))
     seen: Dict[str, List[Dict[str, Any]]] = {}
     for d in involved:
-        entities = d.get("extractedEntities") or d.get("_entities") or {}
+        entities = d.get("_entities") or d.get("extractedEntities") or {}
         u = normalize_uuid(entities.get("UUID"))
         if u:
             seen.setdefault(u, []).append(d)
@@ -759,7 +794,11 @@ def _cross_unique_uuid(rule: Dict[str, Any], documents: List[Dict[str, Any]]) ->
     for u, docs in dupes.items():
         types = {d["documentType"] for d in docs}
         totals = {
-            str((d.get("extractedEntities") or {}).get("TOTAL")) for d in docs
+            str(_first_value(
+                d.get("_entities") or d.get("extractedEntities") or {},
+                ("TOTAL", "TOTAL_CFDI"),
+            ))
+            for d in docs
         }
         if len(types) == 1 and len(totals) == 1:
             copies[u] = len(docs)

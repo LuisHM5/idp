@@ -160,6 +160,7 @@
       "rule_type": "same_pedimento",
       "documents": [
         "PEDIMENTO_ADUANAL",
+        "FACTURA_HONORARIOS",
         "FACTURA_AGENCIA_ADUANAL",
         "CUENTA_GASTOS_AGENTE_ADUANAL",
         "CFDI_GASTO_TERCERO",
@@ -188,6 +189,7 @@
     {
       "rule_type": "unique_cfdi_uuid",
       "documents": [
+        "FACTURA_HONORARIOS",
         "FACTURA_AGENCIA_ADUANAL",
         "CFDI_GASTO_TERCERO",
         "FACTURA_LOGISTICA"

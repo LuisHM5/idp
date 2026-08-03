@@ -143,33 +143,75 @@ como en el DSL viejo.
 
 ### Recuperación determinística desde QR (`qr_recovery`)
 
-Un tipo puede declarar un bloque `qr_recovery` para localizar y decodificar
-el QR del PDF sin pedirle al modelo que lo interprete. El mapeo es por
-parámetros de URL y no está acoplado a un `TYPE_ID`:
+Para el caso mínimo basta declarar `qr_source` en un campo: eso activa la
+lectura del QR y prueba la primera página del segmento. El bloque opcional
+`qr_recovery` afina **dónde buscarlo** y qué URL aceptar; cada campo dice
+**qué toma del QR**. No se agrega código Python por tipo:
+
+```jsonc
+"QR_CONTENIDO": {
+  "type": "string",
+  "required": false,
+  "computed": true,
+  "qr_source": "payload",
+  "hint": "Contenido completo decodificado del QR.",
+  "validation": []
+}
+```
+
+Cuando además se quieren mapear parámetros y validar el QR:
 
 ```jsonc
 "qr_recovery": {
   "confidence": 0.99,
-  "decoded_text_field": "QR_CONSTANCIA",
-  "validity_field": "CONSTANCIA_QR_VALIDO",
-  "required_fields": ["ID_CIF", "RFC"],
   "page_marker_min_matches": 2,
   "short_segment_max_pages": 8,
   "page_markers": ["C[ÉE]DULA DE IDENTIFICACI[ÓO]N FISCAL"],
-  "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf",
-  "fields": {
-    "ID_CIF": {
+  "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf"
+},
+"fields": {
+  "ID_CIF": {
+    "type": "string",
+    "required": false,
+    "hint": "Identificador de la CIF.",
+    "qr_source": {
       "param": "d3",
       "split": "_",
       "part": 0,
       "pattern": "^\\d+$"
     },
-    "RFC": {
+    "validation": []
+  },
+  "RFC": {
+    "type": "string",
+    "required": true,
+    "hint": "RFC del contribuyente.",
+    "qr_source": {
       "param": "d3",
       "split": "_",
       "part": -1,
       "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
-    }
+    },
+    "validation": []
+  },
+  "QR_CONSTANCIA": {
+    "type": "string",
+    "required": false,
+    "computed": true,
+    "qr_source": "payload",
+    "hint": "URL completa decodificada.",
+    "validation": []
+  },
+  "CONSTANCIA_QR_VALIDO": {
+    "type": "boolean",
+    "required": true,
+    "computed": true,
+    "qr_source": "valid",
+    "qr_requires": ["ID_CIF", "RFC"],
+    "hint": "True cuando el QR contiene todos los campos requeridos.",
+    "validation": [
+      {"rule_type": "boolean_true", "message": "QR faltante o inválido"}
+    ]
   }
 }
 ```
@@ -177,16 +219,19 @@ parámetros de URL y no está acoplado a un `TYPE_ID`:
 - `page_markers` y `page_marker_min_matches` eligen la página por texto;
   para segmentos cortos también se intenta primero su página inicial.
 - `url_contains` evita aceptar otro QR presente en la misma página.
-- Cada entrada de `fields` admite `param`, `slice` (`":2"`, `"-2:"`),
+- Si no se necesita localización ni filtrado especial, puede omitirse por
+  completo `qr_recovery`; un campo con `qr_source: "payload"` es suficiente.
+- Un `qr_source` de parámetros admite `param`, `slice` (`":2"`, `"-2:"`),
   `digits`, `split` + `part` (índices negativos permitidos) y `pattern`.
-- `decoded_text_field` recibe el payload/URL completo. Debe existir en
-  `fields` con `computed: true`.
-- `validity_field` recibe `true` solo cuando están todos los
-  `required_fields`; también debe ser un campo computado y normalmente lleva
-  una regla `boolean_true` para que un QR faltante o incompleto invalide el
-  documento.
+- `qr_source: "payload"` guarda el texto o URL completo decodificado.
+- `qr_source: "valid"` produce un booleano; `qr_requires` enumera los campos
+  que deben haberse recuperado. Si se omite, exige todos los mapeos QR.
 - Los campos recuperados desde el QR reemplazan la extracción del modelo y
   quedan auditados en `qrRecovery` y `recoveredFields`.
+- El formato superior usado originalmente por `PEDIMENTO_ADUANAL`
+  (`qr_recovery.fields`, `decoded_text_field`, `validity_field`) sigue
+  soportado para compatibilidad; los catálogos nuevos deben preferir
+  `qr_source` junto al campo.
 - `QR_RECOVERY_ENABLED=false` desactiva globalmente este mecanismo.
 
 ### Reglas de validación soportadas (`rule_type`)

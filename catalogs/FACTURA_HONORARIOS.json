@@ -1,0 +1,542 @@
+{
+  "FACTURA_HONORARIOS": {
+    "schema_version": "5.1.0",
+    "display_name": "Factura de Honorarios",
+    "aliases": [
+      "factura honorarios",
+      "CFDI de honorarios",
+      "recibo de honorarios",
+      "honorarios agente aduanal"
+    ],
+    "description": "CFDI de honorarios por servicios profesionales o por despacho aduanero. Se distingue por el encabezado 'HONORARIOS', los bloques EMISOR y RECEPTOR, UUID y datos de timbrado, una tabla de conceptos de honorarios, retenciones de ISR/IVA y, cuando aplica a servicios aduanales, las secciones 'OBSERVACIONES, PEDIMENTOS', 'Pagos hechos por su cuenta' y 'TOTALES Y SALDO A PAGAR'. No confundir el total fiscal del CFDI con el total global que suma gastos pagados por cuenta del cliente.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "expediente",
+    "business_destination": "FACTURA_HONORARIOS",
+    "min_confidence": 0.8,
+    "qr_recovery": {
+      "confidence": 0.99,
+      "page_marker_min_matches": 2,
+      "short_segment_max_pages": 3,
+      "page_markers": [
+        "REPRESENTACI[ÓO]N IMPRESA DE UN CFDI",
+        "UUID",
+        "SELLO DIGITAL",
+        "CADENA ORIGINAL",
+        "FECHA TIMBRADO"
+      ],
+      "url_contains": "verificacfdi.facturaelectronica.sat.gob.mx/default.aspx"
+    },
+    "fields": {
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "hint": "Versión del CFDI impresa junto a la etiqueta 'VERSIÓN' o 'VERSION', normalmente 4.0. Extraer como string y no confundir con la versión 1.1 del Timbre Fiscal Digital dentro de la cadena original.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "La factura debe corresponder a CFDI versión 4.0"
+          }
+        ]
+      },
+      "SERIE": {
+        "type": "string",
+        "required": false,
+        "hint": "Serie de la factura en el encabezado HONORARIOS. Conservar ceros y caracteres tal como aparecen.",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": true,
+        "hint": "Folio interno impreso en el encabezado HONORARIOS. Extraer como string; no confundir con el UUID o folio fiscal.",
+        "validation": []
+      },
+      "UUID": {
+        "type": "string",
+        "required": true,
+        "hint": "Folio fiscal UUID de 36 caracteres impreso junto a 'UUID'. Se recupera preferentemente del parámetro id del QR del SAT. No tomar números de certificado, serie, folio interno ni referencias de pedimento.",
+        "qr_source": {
+          "param": "id",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "El UUID del CFDI tiene un formato inválido"
+          }
+        ]
+      },
+      "FECHA_EMISION": {
+        "type": "string",
+        "required": true,
+        "hint": "Fecha y hora del comprobante indicada como 'FECHA' en el encabezado. Normalizar a YYYY-MM-DDTHH:MM:SS conservando la hora; no confundir con FECHA_TIMBRADO.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de emisión debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "FECHA_TIMBRADO": {
+        "type": "string",
+        "required": true,
+        "hint": "Fecha y hora junto a la etiqueta 'FECHA TIMBRADO'. Normalizar a YYYY-MM-DDTHH:MM:SS; no usar la fecha de emisión.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de timbrado debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "CERTIFICADO_EMISOR": {
+        "type": "string",
+        "required": false,
+        "hint": "Número impreso junto a 'CERTIFICADO' en el encabezado. Extraer como string para conservar ceros iniciales; no tomar el certificado SAT incluido dentro de la cadena original.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{20}$",
+            "message": "El certificado del emisor debe contener 20 dígitos"
+          }
+        ]
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "hint": "Código impreso junto a 'COMPROBANTE', normalmente I para ingreso. Conservar únicamente la clave de una letra.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[IEPNT]$",
+            "message": "El tipo de comprobante no es una clave CFDI válida"
+          }
+        ]
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave de dos dígitos impresa junto a 'FORMA DE PAGO'. Extraer como string y conservar ceros iniciales.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La forma de pago debe contener dos dígitos"
+          }
+        ]
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave impresa junto a 'MÉTODO DE PAGO', normalmente PUE o PPD.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(PUE|PPD)$",
+            "message": "El método de pago debe ser PUE o PPD"
+          }
+        ]
+      },
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "hint": "RFC del bloque EMISOR. Se recupera preferentemente del parámetro re del QR del SAT. NUNCA tomar el RFC del receptor ni el RFC del proveedor de certificación contenido en la cadena original.",
+        "qr_source": {
+          "param": "re",
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del emisor tiene un formato inválido"
+          }
+        ]
+      },
+      "EMISOR_CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP del emisor cuando sea persona física y aparezca en el bloque EMISOR. No copiar aquí el RFC.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP del emisor tiene un formato inválido"
+          }
+        ]
+      },
+      "EMISOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo, denominación o razón social en el bloque EMISOR. No incluir RFC, CURP ni domicilio.",
+        "validation": []
+      },
+      "EMISOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave de tres dígitos impresa como 'RÉGIMEN' en el encabezado del comprobante. Corresponde al emisor; no confundir con el régimen fiscal del receptor.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{3}$",
+            "message": "El régimen fiscal del emisor debe contener tres dígitos"
+          }
+        ]
+      },
+      "EMISOR_DOMICILIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio completo visible dentro del bloque EMISOR, conservando calle, números, colonia, código postal, ciudad, estado y país tal como aparecen.",
+        "validation": []
+      },
+      "RECEPTOR_RFC": {
+        "type": "string",
+        "required": true,
+        "hint": "RFC del bloque RECEPTOR. Se recupera preferentemente del parámetro rr del QR del SAT. NUNCA tomar el RFC del emisor ni el del proveedor de certificación.",
+        "qr_source": {
+          "param": "rr",
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del receptor tiene un formato inválido"
+          },
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC receptor no corresponde a la empresa configurada"
+          }
+        ]
+      },
+      "RECEPTOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre, denominación o razón social dentro del bloque RECEPTOR. No incluir RFC, régimen fiscal, domicilio ni uso CFDI.",
+        "validation": []
+      },
+      "RECEPTOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave de tres dígitos indicada como 'RÉGIMEN FISCAL' dentro del bloque RECEPTOR.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{3}$",
+            "message": "El régimen fiscal del receptor debe contener tres dígitos"
+          }
+        ]
+      },
+      "RECEPTOR_CODIGO_POSTAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Código postal de cinco dígitos dentro del domicilio del RECEPTOR. Extraer como string y conservar ceros iniciales.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El código postal del receptor debe contener cinco dígitos"
+          }
+        ]
+      },
+      "RECEPTOR_DOMICILIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio completo visible dentro del bloque RECEPTOR, sin incluir nombre, RFC, régimen fiscal ni uso CFDI.",
+        "validation": []
+      },
+      "USO_CFDI": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave indicada junto a 'USO CFDI', por ejemplo G03. Extraer únicamente la clave de tres caracteres.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{3}$",
+            "message": "El uso CFDI debe contener tres caracteres"
+          }
+        ]
+      },
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "hint": "Tabla principal de servicios u honorarios. Extraer una fila por concepto, conservar el orden y mantener cada impuesto vinculado con su concepto. No incluir aquí los pagos hechos por cuenta del cliente de la tabla inferior.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La factura debe contener al menos un concepto de honorarios"
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "hint": "Cantidad de la fila en la columna CANT.",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "hint": "Clave de unidad de la columna U. MED., por ejemplo E48.",
+            "validation": []
+          },
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "hint": "Clave SAT de producto o servicio de la columna CVE PROD. Conservarla como string.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{8}$",
+                "message": "La clave de producto o servicio debe contener ocho dígitos"
+              }
+            ]
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal del servicio facturado en esta fila.",
+            "validation": []
+          },
+          "PRECIO_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "hint": "Precio unitario de la fila, sin símbolo de moneda.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "hint": "Importe antes de impuestos correspondiente a esta fila, sin símbolo de moneda.",
+            "validation": []
+          },
+          "IMPUESTOS": {
+            "type": "array",
+            "required": false,
+            "hint": "Descomponer el texto de la columna IMPUESTO en una fila por impuesto cuando sea posible, conservando clave, nombre, tasa e importe juntos.",
+            "validation": [],
+            "item_fields": {
+              "CLAVE_IMPUESTO": {
+                "type": "string",
+                "required": false,
+                "hint": "Clave SAT del impuesto, por ejemplo 002.",
+                "validation": []
+              },
+              "NOMBRE_IMPUESTO": {
+                "type": "string",
+                "required": false,
+                "hint": "Nombre o abreviatura del impuesto, por ejemplo IVA.",
+                "validation": []
+              },
+              "TASA": {
+                "type": "number",
+                "required": false,
+                "hint": "Tasa porcentual cuando esté impresa o pueda leerse inequívocamente en la misma celda; no inferirla desde el importe.",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": false,
+                "hint": "Importe del impuesto asociado a este concepto.",
+                "validation": []
+              }
+            }
+          }
+        }
+      },
+      "SUBTOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "hint": "Importe de servicios antes de IVA y retenciones. En algunos formatos de honorarios está etiquetado simplemente como 'Importe'. Debe coincidir con la suma de CONCEPTOS.IMPORTE; no tomar el renglón 'SubTotal' que ya incluye IVA ni el total global con gastos del cliente.",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El subtotal del CFDI no coincide con la suma de conceptos"
+          }
+        ]
+      },
+      "IVA_TRASLADADO": {
+        "type": "number",
+        "required": true,
+        "hint": "Importe total del IVA trasladado, normalmente indicado como IVA(16%). No confundir con la retención de IVA.",
+        "validation": []
+      },
+      "SUBTOTAL_MAS_IVA": {
+        "type": "number",
+        "required": false,
+        "hint": "Renglón intermedio que el formato puede etiquetar como 'SubTotal' después de sumar el importe de servicios y el IVA, antes de restar retenciones.",
+        "validation": [
+          {
+            "rule_type": "custom_formula",
+            "formula": "SUBTOTAL_CFDI + IVA_TRASLADADO",
+            "tolerance": 0.02,
+            "message": "El subtotal con IVA no coincide con SUBTOTAL_CFDI + IVA_TRASLADADO"
+          }
+        ]
+      },
+      "ISR_RETENIDO": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Importe de ISR retenido, por ejemplo el renglón '10% Ret. I.S.R.'. Extraer el monto, no el porcentaje.",
+        "validation": []
+      },
+      "IVA_RETENIDO": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Importe de IVA retenido en el renglón 'Ret. I.V.A.'. No confundir con IVA_TRASLADADO.",
+        "validation": []
+      },
+      "TOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "hint": "Total fiscal del CFDI después de IVA y retenciones. Puede estar impreso con una etiqueta personalizada como 'SubTotal 1'. Se recupera preferentemente del parámetro tt del QR del SAT. NUNCA tomar el total global de gastos y honorarios ni el saldo a pagar.",
+        "qr_source": {
+          "param": "tt",
+          "pattern": "^\\d+(?:\\.\\d{1,6})?$"
+        },
+        "validation": [
+          {
+            "rule_type": "cfdi_total",
+            "formula": "SUBTOTAL_CFDI + IVA_TRASLADADO - ISR_RETENIDO - IVA_RETENIDO",
+            "tolerance": 0.02,
+            "message": "El total fiscal del CFDI no coincide con subtotal, IVA y retenciones"
+          }
+        ]
+      },
+      "TOTAL_CON_LETRA_CFDI": {
+        "type": "string",
+        "required": false,
+        "hint": "Importe con letra colocado junto al resumen fiscal del CFDI, antes de sellos y cadena original. No tomar el importe con letra de la sección final TOTALES Y SALDO A PAGAR.",
+        "validation": []
+      },
+      "PEDIMENTO_REFERENCE": {
+        "type": "string",
+        "required": false,
+        "hint": "Número principal listado bajo 'OBSERVACIONES, PEDIMENTOS'. Conservar ceros y no inventar año, aduana o patente cuando solo está impreso el consecutivo de siete dígitos. Este campo vincula la factura con los demás documentos del expediente.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(?:\\d{7}|\\d{15})$",
+            "message": "La referencia de pedimento debe contener 7 o 15 dígitos"
+          }
+        ]
+      },
+      "GASTOS_CUENTA_TERCEROS": {
+        "type": "array",
+        "required": false,
+        "hint": "Tabla 'Pagos hechos por su cuenta' o equivalente. Extraer una fila por concepto pagado por cuenta del cliente. No mezclar estos renglones con los conceptos fiscales de honorarios.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "CONCEPTO": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal del gasto pagado por cuenta del cliente.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "hint": "Importe del gasto de esta fila, sin símbolo de moneda.",
+            "validation": []
+          }
+        }
+      },
+      "TOTAL_FACTURA_MAS_GASTOS": {
+        "type": "number",
+        "required": true,
+        "hint": "Renglón 'Total' dentro de la sección final 'TOTALES Y SALDO A PAGAR'. Incluye TOTAL_CFDI más los pagos hechos por cuenta del cliente. No confundir con el total fiscal del QR.",
+        "validation": [
+          {
+            "rule_type": "custom_formula",
+            "formula": "TOTAL_CFDI + SUM(GASTOS_CUENTA_TERCEROS.IMPORTE)",
+            "tolerance": 0.02,
+            "message": "El total global no coincide con el total del CFDI más los gastos por cuenta del cliente"
+          }
+        ]
+      },
+      "ANTICIPO": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Importe del renglón 'Anticipo' en la sección final de totales. Extraer 0 cuando esté impreso explícitamente como cero; no inventarlo cuando no exista el renglón.",
+        "validation": []
+      },
+      "SALDO_PAGAR": {
+        "type": "number",
+        "required": true,
+        "hint": "Importe del renglón final 'Saldo' o 'Saldo a pagar'. No confundir con TOTAL_CFDI.",
+        "validation": [
+          {
+            "rule_type": "custom_formula",
+            "formula": "TOTAL_FACTURA_MAS_GASTOS - ANTICIPO",
+            "tolerance": 0.02,
+            "message": "El saldo no coincide con el total global menos el anticipo"
+          }
+        ]
+      },
+      "TOTAL_CON_LETRA_GLOBAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Importe total con letra de la sección final TOTALES Y SALDO A PAGAR. No tomar el importe con letra correspondiente únicamente al CFDI de honorarios.",
+        "validation": []
+      },
+      "QR_FACTURA": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "qr_source": "payload",
+        "hint": "URL completa decodificada del QR de verificación CFDI del SAT. Se llena determinísticamente; nunca inferirla ni reconstruirla desde los campos impresos.",
+        "validation": []
+      },
+      "QR_SELLO_ULTIMOS_8": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "hint": "Valor del parámetro fe del QR del CFDI, correspondiente a los últimos caracteres del sello digital. Conservar mayúsculas, minúsculas, signos y relleno Base64.",
+        "qr_source": {
+          "param": "fe",
+          "pattern": "^[A-Za-z0-9+/]{6,12}={0,2}$"
+        },
+        "validation": []
+      },
+      "FACTURA_QR_VALIDA": {
+        "type": "boolean",
+        "required": true,
+        "computed": true,
+        "qr_source": "valid",
+        "qr_requires": [
+          "UUID",
+          "EMISOR_RFC",
+          "RECEPTOR_RFC",
+          "TOTAL_CFDI",
+          "QR_SELLO_ULTIMOS_8"
+        ],
+        "hint": "True únicamente cuando el QR oficial del CFDI permite recuperar UUID, RFC emisor, RFC receptor, total fiscal y fragmento del sello.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "No se localizó un QR CFDI válido o faltan parámetros obligatorios"
+          }
+        ]
+      }
+    },
+    "cross_field_validation": []
+  }
+}

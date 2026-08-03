@@ -14,12 +14,6 @@
     "min_confidence": 0.8,
     "qr_recovery": {
       "confidence": 0.99,
-      "decoded_text_field": "QR_CONSTANCIA",
-      "validity_field": "CONSTANCIA_QR_VALIDO",
-      "required_fields": [
-        "ID_CIF",
-        "RFC"
-      ],
       "page_marker_min_matches": 2,
       "short_segment_max_pages": 8,
       "page_markers": [
@@ -28,27 +22,19 @@
         "LUGAR Y FECHA DE EMISI[ÓO]N",
         "DATOS DE IDENTIFICACI[ÓO]N DEL CONTRIBUYENTE"
       ],
-      "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf",
-      "fields": {
-        "ID_CIF": {
-          "param": "d3",
-          "split": "_",
-          "part": 0,
-          "pattern": "^\\d+$"
-        },
-        "RFC": {
-          "param": "d3",
-          "split": "_",
-          "part": -1,
-          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
-        }
-      }
+      "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf"
     },
     "fields": {
       "RFC": {
         "type": "string",
         "required": true,
         "hint": "Registro Federal de Contribuyentes impreso junto a la etiqueta 'RFC' en la Cédula de Identificación Fiscal y repetido en 'Datos de Identificación del Contribuyente'. Extraer 12 caracteres para persona moral o 13 para persona física, en mayúsculas, sin espacios, guiones ni prefijos. NUNCA tomar la CURP, el idCIF ni un RFC mencionado dentro de la cadena original.",
+        "qr_source": {
+          "param": "d3",
+          "split": "_",
+          "part": -1,
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        },
         "validation": [
           {
             "rule_type": "regex",
@@ -109,6 +95,12 @@
         "type": "string",
         "required": false,
         "hint": "Identificador idCIF asociado a la Cédula de Identificación Fiscal. Se recupera preferentemente de la parte anterior al guion bajo en el parámetro D3 del QR del SAT; si el QR no se decodifica, extraerlo únicamente cuando esté impreso. Conservar todos los dígitos como string y no confundirlo con RFC, CURP o folio.",
+        "qr_source": {
+          "param": "d3",
+          "split": "_",
+          "part": 0,
+          "pattern": "^\\d+$"
+        },
         "validation": [
           {
             "rule_type": "regex",
@@ -122,6 +114,7 @@
         "required": false,
         "computed": true,
         "hint": "URL completa decodificada del código QR de la Constancia de Situación Fiscal. Nunca inferir ni completar este campo: se llena determinísticamente desde el QR embebido y queda null cuando no puede decodificarse.",
+        "qr_source": "payload",
         "validation": []
       },
       "CONSTANCIA_QR_VALIDO": {
@@ -129,6 +122,11 @@
         "required": true,
         "computed": true,
         "hint": "Verificación determinística del QR: true únicamente cuando el código apunta al validador del SAT y permite recuperar tanto ID_CIF como RFC desde el parámetro D3.",
+        "qr_source": "valid",
+        "qr_requires": [
+          "ID_CIF",
+          "RFC"
+        ],
         "validation": [
           {
             "rule_type": "boolean_true",
