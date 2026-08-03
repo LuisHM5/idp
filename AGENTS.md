@@ -21,6 +21,7 @@ This repo documents itself extensively in Spanish — **read the relevant doc in
 | `documentacion/FLUJO_EJECUCION.md` | Code-level execution trace, file:line references, both pipeline branches, dataflow table, and a ranked list of known dataflow inefficiencies. Read before touching `handler.py` or `pipeline/`. |
 | `documentacion/GUIA_DESPLIEGUE_Y_USO.md` | Full operational guide: install, deploy, update/delete catalogs, troubleshooting table, file map of what to edit vs. never touch. |
 | `documentacion/API_USO.md` | **REST API reference — keep in sync automatically, see below.** |
+| `documentacion/APIS_INTEGRACION.md` | Integration-facing inventory: internal APIs this repo exposes vs. external (AWS) APIs it consumes, with exact SDK operations and file references. Update alongside `API_USO.md` when the API surface or AWS service calls change. |
 | `documentacion/AMBIENTES_Y_SEGURIDAD.md` | dev vs prod stacks, custom domain, API keys, WAF. |
 | `documentacion/TESTS.md` | Every test command, what it checks, cost, and how to read `pnpm comparar` output to diagnose a bug. |
 | `documentacion/COSTOS.md` | Measured (not estimated) Bedrock/Textract/infra costs, per page/doc/month. |
@@ -58,7 +59,8 @@ Key pieces:
 - `src/document-processing/resources/query-lambda/index.mjs` — Node.js 20 REST read/search endpoints (`GET /documents/{id}`, `GET /documents?docType=...&field=...&value=...`).
 - `catalogs/` — **THE single source of truth for document types**, but only for files that live directly in this folder (no subfolders are read). See "Catalog DSL" below and `catalogs/README.md` for the full spec.
 - `scripts/` — CLI tooling: catalog sync, prompt preview, local/e2e processing, comparisons, backfill. See the Commands table.
-- `patches/default-bedrock-invoke-index.py` — Patch applied by `scripts/patch-construct.mjs` during `pnpm build`.
+- `src/document-processing/multi-model-document-processing.ts` — Subclass of the blueprint's `BedrockDocumentProcessing` that points the classification/extraction steps at our own Lambda (`resources/model-invoke-lambda/`, Bedrock **Converse** API) so any Bedrock model works, not just Anthropic. Uses the construct's documented `classificationStep()`/`processingStep()` extension points — **do not** move this back to patching `node_modules`. Its overrides run during `super()`, so their state lives in a module-level `WeakMap`, never in class fields (with `target: es2022`, field initializers run after `super()` and would wipe it).
+- `patches/default-sqs-consumer-index.py` — Patch applied by `scripts/patch-construct.mjs` during `pnpm build`.
 
 ## Catalog DSL (field-centric v4)
 

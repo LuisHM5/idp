@@ -12,6 +12,7 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado en exp
 | [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Diagrama de arquitectura AWS + diagrama de flujo de ejecución, y qué modelo de Bedrock se usa. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
 | [`documentacion/API_USO.md`](documentacion/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
+| [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
 | [`documentacion/TESTS.md`](documentacion/TESTS.md) | Qué comando de test correr para cada caso, costos, cómo diagnosticar un bug. |
 | [`documentacion/COSTOS.md`](documentacion/COSTOS.md) | Costos reales medidos (no estimados) por página/documento/mes. |

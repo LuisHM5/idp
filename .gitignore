@@ -60,3 +60,5 @@ resultados/
 
 
 /data
+# Dumps de respuestas crudas del modelo (MODEL_RESPONSE_DUMP_DIR)
+data/responses*/

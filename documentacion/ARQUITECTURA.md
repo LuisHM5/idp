@@ -24,14 +24,32 @@ Diagrama de referencia de la infraestructura y del recorrido de un documento, de
 
 ## Modelo
 
-El pipeline usa **Amazon Bedrock** con el perfil de inferencia cross-region `us.anthropic.claude-haiku-4-5-20251001-v1:0` (**Claude Haiku 4.5**) tanto para clasificar como para extraer campos — el modelo desplegado hoy en dev y prod, verificado contra AWS Cost Explorer (ver [`COSTOS.md`](COSTOS.md)). Configurable sin tocar código vía `.env.dev`/`.env.production`:
+El pipeline usa **Amazon Bedrock** con el perfil de inferencia cross-region `us.anthropic.claude-haiku-4-5-20251001-v1:0` (**Claude Haiku 4.5**) como modelo base — el desplegado hoy en dev y prod, verificado contra AWS Cost Explorer (ver [`COSTOS.md`](COSTOS.md)).
 
-| Variable | Para qué | Default |
-|---|---|---|
-| `BEDROCK_MODEL_ID` | Modelo del flujo estándar (clasificación + extracción single-shot) | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
-| `BEDROCK_EXTRACTOR_MODEL_ID` | Modelo del pipeline de expediente (segmentación + extracción por documento) | igual a `BEDROCK_MODEL_ID` — se puede usar uno más fuerte solo ahí |
+**Cualquier modelo de Bedrock sirve, no solo Anthropic**: todas las llamadas pasan por la API **Converse**, que es agnóstica del proveedor (mismo request para cualquier modelo alojado en Bedrock). Cada paso puede además usar un modelo distinto, para bajar costo donde no hace falta precisión o subirla donde sí. Todo configurable sin tocar código vía `.env.dev`/`.env.production`:
 
-Cambiar el modelo requiere **redeploy** del ambiente correspondiente (la variable se hornea en la Lambda al desplegar).
+| Variable                          | Paso                                                    | ¿Visión? | Default                                       |
+| --------------------------------- | ------------------------------------------------------- | -------- | --------------------------------------------- |
+| `BEDROCK_MODEL_ID`                | Modelo base de todos los pasos                          | —        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `BEDROCK_CLASSIFICATION_MODEL_ID` | Clasificación (flujo estándar)                          | **Sí**   | modelo base                                   |
+| `BEDROCK_PROCESSING_MODEL_ID`     | Extracción single-shot (flujo estándar)                 | **Sí**   | modelo base                                   |
+| `BEDROCK_SEGMENTER_MODEL_ID`      | Segmentación del expediente                             | No       | modelo base                                   |
+| `BEDROCK_EXTRACTOR_MODEL_ID`      | Extracción por documento (la mayor parte de los tokens) | No       | modelo base                                   |
+| `BEDROCK_RECOVERY_MODEL_ID`       | Re-extracción Textract + modelo                         | No       | modelo base                                   |
+
+Los pasos del expediente son de **solo texto** (corren sobre OCR de Textract o texto nativo del PDF, nunca sobre imágenes), así que ahí funciona un modelo sin visión; los dos pasos del flujo estándar sí reciben el documento como imagen/PDF y requieren un modelo multimodal.
+
+Antes de mover un paso a otro modelo, confirmar que ese modelo soporte lo que el paso usa — Bedrock no garantiza paridad entre los modelos que aloja:
+
+| Capacidad                       | La usa                                              | Si no la soporta                                                                                   |
+| ------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Converse                        | Todos los pasos                                     | Falla la llamada                                                                                   |
+| Tool use forzado (`toolChoice`) | Extracción por documento (catálogos de 100+ campos) | Se degrada a JSON libre, menos confiable                                                           |
+| Prompt caching (`cachePoint`)   | Extracción por documento                            | El pipeline lo detecta y reintenta sin caché (ver nota abajo). Funciona, pero pierdes el descuento |
+| Visión                          | Clasificación y extracción del flujo estándar       | No aplica a modelos de solo texto                                                                  |
+| Ventana de contexto             | Flujo estándar                                      | Retunear `MAX_MODEL_DOC_BYTES` (default 3.5 MB, calibrado para ~200K tokens)                       |
+
+Cambiar el modelo requiere **redeploy** del ambiente correspondiente (la variable se hornea en la Lambda al desplegar), y habilitar antes el **"Model access"** de esa familia de modelo en la consola de Bedrock — paso manual por cuenta/región que no se automatiza desde CDK ni IAM.
 
 ---
 
@@ -45,23 +63,23 @@ Los colores de los nodos siguen la paleta oficial por categoría de servicio de 
 
 ![Diagrama de arquitectura AWS: Cliente sube un documento por API Gateway o directo a S3 raw/, dispara SQS y Step Functions (Classification/Processing con Bedrock), la Enrichment Lambda ejecuta el pipeline y escribe en S3 results/, DynamoDB tracking y EventBridge; el catálogo vive en DynamoDB; Query Lambda atiende las consultas.](diagrams/arquitectura-aws.png)
 
-*Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mmd).*
+_Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mmd)._
 
 **Piezas clave:**
 
-| Pieza | Rol |
-|---|---|
-| **Upload Lambda** | Valida el request, decide inline vs. presigned URL, escribe a `S3 raw/`. El prefijo `raw/{TIPO}/` es cómo se "fuerza" la clasificación. |
-| **S3 `raw/`** | Recibir un objeto aquí dispara todo el pipeline (trigger vía SQS → Step Functions). |
-| **Step Functions** | Orquestador del blueprint. Para tipos aduanales, `ClassificationStep`/`ProcessingStep` corren pero su resultado se **descarta** — el handler re-clasifica y re-extrae dentro del pipeline de expediente (ver "Oportunidades de mejora" en `FLUJO_EJECUCION.md`). |
-| **Enrichment Lambda** ⭐ | El cerebro: aquí vive `handler.py` y todo `pipeline/`. Ver diagrama de flujo abajo. |
-| **Textract** | OCR **solo** en páginas de PDF sin capa de texto (el resto usa pypdf, gratis). |
-| **DynamoDB catálogo** | Tipos y reglas editables en caliente (`pnpm sync`), `RETAIN` — sobrevive a un `destroy` del stack. Gana siempre sobre el JSON empaquetado en runtime. |
-| **DynamoDB tracking** | Envelope **compacto** por documento (escalares, `arrayCounts`, `liquidacionNormalizada`, `tracking`) — acotado por el límite de payload de Step Functions (256 KB). |
-| **S3 `results/`** | Resultado **completo**: todos los campos, arrays completos, checks y confianzas. |
-| **EventBridge (`idp-broker`)** | Publica el resultado final (`document-processed`) para que sistemas externos se suscriban. |
-| **Query Lambda** | `GET /documents/{id}` y `GET /documents?docType=&field=` — lee DynamoDB (indexado por GSI `DocumentTypeIndex` cuando hay `docType`, `Scan` si no) y S3 (`fullResult` con `full=1`). |
-| **KMS** | Cifra el bucket S3. Es el rubro de infraestructura (no-IA) más caro medido — ver `COSTOS.md`. |
+| Pieza                          | Rol                                                                                                                                                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Upload Lambda**              | Valida el request, decide inline vs. presigned URL, escribe a `S3 raw/`. El prefijo `raw/{TIPO}/` es cómo se "fuerza" la clasificación.                                                                                                                          |
+| **S3 `raw/`**                  | Recibir un objeto aquí dispara todo el pipeline (trigger vía SQS → Step Functions).                                                                                                                                                                              |
+| **Step Functions**             | Orquestador del blueprint. Para tipos aduanales, `ClassificationStep`/`ProcessingStep` corren pero su resultado se **descarta** — el handler re-clasifica y re-extrae dentro del pipeline de expediente (ver "Oportunidades de mejora" en `FLUJO_EJECUCION.md`). |
+| **Enrichment Lambda** ⭐       | El cerebro: aquí vive `handler.py` y todo `pipeline/`. Ver diagrama de flujo abajo.                                                                                                                                                                              |
+| **Textract**                   | OCR **solo** en páginas de PDF sin capa de texto (el resto usa pypdf, gratis).                                                                                                                                                                                   |
+| **DynamoDB catálogo**          | Tipos y reglas editables en caliente (`pnpm sync`), `RETAIN` — sobrevive a un `destroy` del stack. Gana siempre sobre el JSON empaquetado en runtime.                                                                                                            |
+| **DynamoDB tracking**          | Envelope **compacto** por documento (escalares, `arrayCounts`, `liquidacionNormalizada`, `tracking`) — acotado por el límite de payload de Step Functions (256 KB).                                                                                              |
+| **S3 `results/`**              | Resultado **completo**: todos los campos, arrays completos, checks y confianzas.                                                                                                                                                                                 |
+| **EventBridge (`idp-broker`)** | Publica el resultado final (`document-processed`) para que sistemas externos se suscriban.                                                                                                                                                                       |
+| **Query Lambda**               | `GET /documents/{id}` y `GET /documents?docType=&field=` — lee DynamoDB (indexado por GSI `DocumentTypeIndex` cuando hay `docType`, `Scan` si no) y S3 (`fullResult` con `full=1`).                                                                              |
+| **KMS**                        | Cifra el bucket S3. Es el rubro de infraestructura (no-IA) más caro medido — ver `COSTOS.md`.                                                                                                                                                                    |
 
 Seguridad por ambiente (API keys, WAFv2, dominio propio) solo aplica a **prod**, gateada por `environment === "prod"` — detalle completo en [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md).
 
@@ -73,7 +91,7 @@ El `handler.py` de la Enrichment Lambda bifurca en dos caminos según el tipo de
 
 ![Diagrama de flujo de ejecución: un documento en S3 raw/ pasa por Step Functions (Bedrock), la Enrichment Lambda decide entre el Camino A (pipeline de expediente: pdf_pages, segmenter, text_extractor, normalize+engine, reglas cross-documento) o el Camino B (flujo estándar: reutiliza extracción, validator_module, fallback Textract, custom_validator); ambos terminan en Ensamblado, se persisten en S3 results/ y DynamoDB, y publican en EventBridge.](diagrams/flujo-ejecucion.png)
 
-*Fuente editable: [`diagrams/flujo-ejecucion.mmd`](diagrams/flujo-ejecucion.mmd).*
+_Fuente editable: [`diagrams/flujo-ejecucion.mmd`](diagrams/flujo-ejecucion.mmd)._
 
 **Notas de enrutamiento y detalle por paso** (recortado del diagrama para que quepa en una vista — el detalle completo está aquí y en `FLUJO_EJECUCION.md`):
 
