@@ -1,4 +1,4 @@
-te# Costos de procesamiento — Documents Validator
+# Costos de procesamiento — Documents Validator
 
 > Generado 2026-07-28 a partir de datos reales: 14 ejecuciones guardadas en
 > `s3://<bucket-dev>/results/*.json` (27-28 jul 2026), cruzadas contra AWS
@@ -156,65 +156,49 @@ ambos ambientes, así que no hay diferencia de cómputo — sólo:
 **Piso fijo WAF corregido: $9.00/mes** (antes se documentó ~$6/mes —
 faltaban 3 de las 4 reglas).
 
-Piso de infraestructura base (KMS + Lambda + DynamoDB + SQS + S3 +
-CloudWatch + Step Functions + API Gateway, igual en dev y prod)
-recalculado en vivo con Cost Explorer sobre los últimos 15 días
-(21-jul → 05-ago): **$2.971 / 15 días → $0.198/día → ~$5.94/mes**
-prorateado (antes $7.24/mes; bajó porque KMS tuvo menos actividad en
-esta ventana — sigue siendo el rubro a vigilar).
+Cost Explorer registró ~$5.94/mes al prorratear la infraestructura de la
+**cuenta completa**, pero no es correcto asignar ese importe como piso fijo
+del proyecto: la mayor parte era almacenamiento de otras claves KMS de la
+cuenta. El stack desplegado crea dos claves KMS propias (la compartida del
+pipeline y la propia del bucket), a $1/mes cada una. Lambda, DynamoDB, SQS,
+S3, CloudWatch, Step Functions y API Gateway son principalmente consumo
+variable al volumen de este sistema.
 
 ### Piso fijo total y costo mensual realista en prod
 
-| | Piso fijo/mes |
+| Ambiente | Piso fijo atribuible/mes |
 | --- | ---: |
-| Infra base (dev y prod) | $5.94 |
-| + WAFv2 (sólo prod) | $9.00 |
-| **Total piso fijo PROD** | **$14.94** |
+| Dev | ~$2.00 (2 claves KMS) |
+| Prod | ~$11.00 (2 claves KMS + $9 de WAFv2) |
+| Prod + dev desplegados simultáneamente | ~$13.00 |
 
-**Total mensual prod = $14.94 + (documentos/mes × costo/doc según tipo,
-tabla de arriba).** Ejemplo con una mezcla típica (pedimentos, el tipo
-dominante hoy, ~$0.04/doc si son escaneados o ~$0.012/doc si son
-nativos):
+### Proyección acordada: 2,430 documentos / 7,290 páginas al mes
 
-| Documentos/mes | IA (a $0.012–$0.04/doc) | Total dev (+$5.94) | Total prod (+$14.94) |
-| -------------- | ------------------------ | ------------------- | ---------------------- |
-| 50 | $0.60–$2.00 | $6.54–$7.94 | $15.54–$16.94 |
-| 200 | $2.40–$8.00 | $8.34–$13.94 | $17.34–$22.94 |
-| 1,000 | $12.00–$40.00 | $17.94–$45.94 | $26.94–$54.94 |
+Supuesto: pedimentos de tres páginas procesados con el tipo declarado, por
+lo que se omiten la clasificación visual, la extracción redundante del
+blueprint y la segmentación por modelo. El costo de Bedrock + Textract usa
+las ejecuciones más recientes del mismo pedimento de tres páginas
+(~$0.01365/documento, incluyendo una página OCR). El resto del runtime se
+prorratea conservadoramente desde la ventana real de 58 ejecuciones.
 
-A los volúmenes actuales de prueba, **el piso fijo de prod ($14.94) domina
-el costo total** — el WAF + infraestructura pesan más que el procesamiento
-de documentos en sí hasta llegar a varios cientos de documentos/mes. Esto
-es distinto de dev, donde no hay WAF y el piso es ~$9/mes menor.
+**AWS Business Support+ se excluye expresamente**: es un cargo compartido de
+la cuenta y no forma parte del costo por página acordado para este proyecto.
 
-### $/página TOTAL en prod (variable + piso fijo amortizado)
+| Componente | Costo mensual | Costo/página |
+| --- | ---: | ---: |
+| Bedrock + Textract | $33.17 | $0.00455 |
+| Lambda, S3, SQS, CloudWatch, DynamoDB, Step Functions y API Gateway | ~$3.50 | ~$0.00048 |
+| Piso fijo de prod: 2 claves KMS + WAFv2 | $11.00 | $0.00151 |
+| **Subtotal técnico antes de IVA** | **$47.67** | **$0.00654** |
+| IVA 16% | $7.63 | $0.00105 |
+| **Total esperado con IVA** | **$55.30** | **$0.0076** |
+| **Presupuesto conservador: IVA + 15% de contingencia sobre el consumo variable** | **$61.68** | **$0.0085** |
 
-Las secciones anteriores dan el costo variable por página ($0.0037–$0.0049)
-y el piso fijo por mes ($14.94) por separado. Para un solo número de
-"$/página real en prod" hace falta un volumen — el piso fijo no es por
-página, es por tiempo, así que se reparte distinto según cuánto proceses.
-
-**A tu ritmo real observado** (601 páginas en los 7 días de la ventana
-29-jul→04-ago = ~86 páginas/día ≈ 2,576 páginas/mes si se mantiene):
-
-- Piso fijo de esos 7 días: $14.94/mes ÷ 30 × 7 = $3.486
-- Variable real (bottom-up, 601 páginas): $2.2357
-- Total: $5.7217 / 601 páginas = **$0.0095/página** (con el ajuste de
-  Cost Explorer de la sección 0 en vez del bottom-up: **$0.0107/página**)
-
-**El piso fijo es ~61% del costo por página a este ritmo** — pesa más que
-el procesamiento de IA en sí. Sensibilidad por volumen:
-
-| Páginas/mes | Fijo/página | Variable/página | **Total/página** |
-| ----------- | -----------: | ---------------: | -----------------: |
-| 320 (~50 docs, bajo volumen) | $0.0467 | $0.0037 | **$0.0504** |
-| **2,576 (ritmo real actual)** | **$0.0058** | **$0.0037** | **$0.0095** |
-| 6,400 (~1,000 docs) | $0.0023 | $0.0037 | **$0.0061** |
-| 32,000 (~5,000 docs) | $0.0005 | $0.0037 | **$0.0042** |
-
-A partir de unos pocos miles de páginas/mes el costo converge al variable
-puro porque el piso fijo se vuelve ruido — igual que en dev (sección 6),
-sólo que en prod el piso de partida es $9/mes más alto por el WAF.
+El valor recomendado para presupuesto es **$0.0085 USD/página**, equivalente
+a **$61.68 USD/mes** para 7,290 páginas. La diferencia contra el esperado de
+$0.0076/página cubre variación de tokens, reintentos y errores de proceso.
+Si dev permanece desplegado junto con prod, sumar aproximadamente $2/mes por
+sus dos claves KMS, más su consumo de pruebas.
 
 ## 1. Modelo desplegado y precio real
 
@@ -291,6 +275,11 @@ Mismo volumen de tokens, Sonnet 4.5 ≈ 3x el costo/página; Opus ≈ 5x.
 
 ## 4. Infraestructura de soporte (medida, mismo periodo, dev)
 
+> **Corte histórico, no usar como piso fijo actual.** Cost Explorer mezclaba
+> las claves KMS de toda la cuenta: el cargo de KMS indicado abajo no era
+> atribuible íntegramente al proyecto. La corrección vigente está en la
+> sección 0.1: ~$2/mes de KMS para dev y ~$11/mes de piso fijo para prod.
+
 Costo real del resto del stack en 2026-07-14 → 2026-07-28 (KMS, Lambda,
 Step Functions, DynamoDB, SQS, S3, API Gateway, CloudWatch — todo lo que
 no es Bedrock/Textract):
@@ -318,6 +307,10 @@ incluyen en el total de arriba.)_
 
 ## 5. Extras que SOLO existen en producción (no están en dev)
 
+> **Corte histórico.** La verificación vigente confirmó $9/mes de WAF
+> ($5 por Web ACL + 4 reglas/grupos a $1 cada uno). Usar la sección 0.1 para
+> el piso fijo y la sección 6 para el costo por página acordado.
+
 Según `src/document-validation-stack.ts`, el ambiente `prod` agrega
 API keys + WAFv2 + dominio custom, gateado por `environment === "prod"`.
 Esto es costo **fijo adicional**, no depende de páginas procesadas:
@@ -339,85 +332,38 @@ al mes) el cargo por-request de WAF y API Gateway es centavos, así que el
 costo por página en prod es esencialmente el mismo de la sección 2
 ($0.010–$0.019/página) **más** ese piso fijo de WAF que no escala con uso.
 
-## 6. Resumen — desglose x página / x documento / x mes
+## 6. Resumen vigente — 2,430 documentos / 7,290 páginas al mes
 
-> Actualizado 2026-08-04 (secciones 0/0.1) — reemplaza los números de la
-> primera versión (2026-07-28), que quedan como referencia histórica del
-> "antes" en el Hallazgo 1.
+> Actualizado 2026-08-04. Esta sección reemplaza las proyecciones anteriores
+> para el volumen acordado. Los casos históricos de las secciones 1–5 se
+> conservan para explicar cómo cambió el costo con la optimización del DSL.
 
-### Las tres unidades, de lo medido ahora
-
-| Unidad | Costo (Bedrock + Textract) |
-| --- | --- |
-| **Por página, blended real actual** | **$0.0037–$0.0049** (antes $0.0144 — ver Hallazgo 1; inflado a la baja por el Hallazgo 2 mientras dura la migración de catálogo) |
-| **Por página, pedimento nativo puro** (el tipo que domina el volumen real) | **$0.0041** |
-| Por documento — nativo 3 pág, sin OCR | **$0.0123** |
-| Por documento — escaneado 27 pág, 100% OCR | **$0.0988** |
-| Por documento — INE, 1 pág imagen, 100% OCR | **$0.0080** |
-| Por documento — tipos sin catálogo activo hoy (OTRO, CFDI_GASTO_TERCERO, etc.) | **$0.0000** (temporal) |
-
-### Piso fijo mensual (no depende de cuántos documentos proceses)
-
-| Ambiente | Piso fijo/mes | De qué sale |
-| --- | --- | --- |
-| Dev | **~$5.94/mes** | Infraestructura de soporte, recalculada en vivo sobre 15 días reales (21-jul→05-ago) |
-| Prod | **~$14.94/mes** | Lo mismo de dev **+ $9/mes de WAFv2** (Web ACL $5 + **4** reglas × $1 — 1 rate-based + **3 managed rule groups**, que la versión anterior de este doc no contaba) |
-
-### $/página TOTAL en prod (variable + piso fijo amortizado) — el número final
-
-El piso fijo no es por página, es por tiempo: se reparte distinto según
-cuánto proceses. A tu ritmo real observado (~2,576 páginas/mes):
-**$0.0095–$0.0107/página** (~61% de eso es el piso fijo, no el
-procesamiento). Detalle completo en la sección 0.1.
-
-| Páginas/mes | Total/página en prod |
+| Unidad | Costo vigente |
 | --- | ---: |
-| 320 (bajo volumen) | $0.0504 |
-| **2,576 (ritmo real actual)** | **$0.0095** |
-| 6,400 | $0.0061 |
-| 32,000 | $0.0042 |
+| Bedrock + Textract por pedimento de 3 páginas | ~$0.01365/documento |
+| Subtotal técnico antes de IVA | $47.67/mes — $0.00654/página |
+| Total esperado con IVA | $55.30/mes — $0.0076/página |
+| **Presupuesto recomendado con IVA y 15% de contingencia variable** | **$61.68/mes — $0.0085/página** |
 
-### Puntos clave
+### COSTO RECOMENDADO POR PÁGINA EN PROD
 
-- Costo real de IA **hoy**: **$0.0037–$0.0049/página** blended (antes
-  $0.0144/página, caída real de ~3-4x — Hallazgo 1). El número puro del
-  pedimento, que domina el volumen, es **$0.0041/página**.
-- La mitad de los tipos clasificados hoy cuestan **$0 en LLM** porque su
-  catálogo está archivado en `catalogs/save/` durante la migración del
-  DSL v4 — es temporal, no una optimización permanente (Hallazgo 2).
-- Piso fijo: **$5.94/mes en dev**, **$14.94/mes en prod** — no escala con
-  volumen (corregido: el WAF de prod son 4 reglas = $9/mes, no $6/mes).
-- **$/página TOTAL en prod, a tu ritmo real (~2,576 pág/mes): $0.0095–$0.0107**
-  — el piso fijo pesa más que el procesamiento de IA hasta varios miles
-  de páginas/mes.
-- KMS sigue siendo el rubro de infra a vigilar (dominó el piso fijo de
-  dev en ambas mediciones, jul y ago).
-- Si cambiaras a Sonnet 4.5/Opus, el componente variable ($/página, $/doc)
-  sube ~3x/~5x — el piso fijo no cambia.
+# **$0.0085 USD / página**
 
----
+Este costo incluye Bedrock, Textract, Lambda, DynamoDB, S3, API Gateway,
+KMS, SQS, CloudWatch, Step Functions, WAFv2, IVA y 15% de contingencia
+sobre el consumo variable. **No incluye AWS Business Support+** ni el costo
+de mantener dev activo en paralelo con prod.
 
-### Desglose del costo total por página en prod
+La cifra depende de que el documento se envíe con su tipo declarado y de
+que la mezcla productiva sea representativa del pedimento actual de tres
+páginas. Si se reactivan los catálogos archivados, cambia la mezcla de tipos
+o se omite `documentType`, se debe volver a medir antes de usar este valor.
 
-| Componente | $/página |
-| --- | ---: |
-| IA + Textract (Bedrock + OCR) | $0.0037–$0.0049 |
-| Resto de infra (DynamoDB, S3, Lambda, API Gateway, KMS, SQS, CloudWatch, Step Functions) amortizado a tu ritmo | ~$0.0035 |
-| WAF (solo prod) amortizado a tu ritmo | ~$0.0023 |
-| **Total** | **$0.0095–$0.0107** |
+### Colchón presupuestario ampliado
 
-## COSTO TOTAL REAL POR PÁGINA EN PROD
+# **$0.0131 USD / página**
 
-# **$0.0095 – $0.0107 / página**
-
-*(a tu ritmo real de uso, ~2,576 páginas/mes — sección 0.1)*
-
-Este es el único número que cuenta **todo**: Bedrock (IA) + Textract (OCR)
-+ DynamoDB + S3 + Lambda + API Gateway + KMS + SQS + CloudWatch +
-Step Functions + WAFv2 (piso fijo de prod). No es sólo IA — el $0.0037–
-$0.0049/página de las secciones anteriores es nada más Bedrock+Textract;
-el resto de la infraestructura (~61% del costo a este ritmo) se suma acá.
-
-Baja si procesas más volumen al mes (el piso fijo se diluye — ver tabla de
-sensibilidad arriba); sube si procesas menos. **$0.0095–$0.0107/página es
-el número real a tu ritmo actual, no una proyección.**
+Para planeación financiera puede reservarse **$0.0131/página**, equivalente
+a **$95.50 USD/mes** para 7,290 páginas. Este importe es un colchón ampliado
+por encima del presupuesto técnico recomendado de $0.0085/página; no es el
+costo esperado y no atribuye AWS Business Support+ al proyecto.
