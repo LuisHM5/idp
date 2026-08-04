@@ -1,0 +1,420 @@
+{
+  "INE": {
+    "schema_version": "5.1.0",
+    "display_name": "Credencial para Votar (INE)",
+    "aliases": [
+      "INE",
+      "credencial para votar",
+      "credencial de elector",
+      "identificación oficial INE",
+      "CPV",
+      "CPVE"
+    ],
+    "description": "Credencial para Votar emitida por el Instituto Nacional Electoral, nacional o desde el extranjero. Se distingue por el logotipo INE, fotografía del titular, nombre, Clave de Elector, CURP, datos de registro y vigencia en el anverso; y por CIC, identificador ciudadano/OCR, zona de lectura mecánica, códigos QR y espacios para marcado del voto en el reverso. Cubre los modelos vigentes E, F, G, H, I y J, incluidos los campos de identidad de género y autoidentificación del diseño emitido desde junio de 2026. No confundir con pasaporte, licencia de conducir, cédula profesional ni una copia de consulta de Lista Nominal.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "INE",
+    "min_confidence": 0.85,
+    "qr_recovery": {
+      "confidence": 0.99,
+      "page_marker_min_matches": 1,
+      "short_segment_max_pages": 2,
+      "page_markers": [
+        "IDMEX",
+        "ZONA DE LECTURA MEC[ÁA]NICA",
+        "<{5,}",
+        "C[ÓO]DIGO DE IDENTIFICACI[ÓO]N DE LA CREDENCIAL"
+      ],
+      "url_contains": "listanominal.ine.mx"
+    },
+    "fields": {
+      "TIPO_CREDENCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Indicar NACIONAL cuando sea una Credencial para Votar expedida en territorio nacional o EXTRANJERO cuando el anverso muestre la leyenda 'DESDE EL EXTRANJERO'. No inferir el tipo por el domicilio.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(NACIONAL|EXTRANJERO)$",
+            "message": "El tipo de credencial debe ser NACIONAL o EXTRANJERO"
+          }
+        ]
+      },
+      "APELLIDO_PATERNO": {
+        "type": "string",
+        "required": true,
+        "hint": "Primer apellido del titular. En el bloque NOMBRE suele ser la primera línea, antes del apellido materno y de los nombres. Copiarlo literalmente y no incluir etiquetas ni otros datos.",
+        "validation": []
+      },
+      "APELLIDO_MATERNO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido del titular. En el bloque NOMBRE suele ser la segunda línea. Dejar null cuando no esté impreso; no inventarlo ni repetir el apellido paterno.",
+        "validation": []
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o nombres propios del titular. En el bloque NOMBRE suelen aparecer después de los apellidos. No incluir apellidos, domicilio, CURP ni Clave de Elector.",
+        "validation": []
+      },
+      "DOMICILIO": {
+        "type": "object",
+        "required": false,
+        "hint": "Domicilio impreso en el anverso. Es opcional porque la persona titular puede solicitar que no sea visible y porque la credencial desde el extranjero usa un formato distinto. Conservar también el texto completo y desglosar únicamente los componentes visibles, sin inferir datos ausentes.",
+        "validation": [],
+        "fields": {
+          "TEXTO_COMPLETO": {
+            "type": "string",
+            "required": false,
+            "hint": "Todas las líneas del domicilio tal como están impresas, sin la etiqueta DOMICILIO y sin agregar información geoelectoral.",
+            "validation": []
+          },
+          "CALLE_Y_NUMERO": {
+            "type": "string",
+            "required": false,
+            "hint": "Primera línea del domicilio con calle, número exterior y, si aparece, número interior. Conservar abreviaturas y caracteres literales.",
+            "validation": []
+          },
+          "COLONIA": {
+            "type": "string",
+            "required": false,
+            "hint": "Colonia, barrio, fraccionamiento o equivalente visible en el domicilio. No incluir el código postal.",
+            "validation": []
+          },
+          "CODIGO_POSTAL": {
+            "type": "string",
+            "required": false,
+            "hint": "Código postal visible en el domicilio. Para credencial nacional conservar cinco dígitos; para credencial desde el extranjero conservar el formato alfanumérico literal del país correspondiente.",
+            "validation": []
+          },
+          "LOCALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Localidad, ciudad o población escrita como parte del domicilio. No tomar el código de LOCALIDAD de la identificación geoelectoral.",
+            "validation": []
+          },
+          "MUNICIPIO_O_ALCALDIA": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre del municipio, alcaldía, condado o división equivalente escrita en el domicilio. No tomar el código de MUNICIPIO de la identificación geoelectoral.",
+            "validation": []
+          },
+          "ENTIDAD_O_ESTADO": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre o abreviatura de la entidad federativa, estado o provincia dentro del domicilio. No tomar el código de ESTADO de la identificación geoelectoral.",
+            "validation": []
+          },
+          "PAIS": {
+            "type": "string",
+            "required": false,
+            "hint": "País impreso dentro del domicilio de una credencial desde el extranjero. Para una credencial nacional debe quedar null salvo que el país esté escrito explícitamente.",
+            "validation": []
+          }
+        }
+      },
+      "EDAD": {
+        "type": "number",
+        "required": false,
+        "hint": "Edad impresa en modelos que muestran el bloque EDAD Y SEXO. No calcularla a partir de la fecha de nacimiento y dejar null si no aparece.",
+        "validation": [
+          {
+            "rule_type": "greater_than",
+            "value": 17,
+            "message": "La edad impresa debe corresponder a una persona mayor de edad"
+          }
+        ]
+      },
+      "FECHA_NACIMIENTO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha impresa junto a 'FECHA DE NACIMIENTO' en los modelos que la muestran. Normalizar a YYYY-MM-DD. No derivarla de la CURP, Clave de Elector o zona de lectura mecánica cuando no esté impresa en el anverso.",
+        "validation": []
+      },
+      "SEXO_O_IDENTIDAD_GENERO": {
+        "type": "string",
+        "required": false,
+        "hint": "Valor visible en el campo SEXO o GÉNERO. Conservar H, M, X o NB según esté impreso. Debe quedar null si la persona eligió ocultar el dato; no derivarlo de CURP, Clave de Elector, nombre o fotografía.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(H|M|X|NB)$",
+            "message": "El sexo o identidad de género debe ser H, M, X o NB"
+          }
+        ]
+      },
+      "AUTOIDENTIFICACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Autoidentificación visible del nuevo modelo I/J, por ejemplo INDÍGENA o AFROMEXICANA/AFROMEXICANO. Extraer solo si fue solicitada por la persona y está impresa; en modelos anteriores debe quedar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(IND[ÍI]GENA|AFROMEXICAN[AO])$",
+            "message": "La autoidentificación visible no corresponde a un valor reconocido"
+          }
+        ]
+      },
+      "CLAVE_ELECTOR": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave de Elector de 18 caracteres impresa en el anverso junto a 'CLAVE DE ELECTOR'. Extraer en mayúsculas, sin espacios. No confundir con CURP, CIC, OCR/Identificador Ciudadano ni líneas MRZ.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{18}$",
+            "message": "La Clave de Elector debe contener 18 caracteres alfanuméricos"
+          }
+        ]
+      },
+      "CURP": {
+        "type": "string",
+        "required": true,
+        "hint": "CURP de 18 caracteres impresa en el anverso. Extraer en mayúsculas y sin espacios. No copiar la Clave de Elector ni reconstruir una CURP ausente.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "IDENTIFICACION_GEOELECTORAL": {
+        "type": "object",
+        "required": false,
+        "hint": "Bloque de identificación geoelectoral del anverso. Para credenciales nacionales extraer los códigos de ESTADO, MUNICIPIO, SECCIÓN y LOCALIDAD; en credenciales desde el extranjero pueden no aparecer. No sustituirlos con nombres del domicilio.",
+        "validation": [],
+        "fields": {
+          "ESTADO": {
+            "type": "string",
+            "required": false,
+            "hint": "Código geoelectoral de dos dígitos junto a ESTADO. Conservar ceros iniciales; no extraer el nombre del estado del domicilio.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{2}$",
+                "message": "El código de estado debe contener dos dígitos"
+              }
+            ]
+          },
+          "MUNICIPIO": {
+            "type": "string",
+            "required": false,
+            "hint": "Código geoelectoral de tres dígitos junto a MUNICIPIO. Conservar ceros iniciales.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{3}$",
+                "message": "El código de municipio debe contener tres dígitos"
+              }
+            ]
+          },
+          "SECCION": {
+            "type": "string",
+            "required": true,
+            "hint": "Código de cuatro dígitos junto a SECCIÓN. Conservar ceros iniciales. No tomar los primeros dígitos del OCR salvo que el valor también esté visible en este campo.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{4}$",
+                "message": "La sección electoral debe contener cuatro dígitos"
+              }
+            ]
+          },
+          "LOCALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Código geoelectoral de cuatro dígitos junto a LOCALIDAD. Conservar ceros iniciales; no tomar el nombre de la localidad del domicilio.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{4}$",
+                "message": "El código de localidad debe contener cuatro dígitos"
+              }
+            ]
+          }
+        }
+      },
+      "ANIO_REGISTRO": {
+        "type": "string",
+        "required": true,
+        "hint": "Año de cuatro dígitos impreso junto a 'AÑO DE REGISTRO'. En el mismo bloque suele aparecer después el NÚMERO DE EMISIÓN de dos dígitos; no unir ambos valores.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(19|20)\\d{2}$",
+            "message": "El año de registro debe contener cuatro dígitos"
+          }
+        ]
+      },
+      "NUMERO_EMISION": {
+        "type": "string",
+        "required": true,
+        "hint": "Número de emisión de dos dígitos impreso a continuación del año de registro. Conservar ceros iniciales. No tomar el año de emisión, la vigencia ni los últimos dígitos del OCR.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "El número de emisión debe contener dos dígitos"
+          }
+        ]
+      },
+      "ANIO_EMISION": {
+        "type": "string",
+        "required": false,
+        "hint": "Año de cuatro dígitos junto a EMISIÓN en los modelos que lo imprimen como campo separado. No confundir con AÑO DE REGISTRO, NÚMERO DE EMISIÓN o VIGENCIA.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(19|20)\\d{2}$",
+            "message": "El año de emisión debe contener cuatro dígitos"
+          }
+        ]
+      },
+      "VIGENCIA": {
+        "type": "string",
+        "required": true,
+        "hint": "Valor impreso junto a VIGENCIA en el anverso. Conservar el año final o el rango de años tal como aparezca, por ejemplo 2034 o 2024-2034. No sustituirlo con la fecha de vencimiento de la MRZ.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(19|20)\\d{2}(-(19|20)\\d{2})?$",
+            "message": "La vigencia debe ser un año o un rango de años válido"
+          }
+        ]
+      },
+      "CIC": {
+        "type": "string",
+        "required": true,
+        "hint": "Código de Identificación de la Credencial de nueve dígitos visible en la zona de lectura mecánica del reverso. Conservar ceros iniciales. No confundir con OCR/Identificador Ciudadano, Clave de Elector o Número de Emisión.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{9}$",
+            "message": "El CIC debe contener nueve dígitos"
+          }
+        ]
+      },
+      "IDENTIFICADOR_CIUDADANO": {
+        "type": "string",
+        "required": true,
+        "hint": "Número identificador del ciudadano, también denominado OCR, de 13 dígitos en el reverso de los modelos vigentes E, F, G, H, I y J. Conservar ceros iniciales. No tomar el CIC de nueve dígitos.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{13}$",
+            "message": "El Identificador Ciudadano/OCR debe contener 13 dígitos"
+          }
+        ]
+      },
+      "ZONA_LECTURA_MECANICA": {
+        "type": "object",
+        "required": true,
+        "hint": "Zona de lectura mecánica (MRZ) del reverso, formada por tres líneas de letras, números y caracteres '<'. Copiar cada línea completa y en orden, sin corregir ni completar caracteres. No incluir códigos QR, código de barras ni leyendas cercanas.",
+        "validation": [],
+        "fields": {
+          "LINEA_1": {
+            "type": "string",
+            "required": true,
+            "hint": "Primera línea completa de la zona de lectura mecánica, comenzando normalmente con IDMEX. Eliminar solo espacios introducidos por OCR y conservar los caracteres '<'.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z0-9<]{20,40}$",
+                "message": "La primera línea MRZ contiene caracteres o longitud inválidos"
+              }
+            ]
+          },
+          "LINEA_2": {
+            "type": "string",
+            "required": true,
+            "hint": "Segunda línea completa de la zona de lectura mecánica. Eliminar solo espacios introducidos por OCR y conservar letras, dígitos y caracteres '<' en su orden original.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z0-9<]{20,40}$",
+                "message": "La segunda línea MRZ contiene caracteres o longitud inválidos"
+              }
+            ]
+          },
+          "LINEA_3": {
+            "type": "string",
+            "required": true,
+            "hint": "Tercera línea completa de la zona de lectura mecánica, donde suelen aparecer apellidos y nombres separados por caracteres '<'. Eliminar solo espacios de OCR y no reordenar el nombre.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z0-9<]{20,40}$",
+                "message": "La tercera línea MRZ contiene caracteres o longitud inválidos"
+              }
+            ]
+          },
+          "NACIONALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Código de nacionalidad de tres letras contenido explícitamente en la MRZ, normalmente MEX. No inferirlo por el emisor del documento.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z]{3}$",
+                "message": "La nacionalidad MRZ debe contener tres letras"
+              }
+            ]
+          },
+          "FECHA_NACIMIENTO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de nacimiento codificada en la MRZ. Convertir YYMMDD a YYYY-MM-DD usando la fecha plausible para una persona adulta. Este valor es evidencia de la MRZ y no sustituye FECHA_NACIMIENTO del anverso.",
+            "validation": []
+          },
+          "SEXO": {
+            "type": "string",
+            "required": false,
+            "hint": "Carácter de sexo o género codificado explícitamente en la MRZ. Conservar H, M, X o el valor impreso; no derivarlo del nombre o fotografía.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[HMX]$",
+                "message": "El valor de sexo en la MRZ debe ser H, M o X"
+              }
+            ]
+          },
+          "FECHA_VENCIMIENTO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de vencimiento codificada en la MRZ. Convertir YYMMDD a YYYY-MM-DD y no confundir con fecha de nacimiento, año de emisión o VIGENCIA impresa en el anverso.",
+            "validation": [
+              {
+                "rule_type": "date_expiry",
+                "message": "La fecha de vencimiento codificada en la MRZ ya expiró"
+              }
+            ]
+          }
+        }
+      },
+      "QR_SERVICIOS": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "hint": "Payload literal del código QR abierto de servicios institucionales del reverso. Se llena determinísticamente desde el QR y nunca debe inventarse. Los dos QR de alta densidad de los modelos G/H/I/J están cifrados y requieren la aplicación oficial Valida INE-QR, por lo que este campo no intenta descifrarlos.",
+        "qr_source": "payload",
+        "validation": []
+      },
+      "QR_SERVICIOS_LEIDO": {
+        "type": "boolean",
+        "required": true,
+        "computed": true,
+        "hint": "True cuando fue posible decodificar un QR del reverso mediante el lector genérico. Valida la presencia y lectura del QR abierto de servicios; no certifica criptográficamente los QR de alta densidad ni reemplaza la aplicación oficial Valida INE-QR.",
+        "qr_source": "valid",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "No fue posible localizar y leer el QR abierto de servicios de la credencial"
+          }
+        ]
+      }
+    },
+    "cross_field_validation": []
+  }
+}

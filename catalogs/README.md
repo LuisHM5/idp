@@ -57,22 +57,46 @@ y sus reglas de validación viven juntos bajo `fields`, en vez de repartirse
 entre `extraction_fields`/`extraction_hints`/`required_fields`/`validation_rules`
 como en el DSL viejo.
 
-1. **Copia la plantilla**:
+0. **Elige la plantilla según la FUENTE del documento, no según qué documento
+   de negocio es** — el mismo documento real puede llegar de formas distintas
+   (un PDF escaneado, el XML nativo del mismo comprobante, un export Excel
+   del mismo reporte) y cada forma es un tipo de catálogo distinto:
+
+   | Fuente | Plantilla | Extracción | Costo Bedrock |
+   |---|---|---|---|
+   | PDF/escaneo (un modelo tiene que leerlo) | `catalogs/_TEMPLATE.json` | `hint` por campo, vía Bedrock | El normal de extracción |
+   | XML ya estructurado (CFDI, VUCEM, ...) | `catalogs/_TEMPLATE_XML.json` | `xpath`/`namespaces` por campo, determinística | **$0** (ver [Tipos con fuente XML](#tipos-con-fuente-xml-xpath-item_xpath-namespaces)) |
+   | XLSX/CSV ya estructurado | `catalogs/_TEMPLATE_TABULAR.json` | `cell`/`column` por campo, determinística | **$0** en XLSX; en CSV requiere `documentType` declarado para serlo (ver [Tipos con fuente tabular](#tipos-con-fuente-tabular-cell-column-xlsxcsv)) |
+
+   Ejemplo real: `FACTURA_HONORARIOS.json` (PDF de cortesía del agente
+   aduanal, con secciones que el XML no trae) vs. `FACTURA_HONORARIOS_XML.json`
+   (el CFDI nativo del SAT del mismo comprobante) son dos tipos DISTINTOS,
+   deliberadamente con campos distintos — no el mismo tipo con dos orígenes.
+
+1. **Copia la plantilla que corresponda**:
    ```bash
-   cp catalogs/_TEMPLATE.json catalogs/ACTA_NACIMIENTO.json
+   cp catalogs/_TEMPLATE.json catalogs/ACTA_NACIMIENTO.json               # PDF/escaneo
+   cp catalogs/_TEMPLATE_XML.json catalogs/ACTA_NACIMIENTO_XML.json       # XML ya estructurado
+   cp catalogs/_TEMPLATE_TABULAR.json catalogs/REPORTE_GASTOS_XLSX.json   # XLSX/CSV ya estructurado
    ```
-2. **Edita** el archivo: renombra la llave `NUEVO_TIPO` → `ACTA_NACIMIENTO`
-   (debe coincidir con el nombre del archivo), ajusta `description` (es lo
-   que ve el clasificador — sé discriminante: menciona encabezados, folios,
-   sellos, lo que lo distingue de documentos parecidos), y define `fields`.
-   Borra las llaves `__NOTAS__`/`__COMENTARIO_*__` (son solo documentación
-   del template, el loader las ignora igual, pero no aportan nada en un tipo
-   real).
+2. **Edita** el archivo: renombra la llave (`NUEVO_TIPO`/`NUEVO_TIPO_XML`/
+   `NUEVO_TIPO_XLSX` según la plantilla) al `TYPE_ID` elegido — debe coincidir
+   con el nombre del archivo —, ajusta `description` (es lo que ve el
+   clasificador — sé discriminante: menciona encabezados, folios, sellos, lo
+   que lo distingue de documentos parecidos; para XML/tabular con
+   `documentType` siempre declarado esto casi nunca se usa, pero documenta
+   igual), y define `fields` con `hint` (PDF) o `xpath` (XML) o `cell`/`column`
+   (tabular) según la plantilla. Borra las llaves `__NOTAS__`/`__COMENTARIO_*__`
+   (son solo documentación del template, el loader las ignora igual, pero no
+   aportan nada en un tipo real).
 3. **Aplícalo**:
    ```bash
    pnpm sync:one -- --type ACTA_NACIMIENTO     # inmediato (DynamoDB), o
    pnpm run build && pnpm run deploy           # permanente (empaquetado)
    ```
+   Para XML/XLSX/CSV, además recuerda: la subida SIEMPRE debe declarar
+   `documentType` (`raw/{TYPE_ID}/{uuid}/archivo.ext`) — no hay clasificación
+   automática por visión sobre datos ya estructurados.
 
 ### Entry de nivel de tipo
 
@@ -214,6 +238,122 @@ mira el TYPE_ID para decidir el pipeline.
   declarado en el key de S3, y bypassa extracción para cualquier tipo
   field-centric (`fields`) porque `document-catalog.ts` no genera prompt de
   extracción para ellos — ver `AGENTS.md` → "Trabajo Bedrock desperdiciado".
+
+### Tipos con fuente tabular (`cell`, `column`, XLSX/CSV)
+
+Mismo principio que XML pero para datos ya tabulares — un reporte XLSX, un
+export CSV: `pipeline/tabular_document.py` extrae determinísticamente con
+`openpyxl` (XLSX/XLSM, pura Python, sin dependencias compiladas) o el `csv`
+de la stdlib (CSV), sin llamar a Bedrock. Un tipo entra a este camino
+declarando `cell` (campos fijos) y/o `column` (filas de una tabla) en vez de
+`hint`. La convención de nombre es sufijo `_XLSX`/`_CSV`, igual que `_XML` —
+solo para humanos, `handler.py` rutea por la extensión del archivo subido.
+
+**XLSX y CSV comparten el mismo mapeo de catálogo.** Ambos se parsean a la
+misma forma interna (`{hoja: [[celda, ...], ...]}`) — un CSV es, para efectos
+de extracción, un "libro" con una sola hoja implícita. Esto significa que el
+MISMO tipo/catálogo puede procesar indistintamente un `.xlsx` o un `.csv` si
+el layout de columnas coincide (útil cuando el mismo reporte se exporta en
+ambos formatos).
+
+```jsonc
+{
+  "MI_REPORTE_XLSX": {
+    "fields": {
+      // Campo fijo: dirección de celda estilo Excel ("B2"). Sin "sheet",
+      // usa la primera hoja del libro (o la única, en CSV).
+      "FOLIO": { "type": "string", "required": true, "cell": "B1", "validation": [] },
+      "TOTAL": { "type": "number", "required": true, "cell": "B3", "validation": [] },
+
+      // type == "array": una tabla. "header_row" (1-indexado, default 1)
+      // ubica el renglón de encabezados; "start_row" (default header_row+1)
+      // y "end_row" (opcional) acotan el rango de filas. Sin "end_row", la
+      // lectura se detiene en la primera fila completamente vacía.
+      "GASTOS": {
+        "type": "array",
+        "header_row": 5,
+        "item_fields": {
+          // "column" empareja por texto del encabezado (insensible a
+          // mayúsculas/espacios). Alternativa para datos sin encabezado:
+          // "column_letter": "C".
+          "CONCEPTO": { "type": "string", "required": true, "column": "Concepto", "validation": [] },
+          "IMPORTE": { "type": "number", "required": true, "column": "Importe", "validation": [] }
+        }
+      },
+
+      // Un array puede agregar filas de VARIAS hojas del mismo libro (ej. una
+      // hoja por mes, mismo layout de columnas en cada una) — ver la sección
+      // "Múltiples hojas" más abajo para las 3 formas de item_sheet.
+      "GASTOS_ANUAL": {
+        "type": "array",
+        "item_sheet": ["Enero", "Febrero", "Marzo"],
+        "header_row": 1,
+        "item_fields": {
+          "CONCEPTO": { "type": "string", "required": true, "column": "Concepto", "validation": [] },
+          "IMPORTE": { "type": "number", "required": true, "column": "Importe", "validation": [] }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Múltiples hojas (`sheet` / `item_sheet`)
+
+Un libro XLSX puede tener cualquier número de hojas; por default (sin
+declarar `sheet`/`item_sheet` en un campo) todo se lee de la **primera hoja
+del libro** — igual que hoy. Para leer de otra(s) hoja(s), cada campo declara
+su propio `sheet` (escalar) o `item_sheet` (array), en cualquiera de estas 3
+formas:
+
+| Valor | Efecto en un campo **escalar** (`cell`) | Efecto en un campo **array** (`item_fields`) |
+|---|---|---|
+| *(omitido)* | Primera hoja del libro | Primera hoja del libro |
+| `"NombreHoja"` | Esa hoja | Esa hoja |
+| `["HojaA", "HojaB"]` | Prueba en orden, **gana la primera con la celda no vacía** (fallback — un valor no puede salir de varias hojas a la vez) | **Concatena** las filas de todas, en el orden dado (agregación) |
+| `"*"` | Busca la celda en todas las hojas (equivale a listar todas) | Concatena las filas de **todas** las hojas del libro, en su orden dentro del archivo |
+
+- Un nombre de hoja que no existe en el libro se **omite** (queda registrado
+  como warning en logs), nunca sustituye silenciosamente otra hoja — así un
+  typo en `item_sheet` no corrompe el array con filas de la hoja equivocada,
+  simplemente falta esa hoja.
+- El mismo `header_row`/`start_row`/`end_row`/`item_fields` se aplica a
+  **cada** hoja leída — asume que todas comparten el layout de columnas
+  (el caso real más común: una hoja por mes/sucursal con las mismas
+  columnas). Si el layout difiere entre hojas, no uses agregación — declara
+  un array por hoja en vez de una lista/`"*"` en `item_sheet`.
+- Un CSV no tiene concepto de hoja — cualquier `sheet`/`item_sheet` en un
+  campo pensado para funcionar también desde CSV se ignora de más (siempre
+  resuelve a la única hoja implícita); solo importa cuando el tipo procesa
+  XLSX.
+- Ver `catalogs/_TEMPLATE_TABULAR.json` para un ejemplo completo y probado
+  (campo escalar con fallback entre hojas, array agregando 2 hojas explícitas).
+
+- Celdas con fórmula: `openpyxl.load_workbook(..., data_only=True)` lee el
+  último valor calculado (lo que ve un humano al abrir el archivo en Excel),
+  no el texto de la fórmula.
+- Coerción de tipos: celdas de Excel ya formateadas como número/fecha llegan
+  como `float`/`datetime` nativos de `openpyxl` (no strings) — se normalizan
+  al mismo contrato que XML/Bedrock (`number` → float, fecha → ISO string).
+  Para celdas de texto con formato de moneda ("$1,234.56"), la coerción
+  reutiliza `pipeline.normalize.parse_amount` (el mismo parser que ya usan
+  las reglas de validación numéricas en todo el catálogo).
+- Confianza `1.0` y `source: "TABULAR_EXTRACTION"` para todo campo resuelto
+  (mismo mecanismo `default_source` de `resolve_field_tree` que usa XML).
+- Igual que XML: documento único y autocontenido, `documentType` obligatorio
+  en la subida, sin reglas cross-documento (no hay "hermanos" dentro de una
+  sola subida).
+- **Gotcha de costo específico de CSV** (no aplica a XLSX/XML): Bedrock
+  Converse ya trata `csv` como formato de documento nativo soportado (ver
+  `_DOC_FORMATS` en `model-invoke-lambda/index.py`), así que una subida de
+  `.csv` SIN `documentType` declarado sí llegaría a intentar una llamada real
+  a Bedrock (con costo) antes de fallar — a diferencia de `.xlsx`/`.xml`, que
+  fallan gratis por extensión no soportada. `upload-lambda` ya exige
+  `documentType` para `xml`/`xlsx`/`csv` en la API (`REQUIRES_DECLARED_TYPE`
+  en `index.mjs`) para cerrar esto en el origen.
+- No hay soporte para `.xls` (formato binario legado, pre-2007) hoy — el
+  mismo mecanismo `cell`/`column` funcionaría con un parser distinto
+  (`xlrd`), pero no se agregó sin un caso real que lo necesite.
 
 ### Recuperación determinística desde QR (`qr_recovery`)
 

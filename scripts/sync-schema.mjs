@@ -27,7 +27,6 @@ import { execSync } from "child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATALOGS_DIR = resolve(__dirname, "../catalogs");
-const SPECIAL = new Set(["_shared.json", "_TEMPLATE.json"]);
 
 const BOOL_FLAGS = new Set(["dry-run", "one"]);
 
@@ -81,10 +80,14 @@ function resolveFieldSets(config, fieldSets) {
   return resolved;
 }
 
-/** All per-type files in catalogs/ (excludes _shared.json / _TEMPLATE.json). */
+/** All per-type files in catalogs/ — any "_*.json" file is special (not a
+ * document type): _shared.json, _TEMPLATE.json, and every per-source-format
+ * template (_TEMPLATE_XML.json, _TEMPLATE_TABULAR.json, ...). Filtering by
+ * prefix instead of an explicit filename allowlist means a new template
+ * never needs a code change here. */
 function typeFiles() {
   return readdirSync(CATALOGS_DIR)
-    .filter((f) => f.endsWith(".json") && !SPECIAL.has(f))
+    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
     .sort();
 }
 

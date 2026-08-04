@@ -1,0 +1,107 @@
+{
+  "__NOTAS__": "Plantilla para un tipo cuya fuente es tabular ya estructurada: un reporte XLSX o un export CSV (NO un PDF/escaneo). Copia este archivo, renombra NUEVO_TIPO_XLSX (el nombre de archivo debe coincidir con la llave), borra esta clave __NOTAS__ y las __COMENTARIO__ (documentación, el loader no las lee). Ver catalogs/README.md -> 'Tipos con fuente tabular' para la referencia completa. `pipeline/tabular_document.py` es quien ejecuta este mapeo.",
+
+  "__COMENTARIO_diferencia_clave__": "Igual que XML, cada campo lleva una dirección de dato en vez de `hint`: aquí es `cell` (celda fija, estilo Excel 'B2') o `column` (columna de una tabla, por nombre de encabezado) -- no hay modelo (Bedrock) leyendo el documento. XLSX y CSV comparten EXACTAMENTE el mismo mapeo de catálogo (un CSV se trata como un libro con una sola hoja implícita) -- el mismo tipo sirve para ambos si el layout de columnas coincide. Costo de Bedrock $0 (ver catalogs/README.md 'Tipos con fuente tabular' para el gotcha específico de CSV -- a diferencia de XML/XLSX, un .csv SIN documentType declarado SÍ intentaría una llamada real a Bedrock antes de fallar, por eso upload-lambda lo exige para xml/xlsx/csv).",
+
+  "NUEVO_TIPO_XLSX": {
+    "schema_version": "1.0.0",
+    "display_name": "Nuevo tipo (XLSX/CSV)",
+    "aliases": [],
+    "description": "Descripción breve: qué reporte/export es. Solo importa si algún día se auto-clasifica; con documentType declarado (obligatorio para este tipo) nunca se usa.",
+    "business_destination": null,
+    "min_confidence": 0.8,
+
+    "__COMENTARIO_fields__": "Campos escalares con `cell`: dirección estilo Excel ('B2' = columna B, fila 2; 1-indexado, igual que en Excel). Sin `sheet`, resuelve contra la primera hoja del libro (o la única hoja implícita de un CSV). Para leer de otra hoja: agrega `\"sheet\": \"NombreHoja\"` al campo.",
+    "fields": {
+      "FOLIO": {
+        "type": "string",
+        "required": true,
+        "cell": "B1",
+        "validation": []
+      },
+      "FECHA": {
+        "type": "date",
+        "required": false,
+        "cell": "B2",
+        "validation": []
+      },
+
+      "__COMENTARIO_otra_hoja__": "Ejemplo de campo leído de una hoja distinta a la default -- solo aplica a XLSX (un CSV no tiene el concepto de hoja; si el mismo tipo debe soportar ambos formatos, evita `sheet` en los campos que tengan que funcionar también desde CSV). `sheet` también acepta una LISTA -- para un campo escalar significa 'prueba estas hojas en orden, gana la primera con la celda no vacía' (útil cuando el mismo dato se mueve de hoja según la versión del reporte), NO agregación -- un valor único no puede salir de varias hojas a la vez.",
+      "RESPONSABLE": {
+        "type": "string",
+        "required": false,
+        "cell": "B1",
+        "sheet": ["Resumen", "Portada"],
+        "validation": []
+      },
+
+      "TOTAL": {
+        "type": "number",
+        "required": true,
+        "cell": "B3",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "DETALLE.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El total no coincide con la suma del detalle"
+          }
+        ]
+      },
+
+      "__COMENTARIO_array__": "type == 'array': una tabla. `header_row` (1-indexado, default 1) ubica el renglón de encabezados -- ponlo donde realmente empieza la tabla cuando hay un bloque de datos fijos arriba (como FOLIO/FECHA/TOTAL en este ejemplo). `start_row` (default header_row + 1) y `end_row` (opcional, inclusive) acotan el rango de filas; sin `end_row`, la lectura se detiene en la primera fila completamente vacía. Cada `item_fields` usa `column` (empareja por texto del encabezado, sin distinguir mayúsculas/espacios) o, para datos SIN fila de encabezado, `column_letter` (columna fija, ej. 'C').",
+      "DETALLE": {
+        "type": "array",
+        "required": true,
+        "header_row": 5,
+        "validation": [],
+        "item_fields": {
+          "CONCEPTO": {
+            "type": "string",
+            "required": true,
+            "column": "Concepto",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "column": "Importe",
+            "validation": []
+          },
+          "__COMENTARIO_column_letter__": "Alternativa cuando la hoja no trae fila de encabezado reconocible -- direcciona por letra de columna fija en vez de por texto.",
+          "OBSERVACION": {
+            "type": "string",
+            "required": false,
+            "column_letter": "D",
+            "validation": []
+          }
+        }
+      },
+
+      "__COMENTARIO_multi_hoja__": "El libro puede tener MÚLTIPLES hojas (ej. una por mes/sucursal, mismo layout de columnas en cada una) y un array puede agregarlas todas en un solo campo con `item_sheet`. Tres formas: (1) sin `item_sheet` -> solo la primera hoja del libro (default, como DETALLE arriba); (2) una LISTA de nombres -> concatena las filas de esas hojas, en el orden dado; (3) el string literal '*' -> todas las hojas del libro, en su orden dentro del archivo. Mismo `header_row`/`start_row`/`end_row`/`item_fields` se aplica a cada hoja leída -- asume que todas comparten el mismo layout de columnas. Un nombre de hoja que no existe se omite (con warning en logs), nunca sustituye silenciosamente otra hoja.",
+      "DETALLE_VARIAS_HOJAS": {
+        "type": "array",
+        "required": false,
+        "item_sheet": ["Enero", "Febrero"],
+        "header_row": 1,
+        "validation": [],
+        "item_fields": {
+          "CONCEPTO": {
+            "type": "string",
+            "required": true,
+            "column": "Concepto",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "column": "Importe",
+            "validation": []
+          }
+        }
+      }
+    },
+
+    "cross_field_validation": []
+  }
+}

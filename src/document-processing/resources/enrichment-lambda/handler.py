@@ -433,18 +433,30 @@ def _run_expediente(
     if declared_type:
         logger.info("honoring user-declared type '%s' from key %s", declared_type, key)
 
-    # Already-structured XML (CFDI, VUCEM, ...) skips the PDF/OCR/segmentation
-    # pipeline entirely: pipeline.xml_document deterministically walks the
-    # catalog's xpath-mapped fields instead of asking a model to read it.
-    # Routed by the uploaded file's own extension, not by the declared type's
-    # name — `_XML` is a catalogs/ naming convention for humans, not what the
-    # code keys off. An XML file with no declared type fails fast inside
-    # process_xml (there is no vision-based auto-classification for raw XML).
-    if key.lower().endswith(".xml"):
+    # Already-structured sources (XML, XLSX/CSV) skip the PDF/OCR/segmentation
+    # pipeline entirely: pipeline.xml_document/pipeline.tabular_document
+    # deterministically walk the catalog's xpath-/cell-/column-mapped fields
+    # instead of asking a model to read them. Routed by the uploaded file's
+    # own extension, not by the declared type's name — `_XML` is a catalogs/
+    # naming convention for humans, not what the code keys off. A structured
+    # file with no declared type fails fast inside its pipeline (there is no
+    # vision-based auto-classification for raw XML/XLSX/CSV).
+    ext = key.rsplit(".", 1)[-1].lower() if "." in key else ""
+    if ext == "xml":
         from pipeline.xml_document import process_xml  # deferred: rarely-hit path
 
         result = process_xml(
             document_bytes,
+            declared_type=declared_type,
+            expected_values=expected_values,
+            source_name=key,
+        )
+    elif ext in ("xlsx", "xlsm", "csv"):
+        from pipeline.tabular_document import process_tabular  # deferred: pulls openpyxl
+
+        result = process_tabular(
+            document_bytes,
+            source_format=ext,
             declared_type=declared_type,
             expected_values=expected_values,
             source_name=key,

@@ -15,6 +15,9 @@ Uso:
         # .xml usa pipeline/xml_document.py (extracción por XPath, sin Bedrock/Textract,
         # no necesita credenciales AWS) — --type es OBLIGATORIO para .xml, no hay
         # clasificación automática por visión sobre XML crudo.
+    pnpm procesar -- --file reporte.xlsx --type MI_TIPO_XLSX
+        # .xlsx/.csv usan pipeline/tabular_document.py (extracción por celda/columna,
+        # mismas condiciones que .xml: --type obligatorio, sin Bedrock/Textract).
 
 Salida por documento:
   - resumen legible en consola (tipo, estado, campos clave, warnings)
@@ -46,6 +49,15 @@ STATUS_COLOR = {
     "PARTIALLY_APPROVED": YELLOW,
     "REVIEW_REQUIRED": YELLOW,
     "PROCESSING_ERROR": RED,
+}
+
+# "N páginas (M digitales, K OCR)" (pdf_pages.pages_summary) is PDF
+# vocabulary that doesn't apply to a deterministically-parsed source — one
+# label per non-PDF sourceFormat; absent from the dict = PDF page breakdown.
+SOURCE_FORMAT_NOTE = {
+    "xml": "XML (extracción por XPath, sin Bedrock/Textract)",
+    "xlsx": "XLSX (extracción por celda/columna, sin Bedrock/Textract)",
+    "csv": "CSV (extracción por columna, sin Bedrock/Textract)",
 }
 
 # Campos que vale la pena mostrar en el resumen por tipo de documento
@@ -98,34 +110,37 @@ def summarize_doc(doc: dict) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file", help="un archivo (ruta completa o nombre dentro de --dir)")
-    parser.add_argument("--dir", default=str(DEFAULT_DIR), help="carpeta con PDFs/XMLs")
+    parser.add_argument("--dir", default=str(DEFAULT_DIR), help="carpeta con PDFs/XMLs/XLSX/CSVs")
     parser.add_argument("--out", default="resultados", help="carpeta de salida para los JSON")
     parser.add_argument("--importer", help="RFC del importador esperado (activa checks cruzados de RFC)")
     parser.add_argument("--model", help="override del modelo Bedrock (solo aplica a PDFs)")
     parser.add_argument(
         "--type",
-        help="TYPE_ID declarado. Obligatorio para .xml (no hay clasificación automática "
-        "por visión sobre XML crudo); opcional para .pdf (si se omite, el segmentador "
-        "auto-clasifica).",
+        help="TYPE_ID declarado. Obligatorio para .xml/.xlsx/.csv (no hay clasificación "
+        "automática por visión sobre datos ya estructurados); opcional para .pdf (si se "
+        "omite, el segmentador auto-clasifica).",
     )
     # pnpm forwards a literal "--" separator; argparse must not choke on it
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
 
     from pipeline.expediente import process_pdf
+    from pipeline.tabular_document import process_tabular
     from pipeline.xml_document import process_xml
+
+    _SUPPORTED_EXTS = (".pdf", ".xml", ".xlsx", ".csv")
 
     if args.file:
         p = Path(args.file)
         docs = [p] if p.exists() else sorted(
             f for f in Path(args.dir).glob("*")
-            if f.suffix.lower() in (".pdf", ".xml") and args.file.lower() in f.name.lower()
+            if f.suffix.lower() in _SUPPORTED_EXTS and args.file.lower() in f.name.lower()
         )
     else:
         docs = sorted(
-            f for f in Path(args.dir).glob("*") if f.suffix.lower() in (".pdf", ".xml")
+            f for f in Path(args.dir).glob("*") if f.suffix.lower() in _SUPPORTED_EXTS
         )
     if not docs:
-        print(f"No encontré PDFs/XMLs ({args.file or args.dir})")
+        print(f"No encontré PDFs/XMLs/XLSX/CSVs ({args.file or args.dir})")
         return 2
 
     expected_values = {"IMPORTER_RFC": args.importer} if args.importer else {}
@@ -149,11 +164,19 @@ def main() -> int:
     for doc_path in docs:
         print(f"\n{CYAN}{'=' * 72}\n{doc_path.name}{RESET}")
         started = time.time()
-        is_xml = doc_path.suffix.lower() == ".xml"
+        ext = doc_path.suffix.lower().lstrip(".")
         try:
-            if is_xml:
+            if ext == "xml":
                 result = process_xml(
                     doc_path.read_bytes(),
+                    declared_type=args.type,
+                    expected_values=expected_values,
+                    source_name=doc_path.name,
+                )
+            elif ext in ("xlsx", "csv"):
+                result = process_tabular(
+                    doc_path.read_bytes(),
+                    source_format=ext,
                     declared_type=args.type,
                     expected_values=expected_values,
                     source_name=doc_path.name,
@@ -182,17 +205,10 @@ def main() -> int:
             f"{elapsed_wall * 1000:.0f}ms" if elapsed_wall < 1
             else f"{elapsed_wall:.0f}s"
         )
-        if result.get("sourceFormat") == "xml":
-            # "N páginas (M digitales, K OCR)" is PDF vocabulary (see
-            # pdf_pages.pages_summary) that doesn't apply to a single parsed
-            # XML document — showing it anyway just prints a bare "-" where
-            # nativePages would be.
-            source_note = "XML (extracción por XPath, sin Bedrock/Textract)"
-        else:
-            source_note = (
-                f"{pages.get('totalPages')} páginas "
-                f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
-            )
+        source_note = SOURCE_FORMAT_NOTE.get(result.get("sourceFormat")) or (
+            f"{pages.get('totalPages')} páginas "
+            f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
+        )
         print(f"  Estado: {color}{status}{RESET}  |  {source_note}  |  {duration}")
 
         detected = []

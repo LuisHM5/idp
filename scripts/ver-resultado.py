@@ -32,6 +32,15 @@ STATUS_COLOR = {
     "PROCESSING_ERROR": RED,
 }
 
+# "N páginas (M digitales, K OCR)" is PDF vocabulary that doesn't apply to a
+# deterministically-parsed source — one label per non-PDF sourceFormat;
+# absent from the dict = PDF page breakdown.
+SOURCE_FORMAT_NOTE = {
+    "xml": "XML (extracción por XPath, sin Bedrock/Textract)",
+    "xlsx": "XLSX (extracción por celda/columna, sin Bedrock/Textract)",
+    "csv": "CSV (extracción por columna, sin Bedrock/Textract)",
+}
+
 KEY_FIELDS = [
     "NUMERO_PEDIMENTO_NORMALIZADO", "NUMERO_PEDIMENTO", "PEDIMENTO_REFERENCE",
     "UUID", "EMISOR_RFC", "RECEPTOR_RFC", "RFC_IMPORTADOR_EXPORTADOR",
@@ -207,15 +216,10 @@ def main() -> int:
         # calls Bedrock/Textract) — processingMs keeps that visible.
         ms = exp.get("processingMs")
         duration = f"{ms:.0f}ms" if isinstance(ms, (int, float)) and ms < 1000 else f"{exp.get('processingSeconds', '?')}s"
-        if exp.get("sourceFormat") == "xml":
-            # "N páginas (M digitales, K OCR)" is PDF vocabulary that doesn't
-            # apply to a single parsed XML document.
-            source_note = "XML (extracción por XPath, sin Bedrock/Textract)"
-        else:
-            source_note = (
-                f"{pages.get('totalPages')} páginas "
-                f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
-            )
+        source_note = SOURCE_FORMAT_NOTE.get(exp.get("sourceFormat")) or (
+            f"{pages.get('totalPages')} páginas "
+            f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
+        )
         print(f"Expediente: {STATUS_COLOR.get(exp.get('status'), '')}{exp.get('status')}{RESET}  "
               f"| {source_note} | {duration}")
         for doc in exp.get("documents", []):

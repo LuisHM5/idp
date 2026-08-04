@@ -40,9 +40,6 @@ const TYPES_OUTPUT = join(
   "src/document-processing/resources/query-lambda/document-types.json"
 );
 
-// Files that are not a document type.
-const SPECIAL = new Set(["_shared.json", "_TEMPLATE.json"]);
-
 function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -81,8 +78,12 @@ function main() {
     : {};
 
   const documentTypes = {};
+  // Any "_*.json" file is special (not a document type) — _shared.json,
+  // _TEMPLATE.json, and every per-source-format template (_TEMPLATE_XML.json,
+  // _TEMPLATE_TABULAR.json, ...). Filtering by prefix instead of an explicit
+  // filename allowlist means a new template never needs a code change here.
   const files = readdirSync(CATALOGS_DIR)
-    .filter((f) => f.endsWith(".json") && !SPECIAL.has(f))
+    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
     .sort();
 
   for (const file of files) {

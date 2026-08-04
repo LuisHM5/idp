@@ -2,7 +2,7 @@
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
-El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay tres tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento; `FACTURA_HONORARIOS`, para CFDI de honorarios y gastos por cuenta del cliente dentro del expediente; y `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT. Los demás tipos genéricos de identificación (INE, Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
+El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay cinco tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; e `INE`, para Credenciales para Votar vigentes E–J. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
 
 ## Documentación
 
@@ -132,7 +132,9 @@ documents-validator/
 │   ├── _TEMPLATE.json                      # plantilla DSL field-centric para tipos nuevos
 │   ├── PEDIMENTO_ADUANAL.json              # tipo activo: expediente aduanal
 │   ├── FACTURA_HONORARIOS.json              # tipo activo: CFDI de honorarios aduanales
+│   ├── FACTURA_HONORARIOS_XML.json         # tipo activo: CFDI XML determinístico
 │   ├── CONSTANCIA_SITUACION_FISCAL.json    # tipo activo: constancia individual del SAT
+│   ├── INE.json                             # tipo activo: Credencial para Votar E–J
 │   ├── save/                               # tipos legacy aparcados (no leídos por build/sync)
 │   └── README.md                           # spec completa del DSL
 ├── scripts/                                # CLI: sync, enviar, procesar, resultado, tests, track

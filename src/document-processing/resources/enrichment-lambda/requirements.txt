@@ -15,3 +15,8 @@ pypdf==6.14.2
 pypdfium2==5.12.1
 zxing-cpp==2.2.0
 numpy==2.2.6
+# Tabular extraction (pipeline/tabular_document.py): reads .xlsx/.xlsm
+# workbooks. Pure Python (its only dependency, et_xmlfile, is pure Python
+# too) — no compiled extension, so it needs neither the manylinux wheel
+# constraints nor the Docker bundling fallback that pypdfium2/zxing-cpp do.
+openpyxl==3.1.5

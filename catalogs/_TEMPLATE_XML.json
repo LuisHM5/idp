@@ -1,0 +1,122 @@
+{
+  "__NOTAS__": "Plantilla para un tipo cuya fuente es XML ya estructurado (un CFDI del SAT, un acuse de VUCEM, cualquier XML con esquema fijo) en vez de un PDF/escaneo. Copia este archivo, renombra NUEVO_TIPO_XML (el nombre de archivo debe coincidir con la llave), borra esta clave __NOTAS__ y las __COMENTARIO__ (documentación, el loader no las lee). Ver catalogs/README.md -> 'Tipos con fuente XML' para la referencia completa, y catalogs/FACTURA_HONORARIOS_XML.json para un tipo real ya probado contra un archivo real. `pipeline/xml_document.py` es quien ejecuta este mapeo.",
+
+  "__COMENTARIO_diferencia_clave__": "La diferencia frente al DSL normal (_TEMPLATE.json) es que cada campo lleva `xpath` en vez de `hint`: no hay modelo (Bedrock) leyendo el documento, así que no hace falta describir en español dónde vive el dato para un humano/LLM -- el xpath ya apunta exactamente al nodo/atributo. Por esto mismo, un tipo XML normalmente tiene MENOS campos que su equivalente en PDF: solo lo que el XML realmente trae, no las secciones que una representación impresa agrega encima (ver el comentario en FACTURA_HONORARIOS_XML.json). El costo de Bedrock para estos tipos ya es $0 sin tocar Step Functions (ver AGENTS.md 'Trabajo Bedrock desperdiciado' y catalogs/README.md), SIEMPRE que la subida declare `documentType` explícito -- no existe clasificación automática por visión sobre XML crudo.",
+
+  "NUEVO_TIPO_XML": {
+    "schema_version": "1.0.0",
+    "display_name": "Nuevo tipo (XML)",
+    "aliases": [],
+    "description": "Descripción breve: qué documento XML es y qué lo distingue (namespace raíz, elementos principales). Solo importa si algún día se auto-clasifica; con documentType declarado (el caso normal para XML) nunca se usa.",
+    "business_destination": null,
+    "min_confidence": 0.8,
+
+    "__COMENTARIO_namespaces__": "Prefijo -> URI de cada namespace XML que usan los `xpath` de abajo. Opcional si el XML no usa namespaces, pero la mayoría de los XML de gobierno (CFDI, VUCEM) sí. Debe coincidir EXACTAMENTE con la URI declarada en el XML (no con el prefijo que el emisor eligió -- ElementTree resuelve por URI, el prefijo aquí es solo el alias que usas en los xpath).",
+    "namespaces": {
+      "ns": "http://ejemplo.gob.mx/schema/v1"
+    },
+
+    "__COMENTARIO_fields__": "Cada campo escalar declara `xpath` en vez de `hint`. Convenciones (ver catalogs/README.md para la lista completa): '@Attr' = atributo del nodo raíz/contexto actual; 'a/b/@Attr' = atributo de un descendiente directo; './/ns:Tag/@Attr' = atributo de un descendiente en cualquier profundidad (útil cuando el elemento vive dentro de un bloque anidado, ej. un complemento); 'a/b' (sin @) = texto de un descendiente. `xpath` también acepta una LISTA de rutas -- se prueba cada una en orden y gana la primera que resuelva algo (útil entre sub-versiones del mismo formato).",
+    "fields": {
+      "FOLIO": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Folio",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Fecha",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}",
+            "message": "La fecha debe iniciar con formato YYYY-MM-DD"
+          }
+        ]
+      },
+
+      "__COMENTARIO_bloque_anidado__": "Un dato que vive dentro de un bloque/elemento hijo, no en el nodo raíz. La ruta es RELATIVA al contexto (aquí, la raíz del documento).",
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "ns:Emisor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "RFC con formato inválido"
+          }
+        ]
+      },
+
+      "__COMENTARIO_descendiente_profundo__": "Cuando el dato vive dentro de un complemento/sub-bloque anidado a varios niveles (ej. un timbre fiscal digital dentro de <Complemento>), usa './/' para buscarlo en cualquier profundidad en vez de escribir la ruta completa -- más corto y tolerante a que el emisor agregue/quite bloques intermedios.",
+      "ID_UNICO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//ns:Timbre/@UUID",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "El identificador único tiene un formato inválido"
+          }
+        ]
+      },
+
+      "__COMENTARIO_predicado__": "Cuando varios elementos hermanos del mismo tipo se distinguen por un atributo (ej. dos <Retencion> con Impuesto='001' vs '002'), un predicado simple [@attr='valor'] selecciona el correcto -- ElementTree SÍ soporta esta forma, no hace falta código nuevo. No soporta XPath 1.0 completo (sin local-name(), sin funciones, sin el operador de unión '|' -- para eso, ver 'item_xpath como lista' abajo).",
+      "IMPORTE_IMPUESTO_A": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "ns:Impuestos/ns:Impuesto[@Clave='A']/@Importe",
+        "validation": []
+      },
+
+      "__COMENTARIO_array__": "type == 'array': `item_xpath` ubica cada fila (un elemento repetido); `item_fields` describe UNA fila con rutas RELATIVAS a ese elemento (no a la raíz del documento). `item_xpath` también acepta una LISTA de rutas, que se concatenan (unión) -- útil cuando la tabla real está partida en dos elementos hermanos distintos (ej. Traslados + Retenciones), ya que ElementTree no soporta el operador '|' de XPath.",
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": ".//ns:Conceptos/ns:Concepto",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "Debe existir al menos un concepto"
+          }
+        ],
+        "item_fields": {
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          }
+        }
+      },
+
+      "TOTAL": {
+        "type": "number",
+        "required": true,
+        "xpath": "@Total",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El total no coincide con la suma de conceptos"
+          }
+        ]
+      }
+    },
+
+    "cross_field_validation": []
+  }
+}
