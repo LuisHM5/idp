@@ -189,31 +189,36 @@ def process_xml(
     processing_id = str(uuid.uuid4())
     expected_values = expected_values or {}
 
-    def _fail(message: str) -> Dict[str, Any]:
+    def _fail(
+        message: str, *, stage: Optional[str] = None, exception: Optional[BaseException] = None
+    ) -> Dict[str, Any]:
         return error_result(
             processing_id, source_name, message,
             build_tracking(started_at, started, _SOURCE_LABEL),
+            stage=stage, exception=exception, source_format="xml",
         )
 
     if not declared_type:
         return _fail(
             "XML documents require an explicit declared type "
             "(upload under raw/{TYPE}/{uuid}/file.xml) — there is no "
-            "vision-based auto-classification for raw XML"
+            "vision-based auto-classification for raw XML",
+            stage="declared_type",
         )
 
     entry = get_type_entry(declared_type)
     if not entry.field_tree:
         return _fail(
             f"type '{declared_type}' has no field-centric schema (\"fields\") "
-            "to drive XML extraction"
+            "to drive XML extraction",
+            stage="declared_type",
         )
 
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as e:
-        logger.error("failed to parse XML for %s: %s", declared_type, e)
-        return _fail(f"invalid XML: {e}")
+        logger.exception("failed to parse XML for %s", declared_type)
+        return _fail(f"invalid XML: {e}", stage="parse", exception=e)
 
     entity_map, confidences = extract_from_xml(root, entry)
 

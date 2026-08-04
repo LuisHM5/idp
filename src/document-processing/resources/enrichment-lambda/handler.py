@@ -477,11 +477,17 @@ def _run_expediente(
     else:
         from pipeline.expediente import process_pdf  # deferred: pulls pypdf
 
+        # A field-centric type isn't necessarily backed by a PDF — a photographed/
+        # scanned ID (INE, CSF, ...) is routinely uploaded as a raw JPG/PNG.
+        # process_pdf's page-loading branches internally on source_format;
+        # anything else (a real .pdf, or an unrecognized extension) keeps the
+        # existing pypdf path unchanged via the "pdf" default.
         result = process_pdf(
             document_bytes,
             declared_type=declared_type,
             expected_values=expected_values,
             source_name=key,
+            source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
         )
 
     # Persist the FULL result to S3: a large expediente (86 pages, 20+

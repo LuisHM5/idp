@@ -35,8 +35,8 @@
         "validation": [
           {
             "rule_type": "regex",
-            "pattern": "^(NACIONAL|EXTRANJERO)$",
-            "message": "El tipo de credencial debe ser NACIONAL o EXTRANJERO"
+            "pattern": "^\\s*(NACIONAL|EXTRANJERO|CREDENCIAL\\s+PARA\\s+VOTAR)\\s*$",
+            "message": "El tipo de credencial debe ser CREDENCIAL PARA VOTAR, NACIONAL o EXTRANJERO"
           }
         ]
       },

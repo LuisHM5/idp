@@ -43,7 +43,7 @@ from .normalize import (
     parse_amount,
     pedimento_consecutivo,
 )
-from .pdf_pages import PageText, load_pages, pages_summary
+from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import used_models
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import Segment, segment_pages
@@ -128,9 +128,15 @@ def _extract_segment(
             doc["_entities"]["LIQUIDACION_NORMALIZADA"] = liq
             doc["liquidacionNormalizada"] = liq
     except Exception as e:
-        logger.error("extraction failed for %s pages %d-%d: %s", seg.doc_type, seg.page_start, seg.page_end, e)
+        # Full traceback goes to CloudWatch (logger.exception, not just
+        # logger.error's bare message) so a real crash is diagnosable without
+        # reproducing it locally; the JSON result itself carries the
+        # exception type alongside the truncated message for the same
+        # "what actually broke" triage without needing to reproduce.
+        logger.exception("extraction failed for %s pages %d-%d", seg.doc_type, seg.page_start, seg.page_end)
         doc["status"] = engine.DOC_ERROR
         doc["error"] = str(e)[:300]
+        doc["errorType"] = type(e).__name__
         doc["_entities"] = {}
     return doc
 
@@ -170,41 +176,69 @@ def process_pdf(
     expected_values: Optional[Dict[str, str]] = None,
     model_id: Optional[str] = None,
     source_name: str = "",
+    source_format: str = "pdf",
 ) -> Dict[str, Any]:
-    """Process a (possibly multi-document) PDF and return the full result."""
+    """Process a (possibly multi-document) PDF — or, when `source_format` is
+    an image type ("jpg"/"jpeg"/"png"), a single standalone photographed/
+    scanned document such as an ID card — and return the full result.
+    """
     started = time.time()
     started_at = datetime.now(timezone.utc)
     processing_id = str(uuid.uuid4())
     expected_values = expected_values or {}
+    is_image = source_format in ("jpg", "jpeg", "png")
 
-    def _fail(message: str) -> Dict[str, Any]:
-        return error_result(processing_id, source_name, message,
-                            build_tracking(started_at, started, model_id))
+    def _fail(
+        message: str, *, stage: Optional[str] = None, exception: Optional[BaseException] = None
+    ) -> Dict[str, Any]:
+        return error_result(
+            processing_id, source_name, message,
+            build_tracking(started_at, started, model_id),
+            stage=stage, exception=exception, source_format=source_format,
+        )
 
-    pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, _MAX_PAGES)
+    original_page_count: Optional[int] = None
+    qr_reader = None
 
-    try:
-        pages = load_pages(pdf_bytes)
-    except Exception as e:
-        logger.error("failed to read PDF: %s", e)
-        return _fail(f"unreadable PDF: {e}")
+    if is_image:
+        # No pypdf involved at all: a raw JPEG/PNG has no PDF container for
+        # pypdf to parse (that mismatch is exactly what used to surface as
+        # "unreadable PDF: Stream has ended unexpectedly" for an image
+        # upload) — Textract reads the image bytes directly instead.
+        try:
+            pages = load_image_page(pdf_bytes)
+        except Exception as e:
+            logger.exception("failed to read %s image for OCR", source_format)
+            return _fail(f"unreadable {source_format} image: {e}", stage="page_load", exception=e)
+    else:
+        pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, _MAX_PAGES)
+        try:
+            pages = load_pages(pdf_bytes)
+        except Exception as e:
+            logger.exception("failed to read PDF")
+            return _fail(f"unreadable PDF: {e}", stage="page_load", exception=e)
 
     if not pages:
-        return _fail("PDF has no pages")
+        return _fail(f"{source_format} document has no pages", stage="page_load")
 
     segments = segment_pages(pages, declared_type=declared_type, model_id=model_id)
 
-    # Shared reader for QR-recovery rasterization only (see qr_recovery.py) —
-    # same reader-shared-across-threads pattern pdf_pages.load_pages already
-    # uses for its own Textract OCR workers. None when the PDF can't be
-    # re-read here; `_recover_from_qr` no-ops in that case.
-    try:
-        from pypdf import PdfReader as _PdfReader
+    if not is_image:
+        # Shared reader for QR-recovery rasterization only (see qr_recovery.py) —
+        # same reader-shared-across-threads pattern pdf_pages.load_pages already
+        # uses for its own Textract OCR workers. None when the PDF can't be
+        # re-read here; `_recover_from_qr` no-ops in that case. Images skip this
+        # entirely: there is no PDF page for qr_recovery.py's pypdfium2-based
+        # rasterization to work from, so a type with `qr_source` fields simply
+        # leaves them unfilled for an image-sourced document — a real gap only
+        # if a future catalog type needs a QR read off a photographed document.
+        try:
+            from pypdf import PdfReader as _PdfReader
 
-        qr_reader = _PdfReader(io.BytesIO(pdf_bytes))
-    except Exception as e:
-        logger.warning("could not open PDF for QR recovery: %s", e)
-        qr_reader = None
+            qr_reader = _PdfReader(io.BytesIO(pdf_bytes))
+        except Exception as e:
+            logger.warning("could not open PDF for QR recovery: %s", e)
+            qr_reader = None
 
     # ---- extraction pass (all documents first, so cross-doc rules see siblings).
     # Segments are extracted concurrently (each is an independent Bedrock call);
@@ -305,7 +339,7 @@ def process_pdf(
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
         "modelIds": used_models(),
-        "sourceFormat": "pdf",
+        "sourceFormat": source_format,
         "pages": pages_summary(pages),
         "status": overall,
         "reviewRequired": truncated or overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),

@@ -1,4 +1,5 @@
-"""Per-page text acquisition for PDFs.
+"""Per-page text acquisition for PDFs, and single-page acquisition for
+standalone images (JPG/JPEG/PNG — e.g. a photographed ID document).
 
 Strategy (cost-first):
 1. Native text layer via pypdf — free, exact, covers digital CFDIs/pedimentos.
@@ -7,6 +8,14 @@ Strategy (cost-first):
    so the synchronous Textract API can process them (no S3 round-trip).
 
 A single file can mix both (e.g. digital expediente with scanned annexes).
+
+A raw image has no PDF container to read a native layer from at all — pypdf
+can't parse JPEG/PNG bytes (that's the "unreadable PDF: Stream has ended
+unexpectedly" failure a raw image produces if it's fed to `load_pages`).
+`load_image_page` is the equivalent entry point for that source: Textract's
+DetectDocumentText already accepts JPEG/PNG bytes directly (no PDF wrapping
+needed, unlike the per-PDF-page OCR fallback above), so it reuses the exact
+same block-sorting/confidence logic via `_blocks_to_page`.
 """
 
 from __future__ import annotations
@@ -96,21 +105,19 @@ def _single_page_pdf(reader, index: int) -> bytes:
     return buf.getvalue()
 
 
-def _ocr_page(reader, index: int) -> PageText:
-    page_bytes = _single_page_pdf(reader, index)
-    try:
-        response = _textract_client().detect_document_text(Document={"Bytes": page_bytes})
-    except Exception as e:
-        logger.error("Textract failed on page %d: %s", index + 1, e)
-        return PageText(index + 1, "", "empty", 0.0)
+def _blocks_to_page(response: Dict[str, Any], page_number: int) -> PageText:
+    """Turn a DetectDocumentText response into one PageText. Shared by the
+    per-PDF-page OCR fallback and `load_image_page` — Textract's response
+    shape is identical whichever way the bytes it analyzed got there.
 
-    # Sort LINE blocks by position (top-to-bottom, then left-to-right within
-    # a row) instead of trusting Textract's raw block order — this is what
-    # keeps multi-column layouts (tables, side-by-side boxes) from
-    # interleaving. Blocks within 0.006 of each other's Top are treated as
-    # the same visual row (tiny bounding-box jitter) and broken by Left
-    # instead; a plain sort-by-Top would fail exactly this case, since two
-    # blocks on the same row rarely share the identical Top value.
+    Sort LINE blocks by position (top-to-bottom, then left-to-right within a
+    row) instead of trusting Textract's raw block order — this is what keeps
+    multi-column layouts (tables, side-by-side boxes) from interleaving.
+    Blocks within 0.006 of each other's Top are treated as the same visual
+    row (tiny bounding-box jitter) and broken by Left instead; a plain
+    sort-by-Top would fail exactly this case, since two blocks on the same
+    row rarely share the identical Top value.
+    """
     line_blocks = [b for b in response.get("Blocks", []) if b.get("BlockType") == "LINE"]
 
     def _compare(a: Dict[str, Any], b: Dict[str, Any]) -> float:
@@ -128,7 +135,31 @@ def _ocr_page(reader, index: int) -> PageText:
         confs.append(float(block.get("Confidence", 0.0)))
     text = "\n".join(lines)
     confidence = (sum(confs) / len(confs) / 100.0) if confs else 0.0
-    return PageText(index + 1, text, "textract" if text else "empty", round(confidence, 4))
+    return PageText(page_number, text, "textract" if text else "empty", round(confidence, 4))
+
+
+def _ocr_page(reader, index: int) -> PageText:
+    page_bytes = _single_page_pdf(reader, index)
+    try:
+        response = _textract_client().detect_document_text(Document={"Bytes": page_bytes})
+    except Exception as e:
+        logger.error("Textract failed on page %d: %s", index + 1, e)
+        return PageText(index + 1, "", "empty", 0.0)
+    return _blocks_to_page(response, index + 1)
+
+
+def load_image_page(image_bytes: bytes) -> List[PageText]:
+    """Single-page equivalent of `load_pages`, for a standalone JPG/JPEG/PNG
+    (e.g. a photographed ID document) instead of a PDF. No pypdf involved —
+    Textract's DetectDocumentText accepts image bytes directly — so this
+    always yields exactly one page, sourced "textract" (there is no "native"
+    text layer concept for a raw image). Raises on a genuine Textract
+    failure (unlike the per-PDF-page OCR fallback, which degrades a single
+    bad page to empty text so the rest of a multi-page document still
+    processes) — for a single-image document there is no "rest" to salvage.
+    """
+    response = _textract_client().detect_document_text(Document={"Bytes": image_bytes})
+    return [_blocks_to_page(response, 1)]
 
 
 def load_pages(pdf_bytes: bytes, use_ocr: bool = True) -> List[PageText]:

@@ -7,6 +7,103 @@
 > `usage` real de Bedrock (`extractionMeta.usage` en cada resultado) y
 > `pages.totalPages` / `pages.ocrPages` real por documento.
 
+## 0. Recálculo 2026-08-04 (vía MCP AWS — Cost Explorer + Pricing API)
+
+Datos nuevos desde el último corte: **54 resultados** en
+`results/*.json` (29-jul a 04-ago 2026, 1 error de procesamiento sin
+`documents`), **598 páginas**, **100 sub-documentos clasificados**.
+Precios re-verificados en vivo con `aws-pricing` MCP — **sin cambios**
+respecto a la tabla de la sección 1 (Input $1.10/1M, Output $5.50/1M,
+Cache read $0.11/1M, Cache write $1.375/1M, Textract sync $0.0015/pág).
+
+### Hallazgo 1 — el costo/página del pedimento nativo cayó ~4.7x
+
+Mismo archivo de prueba que el "Caso A" original (`normal_pend.pdf`, 3
+páginas nativas, sin OCR), 18 ejecuciones nuevas:
+
+| | 2026-07-28 (antes) | 2026-08-04 (ahora) |
+| --- | --- | --- |
+| Input tokens/doc | ~20,631 | ~6,483–6,742 |
+| Output tokens/doc | ~6,454 | ~883–1,054 |
+| Costo/doc | $0.0582 | $0.0123 |
+| **Costo/página** | **$0.0194** | **$0.0041** |
+
+Caída de ~3.1x en input y ~7x en output para el **mismo PDF**. Coincide en
+el tiempo con la migración del DSL de catálogo (`catalogs/PEDIMENTO_ADUANAL.json`
+al nuevo formato `fields` consolidado, ver memoria `catalog-dsl-v4-migration`)
+y con los cambios locales pendientes en `pipeline/expediente.py` /
+`pipeline/pdf_pages.py` / `pipeline/result_common.py` (working tree, aún sin
+commitear) — prompt/salida más compactos. No se investigó línea por línea
+cuál cambio específico lo causó; queda como pendiente si se quiere atribuir
+con precisión.
+
+### Hallazgo 2 — la mitad de los sub-documentos clasificados ya no tienen extracción LLM (costo $0)
+
+De los 100 sub-documentos clasificados en la ventana, **48 tienen
+`extractionMeta: null`** — se clasifican pero no se extraen campos:
+`OTRO` (28), `PERMISO_CERTIFICADO_SANITARIO` (4), `CFDI_GASTO_TERCERO` (7),
+`FACTURA_LOGISTICA` (5), `FACTURA_AGENCIA_ADUANAL` (3), más
+`FACTURA_HONORARIOS_XML` (1, pipeline determinístico `xml_document.py`,
+nunca llama a Bedrock). Razón confirmada en el repo: sus catálogos viven
+ahora en `catalogs/save/` (archivados durante la migración del DSL v4,
+ver [[catalog-dsl-v4-migration]] en memoria) — el código no encuentra
+entrada de catálogo activa para esos tipos, así que `extract_document` no
+se invoca. Esto es **temporal** (migración en curso, no arquitectura
+final): cuando esos tipos se reactiven con el DSL nuevo, su costo dejará
+de ser $0.
+
+### Tabla por tipo (ventana 29-jul → 04-ago, sólo costo Bedrock/LLM)
+
+| Tipo | docs | páginas | costo LLM | $/página |
+| --- | ---: | ---: | ---: | ---: |
+| PEDIMENTO_ADUANAL | 46 | 511 | $1.2947 | $0.0025 |
+| PEDIMENTO_ADUANAL_V1 | 1 | 2 | $0.0714 | $0.0357 |
+| CONSTANCIA_SITUACION_FISCAL | 4 | 8 | $0.0698 | $0.0087 |
+| FACTURA_HONORARIOS | 1 | 1 | $0.0138 | $0.0138 |
+| OTRO / PERMISO_CERTIFICADO_SANITARIO / CFDI_GASTO_TERCERO / FACTURA_LOGISTICA / FACTURA_AGENCIA_ADUANAL / FACTURA_HONORARIOS_XML | 48 | 75 | $0.0000 | $0.0000 |
+| **TOTAL** | **100** | **598** | **$1.4498** | **$0.0024** |
+
+El `$0.0025/página` de PEDIMENTO_ADUANAL incluye 14 ejecuciones repetidas
+del mismo PDF de 27 páginas escaneadas (declarado explícitamente como
+`PEDIMENTO_ADUANAL` al subir → 1 solo documento de 27 pág, no expediente
+segmentado — ver regla de `declared_type` en memoria `pedimentos-pipeline`),
+que amortiza el prompt entre más páginas y sale más barato por página que
+el caso de 3 páginas nativas.
+
+### Grounding contra dólares reales (Cost Explorer, sólo los servicios de este proyecto)
+
+La cuenta 886031931562 tiene **otros experimentos corriendo en paralelo**
+(el 08-03 se ve gasto de Mistral-Large-3, Nova Lite/Pro y Qwen3 bajo el
+servicio genérico "Amazon Bedrock" — $0.154 ese día, ajeno a este pipeline,
+que sólo usa `us.anthropic.claude-haiku-4-5-...`). Filtrando sólo
+`Claude Haiku 4.5 (Amazon Bedrock Edition)` + `Amazon Textract` (usage type
+`SyncTextPagesProcessed`, se excluyó `AsyncFormsPagesProcessed`/
+`AsyncTablesPagesProcessed` del 29-jul por ser Analyze API, que este
+pipeline no usa):
+
+| | Bottom-up (S3, por-documento) | Cost Explorer (dólares reales facturados) |
+| --- | ---: | ---: |
+| Bedrock Haiku 4.5 | $1.4498 | $1.9237 |
+| Textract Sync | $0.7620 (508 pág) | $0.9795 (653 pág) |
+| **Total** | **$2.2118** | **$2.9032** |
+| **$/página** (÷ 598 pág de S3) | **$0.0037** | **$0.0049** |
+
+La brecha (~31%) es real y tiene dos causas identificadas, mismo patrón
+que ya advertía la sección 2 original: (1) la llamada de
+clasificación/segmentación del PDF (antes de extraer por-documento) gasta
+tokens de Bedrock que **no** quedan registrados en ningún
+`extractionMeta.usage` por-documento — sólo se ve al comparar contra Cost
+Explorer; (2) ~145 páginas de Textract facturadas no corresponden a
+ningún resultado guardado en `results/` (reintentos/pruebas sin JSON
+final), igual que documentaba la sección 2 para el periodo anterior.
+
+**Costo/página blended actual: $0.0037–$0.0049 (antes $0.0144)** — la
+caída es real (Hallazgo 1) pero está inflada por el Hallazgo 2 (mitad de
+los tipos en $0 mientras dura la migración del catálogo); no usar este
+número blended para proyectar el costo cuando todos los tipos vuelvan a
+tener extracción activa — para eso, el número representativo es el de
+PEDIMENTO_ADUANAL nativo puro: **$0.0041/página**.
+
 ## 1. Modelo desplegado y precio real
 
 Pipeline usa `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil

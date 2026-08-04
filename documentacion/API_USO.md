@@ -136,7 +136,7 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
     "validation": { "status": "REQUIERE_REVISION", "summary": "expediente: REVIEW_REQUIRED (17 documents)" },
     "expediente": {
       "status": "REVIEW_REQUIRED",
-      "sourceFormat": "pdf",                // "pdf" | "xml" | "xlsx" | "csv" — para los últimos 3, "pages" solo trae totalPages (no hay OCR/páginas nativas que reportar)
+      "sourceFormat": "pdf",                // "pdf" | "jpg"/"jpeg"/"png" | "xml" | "xlsx" | "csv" — para xml/xlsx/csv, "pages" solo trae totalPages (no hay OCR/páginas nativas que reportar); jpg/jpeg/png sí reportan pages normal (siempre 1 página, source "textract")
       "processingMs": 45231.7,              // igual que processingSeconds pero con precisión de milisegundo (útil para xml, que suele redondear a 0.0s)
       "pages": { "totalPages": 27, "...": 0 },
       "documents": [                        // TODOS los documentos del expediente
@@ -146,6 +146,8 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
           "extractedEntities": { "NUMERO_PEDIMENTO_NORMALIZADO": "260708236001187", "...": "..." },
           "arrayCounts": { "PARTIDAS": 1, "CONTRIBUCIONES": 2 },
           "liquidacionNormalizada": { "IVA": 53, "PRV": 330, "TOTAL": 383, "...": 0 }
+          // si SOLO este documento falló (el resto del expediente sigue): "status": "PROCESSING_ERROR",
+          // "error": "mensaje truncado a 300 caracteres", "errorType": "ValueError" (nombre de la excepción Python)
         }
         // ... el resto de documentos
       ],
@@ -153,6 +155,24 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
       "tracking": { "schema": { "pipelineVersion": "1.0.0", "typeVersions": { "PEDIMENTO_ADUANAL": "2.0" } } }
     },
     "resultLocation": { "bucket": "...", "key": "results/{id}.json" }
+  }
+}
+```
+
+**Cuando falla el documento COMPLETO** (no se pudo ni leer el archivo — `documents: []`), el `expediente` trae además un bloque `error` estructurado para triage sin tener que parsear el mensaje de `warnings`:
+
+```jsonc
+{
+  "status": "PROCESSING_ERROR",
+  "reviewRequired": true,
+  "documents": [],
+  "sourceFormat": "jpeg",
+  "warnings": ["unreadable jpeg image: ..."],       // mensaje libre, siempre presente (compatibilidad hacia atrás)
+  "error": {
+    "message": "unreadable jpeg image: ...",
+    "stage": "page_load",                            // "page_load" | "parse" | "declared_type" — dónde falló
+    "type": "ClientError",                            // nombre de la clase de excepción Python
+    "sourceFormat": "jpeg"
   }
 }
 ```

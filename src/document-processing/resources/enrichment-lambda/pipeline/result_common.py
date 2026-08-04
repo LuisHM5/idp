@@ -92,8 +92,32 @@ def error_result(
     source_name: str,
     message: str,
     tracking: Optional[Dict[str, Any]] = None,
+    *,
+    stage: Optional[str] = None,
+    exception: Optional[BaseException] = None,
+    source_format: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Build the whole-document failure envelope (no document could even be
+    produced — contrast with a per-document `error`/`status: PROCESSING_ERROR`
+    inside `documents[]`, which `expediente.py::_extract_segment` sets when
+    only ONE segment of a multi-document PDF fails).
+
+    `warnings: [message]` is kept as the free-text summary every existing
+    consumer already reads; `stage`/`exception`/`source_format` — all
+    optional, so old call sites keep working unchanged — additionally build
+    a structured `error` block so a caller can triage by `error.type`/
+    `error.stage` instead of parsing prose (e.g. distinguishing "the file
+    itself couldn't be read" from "extraction/validation blew up" without
+    string-matching the message).
+    """
     tracking = tracking or build_tracking(datetime.now(timezone.utc), time.time(), None)
+    error_detail: Dict[str, Any] = {"message": message}
+    if stage:
+        error_detail["stage"] = stage
+    if exception is not None:
+        error_detail["type"] = type(exception).__name__
+    if source_format:
+        error_detail["sourceFormat"] = source_format
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
@@ -104,9 +128,11 @@ def error_result(
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
         "modelIds": used_models(),
+        **({"sourceFormat": source_format} if source_format else {}),
         "status": engine.DOC_ERROR,
         "reviewRequired": True,
         "documents": [],
         "crossDocumentChecks": [],
         "warnings": [message],
+        "error": error_detail,
     }

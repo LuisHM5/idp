@@ -18,6 +18,10 @@ Uso:
     pnpm procesar -- --file reporte.xlsx --type MI_TIPO_XLSX
         # .xlsx/.csv usan pipeline/tabular_document.py (extracción por celda/columna,
         # mismas condiciones que .xml: --type obligatorio, sin Bedrock/Textract).
+    pnpm procesar -- --file ine.jpeg --type INE
+        # .jpg/.jpeg/.png (una foto/escaneo, no un PDF) usan pipeline/expediente.py
+        # con pdf_pages.load_image_page (Textract sobre los bytes de la imagen
+        # directo, sin pypdf) — SÍ llama Bedrock/Textract, igual que un PDF.
 
 Salida por documento:
   - resumen legible en consola (tipo, estado, campos clave, warnings)
@@ -127,7 +131,7 @@ def main() -> int:
     from pipeline.tabular_document import process_tabular
     from pipeline.xml_document import process_xml
 
-    _SUPPORTED_EXTS = (".pdf", ".xml", ".xlsx", ".csv")
+    _SUPPORTED_EXTS = (".pdf", ".xml", ".xlsx", ".csv", ".jpg", ".jpeg", ".png")
 
     if args.file:
         p = Path(args.file)
@@ -140,7 +144,7 @@ def main() -> int:
             f for f in Path(args.dir).glob("*") if f.suffix.lower() in _SUPPORTED_EXTS
         )
     if not docs:
-        print(f"No encontré PDFs/XMLs/XLSX/CSVs ({args.file or args.dir})")
+        print(f"No encontré PDFs/XMLs/XLSX/CSVs/imágenes ({args.file or args.dir})")
         return 2
 
     expected_values = {"IMPORTER_RFC": args.importer} if args.importer else {}
@@ -182,12 +186,18 @@ def main() -> int:
                     source_name=doc_path.name,
                 )
             else:
+                # A field-centric type isn't necessarily backed by a PDF — a
+                # photographed/scanned ID (INE, CSF, ...) is routinely a raw
+                # JPG/PNG. process_pdf branches its page-loading internally on
+                # source_format; anything else (a real .pdf, or an unknown
+                # extension) keeps the existing pypdf path via the "pdf" default.
                 result = process_pdf(
                     doc_path.read_bytes(),
                     declared_type=args.type,
                     expected_values=expected_values,
                     model_id=args.model,
                     source_name=doc_path.name,
+                    source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
                 )
         except Exception as e:
             print(f"  {RED}ERROR: {e}{RESET}")
