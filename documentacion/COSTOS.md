@@ -1,4 +1,4 @@
-# Costos de procesamiento — Documents Validator
+te# Costos de procesamiento — Documents Validator
 
 > Generado 2026-07-28 a partir de datos reales: 14 ejecuciones guardadas en
 > `s3://<bucket-dev>/results/*.json` (27-28 jul 2026), cruzadas contra AWS
@@ -21,12 +21,12 @@ Cache read $0.11/1M, Cache write $1.375/1M, Textract sync $0.0015/pág).
 Mismo archivo de prueba que el "Caso A" original (`normal_pend.pdf`, 3
 páginas nativas, sin OCR), 18 ejecuciones nuevas:
 
-| | 2026-07-28 (antes) | 2026-08-04 (ahora) |
-| --- | --- | --- |
-| Input tokens/doc | ~20,631 | ~6,483–6,742 |
-| Output tokens/doc | ~6,454 | ~883–1,054 |
-| Costo/doc | $0.0582 | $0.0123 |
-| **Costo/página** | **$0.0194** | **$0.0041** |
+|                   | 2026-07-28 (antes) | 2026-08-04 (ahora) |
+| ----------------- | ------------------ | ------------------ |
+| Input tokens/doc  | ~20,631            | ~6,483–6,742       |
+| Output tokens/doc | ~6,454             | ~883–1,054         |
+| Costo/doc         | $0.0582            | $0.0123            |
+| **Costo/página**  | **$0.0194**        | **$0.0041**        |
 
 Caída de ~3.1x en input y ~7x en output para el **mismo PDF**. Coincide en
 el tiempo con la migración del DSL de catálogo (`catalogs/PEDIMENTO_ADUANAL.json`
@@ -54,14 +54,14 @@ de ser $0.
 
 ### Tabla por tipo (ventana 29-jul → 04-ago, sólo costo Bedrock/LLM)
 
-| Tipo | docs | páginas | costo LLM | $/página |
-| --- | ---: | ---: | ---: | ---: |
-| PEDIMENTO_ADUANAL | 46 | 511 | $1.2947 | $0.0025 |
-| PEDIMENTO_ADUANAL_V1 | 1 | 2 | $0.0714 | $0.0357 |
-| CONSTANCIA_SITUACION_FISCAL | 4 | 8 | $0.0698 | $0.0087 |
-| FACTURA_HONORARIOS | 1 | 1 | $0.0138 | $0.0138 |
-| OTRO / PERMISO_CERTIFICADO_SANITARIO / CFDI_GASTO_TERCERO / FACTURA_LOGISTICA / FACTURA_AGENCIA_ADUANAL / FACTURA_HONORARIOS_XML | 48 | 75 | $0.0000 | $0.0000 |
-| **TOTAL** | **100** | **598** | **$1.4498** | **$0.0024** |
+| Tipo                                                                                                                             |    docs | páginas |   costo LLM |    $/página |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------: | ------: | ----------: | ----------: |
+| PEDIMENTO_ADUANAL                                                                                                                |      46 |     511 |     $1.2947 |     $0.0025 |
+| PEDIMENTO_ADUANAL_V1                                                                                                             |       1 |       2 |     $0.0714 |     $0.0357 |
+| CONSTANCIA_SITUACION_FISCAL                                                                                                      |       4 |       8 |     $0.0698 |     $0.0087 |
+| FACTURA_HONORARIOS                                                                                                               |       1 |       1 |     $0.0138 |     $0.0138 |
+| OTRO / PERMISO_CERTIFICADO_SANITARIO / CFDI_GASTO_TERCERO / FACTURA_LOGISTICA / FACTURA_AGENCIA_ADUANAL / FACTURA_HONORARIOS_XML |      48 |      75 |     $0.0000 |     $0.0000 |
+| **TOTAL**                                                                                                                        | **100** | **598** | **$1.4498** | **$0.0024** |
 
 El `$0.0025/página` de PEDIMENTO_ADUANAL incluye 14 ejecuciones repetidas
 del mismo PDF de 27 páginas escaneadas (declarado explícitamente como
@@ -81,12 +81,12 @@ que sólo usa `us.anthropic.claude-haiku-4-5-...`). Filtrando sólo
 `AsyncTablesPagesProcessed` del 29-jul por ser Analyze API, que este
 pipeline no usa):
 
-| | Bottom-up (S3, por-documento) | Cost Explorer (dólares reales facturados) |
-| --- | ---: | ---: |
-| Bedrock Haiku 4.5 | $1.4498 | $1.9237 |
-| Textract Sync | $0.7620 (508 pág) | $0.9795 (653 pág) |
-| **Total** | **$2.2118** | **$2.9032** |
-| **$/página** (÷ 598 pág de S3) | **$0.0037** | **$0.0049** |
+|                                | Bottom-up (S3, por-documento) | Cost Explorer (dólares reales facturados) |
+| ------------------------------ | ----------------------------: | ----------------------------------------: |
+| Bedrock Haiku 4.5              |                       $1.4498 |                                   $1.9237 |
+| Textract Sync                  |             $0.7620 (508 pág) |                         $0.9795 (653 pág) |
+| **Total**                      |                   **$2.2118** |                               **$2.9032** |
+| **$/página** (÷ 598 pág de S3) |                   **$0.0037** |                               **$0.0049** |
 
 La brecha (~31%) es real y tiene dos causas identificadas, mismo patrón
 que ya advertía la sección 2 original: (1) la llamada de
@@ -103,6 +103,118 @@ los tipos en $0 mientras dura la migración del catálogo); no usar este
 número blended para proyectar el costo cuando todos los tipos vuelvan a
 tener extracción activa — para eso, el número representativo es el de
 PEDIMENTO_ADUANAL nativo puro: **$0.0041/página**.
+
+### Costo real por documento (Bedrock + Textract, incl. los últimos subidos)
+
+Se agregaron a la muestra 5 documentos `INE` subidos el 04-ago (imagen
+JPEG/PNG, pipeline de imagen nuevo — 2 de 5 fallaron con
+`unreadable PDF: Stream has ended unexpectedly`, sin costo porque el
+error ocurre antes de llamar a Bedrock/Textract; vale la pena revisar
+esos 2 casos si se van a subir más imágenes así). Costo real por tipo
+(Bedrock + Textract, atribuido documento-por-documento):
+
+| Tipo | n | costo/doc (avg) | páginas | $/página |
+| --- | ---: | ---: | ---: | ---: |
+| PEDIMENTO_ADUANAL (mezcla 3pág nativo + 27/50pág escaneado) | 46 | $0.0421 | 511 | $0.0038 |
+| PEDIMENTO_ADUANAL_V1 | 1 | $0.0714 | 2 | $0.0357 |
+| CONSTANCIA_SITUACION_FISCAL | 4 | $0.0175 | 8 | $0.0087 |
+| FACTURA_HONORARIOS | 1 | $0.0138 | 1 | $0.0138 |
+| **INE** (imagen, 100% OCR) | 3 | **$0.0080** | 3 | $0.0080 |
+| OTRO / CFDI_GASTO_TERCERO / FACTURA_LOGISTICA / PERMISO_CERTIFICADO_SANITARIO / FACTURA_AGENCIA_ADUANAL / FACTURA_HONORARIOS_XML | 48 | $0.0000 | 75 | $0.0000 |
+
+Casos de referencia puros (un solo tipo, sin mezclar con expedientes):
+
+- **`normal_pend.pdf`, 3 pág nativas, sin OCR:** $0.0123/doc → $0.0041/página.
+- **`pedimiento-scan.pdf`, 27 pág, 100% OCR (declarado, 1 solo doc):** ~$0.0988/doc → $0.0037/página.
+- **INE, 1 pág imagen, 100% OCR:** $0.0080/doc → $0.0080/página.
+
+## 0.1 Costo real en PROD (no dev) — recalculado 2026-08-04
+
+**Sólo existe el stack `DocumentValidationStack-Dev` desplegado** (no hay
+un stack `DocumentValidationStack` de prod corriendo en la cuenta —
+`aws cloudformation list-stacks` sólo lo muestra a él). Por eso este
+número no es "medido" como la sección 0 — es la sección 0 (que sí es
+100% real) **más** el costo fijo de lo que activa
+`src/document-validation-stack.ts` cuando `environment === "prod"`
+(línea 110, `isProd`), calculado con precios reales vía `aws-pricing` MCP.
+
+**Bedrock/Textract cuestan exactamente lo mismo en prod que en dev** — el
+precio de AWS no depende del nombre del stack. Lo que prod agrega es
+infraestructura fija adicional, gateada por `isProd` (confirmado leyendo
+el código, líneas 552-667): Lambda usa el mismo `memorySize`/`timeout` en
+ambos ambientes, así que no hay diferencia de cómputo — sólo:
+
+| Extra sólo-prod | Precio real (verificado con `aws-pricing` MCP, us-east-1) |
+| --- | --- |
+| WAFv2 Web ACL | $5.00/mes |
+| Regla rate-based (`RateLimitPerIp`) | $1.00/mes |
+| 3× AWS Managed Rule Group (`CommonRuleSet`, `KnownBadInputsRuleSet`, `AmazonIpReputationList`) | $1.00/mes **cada una** (se facturan como "Rule", no hay SKU separado para managed groups gratuitos de AWS — la sección 5 original sólo contaba 1 regla y subestimaba esto) |
+| WAF request processing | $0.60 / millón de requests (Tier0) — centavos al volumen actual |
+| API Gateway Usage Plan + API Key | $0 fijo (sólo se cobra el request, misma tarifa API Gateway de siempre) |
+| Dominio custom `idp.alsuper.com` + ACM (BYO cert) | $0 (CNAME externo, cert importado) |
+
+**Piso fijo WAF corregido: $9.00/mes** (antes se documentó ~$6/mes —
+faltaban 3 de las 4 reglas).
+
+Piso de infraestructura base (KMS + Lambda + DynamoDB + SQS + S3 +
+CloudWatch + Step Functions + API Gateway, igual en dev y prod)
+recalculado en vivo con Cost Explorer sobre los últimos 15 días
+(21-jul → 05-ago): **$2.971 / 15 días → $0.198/día → ~$5.94/mes**
+prorateado (antes $7.24/mes; bajó porque KMS tuvo menos actividad en
+esta ventana — sigue siendo el rubro a vigilar).
+
+### Piso fijo total y costo mensual realista en prod
+
+| | Piso fijo/mes |
+| --- | ---: |
+| Infra base (dev y prod) | $5.94 |
+| + WAFv2 (sólo prod) | $9.00 |
+| **Total piso fijo PROD** | **$14.94** |
+
+**Total mensual prod = $14.94 + (documentos/mes × costo/doc según tipo,
+tabla de arriba).** Ejemplo con una mezcla típica (pedimentos, el tipo
+dominante hoy, ~$0.04/doc si son escaneados o ~$0.012/doc si son
+nativos):
+
+| Documentos/mes | IA (a $0.012–$0.04/doc) | Total dev (+$5.94) | Total prod (+$14.94) |
+| -------------- | ------------------------ | ------------------- | ---------------------- |
+| 50 | $0.60–$2.00 | $6.54–$7.94 | $15.54–$16.94 |
+| 200 | $2.40–$8.00 | $8.34–$13.94 | $17.34–$22.94 |
+| 1,000 | $12.00–$40.00 | $17.94–$45.94 | $26.94–$54.94 |
+
+A los volúmenes actuales de prueba, **el piso fijo de prod ($14.94) domina
+el costo total** — el WAF + infraestructura pesan más que el procesamiento
+de documentos en sí hasta llegar a varios cientos de documentos/mes. Esto
+es distinto de dev, donde no hay WAF y el piso es ~$9/mes menor.
+
+### $/página TOTAL en prod (variable + piso fijo amortizado)
+
+Las secciones anteriores dan el costo variable por página ($0.0037–$0.0049)
+y el piso fijo por mes ($14.94) por separado. Para un solo número de
+"$/página real en prod" hace falta un volumen — el piso fijo no es por
+página, es por tiempo, así que se reparte distinto según cuánto proceses.
+
+**A tu ritmo real observado** (601 páginas en los 7 días de la ventana
+29-jul→04-ago = ~86 páginas/día ≈ 2,576 páginas/mes si se mantiene):
+
+- Piso fijo de esos 7 días: $14.94/mes ÷ 30 × 7 = $3.486
+- Variable real (bottom-up, 601 páginas): $2.2357
+- Total: $5.7217 / 601 páginas = **$0.0095/página** (con el ajuste de
+  Cost Explorer de la sección 0 en vez del bottom-up: **$0.0107/página**)
+
+**El piso fijo es ~61% del costo por página a este ritmo** — pesa más que
+el procesamiento de IA en sí. Sensibilidad por volumen:
+
+| Páginas/mes | Fijo/página | Variable/página | **Total/página** |
+| ----------- | -----------: | ---------------: | -----------------: |
+| 320 (~50 docs, bajo volumen) | $0.0467 | $0.0037 | **$0.0504** |
+| **2,576 (ritmo real actual)** | **$0.0058** | **$0.0037** | **$0.0095** |
+| 6,400 (~1,000 docs) | $0.0023 | $0.0037 | **$0.0061** |
+| 32,000 (~5,000 docs) | $0.0005 | $0.0037 | **$0.0042** |
+
+A partir de unos pocos miles de páginas/mes el costo converge al variable
+puro porque el piso fijo se vuelve ruido — igual que en dev (sección 6),
+sólo que en prod el piso de partida es $9/mes más alto por el WAF.
 
 ## 1. Modelo desplegado y precio real
 
@@ -229,39 +341,83 @@ costo por página en prod es esencialmente el mismo de la sección 2
 
 ## 6. Resumen — desglose x página / x documento / x mes
 
-### Las tres unidades, de lo medido
+> Actualizado 2026-08-04 (secciones 0/0.1) — reemplaza los números de la
+> primera versión (2026-07-28), que quedan como referencia histórica del
+> "antes" en el Hallazgo 1.
 
-| Unidad                                                   | Costo (solo IA: Bedrock + Textract)      |
-| -------------------------------------------------------- | ---------------------------------------- |
-| **Por página**                                           | $0.010–$0.019 (blended real **$0.0144**) |
-| **Por documento** (con el promedio real de 6.4 pág/doc)  | 6.4 × $0.0144 ≈ **$0.092/doc**           |
-| **Por documento típico de 3 páginas** (mediana, sin OCR) | **$0.058/doc**                           |
+### Las tres unidades, de lo medido ahora
+
+| Unidad | Costo (Bedrock + Textract) |
+| --- | --- |
+| **Por página, blended real actual** | **$0.0037–$0.0049** (antes $0.0144 — ver Hallazgo 1; inflado a la baja por el Hallazgo 2 mientras dura la migración de catálogo) |
+| **Por página, pedimento nativo puro** (el tipo que domina el volumen real) | **$0.0041** |
+| Por documento — nativo 3 pág, sin OCR | **$0.0123** |
+| Por documento — escaneado 27 pág, 100% OCR | **$0.0988** |
+| Por documento — INE, 1 pág imagen, 100% OCR | **$0.0080** |
+| Por documento — tipos sin catálogo activo hoy (OTRO, CFDI_GASTO_TERCERO, etc.) | **$0.0000** (temporal) |
 
 ### Piso fijo mensual (no depende de cuántos documentos proceses)
 
-| Ambiente | Piso fijo/mes   | De qué sale                                                                                                       |
-| -------- | --------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Dev      | **~$7.24/mes**  | Infraestructura de soporte (sección 4: $3.38 medidos en 14 días → prorateado a 30)                                |
-| Prod     | **~$13.24/mes** | Lo mismo de dev **+ $6/mes de WAFv2** (Web ACL $5 + 1 regla $1) — sin contar el managed rule group, no confirmado |
+| Ambiente | Piso fijo/mes | De qué sale |
+| --- | --- | --- |
+| Dev | **~$5.94/mes** | Infraestructura de soporte, recalculada en vivo sobre 15 días reales (21-jul→05-ago) |
+| Prod | **~$14.94/mes** | Lo mismo de dev **+ $9/mes de WAFv2** (Web ACL $5 + **4** reglas × $1 — 1 rate-based + **3 managed rule groups**, que la versión anterior de este doc no contaba) |
 
-### Total a pagar por mes = piso fijo + (documentos/mes × $0.092/doc)
+### $/página TOTAL en prod (variable + piso fijo amortizado) — el número final
 
-Ejemplos con distintos volúmenes (ajusta `documentos/mes` a tu caso real —
-esto es aritmética sobre los números medidos, no un dato nuevo):
+El piso fijo no es por página, es por tiempo: se reparte distinto según
+cuánto proceses. A tu ritmo real observado (~2,576 páginas/mes):
+**$0.0095–$0.0107/página** (~61% de eso es el piso fijo, no el
+procesamiento). Detalle completo en la sección 0.1.
 
-| Documentos/mes | Páginas/mes (× 6.4) | IA (Bedrock+Textract) | Total dev (+ $7.24 piso) | Total prod (+ $13.24 piso) |
-| -------------- | ------------------- | --------------------- | ------------------------ | -------------------------- |
-| 50             | 320                 | $4.61                 | **$11.85**               | **$17.85**                 |
-| 200            | 1,280               | $18.43                | **$25.67**               | **$31.67**                 |
-| 1,000          | 6,400               | $92.16                | **$99.40**               | **$105.40**                |
-| 5,000          | 32,000              | $460.80               | **$468.04**              | **$474.04**                |
-
-A bajo volumen el piso fijo (KMS + WAF) pesa proporcionalmente más; a partir
-de ~1,000 documentos/mes el costo se vuelve casi puramente variable (~$0.092/doc).
+| Páginas/mes | Total/página en prod |
+| --- | ---: |
+| 320 (bajo volumen) | $0.0504 |
+| **2,576 (ritmo real actual)** | **$0.0095** |
+| 6,400 | $0.0061 |
+| 32,000 | $0.0042 |
 
 ### Puntos clave
 
-- Costo real de IA: **$0.0144/página**, **$0.092/documento** (promedio real 6.4 pág/doc).
-- Piso fijo: **$7.24/mes en dev**, **$13.24/mes en prod** — no escala con volumen.
-- KMS es el rubro de infra a vigilar (dominó el piso fijo de dev).
-- Si cambiaras a Sonnet 4.5/Opus, el componente variable ($/página, $/doc) sube ~3x/~5x — el piso fijo no cambia.
+- Costo real de IA **hoy**: **$0.0037–$0.0049/página** blended (antes
+  $0.0144/página, caída real de ~3-4x — Hallazgo 1). El número puro del
+  pedimento, que domina el volumen, es **$0.0041/página**.
+- La mitad de los tipos clasificados hoy cuestan **$0 en LLM** porque su
+  catálogo está archivado en `catalogs/save/` durante la migración del
+  DSL v4 — es temporal, no una optimización permanente (Hallazgo 2).
+- Piso fijo: **$5.94/mes en dev**, **$14.94/mes en prod** — no escala con
+  volumen (corregido: el WAF de prod son 4 reglas = $9/mes, no $6/mes).
+- **$/página TOTAL en prod, a tu ritmo real (~2,576 pág/mes): $0.0095–$0.0107**
+  — el piso fijo pesa más que el procesamiento de IA hasta varios miles
+  de páginas/mes.
+- KMS sigue siendo el rubro de infra a vigilar (dominó el piso fijo de
+  dev en ambas mediciones, jul y ago).
+- Si cambiaras a Sonnet 4.5/Opus, el componente variable ($/página, $/doc)
+  sube ~3x/~5x — el piso fijo no cambia.
+
+---
+
+### Desglose del costo total por página en prod
+
+| Componente | $/página |
+| --- | ---: |
+| IA + Textract (Bedrock + OCR) | $0.0037–$0.0049 |
+| Resto de infra (DynamoDB, S3, Lambda, API Gateway, KMS, SQS, CloudWatch, Step Functions) amortizado a tu ritmo | ~$0.0035 |
+| WAF (solo prod) amortizado a tu ritmo | ~$0.0023 |
+| **Total** | **$0.0095–$0.0107** |
+
+## COSTO TOTAL REAL POR PÁGINA EN PROD
+
+# **$0.0095 – $0.0107 / página**
+
+*(a tu ritmo real de uso, ~2,576 páginas/mes — sección 0.1)*
+
+Este es el único número que cuenta **todo**: Bedrock (IA) + Textract (OCR)
++ DynamoDB + S3 + Lambda + API Gateway + KMS + SQS + CloudWatch +
+Step Functions + WAFv2 (piso fijo de prod). No es sólo IA — el $0.0037–
+$0.0049/página de las secciones anteriores es nada más Bedrock+Textract;
+el resto de la infraestructura (~61% del costo a este ritmo) se suma acá.
+
+Baja si procesas más volumen al mes (el piso fijo se diluye — ver tabla de
+sensibilidad arriba); sube si procesas menos. **$0.0095–$0.0107/página es
+el número real a tu ritmo actual, no una proyección.**
