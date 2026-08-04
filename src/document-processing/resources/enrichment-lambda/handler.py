@@ -201,6 +201,19 @@ def _extract_s3_pointer(event: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _declared_file_type(event: Dict[str, Any]) -> Optional[str]:
+    """Explicit file type from `content.fileType` (set by the SQS consumer —
+    see `patches/default-sqs-consumer-index.py` — as the single source of
+    truth instead of every downstream Lambda re-deriving it from the S3 key's
+    extension independently). Preferred when present; the caller falls back
+    to parsing the key itself for events that predate this field (already
+    in-flight during a deploy) or arrive from a different ingestion path.
+    """
+    content = event.get("content") or {}
+    file_type = content.get("fileType") if isinstance(content, dict) else None
+    return str(file_type).strip().lower() if file_type else None
+
+
 def _declared_type_from_key(key: str) -> Optional[str]:
     """User-declared document type from the S3 layout, or None.
 
@@ -441,7 +454,7 @@ def _run_expediente(
     # naming convention for humans, not what the code keys off. A structured
     # file with no declared type fails fast inside its pipeline (there is no
     # vision-based auto-classification for raw XML/XLSX/CSV).
-    ext = key.rsplit(".", 1)[-1].lower() if "." in key else ""
+    ext = _declared_file_type(event) or (key.rsplit(".", 1)[-1].lower() if "." in key else "")
     if ext == "xml":
         from pipeline.xml_document import process_xml  # deferred: rarely-hit path
 

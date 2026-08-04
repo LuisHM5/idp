@@ -42,6 +42,8 @@ Upload API → S3 (raw/) → Step Functions (blueprint)
 
 The Step Functions state machine itself comes from `@cdklabs/cdk-appmod-catalog-blueprints`; this repo only supplies the enrichment Lambda and the upload/query Lambdas. See `documentacion/FLUJO_EJECUCION.md` for the full trace with file:line references.
 
+`raw/{TYPE?}/{uuid}/file` is only where the object lives *during* processing — the blueprint (`QueuedS3Adapter`) moves it to `processed/{documentId}/{filename}` on any execution that completes without an exception (including a RECHAZADO validation outcome — that's a business result, not an infra failure) or to `failed/{documentId}/{filename}` only when the execution itself throws/times out. `documentId` here is `{uuid}-{timestamp}` (see `patches/default-sqs-consumer-index.py`), not the bare uuid the Upload API returned — `GET /documents/{id}` matches it by prefix. Code/docs that need to read the original bytes after the fact must account for this move; see `documentacion/APIS_INTEGRACION.md` §1.1/§1.5/§2.3.
+
 Key pieces:
 
 - `bin/app.ts` — CDK entry point. Reads `-c env=dev|prod` (default dev), loads `.env.dev`/`.env.production`, instantiates the stack.

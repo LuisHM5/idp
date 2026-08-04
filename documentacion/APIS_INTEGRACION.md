@@ -34,7 +34,7 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 | 2 | `GET` | `/documents/{id}` | **Consultar** el resultado completo de un documento ya procesado, por su id | `query-lambda/index.mjs` |
 | 3 | `GET` | `/documents?docType=&field=&value=` | **Buscar/listar** documentos por tipo o por cualquier campo extraído | `query-lambda/index.mjs` |
 
-No existe un cuarto endpoint de **descarga del archivo original** (el PDF/imagen que se subió) — se verificó que ningún endpoint devuelve o transmite esos bytes de vuelta al cliente. Lo único descargable vía API es el **resultado de la extracción en JSON**. Si un sistema externo necesita recuperar el archivo original tal cual se subió, hoy solo es posible leyéndolo directo de S3 (`raw/...`) con credenciales AWS — no hay ruta HTTP para eso. Ver nota en la sección 1.5.
+No existe un cuarto endpoint de **descarga del archivo original** (el PDF/imagen que se subió) — se verificó que ningún endpoint devuelve o transmite esos bytes de vuelta al cliente. Lo único descargable vía API es el **resultado de la extracción en JSON**. Si un sistema externo necesita recuperar el archivo original tal cual se subió, hoy solo es posible leyéndolo directo de S3 con credenciales AWS — no hay ruta HTTP para eso — **pero OJO: `raw/...` deja de existir en cuanto termina el workflow.** El blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). Mientras el documento está `PROCESSING` en DynamoDB (`WorkflowStatus`) todavía puede leerse de `raw/{TIPO?}/{uuid}/archivo`; una vez que el estado es terminal, hay que leer de `processed/`/`failed/` con el `documentId` real (el que devolvió `POST /upload` más el sufijo `-{timestamp}` que agrega el consumer — ver la respuesta de `GET /documents/{id}` para el id exacto), no de la key original de la subida. Ver nota en la sección 1.5.
 
 ### 1.2 `POST /upload` — Iniciar el proceso de subida
 
@@ -74,7 +74,7 @@ Dos filtros combinables (al menos uno es obligatorio): `docType` (indexado vía 
 
 Detalle completo: [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md).
 
-**Sobre la descarga del archivo original**: si un sistema de integración necesita el archivo tal cual se subió (no el JSON de resultado), hoy no hay API para eso — sería un endpoint nuevo (`GET /documents/{id}/file` con una URL prefirmada de `GetObjectCommand` sobre `raw/{TIPO}/{uuid}/archivo`, patrón simétrico al de subida). No implementado; queda como dependencia a resolver si el requerimiento de integración lo necesita.
+**Sobre la descarga del archivo original**: si un sistema de integración necesita el archivo tal cual se subió (no el JSON de resultado), hoy no hay API para eso — sería un endpoint nuevo (`GET /documents/{id}/file` con una URL prefirmada de `GetObjectCommand`, patrón simétrico al de subida). No implementado; queda como dependencia a resolver si el requerimiento de integración lo necesita. Ojo al implementarlo: el object key NO es estático — mientras `WorkflowStatus` es `PROCESSING` el archivo vive en `raw/{TIPO?}/{uuid}/archivo` (la key original de la subida), pero al terminar la ejecución el blueprint lo mueve a `processed/{documentId}/{filename}` (o `failed/{documentId}/{filename}` si la propia ejecución falló) — ver la nota de la sección 1.1. El endpoint tendría que resolver primero cuál de las dos keys existe (o guardar la key final en DynamoDB/el resultado) antes de presignar.
 
 ---
 
@@ -124,6 +124,8 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 | `PutObject` | `enrichment-lambda/handler.py` | Escribe el resultado completo a `results/{id}.json` |
 | `GetObject` | `query-lambda/index.mjs` | Lee `results/{id}.json` para responder `?full=1` |
 | `DownloadFile` (transfer manager) | Código propio — `model-invoke-lambda/index.py` | Descarga el archivo para la llamada de visión del flujo estándar |
+| `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createSuccessChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Al terminar la ejecución SIN excepción (incluida una validación RECHAZADA — es un resultado de negocio, no una falla): mueve `raw/{TIPO?}/{uuid}/archivo` → `processed/{documentId}/{filename}`. Código propio no lo invoca directamente. |
+| `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createFailedChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Mismo movimiento pero a `failed/{documentId}/{filename}`, solo cuando la propia ejecución de Step Functions revienta (excepción no capturada, timeout) — no cuando el documento simplemente sale RECHAZADO. |
 
 ### 2.4 Amazon DynamoDB — catálogo y tracking
 

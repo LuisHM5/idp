@@ -74,25 +74,34 @@ def handler(event, context):
                     # auto-classified raw/{uuid}/{file} — one extra path segment.
                     # The uuid segment immediately before the filename is always
                     # the id the Upload API returned to the caller, regardless of
-                    # that optional TYPE folder, so anchor documentId/filename on
-                    # THAT segment. Without this, a manually classified upload got
-                    # a documentId prefixed by TYPE instead of by the uuid, and
-                    # GET /documents/{id}'s prefix lookup could never find it even
-                    # though the workflow completed and wrote EnrichmentResult.
+                    # that optional TYPE folder, so anchor documentId on THAT
+                    # segment ALONE — not on uuid+filename. Without anchoring on
+                    # the uuid, a manually classified upload got a documentId
+                    # prefixed by TYPE instead of by the uuid, and GET /documents/{id}'s
+                    # prefix lookup could never find it even though the workflow
+                    # completed and wrote EnrichmentResult. Concatenating the
+                    # filename on top of that (the previous shape here) was a
+                    # separate, smaller wart: it made documentId noisy/harder to
+                    # read for no benefit — uniqueness already comes from the uuid
+                    # + timestamp, the filename adds nothing but clutter — and
+                    # forced `filename` (used verbatim by the blueprint's own
+                    # raw->processed/failed move, see queued-s3-adapter.js
+                    # createSuccessChain/createFailedChain) into the same
+                    # "uuid/original.ext" shape, so the archived object ended up
+                    # double-nested as processed/{documentId}/{uuid}/original.ext
+                    # instead of the expected processed/{documentId}/original.ext.
                     key_no_prefix = key.replace(raw_prefix, '', 1)  # Remove raw/ prefix
                     key_parts = key_no_prefix.split('/')
-                    id_source = (
-                        f'{key_parts[-2]}/{key_parts[-1]}'
-                        if len(key_parts) >= 2
-                        else key_no_prefix
-                    )
+                    uuid_segment = key_parts[-2] if len(key_parts) >= 2 else key_no_prefix.rsplit('.', 1)[0]
+                    filename = key_parts[-1]  # bare original filename, e.g. "bad-pedimento.pdf"
 
-                    document_id = id_source.rsplit('.', 1)[0]  # Remove file extension
-                    document_id = re.sub(r'[^a-zA-Z0-9-]', '-', document_id) + '-' + str(timestamp)
+                    document_id = re.sub(r'[^a-zA-Z0-9-]', '-', uuid_segment) + '-' + str(timestamp)
 
-                    # Extract filename from key (same id_source, so it matches
-                    # documentId's shape for the raw/processed/failed moves)
-                    filename = id_source
+                    # Explicit file type alongside location/bucket/key/filename,
+                    # so downstream consumers (enrichment Lambda, model-invoke
+                    # Lambda) don't each independently re-derive it by parsing
+                    # the key's extension. "" when the filename has none.
+                    file_type = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
 
                     # Prepare Step Functions execution input
                     step_function_input = {
@@ -102,7 +111,8 @@ def handler(event, context):
                             'location': 's3',
                             'bucket': bucket,
                             'key': key,
-                            'filename': filename
+                            'filename': filename,
+                            'fileType': file_type
                         },
                         'eventTime': event_time,
                         'eventName': event_name,
