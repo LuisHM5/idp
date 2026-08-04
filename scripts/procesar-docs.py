@@ -182,11 +182,18 @@ def main() -> int:
             f"{elapsed_wall * 1000:.0f}ms" if elapsed_wall < 1
             else f"{elapsed_wall:.0f}s"
         )
-        print(
-            f"  Estado: {color}{status}{RESET}  |  {pages.get('totalPages')} páginas "
-            f"({pages.get('nativePages', '-')} digitales, {pages.get('ocrPages')} OCR)  |  "
-            f"{duration}"
-        )
+        if result.get("sourceFormat") == "xml":
+            # "N páginas (M digitales, K OCR)" is PDF vocabulary (see
+            # pdf_pages.pages_summary) that doesn't apply to a single parsed
+            # XML document — showing it anyway just prints a bare "-" where
+            # nativePages would be.
+            source_note = "XML (extracción por XPath, sin Bedrock/Textract)"
+        else:
+            source_note = (
+                f"{pages.get('totalPages')} páginas "
+                f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
+            )
+        print(f"  Estado: {color}{status}{RESET}  |  {source_note}  |  {duration}")
 
         detected = []
         for doc in result.get("documents", []):

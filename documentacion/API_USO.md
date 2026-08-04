@@ -136,6 +136,8 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
     "validation": { "status": "REQUIERE_REVISION", "summary": "expediente: REVIEW_REQUIRED (17 documents)" },
     "expediente": {
       "status": "REVIEW_REQUIRED",
+      "sourceFormat": "pdf",                // "pdf" o "xml" — para xml, "pages" solo trae totalPages (no hay OCR/páginas nativas que reportar)
+      "processingMs": 45231.7,              // igual que processingSeconds pero con precisión de milisegundo (útil para xml, que suele redondear a 0.0s)
       "pages": { "totalPages": 27, "...": 0 },
       "documents": [                        // TODOS los documentos del expediente
         {

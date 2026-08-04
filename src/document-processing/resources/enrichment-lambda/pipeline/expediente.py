@@ -305,6 +305,7 @@ def process_pdf(
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
         "modelIds": used_models(),
+        "sourceFormat": "pdf",
         "pages": pages_summary(pages),
         "status": overall,
         "reviewRequired": truncated or overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),

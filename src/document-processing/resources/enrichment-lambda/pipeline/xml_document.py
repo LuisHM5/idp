@@ -255,7 +255,13 @@ def process_xml(
         "processingMs": tracking["processingMs"],
         "tracking": tracking,
         "modelIds": {},
-        "pages": {"totalPages": 1, "ocrPages": 0},
+        # A "pages" breakdown (native/OCR) is PDF vocabulary that doesn't map
+        # onto a single parsed XML document — sourceFormat lets any consumer
+        # (console printers, the API) render/branch appropriately instead of
+        # forcing PDF-shaped fields (nativePages, ocrPages, emptyPages) onto
+        # something that was never paginated or scanned.
+        "sourceFormat": "xml",
+        "pages": {"totalPages": 1},
         "status": status,
         "reviewRequired": status in (engine.DOC_REVIEW, engine.DOC_PARTIAL),
         "documents": [doc],

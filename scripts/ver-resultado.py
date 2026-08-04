@@ -207,9 +207,17 @@ def main() -> int:
         # calls Bedrock/Textract) — processingMs keeps that visible.
         ms = exp.get("processingMs")
         duration = f"{ms:.0f}ms" if isinstance(ms, (int, float)) and ms < 1000 else f"{exp.get('processingSeconds', '?')}s"
+        if exp.get("sourceFormat") == "xml":
+            # "N páginas (M digitales, K OCR)" is PDF vocabulary that doesn't
+            # apply to a single parsed XML document.
+            source_note = "XML (extracción por XPath, sin Bedrock/Textract)"
+        else:
+            source_note = (
+                f"{pages.get('totalPages')} páginas "
+                f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
+            )
         print(f"Expediente: {STATUS_COLOR.get(exp.get('status'), '')}{exp.get('status')}{RESET}  "
-              f"| {pages.get('totalPages')} páginas ({pages.get('nativePages')} digitales, "
-              f"{pages.get('ocrPages')} OCR) | {duration}")
+              f"| {source_note} | {duration}")
         for doc in exp.get("documents", []):
             print_document(doc)
         print()
