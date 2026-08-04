@@ -692,6 +692,7 @@ def resolve_field_tree(
     type_entry: TypeRegistryEntry,
     ctx: Optional[ValidationContext] = None,
     computed_field_names: Optional[set] = None,
+    default_source: str = "MODEL_EXTRACTION",
 ) -> Tuple[Dict[str, Any], List[RuleCheck]]:
     """Field-centric DSL (schema_version 4.x) equivalent of
     `resolve_fields()` — walks `type_entry.field_tree` and returns ONE
@@ -709,7 +710,10 @@ def resolve_field_tree(
     changed the value, or when the field's whole subtree belongs to
     `computed_field_names` (deterministic post-extraction fields such as
     LIQUIDACION_NORMALIZADA — see FieldSpec.computed); otherwise
-    "MODEL_EXTRACTION".
+    `default_source`. Callers whose entity_map didn't come from the model
+    (e.g. `pipeline.xml_document`, which parses deterministic XML source data)
+    pass their own label here so the output honestly describes where a value
+    came from instead of implying an LLM extracted it.
     """
     ctx = ctx or ValidationContext()
     computed_field_names = computed_field_names or set()
@@ -756,7 +760,7 @@ def resolve_field_tree(
             normalized = normalize_field(leaf_name, value)
             if normalized != value:
                 return normalized, "NORMALIZED"
-        return value, "MODEL_EXTRACTION"
+        return value, default_source
 
     def walk_node(spec: Any, path: str, value: Any, computed: bool, fallback_conf: Optional[float]) -> Dict[str, Any]:
         computed = computed or spec.computed

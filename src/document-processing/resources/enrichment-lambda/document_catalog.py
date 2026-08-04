@@ -154,6 +154,13 @@ class TypeRegistryEntry:
     # "slice"?}}}. None (the default) means the type has no QR to recover
     # from; nothing in the generic pipeline is coupled to which type this is.
     qr_recovery: Optional[Dict[str, Any]] = None
+    # XML namespace prefix -> URI map, used by pipeline/xml_document.py to
+    # resolve each field's `xpath`/`item_xpath` (a field-centric-DSL field
+    # extra, kept in FieldSpec.params like any other — see catalogs/README.md).
+    # Applies to any type whose fields declare an `xpath`, not just ones named
+    # with an `_XML` suffix (that suffix is a file-naming convention only,
+    # detection of which pipeline runs is by the uploaded file's extension).
+    namespaces: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -304,6 +311,7 @@ def _parse_entry(
             pipeline=data.get("pipeline"),
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
             qr_recovery=data.get("qr_recovery"),
+            namespaces=data.get("namespaces", {}) or {},
         )
 
     fields: List[str] = []

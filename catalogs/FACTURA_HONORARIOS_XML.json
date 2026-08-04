@@ -1,0 +1,344 @@
+{
+  "FACTURA_HONORARIOS_XML": {
+    "schema_version": "1.0.0",
+    "display_name": "Factura de Honorarios (XML CFDI)",
+    "aliases": [
+      "cfdi honorarios xml",
+      "xml factura honorarios",
+      "cfdi de honorarios (xml)"
+    ],
+    "description": "CFDI 4.0 nativo (XML timbrado por el SAT) de honorarios por servicios profesionales o por despacho aduanero. Mismo documento fiscal que FACTURA_HONORARIOS, pero leido directamente del XML en vez de su representacion impresa: solo trae los datos fiscales del comprobante (emisor, receptor, conceptos, impuestos, timbrado) y no las secciones que solo existen en el PDF de cortesia del agente aduanal (pagos por cuenta del cliente, total global, saldo a pagar, QR).",
+    "business_destination": "FACTURA_HONORARIOS",
+    "min_confidence": 0.70,
+    "namespaces": {
+      "cfdi": "http://www.sat.gob.mx/cfd/4",
+      "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital"
+    },
+    "fields": {
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Version",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "La factura debe corresponder a CFDI versión 4.0"
+          }
+        ]
+      },
+      "SERIE": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Serie",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Folio",
+        "validation": []
+      },
+      "UUID": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@UUID",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "El UUID del CFDI tiene un formato inválido"
+          }
+        ]
+      },
+      "FECHA_EMISION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Fecha",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de emisión debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "FECHA_TIMBRADO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@FechaTimbrado",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de timbrado debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "CERTIFICADO_EMISOR": {
+        "type": "string",
+        "required": false,
+        "xpath": "@NoCertificado",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{20}$",
+            "message": "El certificado del emisor debe contener 20 dígitos"
+          }
+        ]
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "xpath": "@TipoDeComprobante",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[IEPNT]$",
+            "message": "El tipo de comprobante no es una clave CFDI válida"
+          }
+        ]
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": true,
+        "xpath": "@FormaPago",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La forma de pago debe contener dos dígitos"
+          }
+        ]
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": true,
+        "xpath": "@MetodoPago",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(PUE|PPD)$",
+            "message": "El método de pago debe ser PUE o PPD"
+          }
+        ]
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Moneda",
+        "validation": []
+      },
+      "TIPO_CAMBIO": {
+        "type": "number",
+        "required": false,
+        "xpath": "@TipoCambio",
+        "validation": []
+      },
+      "LUGAR_EXPEDICION": {
+        "type": "string",
+        "required": false,
+        "xpath": "@LugarExpedicion",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El lugar de expedición debe ser un código postal de cinco dígitos"
+          }
+        ]
+      },
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del emisor tiene un formato inválido"
+          }
+        ]
+      },
+      "EMISOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Nombre",
+        "validation": []
+      },
+      "EMISOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@RegimenFiscal",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{3}$",
+            "message": "El régimen fiscal del emisor debe contener tres dígitos"
+          }
+        ]
+      },
+      "RECEPTOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del receptor tiene un formato inválido"
+          },
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC receptor no corresponde a la empresa configurada"
+          }
+        ]
+      },
+      "RECEPTOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Nombre",
+        "validation": []
+      },
+      "RECEPTOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@RegimenFiscalReceptor",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{3}$",
+            "message": "El régimen fiscal del receptor debe contener tres dígitos"
+          }
+        ]
+      },
+      "RECEPTOR_CODIGO_POSTAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@DomicilioFiscalReceptor",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El código postal del receptor debe contener cinco dígitos"
+          }
+        ]
+      },
+      "USO_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@UsoCFDI",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{3}$",
+            "message": "El uso CFDI debe contener tres caracteres"
+          }
+        ]
+      },
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": ".//cfdi:Conceptos/cfdi:Concepto",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La factura debe contener al menos un concepto de honorarios"
+          }
+        ],
+        "item_fields": {
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Cantidad",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveUnidad",
+            "validation": []
+          },
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveProdServ",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{8}$",
+                "message": "La clave de producto o servicio debe contener ocho dígitos"
+              }
+            ]
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": []
+          },
+          "PRECIO_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "xpath": "@ValorUnitario",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          }
+        }
+      },
+      "SUBTOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@SubTotal",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El subtotal del CFDI no coincide con la suma de conceptos"
+          }
+        ]
+      },
+      "IVA_TRASLADADO": {
+        "type": "number",
+        "required": true,
+        "default": 0,
+        "xpath": "cfdi:Impuestos/@TotalImpuestosTrasladados",
+        "validation": []
+      },
+      "ISR_RETENIDO": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "cfdi:Impuestos/cfdi:Retenciones/cfdi:Retencion[@Impuesto='001']/@Importe",
+        "validation": []
+      },
+      "IVA_RETENIDO": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "cfdi:Impuestos/cfdi:Retenciones/cfdi:Retencion[@Impuesto='002']/@Importe",
+        "validation": []
+      },
+      "TOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@Total",
+        "validation": [
+          {
+            "rule_type": "cfdi_total",
+            "formula": "SUBTOTAL_CFDI + IVA_TRASLADADO - ISR_RETENIDO - IVA_RETENIDO",
+            "tolerance": 0.02,
+            "message": "El total fiscal del CFDI no coincide con subtotal, IVA y retenciones"
+          }
+        ]
+      }
+    },
+    "cross_field_validation": []
+  }
+}

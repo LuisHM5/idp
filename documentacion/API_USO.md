@@ -47,7 +47,7 @@ Dispara el pipeline de clasificación → extracción → validación. Dos modos
 **Body:**
 ```jsonc
 {
-  "fileName": "pedimento.pdf",          // requerido; extensión: pdf|jpg|jpeg|png
+  "fileName": "pedimento.pdf",          // requerido; extensión: pdf|jpg|jpeg|png|xml
   "contentBase64": "JVBERi0xLjc...",    // el archivo en base64
   "documentType": "PEDIMENTO_ADUANAL",  // opcional; si se omite, Bedrock clasifica
   "modelId": "amazon.nova-pro-v1:0",    // opcional; SOLO DEV — ver nota abajo
@@ -107,6 +107,7 @@ El archivo nunca pasa por API Gateway ni por el Lambda — el `PUT` va directo a
 ### Notas comunes a ambos modos
 
 - Si mandas `documentType`, se salta la clasificación automática **y se HONRA tu tipo**: el documento se trata como ese tipo único y **no se re-clasifica ni se segmenta** en otro (p. ej. un PDF de varias páginas declarado `PEDIMENTO_ADUANAL` se procesa como un solo pedimento, no como `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). Si quieres que el sistema segmente/clasifique solo, **omite** `documentType`. Para forzar la segmentación multi-documento explícitamente, declara `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
+- **Archivos `.xml`:** para tipos con esquema XML (sufijo `_XML`, p. ej. `FACTURA_HONORARIOS_XML`) `documentType` es **obligatorio** — no existe clasificación automática por visión sobre XML crudo, así que un `.xml` subido sin tipo declarado falla con un error explícito. A cambio, el documento se extrae **determinísticamente por XPath** (sin llamar a Bedrock en ningún paso): más rápido y sin costo de modelo. Ver `catalogs/README.md` → "Tipos con fuente XML".
 - **`modelId` (solo dev):** procesa **ese documento** con el modelo de Bedrock que indiques, sin redeploy — útil para comparar modelos sobre el mismo archivo. Aplica a todas las fases y gana sobre las variables `BEDROCK_*_MODEL_ID`; el resultado reporta en `modelIds` qué modelo corrió en cada fase. **El stack de prod lo ignora a propósito** (no define `ALLOW_MODEL_OVERRIDE`): el valor viene de quien sube el archivo, y en prod dejaría que un tercero eligiera el modelo —y con él el costo y la calidad de extracción— sobre documentos ajenos. Con `pnpm enviar`: `--model amazon.nova-pro-v1:0`.
 - **Tope de páginas (pipeline de expedientes/pedimentos):** un PDF de más de 50 páginas (`MAX_PAGES`, configurable) se **trunca a las primeras 50** antes de correr Textract/Bedrock, para acotar el costo de un documento inesperadamente grande. El PDF original completo **no se toca** — sigue intacto en S3 — pero el resultado solo cubre las páginas procesadas, queda marcado `reviewRequired: true` con un warning explícito, y un campo `truncated: {originalPages, processedPages}`. Si necesitas las páginas restantes, hay que reprocesar manualmente.
 - El resultado final se publica en **EventBridge** (broker `idp-broker`, source `document-validation-pipeline`) y se persiste (ver GET abajo).

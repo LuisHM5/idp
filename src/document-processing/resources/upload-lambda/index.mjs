@@ -22,7 +22,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const s3 = new S3Client({});
 const BUCKET = process.env.DOCUMENT_BUCKET;
-const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf"]);
+const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml"]);
 // How long a presigned upload URL stays valid. Generous enough for a slow
 // connection uploading a large file without leaving it usable indefinitely.
 const PRESIGN_EXPIRY_SECONDS = 15 * 60;
@@ -78,7 +78,7 @@ function validateCommon(fileName, documentType) {
       error: errorResponse(
         400,
         "INVALID_FORMAT",
-        `File format '${ext || "unknown"}' is not supported. Allowed: jpg, jpeg, png, pdf`
+        `File format '${ext || "unknown"}' is not supported. Allowed: jpg, jpeg, png, pdf, xml`
       ),
     };
   }
@@ -246,6 +246,7 @@ function getMimeType(ext) {
     jpeg: "image/jpeg",
     png: "image/png",
     pdf: "application/pdf",
+    xml: "application/xml",
   };
   return mimeMap[ext] || "application/octet-stream";
 }

@@ -141,6 +141,80 @@ como en el DSL viejo.
   campo como `computed` sin que algo en `pipeline/` lo llene explícitamente,
   simplemente sale vacío/null, nadie lo calcula solo.
 
+### Tipos con fuente XML (`xpath`, `item_xpath`, `namespaces`)
+
+Cuando el documento de origen ya es XML estructurado (un CFDI timbrado por el
+SAT, un acuse de VUCEM, etc.) no hace falta pedirle a un modelo que lo lea:
+`pipeline/xml_document.py` extrae los campos determinísticamente con
+`xml.etree.ElementTree` (stdlib, sin dependencias nuevas), sin llamar a
+Bedrock. Un tipo entra a este camino simplemente declarando `xpath` (en vez de
+o junto a `hint`) en sus campos — no hay ningún interruptor especial ni nada
+que registrar en código; `handler.py` decide si un documento entra por aquí
+según la **extensión del archivo subido** (`.xml`), no según el nombre del
+tipo. La convención es nombrar estos tipos con sufijo `_XML`
+(`FACTURA_HONORARIOS_XML`) para que sean identificables a simple vista dentro
+de `catalogs/`, pero esa convención es solo para humanos — el código nunca
+mira el TYPE_ID para decidir el pipeline.
+
+```jsonc
+{
+  "MI_TIPO_XML": {
+    // Prefijo -> URI de cada namespace que usan los xpath de abajo.
+    "namespaces": { "cfdi": "http://www.sat.gob.mx/cfd/4" },
+    "fields": {
+      // "@Attr" = atributo del nodo raíz. "a/b/@Attr" = atributo de un
+      // descendiente. "a/b" (sin @) = texto de un descendiente.
+      "FOLIO": { "type": "string", "required": true, "xpath": "@Folio", "validation": [] },
+      "EMISOR_RFC": { "type": "string", "required": true, "xpath": "cfdi:Emisor/@Rfc", "validation": [] },
+
+      // type == "array": item_xpath ubica cada fila; item_fields usa xpath
+      // RELATIVO a esa fila.
+      "CONCEPTOS": {
+        "type": "array",
+        "item_xpath": ".//cfdi:Conceptos/cfdi:Concepto",
+        "item_fields": {
+          "IMPORTE": { "type": "number", "required": true, "xpath": "@Importe", "validation": [] }
+        }
+      }
+    }
+  }
+}
+```
+
+- `xpath` (y `item_xpath`) aceptan también una **lista** de rutas: para un
+  campo escalar se prueba cada una en orden y gana la primera que resuelva
+  algo (útil entre sub-versiones del mismo formato); para un array, las
+  rutas se concatenan (unión — ElementTree no soporta el operador `|` de
+  XPath real, así que esta es la forma de expresar "esta tabla viene de dos
+  elementos hermanos distintos", ej. `Traslados` + `Retenciones`).
+- Los predicados simples de ElementTree funcionan tal cual:
+  `cfdi:Retenciones/cfdi:Retencion[@Impuesto='001']/@Importe` selecciona la
+  fila correcta sin necesitar código nuevo.
+- No hay `local-name()`, `contains()` ni funciones XPath reales — es el
+  subconjunto que soporta `ElementTree.find`/`findall`. Si un futuro tipo
+  necesita XPath 1.0 completo, la opción es sumar `lxml` como dependencia,
+  no está incluida hoy (para no forzar bundling con Docker como pypdf).
+- La confianza de todo campo resuelto por XML es `1.0` (parseo exacto, sin
+  incertidumbre de OCR/LLM) y su `source` de salida es `"XML_EXTRACTION"`
+  (no `"MODEL_EXTRACTION"` — nadie adivinó el valor). Ambos vienen de
+  `resolve_field_tree(..., default_source="XML_EXTRACTION")`.
+- Un tipo XML es siempre un documento único y autocontenido: **exige
+  `documentType` declarado en la subida** (`raw/{TIPO}/{uuid}/archivo.xml`) —
+  no existe clasificación automática por visión para XML crudo, y las reglas
+  cross-documento no aplican (no hay "hermanos" dentro de una sola subida
+  XML). Si el mismo tipo también puede llegar por PDF, conviene un archivo
+  de catálogo aparte por formato (ver `FACTURA_HONORARIOS.json` vs.
+  `FACTURA_HONORARIOS_XML.json`): son fuentes distintas y normalmente el XML
+  trae MENOS campos que la representación impresa (solo lo que realmente
+  vive en el XML fiscal, sin las secciones que un PDF de cortesía agrega
+  encima) — ese es justamente el "mapeo más limpio" que da tener el dato ya
+  estructurado.
+- El costo de Bedrock para estos tipos ya es cero sin tocar Step Functions:
+  `model-invoke-lambda/index.py` bypassa clasificación cuando el tipo viene
+  declarado en el key de S3, y bypassa extracción para cualquier tipo
+  field-centric (`fields`) porque `document-catalog.ts` no genera prompt de
+  extracción para ellos — ver `AGENTS.md` → "Trabajo Bedrock desperdiciado".
+
 ### Recuperación determinística desde QR (`qr_recovery`)
 
 Para el caso mínimo basta declarar `qr_source` en un campo: eso activa la

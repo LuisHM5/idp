@@ -11,6 +11,10 @@ Uso:
     pnpm procesar -- --dir /ruta/a/mis/docs         # otra carpeta completa
     pnpm procesar -- --out resultados/              # dónde dejar los JSON (default: ./resultados)
     pnpm procesar -- --importer OFU910626UQ0        # RFC del importador esperado (checks cruzados)
+    pnpm procesar -- --file factura.xml --type FACTURA_HONORARIOS_XML
+        # .xml usa pipeline/xml_document.py (extracción por XPath, sin Bedrock/Textract,
+        # no necesita credenciales AWS) — --type es OBLIGATORIO para .xml, no hay
+        # clasificación automática por visión sobre XML crudo.
 
 Salida por documento:
   - resumen legible en consola (tipo, estado, campos clave, warnings)
@@ -57,15 +61,31 @@ KEY_FIELDS = [
 def summarize_doc(doc: dict) -> list[str]:
     lines = []
     entities = doc.get("extractedEntities", {})
+    is_field_tree = doc.get("fieldTreeShape", False)
     for name in KEY_FIELDS:
-        slot = (doc.get("fields") or {}).get(name) or {}
-        value = slot.get("normalizedValue") or slot.get("extractedValue") or entities.get(name)
-        if value not in (None, "", []):
+        if is_field_tree:
+            # Field-centric DSL: extractedEntities IS the resolved tree
+            # ({value, confidence, valid, reason, source} per scalar), no
+            # separate `fields` view (see validators.engine.resolve_field_tree).
+            node = entities.get(name) or {}
+            value = node.get("value")
+            status = "valid" if node.get("valid") else (node.get("reason") or "invalid")
+            conf = node.get("confidence")
+        else:
+            slot = (doc.get("fields") or {}).get(name) or {}
+            value = slot.get("normalizedValue") or slot.get("extractedValue") or entities.get(name)
             status = slot.get("status", "")
             conf = slot.get("confidence")
+        if value not in (None, "", []):
             conf_s = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
             lines.append(f"      {name} = {value}  {DIM}{status}{conf_s}{RESET}")
-    arrays = {k: len(v) for k, v in entities.items() if isinstance(v, list) and v}
+    if is_field_tree:
+        arrays = {
+            k: len(v["items"]) for k, v in entities.items()
+            if isinstance(v, dict) and isinstance(v.get("items"), list) and v["items"]
+        }
+    else:
+        arrays = {k: len(v) for k, v in entities.items() if isinstance(v, list) and v}
     if arrays:
         lines.append(f"      {DIM}arrays: " + ", ".join(f"{k}×{n}" for k, n in arrays.items()) + RESET)
     bad = [c for c in doc.get("checks", []) if not c.get("valid") and not c.get("skipped")]
@@ -78,24 +98,34 @@ def summarize_doc(doc: dict) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file", help="un archivo (ruta completa o nombre dentro de --dir)")
-    parser.add_argument("--dir", default=str(DEFAULT_DIR), help="carpeta con PDFs")
+    parser.add_argument("--dir", default=str(DEFAULT_DIR), help="carpeta con PDFs/XMLs")
     parser.add_argument("--out", default="resultados", help="carpeta de salida para los JSON")
     parser.add_argument("--importer", help="RFC del importador esperado (activa checks cruzados de RFC)")
-    parser.add_argument("--model", help="override del modelo Bedrock")
+    parser.add_argument("--model", help="override del modelo Bedrock (solo aplica a PDFs)")
+    parser.add_argument(
+        "--type",
+        help="TYPE_ID declarado. Obligatorio para .xml (no hay clasificación automática "
+        "por visión sobre XML crudo); opcional para .pdf (si se omite, el segmentador "
+        "auto-clasifica).",
+    )
     # pnpm forwards a literal "--" separator; argparse must not choke on it
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
 
     from pipeline.expediente import process_pdf
+    from pipeline.xml_document import process_xml
 
     if args.file:
         p = Path(args.file)
-        pdfs = [p] if p.exists() else sorted(
-            f for f in Path(args.dir).glob("*.pdf") if args.file.lower() in f.name.lower()
+        docs = [p] if p.exists() else sorted(
+            f for f in Path(args.dir).glob("*")
+            if f.suffix.lower() in (".pdf", ".xml") and args.file.lower() in f.name.lower()
         )
     else:
-        pdfs = sorted(Path(args.dir).glob("*.pdf"))
-    if not pdfs:
-        print(f"No encontré PDFs ({args.file or args.dir})")
+        docs = sorted(
+            f for f in Path(args.dir).glob("*") if f.suffix.lower() in (".pdf", ".xml")
+        )
+    if not docs:
+        print(f"No encontré PDFs/XMLs ({args.file or args.dir})")
         return 2
 
     expected_values = {"IMPORTER_RFC": args.importer} if args.importer else {}
@@ -116,19 +146,29 @@ def main() -> int:
         "|---|---|---|---|",
     ]
 
-    for pdf in pdfs:
-        print(f"\n{CYAN}{'=' * 72}\n{pdf.name}{RESET}")
+    for doc_path in docs:
+        print(f"\n{CYAN}{'=' * 72}\n{doc_path.name}{RESET}")
         started = time.time()
+        is_xml = doc_path.suffix.lower() == ".xml"
         try:
-            result = process_pdf(
-                pdf.read_bytes(),
-                expected_values=expected_values,
-                model_id=args.model,
-                source_name=pdf.name,
-            )
+            if is_xml:
+                result = process_xml(
+                    doc_path.read_bytes(),
+                    declared_type=args.type,
+                    expected_values=expected_values,
+                    source_name=doc_path.name,
+                )
+            else:
+                result = process_pdf(
+                    doc_path.read_bytes(),
+                    declared_type=args.type,
+                    expected_values=expected_values,
+                    model_id=args.model,
+                    source_name=doc_path.name,
+                )
         except Exception as e:
             print(f"  {RED}ERROR: {e}{RESET}")
-            resumen_md.append(f"| {pdf.name} | ERROR | — | {e} |")
+            resumen_md.append(f"| {doc_path.name} | ERROR | — | {e} |")
             continue
 
         status = result.get("status", "?")
@@ -136,7 +176,7 @@ def main() -> int:
         pages = result.get("pages", {})
         print(
             f"  Estado: {color}{status}{RESET}  |  {pages.get('totalPages')} páginas "
-            f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)  |  "
+            f"({pages.get('nativePages', '-')} digitales, {pages.get('ocrPages')} OCR)  |  "
             f"{time.time() - started:.0f}s"
         )
 
@@ -158,12 +198,12 @@ def main() -> int:
             if c.get("valid") and not c.get("skipped"):
                 print(f"  {GREEN}✓ {c.get('rule')}: {c.get('message')}{RESET}")
 
-        out_file = out_dir / f"{pdf.stem}.json"
+        out_file = out_dir / f"{doc_path.stem}.json"
         out_file.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         print(f"\n  {DIM}JSON completo → {out_file}{RESET}")
 
         resumen_md.append(
-            f"| {pdf.name} | {status} | {'<br>'.join(detected) or '—'} | {'<br>'.join(warnings) or '—'} |"
+            f"| {doc_path.name} | {status} | {'<br>'.join(detected) or '—'} | {'<br>'.join(warnings) or '—'} |"
         )
 
     resumen_path = out_dir / "_resumen.md"

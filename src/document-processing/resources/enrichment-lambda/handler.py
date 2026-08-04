@@ -421,8 +421,6 @@ def _run_expediente(
         logger.error("failed to fetch s3://%s/%s: %s", bucket, key, e)
         return None
 
-    from pipeline.expediente import process_pdf  # deferred: pulls pypdf
-
     expected_values = event.get("expectedValues") or {}
     # Honor an EXPLICIT user classification. When the uploader declares a type,
     # the file is stored under raw/{TYPE}/{uuid}/... — that user intent wins and
@@ -434,12 +432,32 @@ def _run_expediente(
     declared_type = _declared_type_from_key(key)
     if declared_type:
         logger.info("honoring user-declared type '%s' from key %s", declared_type, key)
-    result = process_pdf(
-        document_bytes,
-        declared_type=declared_type,
-        expected_values=expected_values,
-        source_name=key,
-    )
+
+    # Already-structured XML (CFDI, VUCEM, ...) skips the PDF/OCR/segmentation
+    # pipeline entirely: pipeline.xml_document deterministically walks the
+    # catalog's xpath-mapped fields instead of asking a model to read it.
+    # Routed by the uploaded file's own extension, not by the declared type's
+    # name — `_XML` is a catalogs/ naming convention for humans, not what the
+    # code keys off. An XML file with no declared type fails fast inside
+    # process_xml (there is no vision-based auto-classification for raw XML).
+    if key.lower().endswith(".xml"):
+        from pipeline.xml_document import process_xml  # deferred: rarely-hit path
+
+        result = process_xml(
+            document_bytes,
+            declared_type=declared_type,
+            expected_values=expected_values,
+            source_name=key,
+        )
+    else:
+        from pipeline.expediente import process_pdf  # deferred: pulls pypdf
+
+        result = process_pdf(
+            document_bytes,
+            declared_type=declared_type,
+            expected_values=expected_values,
+            source_name=key,
+        )
 
     # Persist the FULL result to S3: a large expediente (86 pages, 20+
     # documents with per-field detail) exceeds Step Functions' 256KB

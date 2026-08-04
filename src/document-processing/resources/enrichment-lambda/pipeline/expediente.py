@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import (
     get_cross_document_rules,
-    get_schema_info,
     get_type_entry,
 )
 from validators import engine
@@ -45,15 +44,12 @@ from .normalize import (
     pedimento_consecutivo,
 )
 from .pdf_pages import PageText, load_pages, pages_summary
-from .bedrock import base_model_id, used_models
+from .bedrock import used_models
+from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import Segment, segment_pages
 from .text_extractor import extract_document
 
 logger = logging.getLogger(__name__)
-
-# Bump when extraction/validation logic changes in a way consumers should
-# notice (recorded in every result's tracking block).
-PIPELINE_VERSION = "1.0.0"
 
 # Segments are extracted concurrently: each is an independent Bedrock call, so a
 # 17-document expediente runs in parallel instead of serially. Bounded to respect
@@ -71,48 +67,6 @@ _EXTRACT_WORKERS = int(os.environ.get("EXTRACT_WORKERS", "4"))
 # matter.
 _MAX_PAGES = int(os.environ.get("MAX_PAGES", "50"))
 
-
-def _tracking(
-    started_at: datetime,
-    started_monotonic: float,
-    model_id: Optional[str],
-    doc_types: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """Provenance for a result: created/updated, processing window, schema/version.
-
-    `createdAt` and `updatedAt` mark this result record's lifecycle; they start
-    equal and consumers bump `updatedAt` whenever they mutate the result.
-
-    `typeVersions` reports the declared `schema_version` of each document type
-    that actually processed the file (including DynamoDB hot-reloaded overrides),
-    so a change to a type in DynamoDB is reflected here without a redeploy.
-    """
-    now = datetime.now(timezone.utc)
-    # Report the models that actually ran, not the caller's argument: it is
-    # normally None (each stage resolves its own model from the environment),
-    # which used to be reported as the literal "default" — useless for telling
-    # two models' results apart when comparing them.
-    ran = used_models()
-    schema: Dict[str, Any] = {
-        "pipelineVersion": PIPELINE_VERSION,
-        "model": model_id or ran.get("extractor") or base_model_id(),
-        **get_schema_info(),
-    }
-    type_versions = {}
-    for dt in sorted(set(doc_types or [])):
-        entry = get_type_entry(dt)
-        if getattr(entry, "schema_version", None):
-            type_versions[dt] = entry.schema_version
-    if type_versions:
-        schema["typeVersions"] = type_versions
-    return {
-        "createdAt": now.isoformat(),
-        "updatedAt": now.isoformat(),
-        "processingStartedAt": started_at.isoformat(),
-        "processingCompletedAt": now.isoformat(),
-        "processingSeconds": round(time.time() - started_monotonic, 2),
-        "schema": schema,
-    }
 
 # Fields (by doc type) that carry the pedimento reference for same_pedimento
 _PEDIMENTO_REF_FIELDS = (
@@ -224,8 +178,8 @@ def process_pdf(
     expected_values = expected_values or {}
 
     def _fail(message: str) -> Dict[str, Any]:
-        return _error_result(processing_id, source_name, message,
-                             _tracking(started_at, started, model_id))
+        return error_result(processing_id, source_name, message,
+                            build_tracking(started_at, started, model_id))
 
     pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, _MAX_PAGES)
 
@@ -292,7 +246,7 @@ def process_pdf(
             resolved_tree, checks = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
-            doc["checks"] = _checks_json(checks)
+            doc["checks"] = checks_to_json(checks)
             doc["status"] = engine.document_status_from_checks(checks)
             doc["businessDestination"] = entry.business_destination or None
             conf_values = [v for v in confidences.values() if v is not None]
@@ -306,7 +260,7 @@ def process_pdf(
             checks = engine.run_rules(entity_map, entry, ctx)
             resolved = engine.resolve_fields(entity_map, confidences, checks, entry)
             doc["fields"] = resolved
-            doc["checks"] = _checks_json(checks)
+            doc["checks"] = checks_to_json(checks)
             doc["status"] = engine.document_status(resolved, checks, entry)
             doc["businessDestination"] = entry.business_destination or None
             conf_values = [f["confidence"] for f in resolved.values() if f.get("confidence") is not None]
@@ -328,7 +282,7 @@ def process_pdf(
     statuses = [d.get("status") for d in documents if d.get("documentType") != "OTRO"]
     overall = _overall_status(statuses, cross_checks)
 
-    tracking = _tracking(
+    tracking = build_tracking(
         started_at, started, model_id,
         doc_types=[d["documentType"] for d in documents],
     )
@@ -363,21 +317,6 @@ def process_pdf(
 def _public_entities(entity_map: Dict[str, Any]) -> Dict[str, Any]:
     """Compact entity view (original extracted values only)."""
     return {k: v for k, v in entity_map.items() if v not in (None, "", [])}
-
-
-def _checks_json(checks: List[RuleCheck]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "field": c.field,
-            "rule": c.rule,
-            "valid": c.valid,
-            "severity": c.severity,
-            "skipped": c.skipped,
-            "message": c.message,
-            **({"details": c.details} if c.details else {}),
-        }
-        for c in checks
-    ]
 
 
 def _overall_status(statuses: List[str], cross_checks: List[Dict[str, Any]]) -> str:
@@ -864,25 +803,3 @@ def _cross_pedimento_values(rule: Dict[str, Any], documents: List[Dict[str, Any]
             "details": {"pedimentoValorDolares": val_dolares, "foreignInvoicesTotal": inv_total}}
 
 
-def _error_result(
-    processing_id: str,
-    source_name: str,
-    message: str,
-    tracking: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    tracking = tracking or _tracking(datetime.now(timezone.utc), time.time(), None)
-    return {
-        "processingId": processing_id,
-        "sourceFile": source_name,
-        "processedAt": tracking["processingCompletedAt"],
-        "processingSeconds": tracking["processingSeconds"],
-        "tracking": tracking,
-        # Model per phase that actually ran. The handler merges in the
-        # classification/processing phases, which run in a different Lambda.
-        "modelIds": used_models(),
-        "status": engine.DOC_ERROR,
-        "reviewRequired": True,
-        "documents": [],
-        "crossDocumentChecks": [],
-        "warnings": [message],
-    }
