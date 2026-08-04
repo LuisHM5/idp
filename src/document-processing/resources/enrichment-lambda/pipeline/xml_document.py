@@ -252,6 +252,7 @@ def process_xml(
         "sourceFile": source_name,
         "processedAt": tracking["processingCompletedAt"],
         "processingSeconds": tracking["processingSeconds"],
+        "processingMs": tracking["processingMs"],
         "tracking": tracking,
         "modelIds": {},
         "pages": {"totalPages": 1, "ocrPages": 0},

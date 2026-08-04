@@ -300,6 +300,7 @@ def process_pdf(
         "sourceFile": source_name,
         "processedAt": tracking["processingCompletedAt"],
         "processingSeconds": tracking["processingSeconds"],
+        "processingMs": tracking["processingMs"],
         "tracking": tracking,
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.

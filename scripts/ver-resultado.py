@@ -202,9 +202,14 @@ def main() -> int:
 
     if exp:
         pages = exp.get("pages", {})
+        # processingSeconds rounds to 2 decimals and reads as a flat "0.0s"
+        # for anything under ~5ms (routine for the XML pipeline, which never
+        # calls Bedrock/Textract) — processingMs keeps that visible.
+        ms = exp.get("processingMs")
+        duration = f"{ms:.0f}ms" if isinstance(ms, (int, float)) and ms < 1000 else f"{exp.get('processingSeconds', '?')}s"
         print(f"Expediente: {STATUS_COLOR.get(exp.get('status'), '')}{exp.get('status')}{RESET}  "
               f"| {pages.get('totalPages')} páginas ({pages.get('nativePages')} digitales, "
-              f"{pages.get('ocrPages')} OCR) | {exp.get('processingSeconds', '?')}s")
+              f"{pages.get('ocrPages')} OCR) | {duration}")
         for doc in exp.get("documents", []):
             print_document(doc)
         print()

@@ -174,10 +174,18 @@ def main() -> int:
         status = result.get("status", "?")
         color = STATUS_COLOR.get(status, "")
         pages = result.get("pages", {})
+        elapsed_wall = time.time() - started
+        # elapsed_wall rounds to "0s" for the XML pipeline (no Bedrock/Textract
+        # round-trip) — fall back to the pipeline's own millisecond figure,
+        # which is accurate down to sub-second work instead of just wall time.
+        duration = (
+            f"{elapsed_wall * 1000:.0f}ms" if elapsed_wall < 1
+            else f"{elapsed_wall:.0f}s"
+        )
         print(
             f"  Estado: {color}{status}{RESET}  |  {pages.get('totalPages')} páginas "
             f"({pages.get('nativePages', '-')} digitales, {pages.get('ocrPages')} OCR)  |  "
-            f"{time.time() - started:.0f}s"
+            f"{duration}"
         )
 
         detected = []

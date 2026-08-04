@@ -623,6 +623,7 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
         "sourceFile": result.get("sourceFile"),
         "processedAt": result.get("processedAt"),
         "processingSeconds": result.get("processingSeconds"),
+        "processingMs": result.get("processingMs"),
         "tracking": result.get("tracking"),
         "pages": result.get("pages"),
         "status": result.get("status"),

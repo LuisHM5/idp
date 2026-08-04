@@ -53,12 +53,21 @@ def build_tracking(
             type_versions[dt] = entry.schema_version
     if type_versions:
         schema["typeVersions"] = type_versions
+    # Single elapsed-time sample shared by both fields: two separate
+    # time.time() calls (one per field) would drift apart by however long
+    # the dict literal below takes to build, and `processingSeconds` rounded
+    # to 2 decimals reads as a flat 0.0 for anything under ~5ms (the XML
+    # pipeline routinely is) — `processingMs` keeps millisecond precision for
+    # exactly that case, without dropping the existing seconds field anyone
+    # already reads.
+    elapsed = time.time() - started_monotonic
     return {
         "createdAt": now.isoformat(),
         "updatedAt": now.isoformat(),
         "processingStartedAt": started_at.isoformat(),
         "processingCompletedAt": now.isoformat(),
-        "processingSeconds": round(time.time() - started_monotonic, 2),
+        "processingSeconds": round(elapsed, 2),
+        "processingMs": round(elapsed * 1000, 2),
         "schema": schema,
     }
 
@@ -90,6 +99,7 @@ def error_result(
         "sourceFile": source_name,
         "processedAt": tracking["processingCompletedAt"],
         "processingSeconds": tracking["processingSeconds"],
+        "processingMs": tracking["processingMs"],
         "tracking": tracking,
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
