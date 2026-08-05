@@ -108,8 +108,8 @@ El archivo nunca pasa por API Gateway ni por el Lambda — el `PUT` va directo a
 
 - Si mandas `documentType`, se salta la clasificación automática **y se HONRA tu tipo**: el documento se trata como ese tipo único y **no se re-clasifica ni se segmenta** en otro (p. ej. un PDF de varias páginas declarado `PEDIMENTO_ADUANAL` se procesa como un solo pedimento, no como `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). Si quieres que el sistema segmente/clasifique solo, **omite** `documentType`. Para forzar la segmentación multi-documento explícitamente, declara `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
 - **Archivos `.xml`/`.xlsx`/`.csv`:** para tipos con esquema XML (sufijo `_XML`) o tabular (sufijo `_XLSX`/`_CSV`) `documentType` es **obligatorio** — la API lo rechaza con `400 DOCUMENT_TYPE_REQUIRED` si falta, porque no existe clasificación automática por visión sobre datos ya estructurados. A cambio, el documento se extrae **determinísticamente** (XPath para XML, celda/columna para XLSX/CSV — sin llamar a Bedrock en ningún paso): más rápido y sin costo de modelo. Ver `catalogs/README.md` → "Tipos con fuente XML" / "Tipos con fuente tabular".
-- **`modelId` (solo dev):** procesa **ese documento** con el modelo de Bedrock que indiques, sin redeploy — útil para comparar modelos sobre el mismo archivo. Aplica a todas las fases y gana sobre las variables `BEDROCK_*_MODEL_ID`; el resultado reporta en `modelIds` qué modelo corrió en cada fase. **El stack de prod lo ignora a propósito** (no define `ALLOW_MODEL_OVERRIDE`): el valor viene de quien sube el archivo, y en prod dejaría que un tercero eligiera el modelo —y con él el costo y la calidad de extracción— sobre documentos ajenos. Con `pnpm enviar`: `--model amazon.nova-pro-v1:0`.
-- **`appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `appOrigin` con el nombre de esa app — buscable después vía `GET /documents?field=appOrigin&value=<app>`. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece.
+- **`modelId` (solo dev):** procesa **ese documento** con el modelo de Bedrock que indiques, sin redeploy — útil para comparar modelos sobre el mismo archivo. Aplica a todas las fases y gana sobre las variables `BEDROCK_*_MODEL_ID`; el resultado reporta en `tracking.modelIds` qué modelo corrió en cada fase. **El stack de prod lo ignora a propósito** (no define `ALLOW_MODEL_OVERRIDE`): el valor viene de quien sube el archivo, y en prod dejaría que un tercero eligiera el modelo —y con él el costo y la calidad de extracción— sobre documentos ajenos. Con `pnpm enviar`: `--model amazon.nova-pro-v1:0`.
+- **`tracking.appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `tracking.appOrigin` con el nombre de esa app — buscable después vía `GET /documents?field=tracking.appOrigin&value=<app>`. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece dentro de `tracking`.
 - **Tope de páginas (pipeline de expedientes/pedimentos):** un PDF de más de 50 páginas (`MAX_PAGES`, configurable) se **trunca a las primeras 50** antes de correr Textract/Bedrock, para acotar el costo de un documento inesperadamente grande. El PDF original completo **no se toca** — sigue intacto en S3 — pero el resultado solo cubre las páginas procesadas, queda marcado `reviewRequired: true` con un warning explícito, y un campo `truncated: {originalPages, processedPages}`. Si necesitas las páginas restantes, hay que reprocesar manualmente.
 - El resultado final se publica en **EventBridge** (broker `idp-broker`, source `document-validation-pipeline`) y se persiste (ver GET abajo).
 
@@ -133,7 +133,14 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
   "result": {
     "documentId": "...",
     "documentClassification": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",
-    "appOrigin": "CEDIS",                   // opcional; app que subió el documento (ver nota abajo) — ausente si no hay api key o no está registrada
+    // Resumen de procedencia/procesamiento — presente en TODO resultado
+    // (flujo estándar y expediente por igual). createdAt siempre está;
+    // modelIds/appOrigin solo si hay algo que reportar.
+    "tracking": {
+      "createdAt": "2026-07-27T13:19:04.231Z",
+      "modelIds": { "extractor": "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
+      "appOrigin": "CEDIS"                  // opcional; app que subió el documento (ver nota abajo) — ausente si no hay api key o no está registrada
+    },
     "extractedEntities": { "...": "..." },  // escalares del documento principal
     "validation": { "status": "REQUIERE_REVISION", "summary": "expediente: REVIEW_REQUIRED (17 documents)" },
     "expediente": {
@@ -154,7 +161,12 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
         // ... el resto de documentos
       ],
       "crossDocumentChecks": [ ... ],
-      "tracking": { "schema": { "pipelineVersion": "1.0.0", "typeVersions": { "PEDIMENTO_ADUANAL": "2.0" } } }
+      // Detalle de procedencia DE ESTE EXPEDIENTE específicamente (qué schema/
+      // versiones de tipo lo procesaron, su propia ventana de tiempo) —
+      // complementa, no reemplaza, el resumen del `tracking` de nivel superior.
+      "tracking": { "createdAt": "...", "processingStartedAt": "...", "processingCompletedAt": "...",
+                     "processingSeconds": 45.23, "processingMs": 45231.7,
+                     "schema": { "pipelineVersion": "1.0.0", "typeVersions": { "PEDIMENTO_ADUANAL": "2.0" } } }
     },
     "resultLocation": { "bucket": "...", "key": "results/{id}.json" }
   }
@@ -308,6 +320,7 @@ Además del `EnrichmentResult`, cada item lleva columnas de primer nivel que esc
 | `ValidationStatus` | `REQUIERE_REVISION` | Filtro `status=` evaluado en DynamoDB. |
 | `ContainedDocumentTypes` | `["EXPEDIENTE_...", "PEDIMENTO_ADUANAL", "FACTURA"]` | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente. |
 | `DocumentName` | `expediente-2026.pdf` | Nombre del archivo original. |
+| `Tracking` | `{CreatedAt, UpdatedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, Schema, AppOrigin, ModelIds}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. Misma paridad de campos que `result.tracking`/`expediente.tracking` (ver §2 y `indexing.py::_TRACKING_FIELD_MAP`), solo que en PascalCase para combinar con el resto de estas columnas — nunca un subconjunto recortado. |
 
 Documentos procesados antes de esto no tienen las columnas: `pnpm backfill:index` las reconstruye desde `EnrichmentResult` (idempotente, `--dry-run` disponible).
 

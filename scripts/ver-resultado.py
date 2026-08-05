@@ -214,8 +214,15 @@ def main() -> int:
         # processingSeconds rounds to 2 decimals and reads as a flat "0.0s"
         # for anything under ~5ms (routine for the XML pipeline, which never
         # calls Bedrock/Textract) — processingMs keeps that visible.
-        ms = exp.get("processingMs")
-        duration = f"{ms:.0f}ms" if isinstance(ms, (int, float)) and ms < 1000 else f"{exp.get('processingSeconds', '?')}s"
+        # Duration now lives at the envelope's top-level `tracking` (see
+        # handler.py::_run_expediente); exp.get(...) is only the fallback for
+        # results persisted before that (old compact-envelope shape) or for
+        # the raw S3 full-detail merge above (which still carries its own
+        # copy at the pipeline-result level, untouched by that change).
+        tracking = out.get("tracking") or {}
+        ms = tracking.get("processingMs", exp.get("processingMs"))
+        seconds = tracking.get("processingSeconds", exp.get("processingSeconds"))
+        duration = f"{ms:.0f}ms" if isinstance(ms, (int, float)) and ms < 1000 else f"{seconds if seconds is not None else '?'}s"
         source_note = SOURCE_FORMAT_NOTE.get(exp.get("sourceFormat")) or (
             f"{pages.get('totalPages')} páginas "
             f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"

@@ -20,8 +20,8 @@ pnpm enviar doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0
 ```
 
 Aplica a todas las fases del pipeline y gana sobre `BEDROCK_*_MODEL_ID`. El
-resultado registra qué modelo corrió en cada fase (`modelIds`), así que puedes
-mandar el mismo archivo con dos modelos y comparar.
+resultado registra qué modelo corrió en cada fase (`tracking.modelIds`), así
+que puedes mandar el mismo archivo con dos modelos y comparar.
 
 **Solo funciona en dev.** El stack de prod no define `ALLOW_MODEL_OVERRIDE`, así
 que ignora el valor a propósito: viene de quien sube el archivo, y en prod

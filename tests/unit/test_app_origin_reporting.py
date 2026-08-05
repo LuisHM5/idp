@@ -16,14 +16,16 @@ import handler  # noqa: E402
 
 
 def test_app_origin_lands_in_the_stored_response():
+    """appOrigin lives under the top-level `tracking` object, alongside
+    modelIds/createdAt — not loose at the envelope's top level."""
     result = handler.build_canonical_result(
         "doc-1", "INE", {}, [], "APROBADO", app_origin="CEDIS",
     )
-    assert result["appOrigin"] == "CEDIS"
+    assert result["tracking"]["appOrigin"] == "CEDIS"
 
 
 def test_absent_rather_than_empty_when_no_app_origin():
     """No x-api-key on the request (e.g. dev with the key requirement off) —
     don't emit a misleading empty/None value."""
     result = handler.build_canonical_result("doc-1", "INE", {}, [], "APROBADO")
-    assert "appOrigin" not in result
+    assert "appOrigin" not in result["tracking"]

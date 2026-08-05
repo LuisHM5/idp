@@ -86,6 +86,58 @@ function displayNames() {
 
 const NAMES = displayNames();
 
+/** Low-level DynamoDB JSON typed value for a plain JS value (recursive —
+ * `Tracking`/`ModelIds` are nested maps). Mirrors what the AWS CLI's
+ * `--cli-input-json` expects; boto3's resource API (indexing.py) does this
+ * marshalling itself, this script talks to the CLI directly so it can't. */
+function toDdbAttr(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return { S: value };
+  if (typeof value === "number") return { N: String(value) };
+  if (typeof value === "boolean") return { BOOL: value };
+  if (Array.isArray(value)) {
+    const items = value.map(toDdbAttr).filter(Boolean);
+    return items.length ? { L: items } : null;
+  }
+  if (typeof value === "object") {
+    const m = {};
+    for (const [k, v] of Object.entries(value)) {
+      const attr = toDdbAttr(v);
+      if (attr) m[k] = attr;
+    }
+    return Object.keys(m).length ? { M: m } : null;
+  }
+  return null;
+}
+
+// camelCase (envelope's `tracking`) -> PascalCase (DynamoDB column naming
+// convention) — same map as indexing.py::_TRACKING_FIELD_MAP, every field
+// build_tracking() sets plus modelIds/appOrigin, so this never lags behind
+// what the nested `expediente.tracking` already carries.
+const TRACKING_FIELD_MAP = {
+  createdAt: "CreatedAt",
+  updatedAt: "UpdatedAt",
+  processingStartedAt: "ProcessingStartedAt",
+  processingCompletedAt: "ProcessingCompletedAt",
+  processingSeconds: "ProcessingSeconds",
+  processingMs: "ProcessingTime",
+  schema: "Schema",
+  appOrigin: "AppOrigin",
+  modelIds: "ModelIds",
+};
+
+/** Same shape as indexing.py::_tracking_attribute, from a stored envelope's
+ * top-level `tracking`. */
+function trackingAttribute(envelope) {
+  const tracking = envelope.tracking || {};
+  const out = {};
+  for (const [camelKey, pascalKey] of Object.entries(TRACKING_FIELD_MAP)) {
+    const value = tracking[camelKey];
+    if (value !== undefined && value !== null) out[pascalKey] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** Same derivation as enrichment-lambda/indexing.py, from a stored envelope. */
 function deriveAttributes(envelope) {
   const type = String(envelope.documentClassification || "OTRO").trim().toUpperCase();
@@ -108,6 +160,8 @@ function deriveAttributes(envelope) {
     IndexedAt: { S: new Date().toISOString() },
   };
   if (name) attrs.DocumentName = { S: name };
+  const tracking = trackingAttribute(envelope);
+  if (tracking) attrs.Tracking = toDdbAttr(tracking);
   return attrs;
 }
 

@@ -123,6 +123,13 @@ explícito si el nombre del stack no es el estándar, y `--region` (default
 `AWS_REGION` o `us-east-1`). Ninguno necesita `cdk deploy`: hablan directo con
 API Gateway y con la tabla `document-validation-apps[-dev]` ya desplegada.
 
+**Todos los que mutan algo** (`register`, `rotate`, `reconfigure`, `disable`,
+`enable`, `revoke`, `adopt` — `list` es de solo lectura) son **interactivos**
+si corren en una terminal real y falta algún dato, y **siempre** terminan con
+una confirmación `(S/n)` antes de tocar AWS — incluso si ya diste todos los
+flags. `--yes`, o correr sin TTY (scripts/CI), se salta todo eso (falla si
+falta algo requerido) para no bloquear automatización.
+
 #### 1. Generar una API key nueva (`register`)
 
 **Modo interactivo** (recomendado si no sabes de memoria qué rate limit poner)
@@ -175,17 +182,28 @@ dos keys `ACTIVE` del mismo nombre, que ni `revoke` ni `rotate` podrían
 desambiguar solas). `--force` sí crea una key adicional a propósito si de
 verdad quieres dos credenciales activas para la misma app en paralelo.
 
-#### 2. Deshabilitar una API key (`revoke`)
+#### 2. Deshabilitar / re-habilitar una API key (`disable` / `enable`, o `revoke`)
 ```bash
-pnpm apps:revoke -- --name CEDIS --env prod
+pnpm apps:disable -- --name CEDIS --env prod
+pnpm apps:enable -- --name CEDIS --env prod    # revertir: misma key, sin crear nada
 ```
-Deja la key **inhabilitada en API Gateway** (`update-api-key` con
-`enabled=false` — cualquier request con esa key pasa a 403 nativo, gratis,
-al instante) y marca la fila en DynamoDB como `Status=REVOKED` con
-`RevokedAt`. **No borra nada**: reversible con `aws apigateway update-api-key
---patch-operations op=replace,path=/enabled,value=true` a mano si te
-equivocaste (el script no expone un `unrevoke` porque no debería ser un caso
-común — si la necesitas de vuelta, mejor `rotate`).
+`disable` deja la key **inhabilitada en API Gateway** (`update-api-key` con
+`enabled=false`) y marca la fila en DynamoDB como `Status=REVOKED` con
+`RevokedAt`. **No borra nada**: `enable` la reactiva (misma key, `Status=ACTIVE`
+de nuevo) sin crear ni borrar ningún recurso. `pnpm apps:revoke -- --name X`
+(sin `--delete`) hace exactamente lo mismo que `disable` — son equivalentes,
+`disable`/`enable` solo tienen nombres más directos para ese par de acciones.
+
+> **OJO — no es instantáneo.** Un `enabled=false` puede tardar de unos
+> segundos a varios minutos en propagarse a los nodos de borde de API
+> Gateway (mismo tipo de retraso que los cambios de usage plan, sección 5).
+> Un request enviado justo después de `disable` puede pasar igual una vez
+> más — no es que el comando haya fallado. Verifícalo sin gastar en
+> Bedrock/Textract pegándole a un endpoint de lectura:
+> ```bash
+> curl -s -o /dev/null -w "%{http_code}\n" -H "x-api-key: <VALOR>" "$API_ENDPOINT/documents?limit=1"
+> ```
+> `403` confirma que ya se propagó; si ves `200`, espera un poco y reintenta.
 
 #### 3. Borrar una API key (`revoke --delete`)
 ```bash
@@ -214,6 +232,22 @@ nueva, `RotatedTo` en la vieja) para poder rastrear el historial de una app.
 `register --force` **no** es lo mismo que `rotate`: crea una key adicional
 sin tocar la vieja ni saber cuál reemplaza a cuál — usa `rotate` salvo que
 quieras deliberadamente dos keys activas a la vez.
+
+#### 5. Cambiar SOLO el rate limit/cuota, sin tocar la key (`reconfigure`)
+```bash
+pnpm apps:reconfigure -- --name CEDIS --env prod --rate-limit 50 --burst-limit 100
+```
+Para cuando el volumen de una app cambió y hay que ajustarle el límite, pero
+la key en sí sigue siendo válida — a diferencia de `rotate`, **no crea nada
+nuevo**: hace `update-usage-plan` (JSON Patch por sub-path, solo sobre
+`/throttle/rateLimit`, `/throttle/burstLimit` y/o `/quota/limit` — los que
+pases) sobre el `UsagePlanId` que ya tiene la app, y actualiza esos mismos
+campos en DynamoDB. La API key no cambia, así que los consumidores **no
+necesitan hacer nada** (a diferencia de `rotate`, que sí les obliga a
+actualizar su key). Acepta cualquier subconjunto de `--rate-limit`/
+`--burst-limit`/`--quota-per-day` — los que omitas se quedan como estaban.
+Falla si la app fue adoptada sin `UsagePlanId` conocido (no hay a qué usage
+plan aplicarle el patch) o si no hay ninguna app `ACTIVE` con ese nombre.
 
 #### Ver el estado de todas las apps (`list`)
 ```bash
@@ -282,8 +316,10 @@ Del lado de **procesar un documento** (no del script, corre en cada request):
 4. El SQS consumer (`patches/default-sqs-consumer-index.py`) lee esa
    metadata con un `head_object` (barato, solo headers) y la reenvía como
    `appOrigin` en el input de Step Functions.
-5. El enrichment Lambda la copia tal cual al JSON final (`appOrigin`), tanto
-   en el flujo estándar como en el de expediente — ver `documentacion/API_USO.md`.
+5. El enrichment Lambda la copia tal cual al JSON final, dentro del objeto
+   `tracking` de nivel superior (`tracking.appOrigin`, junto a `tracking.modelIds`/
+   `tracking.createdAt`) — tanto en el flujo estándar como en el de expediente,
+   mismo shape en ambos. Ver `documentacion/API_USO.md`.
 
 Si algo de esa cadena falla (permiso, key no registrada, S3 metadata perdida),
 el diseño es **fail-open a nivel de trazabilidad**: el documento se procesa

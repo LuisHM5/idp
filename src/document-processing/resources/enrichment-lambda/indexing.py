@@ -13,6 +13,13 @@ run a DynamoDB Query against the `DocumentTypeIndex` GSI:
     ContainedDocumentTypes  (SS) every type found inside an expediente
     DocumentName            (S)  source file name, when known
     IndexedAt               (S)  when these columns were written
+    Tracking                (M)  {CreatedAt, UpdatedAt?, ProcessingStartedAt?,
+                                 ProcessingCompletedAt?, ProcessingSeconds?,
+                                 ProcessingTime?, Schema?, AppOrigin?, ModelIds?} —
+                                 every field the envelope's `tracking.*` has
+                                 (see _TRACKING_FIELD_MAP), promoted so it's
+                                 on the item itself (Scan/console), not only
+                                 inside the `EnrichmentResult` JSON blob
 
 `DocumentType` is the classification the enrichment Lambda settled on (the
 segmenter's verdict for expedientes), NOT the upstream vision guess — which is
@@ -24,6 +31,7 @@ The write is best-effort: an indexing failure must never fail validation.
 import logging
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
 from document_catalog import get_type_entry
@@ -76,6 +84,55 @@ def _contained_types(classification: str, expediente: Dict[str, Any]) -> Set[str
     return types
 
 
+def _decimalize(value: Any) -> Any:
+    """Recursively convert every float to Decimal — boto3's DynamoDB
+    *resource* API (unlike the low-level client) rejects a raw Python float
+    outright ("Float types are not supported. Use Decimal types instead."),
+    anywhere in the structure, not just at the top level."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _decimalize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decimalize(v) for v in value]
+    return value
+
+
+# camelCase (envelope's `tracking`) -> PascalCase (this module's DynamoDB
+# column naming convention) — every field build_tracking() sets (see
+# pipeline/result_common.py) plus modelIds/appOrigin, so this column never
+# lags behind what the nested `expediente.tracking` already carries.
+_TRACKING_FIELD_MAP = {
+    "createdAt": "CreatedAt",
+    "updatedAt": "UpdatedAt",
+    "processingStartedAt": "ProcessingStartedAt",
+    "processingCompletedAt": "ProcessingCompletedAt",
+    "processingSeconds": "ProcessingSeconds",
+    "processingMs": "ProcessingTime",
+    "schema": "Schema",
+    "appOrigin": "AppOrigin",
+    "modelIds": "ModelIds",
+}
+
+
+def _tracking_attribute(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Top-level `Tracking` map — same fields as the envelope's own
+    `tracking` object (see handler.py / _TRACKING_FIELD_MAP), just
+    PascalCase-keyed to match this module's other indexed columns. None when
+    there's nothing to report (defensive — `tracking.createdAt` is always
+    set by the handler, so this is expected to be non-None in practice).
+    """
+    tracking = result.get("tracking") or {}
+    if not tracking:
+        return None
+    out = {
+        pascal_key: tracking[camel_key]
+        for camel_key, pascal_key in _TRACKING_FIELD_MAP.items()
+        if tracking.get(camel_key) is not None
+    }
+    return _decimalize(out) if out else None
+
+
 def derive_index_attributes(
     result: Dict[str, Any], source_key: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -99,6 +156,9 @@ def derive_index_attributes(
     name = _document_name(result, expediente, source_key)
     if name:
         attributes["DocumentName"] = name
+    tracking_attr = _tracking_attribute(result)
+    if tracking_attr:
+        attributes["Tracking"] = tracking_attr
     return attributes
 
 
@@ -148,4 +208,5 @@ def index_column_names() -> List[str]:
         "ContainedDocumentTypes",
         "DocumentName",
         "IndexedAt",
+        "Tracking",
     ]

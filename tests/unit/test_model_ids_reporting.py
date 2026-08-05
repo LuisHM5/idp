@@ -85,7 +85,8 @@ def test_each_phase_can_run_a_different_model(monkeypatch):
 
 
 def test_model_ids_lands_in_the_stored_response(monkeypatch):
-    """`build_canonical_result` is what the standard flow persists."""
+    """`build_canonical_result` is what the standard flow persists — modelIds
+    lives under the top-level `tracking` object, not loose at the top."""
     monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
     bedrock.resolve_model("recovery")
 
@@ -94,13 +95,17 @@ def test_model_ids_lands_in_the_stored_response(monkeypatch):
         model_ids=handler._model_ids({"classificationResult": {"modelId": "vision-model"}}),
     )
 
-    assert result["modelIds"] == {"classification": "vision-model", "recovery": "base-model"}
+    assert result["tracking"]["modelIds"] == {"classification": "vision-model", "recovery": "base-model"}
 
 
 def test_absent_rather_than_empty_when_nothing_ran():
-    """No phase ran (e.g. an early handler error) — don't emit a misleading {}."""
+    """No phase ran (e.g. an early handler error) — don't emit a misleading
+    {} for modelIds. `tracking` itself is always present (it always carries
+    at least `createdAt`)."""
     result = handler.build_canonical_result("doc-1", "INE", {}, [], "APROBADO")
-    assert "modelIds" not in result
+    assert "tracking" in result
+    assert "createdAt" in result["tracking"]
+    assert "modelIds" not in result["tracking"]
 
 
 def test_registry_is_reset_between_invocations(monkeypatch):

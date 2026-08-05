@@ -108,11 +108,23 @@ def build_canonical_result(
         failed = total - passed
         summary = f"{failed} of {total} checks failed"
 
+    # Provenance, consolidated under one top-level object (createdAt always
+    # present; modelIds/appOrigin only when there's something to report) —
+    # mirrors the shape _run_expediente builds from pipeline.result_common's
+    # build_tracking(), so both flows expose the same `tracking.*` fields
+    # even though the standard flow doesn't compute the richer schema/
+    # processing-window info the expediente pipeline does.
+    processed_at = datetime.now(timezone.utc).isoformat()
+    tracking: Dict[str, Any] = {"createdAt": processed_at}
+    if model_ids:
+        tracking["modelIds"] = model_ids
+    if app_origin:
+        tracking["appOrigin"] = app_origin
+
     return {
         "documentId": document_id,
         "documentClassification": classification,
-        **({"modelIds": model_ids} if model_ids else {}),
-        **({"appOrigin": app_origin} if app_origin else {}),
+        "tracking": tracking,
         "extractedEntities": entity_map,
         "validation": {
             "status": status,
@@ -127,7 +139,7 @@ def build_canonical_result(
             ],
             "summary": summary,
         },
-        "processedAt": datetime.now(timezone.utc).isoformat(),
+        "processedAt": processed_at,
     }
 
 
@@ -522,11 +534,23 @@ def _run_expediente(
         final_classification = "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
     else:
         final_classification = classification
+    # Same top-level `tracking` shape build_canonical_result uses for the
+    # standard flow — here it starts from the pipeline's own build_tracking()
+    # (createdAt/updatedAt/processingStartedAt/processingCompletedAt/
+    # processingSeconds/processingMs/schema, set by every pipeline branch:
+    # expediente.py, xml_document.py, tabular_document.py) and adds
+    # modelIds/appOrigin on top, instead of those living as separate
+    # loose top-level envelope keys.
+    tracking = {
+        **(result.get("tracking") or {}),
+        "modelIds": _model_ids(event),
+        **({"appOrigin": event.get("appOrigin")} if event.get("appOrigin") else {}),
+    }
+
     return {
         "documentId": document_id,
         "documentClassification": final_classification,
-        "modelIds": _model_ids(event),
-        **({"appOrigin": event.get("appOrigin")} if event.get("appOrigin") else {}),
+        "tracking": tracking,
         "extractedEntities": _entities_for_envelope(main or {}),
         "validation": {
             "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
@@ -658,6 +682,11 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
         "processedAt": result.get("processedAt"),
         "processingSeconds": result.get("processingSeconds"),
         "processingMs": result.get("processingMs"),
+        # Kept here too (not just at the envelope's top-level `tracking`,
+        # see _run_expediente): this is the per-expediente detail — which
+        # schema/type versions actually processed THIS expediente, its own
+        # processing window — useful on its own even without reading the
+        # top-level summary, and existing consumers already read it from here.
         "tracking": result.get("tracking"),
         "sourceFormat": result.get("sourceFormat"),
         "pages": result.get("pages"),
