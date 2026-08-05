@@ -620,10 +620,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     // GET /documents?field=<dot.path>&value=<v>  → search by any extracted field
     // GET /documents/{id}                        → full result for one document
+    // GET /documents/{id}/file                    → presigned S3 URL to the original uploaded file
     const queryIntegration = new apigateway.LambdaIntegration(queryFn);
     const documentsResource = api.root.addResource("documents");
     documentsResource.addMethod("GET", queryIntegration, methodOptions);
-    documentsResource.addResource("{id}").addMethod("GET", queryIntegration, methodOptions);
+    const documentByIdResource = documentsResource.addResource("{id}");
+    documentByIdResource.addMethod("GET", queryIntegration, methodOptions);
+    documentByIdResource.addResource("file").addMethod("GET", queryIntegration, methodOptions);
 
     // ---- Prod hardening: API keys + usage plan, WAF, custom domain ----------
     if (isProd) {

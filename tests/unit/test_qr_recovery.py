@@ -249,7 +249,7 @@ def test_factura_honorarios_reconciles_cfdi_expenses_and_balance():
         expected_values={"RECEPTOR_RFC": "XEXX010101000"}
     )
 
-    _, checks = resolve_field_tree(values, {}, entry, context)
+    _, checks, _ = resolve_field_tree(values, {}, entry, context)
 
     assert not [check for check in checks if not check.valid]
     assert not [check for check in checks if check.skipped]

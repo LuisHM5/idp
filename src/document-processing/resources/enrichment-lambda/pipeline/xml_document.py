@@ -230,7 +230,7 @@ def process_xml(
         entity_map["LIQUIDACION_NORMALIZADA"] = liq
 
     ctx = ValidationContext(expected_values=expected_values, sibling_documents=[], document_text="")
-    resolved_tree, checks = engine.resolve_field_tree(
+    resolved_tree, checks, _effective_confidences = engine.resolve_field_tree(
         entity_map, confidences, entry, ctx, default_source="XML_EXTRACTION",
     )
     status = engine.document_status_from_checks(checks)

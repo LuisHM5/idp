@@ -277,13 +277,16 @@ def process_pdf(
             # boolean with `qr_source: "valid"` can carry a `boolean_true`
             # rule, so normal rule dispatch handles it without a TYPE_ID or
             # output-field special case here.
-            resolved_tree, checks = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
+            resolved_tree, checks, effective_confidences = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
             doc["checks"] = checks_to_json(checks)
             doc["status"] = engine.document_status_from_checks(checks)
             doc["businessDestination"] = entry.business_destination or None
-            conf_values = [v for v in confidences.values() if v is not None]
+            # Average the post-capping (trust-aware) confidences, not the raw
+            # model×OCR ones — a field demoted by a failed check should pull
+            # the document-level number down too, not just its own node.
+            conf_values = [v for v in effective_confidences.values() if v is not None]
             doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else None
             # Persisted (not popped) — handler.py's envelope assembly needs to
             # know, per document, whether `extractedEntities` is already the

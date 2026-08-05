@@ -159,15 +159,20 @@ _ALLOWED_BINOPS = {
 
 def evaluate_formula(
     formula: str, entity_map: Dict[str, Any]
-) -> Tuple[Optional[float], List[str]]:
+) -> Tuple[Optional[float], List[str], List[str]]:
     """Safely evaluate an arithmetic formula over entity fields.
 
     Supports identifiers, + - * /, parentheses and SUM(ARRAY.FIELD).
     Missing or non-numeric operands evaluate to 0 and are reported in the
-    returned assumption list. Returns (value, assumptions) or (None, errors)
-    when the formula is malformed.
+    returned assumption list. Returns (value, assumptions, operand_fields) or
+    (None, errors, operand_fields) when the formula is malformed — the third
+    element lists every plain identifier the formula referenced (present or
+    not), in first-seen order, so a caller can attribute a failed comparison
+    back to each field it depends on instead of only the field the rule was
+    declared under (see `_check_formula`'s `operand_fields` detail).
     """
     assumptions: List[str] = []
+    operand_fields: List[str] = []
 
     def sum_repl(m: re.Match) -> str:
         total, counted, skipped = _sum_path(entity_map, m.group(1))
@@ -180,7 +185,7 @@ def evaluate_formula(
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError:
-        return None, [f"malformed formula: {formula}"]
+        return None, [f"malformed formula: {formula}"], operand_fields
 
     def ev(node: ast.AST) -> float:
         if isinstance(node, ast.Expression):
@@ -195,6 +200,8 @@ def evaluate_formula(
             name = node.id
             if not _IDENT_RE.match(name):
                 raise ValueError(f"identifier not allowed: {name}")
+            if name not in operand_fields:
+                operand_fields.append(name)
             raw = entity_map.get(name)
             amount = parse_amount(raw)
             if amount is None:
@@ -204,9 +211,9 @@ def evaluate_formula(
         raise ValueError(f"expression not allowed: {ast.dump(node)}")
 
     try:
-        return float(ev(tree)), assumptions
+        return float(ev(tree)), assumptions, operand_fields
     except (ValueError, ZeroDivisionError) as e:
-        return None, [str(e)]
+        return None, [str(e)], operand_fields
 
 
 # ---------------------------------------------------------------- rule handlers
@@ -278,7 +285,7 @@ def _check_formula(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleChec
             f"'{rule.field}' has no numeric value to compare against formula",
             skipped=True,
         )
-    computed, assumptions = evaluate_formula(formula, entity_map)
+    computed, assumptions, operand_fields = evaluate_formula(formula, entity_map)
     if computed is None:
         return RuleCheck(rule.field, rule.rule_type, False, "; ".join(assumptions), skipped=True)
     tol = _tolerance(rule)
@@ -287,6 +294,13 @@ def _check_formula(rule: ValidationRule, entity_map: Dict[str, Any]) -> RuleChec
     detail = {"declared": declared, "computed": round(computed, 4), "tolerance": tol}
     if assumptions:
         detail["assumptions"] = assumptions
+    if not ok and operand_fields:
+        # Which named field is actually wrong is ambiguous from a failed sum
+        # alone (e.g. VALOR_ADUANA vs PRECIO_PAGADO_VALOR_COMERCIAL look
+        # alike on the page and get swapped) — record every operand so
+        # `resolve_field_tree` can flag each one as a possible culprit
+        # instead of only the field the rule happens to be declared under.
+        detail["operand_fields"] = operand_fields
     return RuleCheck(
         rule.field, rule.rule_type, ok,
         f"{rule.field}={declared} matches formula ({computed:.2f} ± {tol})" if ok
@@ -340,11 +354,14 @@ def _check_equals_field(rule: ValidationRule, entity_map: Dict[str, Any]) -> Rul
     tol = _tolerance(rule)
     diff = abs(declared - other)
     ok = diff <= tol
+    detail = {"declared": declared, "other": other, "tolerance": tol}
+    if not ok:
+        detail["operand_fields"] = [source]
     return RuleCheck(
         rule.field, "equals_field", ok,
         f"{rule.field}={declared} matches {source} ({other})" if ok
         else (rule.message or f"{rule.field}={declared} differs from {source}={other} by {diff:.2f}"),
-        details={"declared": declared, "other": other, "tolerance": tol},
+        details=detail,
     )
 
 
@@ -693,7 +710,7 @@ def resolve_field_tree(
     ctx: Optional[ValidationContext] = None,
     computed_field_names: Optional[set] = None,
     default_source: str = "MODEL_EXTRACTION",
-) -> Tuple[Dict[str, Any], List[RuleCheck]]:
+) -> Tuple[Dict[str, Any], List[RuleCheck], Dict[str, Optional[float]]]:
     """Field-centric DSL (schema_version 4.x) equivalent of
     `resolve_fields()` — walks `type_entry.field_tree` and returns ONE
     recursive structure per field instead of the legacy trio of raw values
@@ -714,6 +731,35 @@ def resolve_field_tree(
     (e.g. `pipeline.xml_document`, which parses deterministic XML source data)
     pass their own label here so the output honestly describes where a value
     came from instead of implying an LLM extracted it.
+
+    Trust determination (`valid`/`confidence`) is not raw model self-report
+    alone — it is deliberately conservative:
+    - A `custom_formula`/`cfdi_total`/`equals_field` check failure is
+      attributed not just to the field the rule is declared under, but to
+      every field its formula reads (`RuleCheck.details["operand_fields"]`,
+      see `_check_formula`/`_check_equals_field`): when two fields can be
+      confused on the source document (e.g. VALOR_ADUANA vs
+      PRECIO_PAGADO_VALOR_COMERCIAL), a mismatch flags both as possible
+      culprits (severity "warning") instead of only the one the rule
+      happens to live on, leaving the actual bad field looking `valid`.
+    - `confidence < min_confidence` now also appends a `RuleCheck` (it used
+      to only set the node's own `valid`/`reason`), so
+      `document_status_from_checks` — the function every field-tree caller
+      uses for the document-level status — actually sees it instead of
+      silently missing every LOW_CONFIDENCE-equivalent field.
+    - A field whose `valid` is False for any of the above reasons never
+      reports a `confidence` at or above `min_confidence` — the self/OCR
+      combined number is capped below threshold, because a model/OCR that's
+      "sure" about a value the system independently knows is wrong is not
+      a trustworthy number (see `documentacion/TESTS.md`'s
+      `raise_min_confidence` finding: raw self-reported confidence alone is
+      not a reliable correctness signal).
+
+    Returns `(resolved_tree, checks, effective_confidences)` — the third
+    element is `path -> confidence` for every scalar leaf actually resolved
+    (post-capping), so a caller computing a document-level average (see
+    `pipeline/expediente.py`) reflects the same trust determination as the
+    per-field values instead of averaging the pre-cap raw numbers.
     """
     ctx = ctx or ValidationContext()
     computed_field_names = computed_field_names or set()
@@ -732,6 +778,30 @@ def resolve_field_tree(
         result = _dispatch_rule(rule, value, entity_map, ctx)
         if result is not None:
             checks.append(result)
+
+    # A failed cross-field check (formula/equals_field) names every field it
+    # read in `details["operand_fields"]`. Flag each one that isn't already
+    # the rule's own field as a possible culprit — "warning" severity, since
+    # we don't know WHICH operand is actually wrong, only that one of them
+    # is. Without this, only the field the rule happens to be declared under
+    # gets demoted, and a genuinely wrong sibling field keeps looking valid
+    # with a high self-reported confidence (the exact failure mode
+    # documented in documentacion/TESTS.md for PRECIO_PAGADO_VALOR_COMERCIAL
+    # vs VALOR_ADUANA).
+    operand_checks: List[RuleCheck] = []
+    for c in checks:
+        if c.skipped or c.valid or not c.details:
+            continue
+        for operand in c.details.get("operand_fields") or ():
+            if operand == c.field:
+                continue
+            operand_checks.append(RuleCheck(
+                operand, f"{c.rule}_operand", False,
+                f"possible source of failed check on '{c.field}': {c.message}",
+                severity="warning",
+                details={"related_field": c.field, "related_rule": c.rule},
+            ))
+    checks.extend(operand_checks)
 
     checks_by_field: Dict[str, List[RuleCheck]] = {}
     for c in checks:
@@ -805,6 +875,21 @@ def resolve_field_tree(
         confidence = confidences.get(path, fallback_conf)
         if valid and confidence is not None and confidence < type_entry.min_confidence:
             valid, reason = False, f"confidence {confidence} below minimum {type_entry.min_confidence}"
+            # Previously this only demoted the node's own valid/reason —
+            # document_status_from_checks (what every field-tree caller uses
+            # for the document-level status) reads `checks`, not the tree, so
+            # a below-threshold field never affected document status. Record
+            # it as a real check so it does.
+            checks.append(RuleCheck(path, "min_confidence", False, reason, severity="warning"))
+        elif not valid and confidence is not None and type_entry.min_confidence > 0 and confidence >= type_entry.min_confidence:
+            # This field is untrustworthy for a reason the raw model×OCR
+            # number can't see (its own rule failed, or it's an implicated
+            # operand of a failed cross-field check elsewhere) — don't let a
+            # high self-reported number contradict that. Cap it below
+            # threshold so `confidence` alone tells the truth, not just
+            # `valid`.
+            confidence = round(max(0.0, min(confidence, type_entry.min_confidence - 0.01)), 4)
+        effective_confidences[path] = confidence
         return {
             "value": resolved_value,
             "confidence": confidence,
@@ -813,11 +898,12 @@ def resolve_field_tree(
             "source": source,
         }
 
+    effective_confidences: Dict[str, Optional[float]] = {}
     result = {
         name: walk_node(spec, name, entity_map.get(name), name in computed_field_names, None)
         for name, spec in type_entry.field_tree.items()
     }
-    return result, checks
+    return result, checks, effective_confidences
 
 
 def document_status_from_checks(checks: List[RuleCheck]) -> str:

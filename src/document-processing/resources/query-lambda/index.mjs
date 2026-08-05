@@ -1,12 +1,21 @@
 /**
  * QueryLambda - Read/search processed documents.
  *
- * Two endpoints (both GET, public like the upload API):
+ * Three endpoints (all GET, public like the upload API unless the stage
+ * requires an API key — see AMBIENTES_Y_SEGURIDAD.md):
  *
  *   GET /documents/{id}
  *       Returns the full result for a document id. Reads the complete result
  *       from S3 (results/{id}.json) when available, else the compact envelope
  *       stored in DynamoDB. The id may be a prefix — the first match wins.
+ *
+ *   GET /documents/{id}/file
+ *       Returns a short-lived presigned S3 GET URL for the ORIGINAL uploaded
+ *       file (the PDF/image/XML/XLSX itself, not the extraction result).
+ *       Bytes never pass through this Lambda or API Gateway — see
+ *       `findSourceObject`/`getFileById` below and
+ *       documentacion/API_USO.md for why (size limits) and the access-control
+ *       implications of a presigned URL / a single shared API key.
  *
  *   GET /documents?docType=<tipo>[&field=<dot.path>&value=<v>][&op=eq|contains]
  *                 [&status=<s>][&since=&until=][&order=desc|asc][&limit=N]
@@ -31,6 +40,16 @@
  * enrichment Lambda — see enrichment-lambda/indexing.py. Documents processed
  * before those columns existed are invisible to the GSI until backfilled with
  * `pnpm backfill:index`.
+ *
+ * Authorization model (read this before wiring up `/file` in a new caller):
+ * every route here is scoped to the WHOLE bucket/table, not to the caller's
+ * app. `x-api-key` identifies which app is calling (see upload-lambda's
+ * `resolveAppOrigin`, recorded as `app-origin`/`Tracking.AppOrigin` for
+ * traceability) but nothing here checks it against the document being read —
+ * any valid key can fetch any document's result AND original file, including
+ * ones uploaded by a different app. A single system-wide key is effectively a
+ * master key for every file in the environment. See "Seguridad" in
+ * documentacion/API_USO.md.
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -41,7 +60,8 @@ import {
   QueryCommand,
   ScanCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { readFileSync } from "fs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -54,6 +74,20 @@ const BUCKET = process.env.DOCUMENT_BUCKET;
 const TYPE_INDEX = process.env.DOCUMENT_TYPE_INDEX || "DocumentTypeIndex";
 const CATALOG_TABLE = process.env.CATALOG_TABLE;
 const MAX_LIMIT = 100;
+// The blueprint moves the raw upload to processed/{id}/{filename} on any
+// execution that completes without an exception (including a RECHAZADO
+// validation outcome — that's a business result, not an infra failure), or to
+// failed/{id}/{filename} only when the execution itself threw/timed out (see
+// AGENTS.md's architecture note and patches/default-sqs-consumer-index.py).
+// GET /documents/{id} only ever returns 200 for a document that has already
+// been indexed, i.e. already moved out of raw/ — so these two prefixes are
+// exhaustive for this endpoint; raw/ is deliberately not searched.
+const SOURCE_PREFIXES = [
+  { location: "processed", prefix: "processed/" },
+  { location: "failed", prefix: "failed/" },
+];
+const DEFAULT_DOWNLOAD_EXPIRY_SECONDS = 15 * 60;
+const MAX_DOWNLOAD_EXPIRY_SECONDS = 60 * 60;
 /** Types whose items hold several documents inside (see expandContainers). */
 const CONTAINER_TYPES = ["EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"];
 /** Attributes read from the base table for every candidate. */
@@ -261,34 +295,41 @@ async function resolveType(raw) {
 
 // --------------------------------------------------------------- GET by id
 
-async function getById(id, params) {
-  const full = params.full === "1" || params.full === "true";
-
-  // Exact id first.
+/**
+ * Resolve `id` (exact or prefix) to its DynamoDB item, shared by every
+ * single-document route. Exact id first; else scan (paginating) for the
+ * first id that starts with `id`.
+ * NOTE: do NOT use Limit on the fallback Scan — on a filtered Scan, Limit
+ * caps items EXAMINED per page, not matches, so a matching item that is not
+ * first would be missed. Page through until a match is found.
+ */
+async function resolveItemById(id) {
   const exact = await ddb.send(
     new GetCommand({ TableName: TABLE, Key: { DocumentId: id } })
   );
-  let item = exact.Item;
+  if (exact.Item) return exact.Item;
 
-  // Prefix match: scan (paginating) for the first id that starts with `id`.
-  // NOTE: do NOT use Limit here — on a filtered Scan, Limit caps items
-  // EXAMINED per page, not matches, so a matching item that is not first
-  // would be missed. Page through until a match is found.
-  if (!item) {
-    let ExclusiveStartKey;
-    do {
-      const scan = await ddb.send(
-        new ScanCommand({
-          TableName: TABLE,
-          FilterExpression: "begins_with(DocumentId, :p)",
-          ExpressionAttributeValues: { ":p": id },
-          ExclusiveStartKey,
-        })
-      );
-      item = (scan.Items || [])[0];
-      ExclusiveStartKey = scan.LastEvaluatedKey;
-    } while (!item && ExclusiveStartKey);
-  }
+  let ExclusiveStartKey;
+  do {
+    const scan = await ddb.send(
+      new ScanCommand({
+        TableName: TABLE,
+        FilterExpression: "begins_with(DocumentId, :p)",
+        ExpressionAttributeValues: { ":p": id },
+        ExclusiveStartKey,
+      })
+    );
+    const item = (scan.Items || [])[0];
+    if (item) return item;
+    ExclusiveStartKey = scan.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return null;
+}
+
+async function getById(id, params) {
+  const full = params.full === "1" || params.full === "true";
+
+  const item = await resolveItemById(id);
   if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
 
   const documentId = item.DocumentId;
@@ -318,6 +359,84 @@ async function fetchFullResult(documentId) {
   } catch {
     return null;
   }
+}
+
+// ------------------------------------------------------- GET file by id
+
+/**
+ * Find the original uploaded object for `documentId` under processed/ (tried
+ * first — the common case) then failed/. Each folder is
+ * `{prefix}{documentId}/{originalFileName}` and holds exactly that one
+ * object, so a 1-key listing is enough to both confirm existence and recover
+ * the exact filename without trusting the `DocumentName` DynamoDB column
+ * (which is best-effort/derived, not authoritative — see indexing.py).
+ */
+async function findSourceObject(documentId) {
+  for (const { location, prefix } of SOURCE_PREFIXES) {
+    const listed = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: BUCKET,
+        Prefix: `${prefix}${documentId}/`,
+        MaxKeys: 1,
+      })
+    );
+    const obj = (listed.Contents || [])[0];
+    if (obj) return { key: obj.Key, location, size: obj.Size };
+  }
+  return null;
+}
+
+/**
+ * GET /documents/{id}/file — presigned S3 GET URL for the original file.
+ * Bytes never pass through Lambda/API Gateway (see the module docstring for
+ * why and its access-control implications): a REST API response is capped at
+ * 10MB by API Gateway regardless of Lambda's own limits, and expediente PDFs
+ * in this system run into the tens of MB, so proxying was never viable —
+ * this mirrors the presigned-PUT path upload-lambda already uses for large
+ * uploads (`handlePresigned`).
+ */
+async function getFileById(id, params) {
+  if (!BUCKET) return json(500, { error: "CONFIG_ERROR", message: "DOCUMENT_BUCKET not configured" });
+
+  const item = await resolveItemById(id);
+  if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  const documentId = item.DocumentId;
+
+  const source = await findSourceObject(documentId);
+  if (!source) {
+    return json(404, {
+      error: "FILE_NOT_FOUND",
+      message: `No original file found for document '${documentId}' (it may still be processing, or the source object was removed)`,
+    });
+  }
+
+  const requested = parseInt(params.expiresIn, 10);
+  const expiresIn = Number.isFinite(requested)
+    ? Math.min(Math.max(requested, 60), MAX_DOWNLOAD_EXPIRY_SECONDS)
+    : DEFAULT_DOWNLOAD_EXPIRY_SECONDS;
+
+  let downloadUrl;
+  try {
+    downloadUrl = await getSignedUrl(
+      s3,
+      new GetObjectCommand({ Bucket: BUCKET, Key: source.key }),
+      { expiresIn }
+    );
+  } catch (err) {
+    console.error("Failed to generate presigned download URL:", err);
+    return json(500, { error: "PRESIGN_FAILED", message: "Failed to generate download URL" });
+  }
+
+  return json(200, {
+    documentId,
+    fileName: source.key.split("/").pop(),
+    fileSizeBytes: source.size,
+    location: source.location, // "processed" | "failed"
+    downloadUrl,
+    downloadMethod: "GET",
+    expiresInSeconds: expiresIn,
+    expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+  });
 }
 
 // --------------------------------------------------------------- query
@@ -585,9 +704,15 @@ async function query(params) {
 
 export async function handler(event) {
   const id = event.pathParameters && event.pathParameters.id;
+  const params = event.queryStringParameters || {};
+  // `event.resource` is API Gateway's resource path template
+  // ("/documents/{id}/file" vs "/documents/{id}"), stable regardless of how
+  // `id` was URL-encoded — safer than pattern-matching `event.path`.
+  const isFileRoute = event.resource === "/documents/{id}/file";
   try {
-    if (id) return await getById(decodeURIComponent(id), event.queryStringParameters || {});
-    return await query(event.queryStringParameters || {});
+    if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params);
+    if (id) return await getById(decodeURIComponent(id), params);
+    return await query(params);
   } catch (err) {
     return json(500, { error: "INTERNAL_ERROR", message: String(err && err.message || err) });
   }

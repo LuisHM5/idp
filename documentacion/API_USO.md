@@ -33,6 +33,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
 |---|---|---|
 | `POST` | `/upload` | Subir un documento a procesar |
 | `GET`  | `/documents/{id}` | Obtener el resultado completo de un documento por su id |
+| `GET`  | `/documents/{id}/file` | Obtener una URL prefirmada de S3 para descargar el **archivo original** subido |
 | `GET`  | `/documents?docType=...` | Listar/filtrar documentos por tipo (indexado, sin Scan) |
 | `GET`  | `/documents?field=...&value=...` | Buscar documentos por cualquier campo extraído |
 
@@ -205,7 +206,56 @@ Atajo del repo (equivalente, formateado): `pnpm resultado -- --id 4ff224be`.
 
 ---
 
-## 3. `GET /documents` — Buscar por tipo y/o por cualquier campo extraído
+## 3. `GET /documents/{id}/file` — Descargar el archivo original
+
+Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo tal cual se subió (el PDF/imagen/XML/XLSX/CSV original, no el resultado de la extracción). `{id}` acepta id completo o prefijo, igual que `GET /documents/{id}`.
+
+**Por qué una URL prefirmada y no los bytes directamente:** los expedientes de este sistema llegan a decenas de MB (un expediente digital real de referencia tiene 86 páginas) y **API Gateway topa cualquier respuesta a 10 MB** — límite duro de AWS, no configurable — sin contar el límite de invocación síncrona de Lambda (6 MB). Proxyear el archivo por la Lambda simplemente no es viable para el rango de tamaños real de este sistema. En vez de eso, el endpoint firma una URL de `GetObjectCommand` (mismo mecanismo `@aws-sdk/s3-request-presigner` que ya usa `POST /upload` en modo prefirmado — ver §1b) y el cliente descarga **directo de S3**, sin pasar por Lambda ni por API Gateway. Sin tope de tamaño real.
+
+**Cómo se localiza el archivo:** el key de S3 del original **no es estático** — mientras se procesa vive en `raw/{TIPO?}/{documentId}/{archivo}`, pero al terminar la ejecución el blueprint lo mueve a `processed/{documentId}/{archivo}` (caso normal, incluida una validación RECHAZADA) o a `failed/{documentId}/{archivo}` (solo si la propia ejecución de Step Functions revienta). Como este endpoint solo responde para documentos que `GET /documents/{id}` ya puede resolver (es decir, ya salieron de `raw/`), el handler busca primero en `processed/{documentId}/` y si no hay nada, en `failed/{documentId}/` — un `ListObjectsV2` de una sola key por prefijo, no una reconstrucción a ciegas del nombre de archivo.
+
+**Respuesta `200`:**
+```json
+{
+  "documentId": "PEDIMENTO-ADUANAL-4ff224be-...",
+  "fileName": "expediente.pdf",
+  "fileSizeBytes": 8345213,
+  "location": "processed",
+  "downloadUrl": "https://documentvalidationstack-....s3.amazonaws.com/processed/...",
+  "downloadMethod": "GET",
+  "expiresInSeconds": 900,
+  "expiresAt": "2026-08-05T13:33:19.000Z"
+}
+```
+
+**Query params:**
+| Param | Default | Descripción |
+|---|---|---|
+| `expiresIn` | `900` (15 min) | Segundos de validez de la URL. Se acota entre `60` y `3600` (1h) — un valor fuera de rango se recorta, no da error. |
+
+**Errores:**
+- `404 NOT_FOUND` — no hay documento con ese id/prefijo (igual que `GET /documents/{id}`).
+- `404 FILE_NOT_FOUND` — el documento existe pero no se encontró el objeto original en `processed/`/`failed/` (documento aún en `PROCESSING`, o el objeto se borró de S3 por fuera del sistema).
+
+**Ejemplo:**
+```bash
+curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224be/file"
+# → { "downloadUrl": "https://...", ... }
+curl -sS -o expediente.pdf "$(curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224be/file" | python3 -c 'import sys,json;print(json.load(sys.stdin)["downloadUrl"])')"
+```
+
+### ⚠️ Implicaciones de seguridad — leer antes de exponer este endpoint a un tercero
+
+Este endpoint expone **bytes del archivo original** (posible PII: fotos de identificación, RFC/CURP, montos, direcciones), no solo el JSON de resultado — así que el modelo de autorización de este API pesa más aquí que en cualquier otro endpoint. Dos puntos concretos:
+
+1. **La `x-api-key` no filtra por dueño del documento.** Como ya advierte `AMBIENTES_Y_SEGURIDAD.md` ("API key = identificación + rate-limit + gate sobre TLS; no es auth fuerte"), este API **no** valida que la app dueña de la key sea la misma que subió el documento — `tracking.appOrigin` es solo trazabilidad (para saber después quién subió qué), nunca una ACL. En la práctica: **cualquier key válida (incluida una sola key compartida "por sistema") puede listar (`GET /documents?docType=...`), consultar y ahora también descargar el archivo original de CUALQUIER documento procesado en ese ambiente**, no solo los que subió esa misma app. Si varios sistemas comparten un ambiente (mismo stack dev o prod) y una key, todos pueden ver los documentos de todos. Mitigaciones posibles si esto es un problema real: (a) una key por sistema consumidor + un stack separado por sistema si los datos deben estar aislados de verdad, no solo etiquetados; (b) agregar una validación de `appOrigin` contra `tracking.appOrigin` en `query-lambda` antes de responder (cambio de código, no existe hoy); (c) subir a un authorizer Lambda/IAM si se necesita autorización real por sujeto en vez de por sistema.
+2. **La URL prefirmada es en sí misma una credencial de acceso**, independiente de la `x-api-key` que la generó: cualquiera que la obtenga (log de proxy, historial de navegador, un `Referer` filtrado, copiar-pegar a un chat) puede descargar el archivo **sin volver a pasar por autenticación** hasta que expira. Por eso el default es corto (15 min, tope 1h) — no subir `expiresIn` más de lo necesario, y tratar la URL resultante como un secreto de vida corta, no como un link para reenviar.
+
+**Tamaño de archivo — resumen:** sin límite real. La única cota que aplica es la del **upload** original (§1): ~4 MB si se subió inline, sin tope práctico si se subió vía URL prefirmada (S3 acepta objetos hasta 5 TB, `PUT` de una sola parte hasta 5 GB). La descarga hereda ese mismo tamaño sin ningún límite adicional propio, porque nunca pasa por Lambda/API Gateway.
+
+---
+
+## 4. `GET /documents` — Buscar por tipo y/o por cualquier campo extraído
 
 Dos filtros combinables:
 
@@ -330,6 +380,7 @@ Cómo lo devuelve cada endpoint:
 |---|---|---|
 | `GET /documents/{id}` | DynamoDB (`result`) | Envelope completo (con `expediente.documents[...]`) |
 | `GET /documents/{id}?full=1` | DynamoDB + S3 (`fullResult`) | Envelope + detalle por-campo `fields[]` |
+| `GET /documents/{id}/file` | DynamoDB (resolver id) + S3 (`ListObjectsV2` + URL prefirmada) | El **archivo original**, no el resultado — ver §3 |
 | `GET /documents?docType=...` | DynamoDB (Query al GSI + BatchGet) | Envelope completo por match |
 | `GET /documents?field=...` | DynamoDB (Scan) | Envelope completo por match |
 | `GET /documents?...&summary=1` | DynamoDB (Query o Scan) | Resumen ligero por match |

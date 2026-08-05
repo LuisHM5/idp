@@ -455,3 +455,23 @@ así que los defaults son holgados.
   empezar a mandar `x-api-key`. `scripts/enviar-documento.sh` ya soporta `API_KEY`.
 - API key = identificación + rate-limit + gate sobre TLS; no es auth fuerte. Si
   luego se requiere, se puede subir a IAM/Lambda authorizer sin rehacer el resto.
+- **Esto no es solo teórico desde `GET /documents/{id}/file`** (descarga del
+  archivo original vía URL prefirmada de S3, ver `API_USO.md` §3): ninguna
+  ruta de lectura (`GET /documents/{id}`, `GET /documents/{id}/file`,
+  `GET /documents`) valida que la app dueña de la `x-api-key` sea la misma
+  que subió el documento — `tracking.appOrigin` (arriba) es trazabilidad para
+  auditoría posterior, nunca una ACL evaluada en el request. Con **una sola
+  key compartida "por sistema"** (en vez de una key por app registrada vía
+  `pnpm apps:register`), cualquier proceso que tenga esa key puede listar,
+  consultar y descargar **cualquier documento de ese ambiente**, incluyendo
+  archivos originales que pueden contener PII (identificaciones, RFC/CURP,
+  montos, direcciones) — no solo los que ese mismo proceso subió. Si eso
+  importa (varios sistemas/clientes comparten un ambiente y sus documentos
+  deben estar aislados entre sí, no solo etiquetados), las opciones reales
+  hoy son: (a) una key por sistema **y** un stack separado por sistema si el
+  aislamiento debe ser real, no solo lógico; (b) agregar una validación de
+  `appOrigin` en `query-lambda` antes de responder (no implementada — cambio
+  de código); (c) un authorizer Lambda/IAM si se necesita autorización real
+  por sujeto. Una URL prefirmada, además, es una credencial de acceso en sí
+  misma una vez emitida — válida hasta que expira (default 15 min, tope 1h en
+  `/file`) para quien sea que la tenga, sin volver a pasar por `x-api-key`.
