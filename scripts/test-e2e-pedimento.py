@@ -29,6 +29,7 @@ import argparse
 import base64
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -93,15 +94,57 @@ def s3_key_exists(bucket: str, key: str, region: str) -> bool:
     return out.returncode == 0
 
 
-def upload(endpoint: str, pdf_path: Path, doc_type: str) -> dict:
+def _read_dotenv_var(path: Path, key: str) -> str | None:
+    """Lee UNA variable de un archivo estilo dotenv sin cargarlo completo
+    (evita pisar variables ya presentes en el proceso). None si el archivo o
+    la variable no existen."""
+    if not path.exists():
+        return None
+    value = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() == key:
+            value = v.strip().strip('"').strip("'")
+    return value
+
+
+def resolve_api_key(env: str) -> str | None:
+    """prod SIEMPRE requiere API_KEY explícito (nunca se autodetecta ahí, a
+    propósito). En dev, si no hay API_KEY ya exportado y .env.dev tiene
+    DEV_API_KEY_REQUIRED=true, usa automáticamente API_KEY_APP (de .env.dev
+    o ya exportado) — mismo criterio que scripts/enviar-documento.sh. Ver
+    documentacion/AMBIENTES_Y_SEGURIDAD.md."""
+    if os.environ.get("API_KEY"):
+        return os.environ["API_KEY"]
+    if env != "dev":
+        return None
+    dotenv = REPO / ".env.dev"
+    required = os.environ.get("DEV_API_KEY_REQUIRED") or _read_dotenv_var(dotenv, "DEV_API_KEY_REQUIRED") or ""
+    if required.strip().lower() != "true":
+        return None
+    key = os.environ.get("API_KEY_APP") or _read_dotenv_var(dotenv, "API_KEY_APP")
+    if key:
+        print(f"{DIM}DEV_API_KEY_REQUIRED=true detectado — usando API_KEY_APP automáticamente.{RESET}")
+    else:
+        print(f"{YELLOW}AVISO: DEV_API_KEY_REQUIRED=true pero no hay API_KEY_APP en .env.dev ni exportado — el upload probablemente reciba 403.{RESET}")
+    return key
+
+
+def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = None) -> dict:
     body = json.dumps({
         "fileName": pdf_path.name,
         "contentBase64": base64.b64encode(pdf_path.read_bytes()).decode(),
         "documentType": doc_type,
     }).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["x-api-key"] = api_key
     req = urllib.request.Request(
         f"{endpoint}/upload", data=body,
-        headers={"Content-Type": "application/json"}, method="POST",
+        headers=headers, method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -142,7 +185,8 @@ def main() -> int:
     print(f"Bucket: {bucket}")
 
     t0 = time.time()
-    upload_result = upload(endpoint, pdf_path, args.doc_type)
+    api_key = resolve_api_key(args.env)
+    upload_result = upload(endpoint, pdf_path, args.doc_type, api_key=api_key)
     doc_id = upload_result.get("documentId")
     if not doc_id:
         print(f"{RED}El API no devolvió documentId: {upload_result}{RESET}")

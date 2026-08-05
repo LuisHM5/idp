@@ -20,8 +20,48 @@
  */
 
 import { readFileSync, existsSync } from "fs";
-import { basename, extname } from "path";
+import { basename, extname, join } from "path";
 import { execSync } from "child_process";
+
+const DEV_STACK = "DocumentValidationStack-Dev";
+
+/** Lee UNA variable de un archivo estilo dotenv sin cargarlo completo. */
+function readDotEnvVar(path, key) {
+  if (!existsSync(path)) return null;
+  let value = null;
+  for (const raw of readFileSync(path, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || !line.includes("=")) continue;
+    const idx = line.indexOf("=");
+    if (line.slice(0, idx).trim() === key) {
+      value = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
+    }
+  }
+  return value;
+}
+
+/**
+ * prod SIEMPRE requiere API_KEY explícito (nunca se autodetecta ahí, a
+ * propósito). En dev (solo cuando --stack resuelve al stack de dev conocido
+ * — este script no tiene --env), si no hay API_KEY ya exportado y .env.dev
+ * tiene DEV_API_KEY_REQUIRED=true, usa automáticamente API_KEY_APP (de
+ * .env.dev o ya exportado) — mismo criterio que scripts/enviar-documento.sh
+ * y scripts/test-e2e-pedimento.py. Ver documentacion/AMBIENTES_Y_SEGURIDAD.md.
+ */
+function resolveApiKey(stackName) {
+  if (process.env.API_KEY) return process.env.API_KEY;
+  if (stackName !== DEV_STACK) return null;
+  const dotenv = join(process.cwd(), ".env.dev");
+  const required = process.env.DEV_API_KEY_REQUIRED || readDotEnvVar(dotenv, "DEV_API_KEY_REQUIRED") || "";
+  if (required.trim().toLowerCase() !== "true") return null;
+  const key = process.env.API_KEY_APP || readDotEnvVar(dotenv, "API_KEY_APP");
+  if (key) {
+    console.log("DEV_API_KEY_REQUIRED=true detectado — usando API_KEY_APP automáticamente.");
+  } else {
+    console.warn("⚠️  DEV_API_KEY_REQUIRED=true pero no hay API_KEY_APP en .env.dev ni exportado — el upload probablemente reciba 403.");
+  }
+  return key;
+}
 
 function parseArgs(args) {
   const parsed = {};
@@ -139,9 +179,12 @@ async function main() {
     metadata: { source: "test-e2e", uploadedAt: new Date().toISOString() },
   });
 
+  const apiKey = resolveApiKey(stackName);
+  const apiKeyHeader = apiKey ? `-H "x-api-key: ${apiKey}" ` : "";
+
   try {
     const response = execSync(
-      `curl -s -w "\\n%{http_code}" -X POST "${uploadUrl}" -H "Content-Type: application/json" -d @-`,
+      `curl -s -w "\\n%{http_code}" -X POST "${uploadUrl}" -H "Content-Type: application/json" ${apiKeyHeader}-d @-`,
       {
         input: body,
         encoding: "utf8",

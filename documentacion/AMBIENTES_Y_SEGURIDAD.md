@@ -7,8 +7,8 @@ API keys); `dev` queda abierto en el URL random de Amazon para probar fácil.
 |---|---|---|
 | Stack | `DocumentValidationStack-Dev` | `DocumentValidationStack` |
 | URL | `execute-api` random de Amazon | `https://idp.alsuper.com` (o random si no configuras dominio) |
-| Auth | ninguna (abierto) | **API key** (`x-api-key`) en todos los endpoints |
-| Rate limit / anti-DDoS | no | **WAF** (rate-based + managed rules) + usage plan |
+| Auth | ninguna por default; **API key** opcional vía `DEV_API_KEY_REQUIRED=true` + redeploy | **API key** (`x-api-key`) en todos los endpoints, siempre |
+| Rate limit / anti-DDoS | no (WAF no aplica en dev); throttle ciego a nivel de stage | **WAF** (rate-based + managed rules) + usage plan por app |
 | TLS | sí (execute-api) | sí (cert propio, TLS 1.2+) |
 | Recursos globales | sufijo `-dev` (`idp-broker-dev`, alias KMS `…/pipeline-dev`) | nombres base (`idp-broker`, `…/pipeline`) |
 
@@ -84,7 +84,7 @@ node scripts/import-cert.mjs --renew --arn "$CERT_ARN" \
 `CERT_ARN` no cambia; el `CustomDomainTarget` no cambia; el CNAME sigue igual.
 (ACM publica la métrica `DaysToExpiry` en CloudWatch si quieres una alarma.)
 
-## Seguridad (prod)
+## Seguridad (prod, y dev si activas `DEV_API_KEY_REQUIRED`)
 
 ### API keys — protege y evita consumo por 401/403/404
 Todos los endpoints exigen `x-api-key`. Un request sin key válida recibe **403
@@ -92,20 +92,313 @@ nativo de API Gateway sin invocar la Lambda** → **no hay consumo de backend** 
 requests no autorizados o rutas inexistentes (404). Solo requests válidos (200) o
 errores reales del backend consumen Lambda/Bedrock.
 
-Obtener el valor de la key (el deploy imprime su **id** en `ApiKeyId`):
-```bash
-aws apigateway get-api-key --api-key <ApiKeyId> --include-value \
-  --region us-east-1 --query value --output text
-```
-Usarla:
+Hay dos mecanismos de API key, que **coexisten sin conflicto** (son recursos
+AWS físicos distintos):
+
+1. **`idp-default`** — la key única gestionada por CDK (`src/document-validation-stack.ts`,
+   bloque `if (isProd)`), creada automáticamente al desplegar prod. Su id sale
+   en el output `ApiKeyId`:
+   ```bash
+   aws apigateway get-api-key --api-key <ApiKeyId> --include-value \
+     --region us-east-1 --query value --output text
+   ```
+2. **Apps registradas** — una API key + usage plan **por sistema consumidor**
+   (Promocontrol, CEDIS/ERP, Portal…), con su propio rate limit/cuota, creadas
+   **sin redeploy** contra el stack ya desplegado, vía `pnpm apps:*`
+   (`scripts/manage-apps.mjs`). Es el mecanismo recomendado para cualquier
+   app nueva — `idp-default` existe solo por compatibilidad con quien ya la
+   usaba antes de que este mecanismo existiera.
+
+Usar cualquiera de las dos keys es igual:
 ```bash
 curl -H "x-api-key: <VALOR>" https://idp.alsuper.com/documents/...
 # o con el script:
 API_KEY=<VALOR> pnpm enviar archivo.pdf PEDIMENTO_ADUANAL --env prod
 ```
-Puedes crear **una key por sistema consumidor** (Promocontrol, CEDIS/ERP, Portal…)
-para métricas y límites por módulo — se agregan en el stack (`api.addApiKey` +
-`usagePlan.addApiKey`).
+
+### Ciclo de vida de una app registrada
+
+Todos los comandos aceptan `--env dev|prod` (default `dev`), `--stack <NOMBRE>`
+explícito si el nombre del stack no es el estándar, y `--region` (default
+`AWS_REGION` o `us-east-1`). Ninguno necesita `cdk deploy`: hablan directo con
+API Gateway y con la tabla `document-validation-apps[-dev]` ya desplegada.
+
+#### 1. Generar una API key nueva (`register`)
+
+**Modo interactivo** (recomendado si no sabes de memoria qué rate limit poner)
+— corre sin flags, o con solo algunos, en una terminal real:
+```bash
+pnpm apps:register
+```
+Pregunta **solo lo que falte** (nombre, ambiente, y si falta cualquiera de
+rate-limit/burst-limit/cuota, el **volumen de documentos por día** esperado
+para esa app) y recomienda valores por tramo:
+
+| Volumen/día | rate (req/s) | burst | cuota/día sugerida |
+|---|---|---|---|
+| ≤ 50 | 5 | 10 | ~volumen×1.5 (mín. 100) |
+| 51–500 | 10 | 20 | ídem |
+| 501–2000 | 20 | 40 | ídem |
+| 2001–10000 | 40 | 80 | ídem |
+| > 10000 | 80 | 160 | ídem |
+
+(`scripts/manage-apps.mjs::VOLUME_TIERS`/`recommendLimits` — rate/burst por
+tramo porque en este dominio, subida de documentos y no llamadas de alta
+frecuencia, protegen contra un loop/burst anómalo más que limitar tráfico
+legítimo; la cuota diaria sí se calcula fino sobre el número que des, con
+30% de margen para reintentos). Cada pregunta muestra el valor recomendado
+entre corchetes — Enter lo acepta, o escribes el tuyo (como en el segundo
+ejemplo arriba: volumen 50000 recomienda rate=80, pero se aceptó `100`
+a mano). Al final pide confirmación con un resumen antes de tocar AWS.
+Cualquier flag que ya hayas pasado **no se vuelve a preguntar** — si diste
+los tres límites, tampoco pregunta el volumen. `--yes`, o correr sin TTY
+(pipes, CI), desactiva las preguntas por completo y usa flags/defaults tal
+cual (falla si falta `--name`) — igual que el comportamiento antes de que
+existiera el modo interactivo.
+
+**Modo directo**, para scripting o cuando ya sabes los números:
+```bash
+pnpm apps:register -- --name CEDIS --env prod \
+  --rate-limit 30 --burst-limit 60 --quota-per-day 10000
+```
+`--rate-limit`/`--burst-limit`/`--quota-per-day` son opcionales incluso aquí
+(default `20`/`40`/`5000`, igual que `idp-default`, sin pasar por la
+recomendación por volumen).
+
+En ambos modos: el comando imprime el valor de la key **una sola vez** en
+pantalla — cópialo antes de cerrar la terminal; si lo pierdes, se reobtiene
+con el mismo `aws apigateway get-api-key --include-value` que ya usa
+`idp-default` (ver arriba), nunca hace falta regenerarla solo por eso. Falla
+explícitamente si ya existe una app `ACTIVE` con ese nombre — para
+reemplazarla usa `rotate` (abajo), no `register` de nuevo (evita quedar con
+dos keys `ACTIVE` del mismo nombre, que ni `revoke` ni `rotate` podrían
+desambiguar solas). `--force` sí crea una key adicional a propósito si de
+verdad quieres dos credenciales activas para la misma app en paralelo.
+
+#### 2. Deshabilitar una API key (`revoke`)
+```bash
+pnpm apps:revoke -- --name CEDIS --env prod
+```
+Deja la key **inhabilitada en API Gateway** (`update-api-key` con
+`enabled=false` — cualquier request con esa key pasa a 403 nativo, gratis,
+al instante) y marca la fila en DynamoDB como `Status=REVOKED` con
+`RevokedAt`. **No borra nada**: reversible con `aws apigateway update-api-key
+--patch-operations op=replace,path=/enabled,value=true` a mano si te
+equivocaste (el script no expone un `unrevoke` porque no debería ser un caso
+común — si la necesitas de vuelta, mejor `rotate`).
+
+#### 3. Borrar una API key (`revoke --delete`)
+```bash
+pnpm apps:revoke -- --name CEDIS --env prod --delete
+```
+Primero hace lo mismo que el punto 2, y además **elimina los recursos AWS**
+(`delete-usage-plan-key` → `delete-usage-plan` → `delete-api-key`) —
+**irreversible**, el `ApiKeyId` deja de existir. La fila en DynamoDB **se
+conserva** como `Status=REVOKED` a propósito: documentos ya procesados con
+esa key guardaron el nombre de la app directamente en su `appOrigin` (no el
+`ApiKeyId`), así que borrar la fila no les haría nada — se conserva solo como
+historial de auditoría de qué apps existieron.
+
+#### 4. Regenerar/rotar una API key para la misma app (`rotate`)
+```bash
+pnpm apps:rotate -- --name CEDIS --env prod
+```
+El caso de uso típico: la key se filtró, o toca rotarla por política. Un solo
+comando: crea una key + usage plan **nuevos** con el mismo rate limit/cuota
+que tenía la app (a menos que pases `--rate-limit`/`--burst-limit`/
+`--quota-per-day` para cambiarlos también), la registra en DynamoDB, y recién
+entonces **deshabilita** (no borra) la key vieja — el orden importa: si algo
+falla creando la nueva, la vieja se queda activa en vez de dejar a la app sin
+ninguna key funcionando. Ambas filas quedan enlazadas (`RotatedFrom` en la
+nueva, `RotatedTo` en la vieja) para poder rastrear el historial de una app.
+`register --force` **no** es lo mismo que `rotate`: crea una key adicional
+sin tocar la vieja ni saber cuál reemplaza a cuál — usa `rotate` salvo que
+quieras deliberadamente dos keys activas a la vez.
+
+#### Ver el estado de todas las apps (`list`)
+```bash
+pnpm apps:list -- --env prod
+```
+Lista cada app con su `ApiKeyId`/`UsagePlanId`, límites, `Status`, fecha de
+alta y (si aplica) de revocación — Scan completo de la tabla, pensado para
+uso administrativo ocasional, no para consultarse en un hot path.
+
+#### Migrar `idp-default` al esquema de trazabilidad (`adopt`, opcional)
+```bash
+pnpm apps:adopt -- --name legacy-idp-default --api-key-id <ApiKeyId de idp-default> --env prod
+```
+No crea ninguna key ni usage plan nuevos — solo escribe en DynamoDB la fila
+que le falta a una key que **ya existe** (típicamente `idp-default`, la que
+gestiona CDK), leyendo su usage plan/límites actuales vía `aws apigateway
+get-usage-plans --key-id`. Hasta hacerlo, los documentos subidos con
+`idp-default` muestran `appOrigin: "unregistered"` (una key válida que API
+Gateway aceptó, pero que nunca se registró aquí) — sigue siendo un `appOrigin`
+válido, solo menos informativo que un nombre real.
+
+### Cómo funciona en el backend
+
+`register`/`rotate` hacen, en orden, exactamente estas llamadas (todas vía
+AWS CLI desde tu máquina, con tus propias credenciales — el script no
+despliega ni modifica ningún Lambda):
+
+1. `cloudformation describe-stack-resources` sobre el stack (`DocumentValidationStack[-Dev]`)
+   para encontrar el `RestApiId` físico (no hay que saberlo de memoria).
+2. `apigateway get-stages` sobre ese `RestApiId` para el nombre del stage
+   (`prod`, incluso en dev — es el nombre que CDK usa por default en ambos
+   ambientes, no algo que este stack fije explícitamente).
+3. `apigateway create-api-key` — crea el objeto ApiKey en API Gateway
+   (`--enabled`, con un nombre tipo `idp-<app>-<env>` solo como etiqueta
+   legible en la consola; lo único que importa para el sistema es el
+   `ApiKeyId` que devuelve).
+4. `apigateway get-api-key --include-value` — recupera el **valor real**
+   de la key (un secreto de 40 caracteres) para imprimirlo una vez; el
+   script nunca lo persiste en ningún lado, ni en DynamoDB ni en disco.
+5. `apigateway create-usage-plan` — crea el usage plan con el
+   rate/burst/quota pedidos, ya asociado al `RestApiId`+stage del paso 1-2.
+6. `apigateway create-usage-plan-key` — conecta la ApiKey del paso 3 al
+   usage plan del paso 5 (sin esto, la key existiría pero no tendría
+   throttle/cuota aplicados — seguiría exigiendo `apiKeyRequired`, pero sin
+   límites).
+7. `dynamodb put-item` en `document-validation-apps[-dev]` — la única
+   escritura que no es contra API Gateway: guarda `ApiKeyId → AppName` (y
+   los límites/estado) para que el Upload Lambda pueda resolver el nombre
+   después.
+
+Del lado de **procesar un documento** (no del script, corre en cada request):
+
+1. API Gateway valida `x-api-key` contra sus propios recursos ApiKey/UsagePlan
+   — **nativo, antes de invocar cualquier Lambda**. Si falla, 403, cero costo.
+2. Si pasa, el Upload Lambda (`upload-lambda/index.mjs`) lee
+   `event.requestContext.identity.apiKeyId` (API Gateway se lo entrega
+   automáticamente en el evento cuando el método exige key) y hace un
+   `GetItem` **directo** (no Scan) contra `document-validation-apps[-dev]`
+   por ese `ApiKeyId` — de ahí la elección de `ApiKeyId` como partition key:
+   este es el único lookup que corre en el hot path de cada subida.
+3. El nombre resuelto (`AppName`, o `"unregistered"` si la key es válida pero
+   nadie la registró aquí) viaja como metadata del objeto S3 (`app-origin`,
+   mismo mecanismo que `model-id` para el override de modelo en dev) — nunca
+   como parámetro explícito del body, así que un cliente no puede falsear
+   qué app dice ser.
+4. El SQS consumer (`patches/default-sqs-consumer-index.py`) lee esa
+   metadata con un `head_object` (barato, solo headers) y la reenvía como
+   `appOrigin` en el input de Step Functions.
+5. El enrichment Lambda la copia tal cual al JSON final (`appOrigin`), tanto
+   en el flujo estándar como en el de expediente — ver `documentacion/API_USO.md`.
+
+Si algo de esa cadena falla (permiso, key no registrada, S3 metadata perdida),
+el diseño es **fail-open a nivel de trazabilidad**: el documento se procesa
+igual, solo con `appOrigin` ausente o `"unregistered"` — nunca se bloquea una
+subida por no poder resolver quién la hizo.
+
+### Permisos IAM para ejecutar `manage-apps.mjs` de forma segura
+
+Quien corra `pnpm apps:*` necesita sus propias credenciales AWS (el script no
+asume ningún rol ni usa las de ningún Lambda) con, como mínimo:
+
+```jsonc
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      // Las acciones de administración de API Gateway (ApiKey/UsagePlan) son
+      // un caso especial de IAM: se autorizan contra ARNs de la forma
+      // arn:aws:apigateway:<region>::/<recurso> — SIN account id, porque el
+      // "recurso" es la propia API de administración de API Gateway, no un
+      // objeto de tu cuenta. get-stages necesita el RestApiId real; el resto
+      // no distingue una app de otra a nivel de ARN (API Gateway no soporta
+      // ABAC por ApiKey individual), así que el mínimo real es a nivel de
+      // acción, no de recurso específico.
+      "Sid": "GestionarApiKeysYUsagePlans",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:POST",   // create-api-key / create-usage-plan / create-usage-plan-key
+        "apigateway:GET",    // get-api-key / get-stages / get-usage-plans
+        "apigateway:PATCH",  // update-api-key (revoke)
+        "apigateway:DELETE"  // delete-api-key / delete-usage-plan / delete-usage-plan-key (--delete)
+      ],
+      "Resource": [
+        "arn:aws:apigateway:us-east-1::/apikeys",
+        "arn:aws:apigateway:us-east-1::/apikeys/*",
+        "arn:aws:apigateway:us-east-1::/usageplans",
+        "arn:aws:apigateway:us-east-1::/usageplans/*",
+        "arn:aws:apigateway:us-east-1::/restapis/*/stages"
+      ]
+    },
+    {
+      // Solo para resolver el RestApiId a partir del nombre del stack — no
+      // da acceso a modificar nada del stack.
+      "Sid": "ResolverRestApiDelStack",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStackResources",
+      "Resource": "arn:aws:cloudformation:us-east-1:<ACCOUNT_ID>:stack/DocumentValidationStack*/*"
+    },
+    {
+      // Acotado a ESTA tabla específicamente — nunca dynamodb:* genérico.
+      "Sid": "TablaDeApps",
+      "Effect": "Allow",
+      "Action": ["dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+      "Resource": "arn:aws:dynamodb:us-east-1:<ACCOUNT_ID>:table/document-validation-apps*"
+    }
+  ]
+}
+```
+
+Notas sobre esto:
+- **No hace falta acceso a Lambda, S3 ni al resto del stack** para administrar
+  apps — el script nunca los toca. Si quien administra apps solo debe poder
+  hacer eso (y nada de deploys/destroys), esta policy sola ya lo acota sin
+  darle de más.
+- API Gateway **no tiene una acción IAM separada por operación fina** (no
+  existe `apigateway:CreateApiKey` como tal) — las acciones son por verbo
+  HTTP (`GET`/`POST`/`PATCH`/`DELETE`) contra la ruta de administración; por
+  eso el mínimo privilegio real aquí es "puede administrar ApiKeys/UsagePlans
+  de esta cuenta/región", no algo más fino por app individual.
+- El valor de la key (el secreto real) solo puede leerse con
+  `apigateway:GET` sobre `/apikeys/{id}` con `includeValue=true` — la misma
+  acción que listar sin el valor. Quien tenga este permiso puede ver el
+  valor de **cualquier** API key de la cuenta en esa región, no solo las que
+  administra vía `manage-apps.mjs` (incluida `idp-default`). No hay forma de
+  acotar eso más fino a nivel de IAM sin un permission boundary custom.
+- Para dev, cambia el ARN del stack/región según corresponda
+  (`DocumentValidationStack-Dev*`, `document-validation-apps-dev`).
+
+### Dev con protección activable
+Por default dev queda abierto (sin `x-api-key`, sin usage plan). Para exigir
+key igual que prod:
+```bash
+# .env.dev
+DEV_API_KEY_REQUIRED=true
+```
+```bash
+pnpm run deploy:dev
+pnpm apps:register -- --name test-app --env dev   # sin esto, TODO devuelve 403
+```
+Es un flag de CDK (`devApiKeyRequired` en `document-validation-stack.ts`), no
+un toggle en caliente — cambiarlo siempre requiere `pnpm run deploy:dev`.
+
+**Los scripts de envío detectan esto solos.** `pnpm enviar` (`enviar-documento.sh`),
+`pnpm test:e2e:pedimento` (`test-e2e-pedimento.py`) y `pnpm test-e2e`
+(`test-e2e.mjs`) — los tres únicos que le pegan a `POST /upload` real — leen
+`.env.dev` por su cuenta: si `DEV_API_KEY_REQUIRED=true` y no exportaste
+`API_KEY` a mano, usan automáticamente **`API_KEY_APP`** (también de
+`.env.dev`, o ya exportado) como `x-api-key`, sin que tengas que repetir
+`API_KEY=... ` en cada comando. Flujo típico:
+```bash
+pnpm apps:register -- --name local-scripts --env dev   # una vez
+# pega el valor impreso en .env.dev:
+#   API_KEY_APP=<valor>
+
+pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL          # ya no hace falta API_KEY=...
+pnpm test:e2e:pedimento -- --file normal_pend.pdf
+```
+Reglas de precedencia (las mismas en los tres scripts): un `API_KEY`
+exportado en el shell (o pasado inline: `API_KEY=<valor> pnpm enviar ...`)
+**siempre gana** sobre `API_KEY_APP` — sigue siendo la forma de probar con
+una app específica sin cambiar `.env.dev`. En **prod nunca se autodetecta
+nada**: ahí `API_KEY` hay que darlo explícito siempre, a propósito (ver
+"Notas" abajo). Si `DEV_API_KEY_REQUIRED=true` pero no hay `API_KEY_APP`
+configurado, el script avisa por consola y deja que el request siga (recibirá
+403 igual — el aviso es solo para que sepas por qué).
 
 ### WAF + rate limiting + anti-DDoS
 - **Regla rate-based** por IP (default 2000 req/5min, configurable con `wafRateLimit`).

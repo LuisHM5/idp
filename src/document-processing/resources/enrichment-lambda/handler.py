@@ -94,6 +94,7 @@ def build_canonical_result(
     checks: List[CheckResult],
     status: str,
     model_ids: Optional[Dict[str, str]] = None,
+    app_origin: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the Canonical_Result output JSON."""
     total = len(checks)
@@ -111,6 +112,7 @@ def build_canonical_result(
         "documentId": document_id,
         "documentClassification": classification,
         **({"modelIds": model_ids} if model_ids else {}),
+        **({"appOrigin": app_origin} if app_origin else {}),
         "extractedEntities": entity_map,
         "validation": {
             "status": status,
@@ -524,6 +526,7 @@ def _run_expediente(
         "documentId": document_id,
         "documentClassification": final_classification,
         "modelIds": _model_ids(event),
+        **({"appOrigin": event.get("appOrigin")} if event.get("appOrigin") else {}),
         "extractedEntities": _entities_for_envelope(main or {}),
         "validation": {
             "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
@@ -769,6 +772,7 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         result = build_canonical_result(
             document_id, classification, entity_map, checks, status,
             model_ids=_model_ids(event),
+            app_origin=event.get("appOrigin"),
         )
         if reextraction_meta:
             result["validation"]["reextraction"] = reextraction_meta
@@ -789,4 +793,5 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
                 )
             ],
             "REQUIERE_REVISION",
+            app_origin=event.get("appOrigin"),
         )

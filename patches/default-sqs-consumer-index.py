@@ -2,7 +2,6 @@ import json
 import os
 import boto3
 from urllib.parse import unquote_plus
-import time
 import re
 from aws_lambda_powertools import Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
@@ -23,6 +22,7 @@ def _create_boto3_client(service_name, *service_env_keys):
 
 
 sfn_client = _create_boto3_client('stepfunctions', 'AWS_ENDPOINT_URL_STEPFUNCTIONS')
+s3_client = _create_boto3_client('s3', 'AWS_ENDPOINT_URL_S3')
 metrics = Metrics()
 tracer = Tracer()
 
@@ -66,8 +66,23 @@ def handler(event, context):
 
                     print(f'Processing S3 object: s3://{bucket}/{key}')
 
-                    # Generate unique document ID from S3 key and timestamp
-                    timestamp = int(time.time() * 1000)
+                    # Which app uploaded this (set by upload-lambda as S3
+                    # object metadata, resolved from the caller's x-api-key —
+                    # see upload-lambda/index.mjs's resolveAppOrigin). Read
+                    # here, not in the enrichment Lambda, so it reaches EVERY
+                    # document regardless of pipeline branch: the enrichment
+                    # Lambda only re-fetches the raw object (and its metadata)
+                    # for the expediente flow or when re-extraction triggers,
+                    # not on every standard-flow invocation. Best-effort and
+                    # isolated from the record's own try/except below — a
+                    # failure here (permissions, throttling, object already
+                    # moved) must never trigger an SQS retry/DLQ.
+                    app_origin = None
+                    try:
+                        head = s3_client.head_object(Bucket=bucket, Key=key)
+                        app_origin = (head.get('Metadata') or {}).get('app-origin')
+                    except Exception as e:
+                        print(f'Could not read app-origin metadata for s3://{bucket}/{key}: {e}')
 
                     # Manual classification (upload-lambda's `documentType` param)
                     # stores the object as raw/{TYPE}/{uuid}/{file} instead of the
@@ -75,27 +90,24 @@ def handler(event, context):
                     # The uuid segment immediately before the filename is always
                     # the id the Upload API returned to the caller, regardless of
                     # that optional TYPE folder, so anchor documentId on THAT
-                    # segment ALONE — not on uuid+filename. Without anchoring on
-                    # the uuid, a manually classified upload got a documentId
-                    # prefixed by TYPE instead of by the uuid, and GET /documents/{id}'s
-                    # prefix lookup could never find it even though the workflow
-                    # completed and wrote EnrichmentResult. Concatenating the
-                    # filename on top of that (the previous shape here) was a
-                    # separate, smaller wart: it made documentId noisy/harder to
-                    # read for no benefit — uniqueness already comes from the uuid
-                    # + timestamp, the filename adds nothing but clutter — and
-                    # forced `filename` (used verbatim by the blueprint's own
-                    # raw->processed/failed move, see queued-s3-adapter.js
-                    # createSuccessChain/createFailedChain) into the same
-                    # "uuid/original.ext" shape, so the archived object ended up
-                    # double-nested as processed/{documentId}/{uuid}/original.ext
-                    # instead of the expected processed/{documentId}/original.ext.
+                    # segment ALONE — not on uuid+filename, and not uuid+timestamp
+                    # either (a former version of this file appended a timestamp
+                    # "for uniqueness", but the uuid the Upload API already handed
+                    # back is unique per upload on its own — the timestamp only
+                    # ever made documentId diverge from the id callers actually
+                    # have, forcing GET /documents/{id} onto a full table Scan
+                    # instead of a direct GetItem; see query-lambda/index.mjs's
+                    # getById, which already tries an exact GetItem first).
+                    # Without anchoring on the uuid AT ALL, a manually classified
+                    # upload got a documentId prefixed by TYPE instead, and
+                    # GET /documents/{id} could never find it even though the
+                    # workflow completed and wrote EnrichmentResult.
                     key_no_prefix = key.replace(raw_prefix, '', 1)  # Remove raw/ prefix
                     key_parts = key_no_prefix.split('/')
                     uuid_segment = key_parts[-2] if len(key_parts) >= 2 else key_no_prefix.rsplit('.', 1)[0]
                     filename = key_parts[-1]  # bare original filename, e.g. "bad-pedimento.pdf"
 
-                    document_id = re.sub(r'[^a-zA-Z0-9-]', '-', uuid_segment) + '-' + str(timestamp)
+                    document_id = re.sub(r'[^a-zA-Z0-9-]', '-', uuid_segment)
 
                     # Explicit file type alongside location/bucket/key/filename,
                     # so downstream consumers (enrichment Lambda, model-invoke
@@ -116,19 +128,47 @@ def handler(event, context):
                         },
                         'eventTime': event_time,
                         'eventName': event_name,
-                        'source': 'sqs-consumer'
+                        'source': 'sqs-consumer',
+                        **({'appOrigin': app_origin} if app_origin else {})
                     }
 
                     print(f'Starting Step Functions execution with input: {json.dumps(step_function_input, indent=2)}')
 
-                    # Start Step Functions execution
+                    # Start Step Functions execution. Deterministic documentId
+                    # means a genuinely duplicate S3/SQS delivery of the SAME
+                    # object (SQS is at-least-once, not exactly-once — AWS
+                    # documents this as rare but real) reuses this exact name:
+                    # while the original execution is still running, Standard
+                    # Step Functions' own StartExecution is idempotent for a
+                    # matching name+input and just returns that execution
+                    # (https://docs.aws.amazon.com/step-functions/latest/apireference/API_StartExecution.html) —
+                    # no duplicate Bedrock/Textract billing. If the original
+                    # already finished, the SAME call instead raises
+                    # ExecutionAlreadyExists; caught below and treated as a
+                    # no-op (not re-raised) so a late duplicate lands as a
+                    # skip, not as five SQS retries ending in the DLQ.
                     execution_name = f'{document_id}-execution'[:80]  # AWS limit
 
-                    response = sfn_client.start_execution(
-                        stateMachineArn=os.environ['STATE_MACHINE_ARN'],
-                        input=json.dumps(step_function_input),
-                        name=execution_name
-                    )
+                    try:
+                        response = sfn_client.start_execution(
+                            stateMachineArn=os.environ['STATE_MACHINE_ARN'],
+                            input=json.dumps(step_function_input),
+                            name=execution_name
+                        )
+                    except sfn_client.exceptions.ExecutionAlreadyExists:
+                        metrics.add_metric(name="DuplicateExecutionSkipped", unit=MetricUnit.Count, value=1)
+                        print(
+                            f'Execution {execution_name} already exists for documentId '
+                            f'{document_id} (duplicate S3/SQS delivery, or a manual re-upload '
+                            f'to the same key) — already processed or in progress, skipping.'
+                        )
+                        results.append({
+                            'documentId': document_id,
+                            'executionArn': None,
+                            's3Location': f's3://{bucket}/{key}',
+                            'duplicate': True,
+                        })
+                        continue
 
                     print(f'Step Functions execution started: {response["executionArn"]}')
 

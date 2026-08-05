@@ -19,9 +19,12 @@
 import { randomUUID } from "node:crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 
 const s3 = new S3Client({});
+const ddb = new DynamoDBClient({});
 const BUCKET = process.env.DOCUMENT_BUCKET;
+const APPS_TABLE = process.env.APPS_TABLE;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
 // Extensions with no vision-based auto-classification at all: the enrichment
 // pipeline's xml/tabular extractors require a declared type to even parse the
@@ -107,6 +110,32 @@ function validateCommon(fileName, documentType) {
 }
 
 /**
+ * Resolve the x-api-key used for this request (API Gateway hands its
+ * ApiKeyId back on `event.requestContext.identity.apiKeyId` whenever the
+ * method has `apiKeyRequired: true`) to the human-readable app name recorded
+ * by `pnpm apps:register` (scripts/manage-apps.mjs). Fails open — a lookup
+ * problem must never block an upload — and distinguishes "no key on this
+ * request" (null, e.g. dev with the key requirement off) from "a valid key
+ * API Gateway accepted, but nobody registered it here" ("unregistered", e.g.
+ * the legacy idp-default key before `pnpm apps:adopt`).
+ */
+async function resolveAppOrigin(apiKeyId) {
+  if (!apiKeyId || !APPS_TABLE) return null;
+  try {
+    const { Item } = await ddb.send(
+      new GetItemCommand({
+        TableName: APPS_TABLE,
+        Key: { ApiKeyId: { S: apiKeyId } },
+      })
+    );
+    return Item?.AppName?.S || "unregistered";
+  } catch (err) {
+    console.error("Failed to resolve appOrigin:", err);
+    return "unregistered";
+  }
+}
+
+/**
  * Lambda handler.
  */
 export async function handler(event) {
@@ -137,12 +166,20 @@ export async function handler(event) {
     ? `raw/${manualType}/${documentId}/${fileName}`
     : `raw/${documentId}/${fileName}`;
 
+  // Which app made this request, resolved from its x-api-key (present only
+  // when the method requires one — see resolveAppOrigin above).
+  const apiKeyId = event.requestContext?.identity?.apiKeyId;
+  const appOrigin = await resolveAppOrigin(apiKeyId);
+
   // A per-request model override travels as S3 object metadata. The
   // enrichment Lambda only honours it when the deployment allows it (dev), so
   // accepting it here is inert in prod.
   const objectMetadata = { ...(metadata || {}) };
   if (typeof modelId === "string" && modelId.trim()) {
     objectMetadata["model-id"] = modelId.trim();
+  }
+  if (appOrigin) {
+    objectMetadata["app-origin"] = appOrigin;
   }
 
   if (contentBase64 === undefined || contentBase64 === null) {

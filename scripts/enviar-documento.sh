@@ -26,6 +26,12 @@
 #     para LEER el endpoint del stack, no para subir el archivo.
 #   - curl, base64
 #
+# x-api-key:
+#   - prod SIEMPRE la exige: exporta API_KEY=<valor> a mano.
+#   - dev: si .env.dev tiene DEV_API_KEY_REQUIRED=true, se usa AUTOMÁTICAMENTE
+#     API_KEY_APP (de .env.dev o ya exportado) sin que tengas que pasar nada —
+#     ver documentacion/AMBIENTES_Y_SEGURIDAD.md. API_KEY explícito siempre gana.
+#
 # El API es público (sin auth). Archivos chicos (<=~4MB) van inline como
 # base64 en el POST /upload. Archivos más grandes: POST /upload SIN
 # `contentBase64` devuelve una URL prefirmada de S3 (`uploadUrl`), y el
@@ -37,9 +43,26 @@
 
 set -euo pipefail
 
+# Directorio real del script (no depende de INIT_CWD): de aquí sale .env.dev.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Un stack por ambiente (ver bin/app.ts), igual que en scripts/track-execution.mjs.
 DEV_STACK="DocumentValidationStack-Dev"
 PROD_STACK="DocumentValidationStack"
+
+# Lee UNA variable de un archivo estilo dotenv sin sourcearlo completo (evita
+# pisar otras variables del shell por accidente). No falla si el archivo o la
+# variable no existen — solo no imprime nada.
+read_dotenv_var() {
+  local file="$1" key="$2" line val
+  [[ -f "$file" ]] || return 0
+  line="$(grep -E "^${key}=" "$file" | tail -1)"
+  [[ -n "$line" ]] || return 0
+  val="${line#*=}"
+  val="${val%\"}"; val="${val#\"}"
+  val="${val%\'}"; val="${val#\'}"
+  printf '%s' "$val"
+}
 
 STACK_NAME="${STACK_NAME:-}"
 STACK_EXPLICIT=false
@@ -159,8 +182,27 @@ echo "API_ENDPOINT = $API_ENDPOINT"
 FILE_NAME=$(basename "$FILE")
 SIZE=$(wc -c < "$FILE")
 
-# En prod el API exige `x-api-key`. Exporta API_KEY con el valor de tu key
-# (aws apigateway get-api-key --api-key <id> --include-value). En dev no hace falta.
+# En prod el API siempre exige `x-api-key`: exporta API_KEY con el valor de
+# tu key (aws apigateway get-api-key --api-key <id> --include-value) — nunca
+# se autodetecta ahí, es intencional (ver documentacion/AMBIENTES_Y_SEGURIDAD.md).
+#
+# En dev, si no diste API_KEY a mano y .env.dev tiene DEV_API_KEY_REQUIRED=true,
+# se usa automáticamente API_KEY_APP (de .env.dev o ya exportado) — regístrala
+# una vez con `pnpm apps:register -- --name local-scripts --env dev` y pega el
+# valor en .env.dev. Un API_KEY ya exportado en el shell siempre gana.
+if [[ "$ENV" == "dev" && -z "${API_KEY:-}" ]]; then
+  ENV_DEV_FILE="$SCRIPT_DIR/../.env.dev"
+  DEV_KEY_REQUIRED="${DEV_API_KEY_REQUIRED:-$(read_dotenv_var "$ENV_DEV_FILE" DEV_API_KEY_REQUIRED)}"
+  if [[ "$(printf '%s' "$DEV_KEY_REQUIRED" | tr '[:upper:]' '[:lower:]')" == "true" ]]; then
+    API_KEY="${API_KEY_APP:-$(read_dotenv_var "$ENV_DEV_FILE" API_KEY_APP)}"
+    if [[ -n "${API_KEY:-}" ]]; then
+      echo "DEV_API_KEY_REQUIRED=true detectado — usando API_KEY_APP automáticamente."
+    else
+      echo "AVISO: DEV_API_KEY_REQUIRED=true pero no hay API_KEY_APP en .env.dev ni exportado — el request probablemente reciba 403." >&2
+    fi
+  fi
+fi
+
 API_KEY_HEADER=()
 if [[ -n "${API_KEY:-}" ]]; then
   API_KEY_HEADER=(-H "x-api-key: ${API_KEY}")

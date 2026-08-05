@@ -45,4 +45,9 @@ new BedrockDocumentProcessingStack(app, stackId, {
   // Custom domain applies in prod only; unset in dev → random execute-api URL.
   domainName: environment === "prod" ? process.env.DOMAIN_NAME : undefined,
   certArn: environment === "prod" ? process.env.CERT_ARN : undefined,
+  // Dev-only toggle to require x-api-key like prod; ignored when prod (always
+  // required there regardless of this value).
+  devApiKeyRequired:
+    environment !== "prod" &&
+    (process.env.DEV_API_KEY_REQUIRED || "").trim().toLowerCase() === "true",
 });

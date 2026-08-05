@@ -74,6 +74,17 @@ export interface DocumentValidationStackProps extends cdk.StackProps {
    * @default { rateLimit: 20, burstLimit: 40, quotaPerDay: 5000 }
    */
   apiThrottle?: { rateLimit?: number; burstLimit?: number; quotaPerDay?: number };
+
+  /**
+   * In dev, require `x-api-key` on every method just like prod. Per-app keys
+   * and usage plans are registered against the deployed stack with
+   * `pnpm apps:register` (see scripts/manage-apps.mjs) — not managed by CDK,
+   * unlike the single prod `idp-default` key below. Ignored in prod (always
+   * requires a key there). Changing this needs a redeploy — there is no
+   * runtime toggle.
+   * @default false
+   */
+  devApiKeyRequired?: boolean;
 }
 
 export class BedrockDocumentProcessingStack extends cdk.Stack {
@@ -401,6 +412,46 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // payloads only carry a compact summary).
     documentBucket.grantReadWrite(enrichmentFn);
 
+    // Apps/API keys registry: `pnpm apps:register`/`list`/`revoke` (see
+    // scripts/manage-apps.mjs) create real API Gateway ApiKey+UsagePlan
+    // resources directly against this deployed stack (no redeploy per app)
+    // and record them here so the Upload Lambda can resolve an incoming
+    // `x-api-key` back to a human-readable app name for traceability
+    // (`appOrigin` on the result envelope). One table per stack — dev/prod
+    // each have their own RestApi, so their ApiKeyIds are never comparable
+    // across environments, unlike the shared catalog table above (DESTROY,
+    // not RETAIN: this is operational metadata tied to this stack's own
+    // ApiKey/UsagePlan resources, not domain data worth preserving past it).
+    // PK = ApiKeyId (not AppName): the Upload Lambda needs a direct GetItem
+    // on the hot path of every upload, not a Scan.
+    const appsTable = new dynamodb.Table(this, "AppsTable", {
+      tableName: `document-validation-apps${envSuffix}`,
+      partitionKey: { name: "ApiKeyId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // The SQS consumer (patched via patches/default-sqs-consumer-index.py)
+    // reads the uploaded object's `app-origin` S3 metadata so appOrigin
+    // reaches every document regardless of which pipeline branch handles it
+    // — its default IAM role only has states:StartExecution + logs, so it
+    // needs S3 read granted explicitly. Same construct-tree lookup pattern
+    // already used above for the ingestion bucket.
+    const sqsConsumerFn = pipeline.node
+      .findAll()
+      .find(
+        (c): c is lambda.Function =>
+          c instanceof lambda.Function && c.node.id === "SQSConsumer"
+      );
+    if (!sqsConsumerFn) {
+      throw new Error(
+        "BedrockDocumentProcessing no longer exposes a 'SQSConsumer' Lambda in its construct tree; appOrigin metadata could not be read, and the app-origin propagation patch would silently do nothing."
+      );
+    }
+    documentBucket.grantRead(sqsConsumerFn);
+
     // Cost guardrail: catch a runaway enrichment Lambda (unexpected request
     // volume, or a single invocation crawling toward its 15-minute cap) fast,
     // instead of finding out from the AWS bill. Complements the account-wide
@@ -492,9 +543,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       description: "Document upload via REST API",
       environment: {
         DOCUMENT_BUCKET: documentBucket.bucketName,
+        APPS_TABLE: appsTable.tableName,
       },
     });
     documentBucket.grantPut(uploadFn);
+    appsTable.grantReadData(uploadFn);
 
     // Query Lambda - read a document by id and search by any extracted field.
     const queryFn = new lambda.Function(this, "QueryLambda", {
@@ -552,8 +605,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // In prod every method requires an API key: requests without a valid
     // `x-api-key` get a native 403 from API Gateway WITHOUT invoking the
     // backend Lambda — so 401/403/404 never consume Lambda/Bedrock. In dev the
-    // API stays open for easy testing.
-    const methodOptions: apigateway.MethodOptions = { apiKeyRequired: isProd };
+    // API stays open for easy testing, unless devApiKeyRequired opts it into
+    // the same enforcement (per-app keys still come from `pnpm apps:register`
+    // in both cases, never from the CDK-managed idp-default block below).
+    const requireApiKey = isProd || (props?.devApiKeyRequired ?? false);
+    const methodOptions: apigateway.MethodOptions = { apiKeyRequired: requireApiKey };
 
     const uploadResource = api.root.addResource("upload");
     uploadResource.addMethod(
