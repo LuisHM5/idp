@@ -344,7 +344,6 @@ def converse_structured(
         "modelId": model_id,
         "messages": [{"role": "user", "content": [{"text": prompt}]}],
         "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0},
-        # TODO: ADD OUTPUTCONFIG
         "toolConfig": {
             "tools": [
                 {
