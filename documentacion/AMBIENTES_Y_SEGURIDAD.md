@@ -249,6 +249,78 @@ actualizar su key). Acepta cualquier subconjunto de `--rate-limit`/
 Falla si la app fue adoptada sin `UsagePlanId` conocido (no hay a qué usage
 plan aplicarle el patch) o si no hay ninguna app `ACTIVE` con ese nombre.
 
+#### 6. Restringir qué documentos y qué queries puede usar una app (`register`/`reconfigure`)
+```bash
+# ERP solo ve lo que ELLA subió (default de cualquier app nueva) — no hace falta nada:
+pnpm apps:register -- --name ERP --env prod
+
+# Portal admin: ve todo, sin restricción
+pnpm apps:reconfigure -- --name Portal --env prod --access-scope all
+
+# CEDIS: además de "solo lo suyo", nunca puede tocar otro tipo que no sea el suyo
+pnpm apps:reconfigure -- --name CEDIS --env prod --allowed-doctypes FACTURA_HONORARIOS_XML
+
+# Una app de soporte que sí necesita el buscador libre (caro, ver abajo)
+pnpm apps:reconfigure -- --name Soporte --env prod --access-scope all --allow-field-search
+```
+Tres controles, todos atributos en DynamoDB (no en API Gateway — no requieren
+redeploy ni tocan la key), aplicados por `query-lambda` en cada
+`GET /documents/{id}`, `GET /documents/{id}/file` y `GET /documents?...`:
+
+| Flag | Default (app nueva) | Qué controla |
+|---|---|---|
+| `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma. `all`: sin restricción. |
+| `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` a esos tipos — ni para subir ni para consultar otros. `none` en `reconfigure` quita la restricción. |
+| `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}`. |
+
+**Por qué 404, no 403, en un documento fuera de alcance**: `GET /documents/{id}`
+y `.../file` devuelven `404 NOT_FOUND` cuando el documento existe pero la app
+no puede verlo — igual que si no existiera. No confirmar la existencia evita
+que una app pueda enumerar/inferir qué IDs son válidos aunque no pueda leerlos.
+`GET /documents?...` (listar/buscar) simplemente omite esos resultados de
+`matches`, sin marcar error. Un `docType=` o `field=` explícitamente prohibido
+sí devuelve `403 FORBIDDEN` con el motivo — ahí la app SÍ sabe qué pidió, así
+que ocultarlo no suma nada.
+
+**Apps ya registradas antes de esto** (como `CEDIS`/`idp-default`): quedan en
+`own` por default la próxima vez que se lean (no hay redeploy que las toque),
+salvo `idp-default` sin adoptar, que se trata como `all` (ver "Cómo funciona
+en el backend"). Si una app vieja necesita ver todo, súbela explícito con
+`--access-scope all`.
+
+#### 7. Otorgar/quitar UN permiso puntual, sin reescribir todo (`grant` / `deny`)
+```bash
+# CEDIS ya tenía allowedDocTypes=PEDIMENTO_ADUANAL; agrégale FACTURA_HONORARIOS_XML
+# sin tener que saber/retipear lo que ya tenía:
+pnpm apps:grant -- --name CEDIS --env prod --doctype FACTURA_HONORARIOS_XML
+
+# Quitarle SOLO ese tipo (el resto de allowedDocTypes queda intacto):
+pnpm apps:deny -- --name CEDIS --env prod --doctype FACTURA_HONORARIOS_XML
+
+# Subir/bajar el scope o el acceso al buscador libre, igual de puntual:
+pnpm apps:grant -- --name Soporte --env prod --access-scope all --field-search
+pnpm apps:deny  -- --name Soporte --env prod --field-search
+```
+`reconfigure --allowed-doctypes A,B` **reemplaza** la lista completa — para
+agregar un tipo a una app que ya tenía otros, hay que retipearlos todos.
+`grant`/`deny --doctype` en cambio hacen **unión/diferencia** contra lo que la
+app ya tenía: `grant` nunca pisa lo existente, `deny` solo quita lo pedido. Si
+`deny` deja la lista de tipos permitidos en cero, el atributo se **quita por
+completo** (no queda un `AllowedDocTypes` vacío) — DynamoDB no admite un
+String Set vacío, y además un `AllowedDocTypes` vacío en el código de
+`query-lambda` significaría "sin restricción de tipo", justo lo contrario de
+lo que se buscaba al quitar el último tipo permitido.
+
+Antes de aplicar, ambos comandos muestran los permisos **actuales** de la app
+(scope, field-search, tipos) y qué va a cambiar, con la misma confirmación
+`(S/n)` que el resto de comandos. `--field-search` es un flag sin valor cuyo
+sentido lo fija el comando: en `grant` siempre habilita, en `deny` siempre
+deshabilita. `--access-scope own|all` sí toma un valor explícito en ambos
+comandos (por si alguna vez necesitas "otorgar" `own` a propósito, ej. una
+app que tenía `all` y quieres acotarla sin usar `reconfigure`) — la
+diferencia real entre `grant`/`deny` para `--doctype` es la única que importa
+para la mayoría de los casos: unión vs. diferencia contra la lista actual.
+
 #### Ver el estado de todas las apps (`list`)
 ```bash
 pnpm apps:list -- --env prod
@@ -325,6 +397,21 @@ Si algo de esa cadena falla (permiso, key no registrada, S3 metadata perdida),
 el diseño es **fail-open a nivel de trazabilidad**: el documento se procesa
 igual, solo con `appOrigin` ausente o `"unregistered"` — nunca se bloquea una
 subida por no poder resolver quién la hizo.
+
+**Del lado de leer** (`query-lambda`, cada `GET /documents*`): resuelve el
+`ApiKeyId` del caller igual que arriba (mismo `GetItem` contra
+`document-validation-apps[-dev]`, mismo hot-path-friendly), y con eso decide
+`accessScope`/`allowedDocTypes`/`allowFieldSearch` para esa request. Dos casos
+quedan **sin restricción** a propósito (`accessScope: "all"` implícito):
+sin `x-api-key` en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado — no hay
+identidad que restringir) y una key válida que API Gateway aceptó pero que
+**nunca se registró aquí** (`idp-default` antes de `apps:adopt` — el
+grandfather case: la key preexistente del sistema no pierde su acceso total
+solo por no haberse migrado todavía). Un fallo al resolver los permisos
+(DynamoDB caído, etc.) **también falla abierto** — un hipo en esa tabla no
+debe convertirse en que nadie pueda leer nada; esto protege segregación de
+datos entre apps ya autenticadas, no un secreto. Código: `query-lambda/index.mjs`
+→ `resolveCallerApp`/`canSeeDocument`.
 
 ### Permisos IAM para ejecutar `manage-apps.mjs` de forma segura
 

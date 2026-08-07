@@ -41,15 +41,38 @@
  * before those columns existed are invisible to the GSI until backfilled with
  * `pnpm backfill:index`.
  *
- * Authorization model (read this before wiring up `/file` in a new caller):
- * every route here is scoped to the WHOLE bucket/table, not to the caller's
- * app. `x-api-key` identifies which app is calling (see upload-lambda's
- * `resolveAppOrigin`, recorded as `app-origin`/`Tracking.AppOrigin` for
- * traceability) but nothing here checks it against the document being read —
- * any valid key can fetch any document's result AND original file, including
- * ones uploaded by a different app. A single system-wide key is effectively a
- * master key for every file in the environment. See "Seguridad" in
- * documentacion/API_USO.md.
+ * Authorization model — per-app, resolved from the caller's own x-api-key
+ * (`event.requestContext.identity.apiKeyId`, via `resolveCallerApp` below),
+ * looked up in the same `document-validation-apps[-dev]` table upload-lambda
+ * uses to resolve `appOrigin` (see `manage-apps.mjs` for how these fields
+ * are set — `apps:register`/`apps:reconfigure --access-scope/--allowed-doctypes
+ * /--allow-field-search`):
+ *
+ *   - `AccessScope: "own"` (default for any app registered from here on) —
+ *     can only read documents whose `tracking.appOrigin` (see handler.py)
+ *     equals the caller's own AppName. `"all"` — no restriction.
+ *   - `AllowedDocTypes` — if set, further narrows even an "all"-scope app to
+ *     only those types; a `GET /documents?docType=` for anything else is
+ *     rejected, and an unscoped search/list is transparently narrowed to just
+ *     these types instead of touching the rest of the table.
+ *   - `AllowFieldSearch` — whether this app may use `field=`/`value=` at all
+ *     (the Scan-based deep search, the most expensive and most abusable
+ *     route here) — default false; most apps only need `docType=`/`{id}`.
+ *
+ * A denied `GET /documents/{id}` or `/file` returns **404**, not 403 — it
+ * must not confirm that a document you can't see even exists. `query()`
+ * (list/search) silently drops out-of-scope items from `matches` rather than
+ * erroring, same principle.
+ *
+ * Two callers get NO restriction (`accessScope: "all"`, see `UNRESTRICTED`
+ * below), preserving today's behavior for them exactly: no `x-api-key` at all
+ * (dev without `DEV_API_KEY_REQUIRED`) and a valid AWS key API Gateway itself
+ * accepted but that was never registered here (e.g. `idp-default` before
+ * `pnpm apps:adopt` — the pre-existing system-wide key, a deliberate
+ * grandfather case, not a bug). A permissions-lookup failure ALSO fails open
+ * (logged, but the read proceeds unrestricted) — this guards data
+ * segregation between already-authenticated apps, not a secret, so an
+ * outage in the Apps table should not become an outage of every read.
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -73,6 +96,7 @@ const TABLE = process.env.DOCUMENT_TABLE;
 const BUCKET = process.env.DOCUMENT_BUCKET;
 const TYPE_INDEX = process.env.DOCUMENT_TYPE_INDEX || "DocumentTypeIndex";
 const CATALOG_TABLE = process.env.CATALOG_TABLE;
+const APPS_TABLE = process.env.APPS_TABLE;
 const MAX_LIMIT = 100;
 // The blueprint moves the raw upload to processed/{id}/{filename} on any
 // execution that completes without an exception (including a RECHAZADO
@@ -119,6 +143,54 @@ function resolvePath(obj, path) {
     cur = cur[key];
   }
   return cur;
+}
+
+// ---------------------------------------------------- per-app authorization
+
+/** No x-api-key, or a valid key never registered in APPS_TABLE — today's
+ * behavior, unchanged: unrestricted read access. See the module docstring. */
+const UNRESTRICTED = { appName: null, accessScope: "all", allowedDocTypes: [], allowFieldSearch: true };
+
+/**
+ * Resolve the caller's own app + permissions from its x-api-key, mirroring
+ * upload-lambda's `resolveAppOrigin` GetItem-by-ApiKeyId lookup — same table,
+ * same hot-path-friendly access pattern (direct GetItem, no Scan).
+ */
+async function resolveCallerApp(event) {
+  const apiKeyId = event.requestContext && event.requestContext.identity && event.requestContext.identity.apiKeyId;
+  if (!apiKeyId || !APPS_TABLE) return UNRESTRICTED;
+  try {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: APPS_TABLE, Key: { ApiKeyId: apiKeyId } })
+    );
+    if (!Item) return UNRESTRICTED; // valid AWS key, never registered here (e.g. idp-default) — grandfathered
+    return {
+      appName: Item.AppName,
+      accessScope: Item.AccessScope || "own",
+      allowedDocTypes: Item.AllowedDocTypes || [],
+      allowFieldSearch: !!Item.AllowFieldSearch,
+    };
+  } catch (err) {
+    console.error("Failed to resolve caller app permissions (failing open — read access unaffected):", err);
+    return UNRESTRICTED;
+  }
+}
+
+/** `tracking.appOrigin` on a result envelope — see handler.py. */
+function documentAppOrigin(envelope) {
+  return (envelope && envelope.tracking && envelope.tracking.appOrigin) || null;
+}
+
+/** Whether `caller` is allowed to see this specific document. */
+function canSeeDocument(caller, envelope) {
+  if (!envelope) return false;
+  if (caller.allowedDocTypes.length && !caller.allowedDocTypes.includes(envelope.documentClassification)) {
+    return false;
+  }
+  if (caller.accessScope === "own" && documentAppOrigin(envelope) !== caller.appName) {
+    return false;
+  }
+  return true;
 }
 
 function norm(v) {
@@ -326,11 +398,18 @@ async function resolveItemById(id) {
   return null;
 }
 
-async function getById(id, params) {
+async function getById(id, params, caller) {
   const full = params.full === "1" || params.full === "true";
 
   const item = await resolveItemById(id);
   if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+
+  const envelope = parseEnrichment(item);
+  // 404, not 403: a document outside the caller's scope must not even be
+  // confirmed to exist (see the module docstring's authorization model).
+  if (!canSeeDocument(caller, envelope)) {
+    return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  }
 
   const documentId = item.DocumentId;
   // Default result is the DynamoDB envelope (documentClassification, validation,
@@ -340,7 +419,7 @@ async function getById(id, params) {
     workflowStatus: item.WorkflowStatus,
     documentType: item.DocumentType,
     documentTypeName: item.DocumentTypeName,
-    result: parseEnrichment(item),
+    result: envelope,
   };
   // full=1 adds the deepest S3 result (per-field detail: fields[] with
   // extractedValue/normalizedValue/status/checks, full array contents).
@@ -395,11 +474,16 @@ async function findSourceObject(documentId) {
  * this mirrors the presigned-PUT path upload-lambda already uses for large
  * uploads (`handlePresigned`).
  */
-async function getFileById(id, params) {
+async function getFileById(id, params, caller) {
   if (!BUCKET) return json(500, { error: "CONFIG_ERROR", message: "DOCUMENT_BUCKET not configured" });
 
   const item = await resolveItemById(id);
   if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  // Same 404-not-403 rule as getById — this is the highest-stakes check in
+  // the file, it hands out the actual bytes.
+  if (!canSeeDocument(caller, parseEnrichment(item))) {
+    return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  }
   const documentId = item.DocumentId;
 
   const source = await findSourceObject(documentId);
@@ -554,7 +638,7 @@ async function fetchItems(documentIds) {
   return documentIds.map((id) => byId.get(id)).filter(Boolean);
 }
 
-async function query(params) {
+async function query(params, caller) {
   const field = params.field || params.path;
   const value = params.value;
   const op = params.op === "contains" ? "contains" : "eq";
@@ -586,13 +670,40 @@ async function query(params) {
       message: "'field' requires 'value'",
     });
   }
+  // The Scan-based deep search is the most expensive and most abusable route
+  // here (see the module docstring) — most apps only need docType/id lookups.
+  if (field && !caller.allowFieldSearch) {
+    return json(403, {
+      error: "FORBIDDEN",
+      message: "This app is not allowed to use field/value search. Ask for --allow-field-search if it's needed.",
+    });
+  }
 
   const resolved = [];
   for (const raw of rawTypes) {
     const r = await resolveType(raw);
     if (r) resolved.push(r);
   }
-  const docTypes = [...new Set(resolved.map((r) => r.typeId))];
+  let docTypes = [...new Set(resolved.map((r) => r.typeId))];
+
+  // AllowedDocTypes narrows (never widens) what this app can see: an
+  // unscoped search ("everything") is silently narrowed to just the allowed
+  // types instead of touching the rest of the table; an explicit docType
+  // outside that list is rejected rather than silently dropped, since the
+  // caller asked for it by name.
+  if (caller.allowedDocTypes.length) {
+    if (!docTypes.length) {
+      docTypes = [...caller.allowedDocTypes];
+    } else {
+      const denied = docTypes.filter((t) => !caller.allowedDocTypes.includes(t));
+      if (denied.length) {
+        return json(403, {
+          error: "FORBIDDEN",
+          message: `This app is not allowed to query docType(s): ${denied.join(", ")}`,
+        });
+      }
+    }
+  }
 
   const matches = [];
   let scanned = 0;
@@ -603,6 +714,7 @@ async function query(params) {
       scanned++;
       const envelope = parseEnrichment(item);
       if (!envelope) continue;
+      if (!canSeeDocument(caller, envelope)) continue;
       let matchedValue;
       let matchedAt;
       if (field) {
@@ -693,6 +805,10 @@ async function query(params) {
       summary,
       full,
       indexed: docTypes.length > 0,
+      // Present whenever the caller's own permissions shaped the results —
+      // so "why don't I see X" is answerable from the response itself.
+      ...(caller.accessScope === "own" && { restrictedToApp: caller.appName }),
+      ...(caller.allowedDocTypes.length && { restrictedToDocTypes: caller.allowedDocTypes }),
       count: matches.length,
       scanned,
       matches,
@@ -710,9 +826,10 @@ export async function handler(event) {
   // `id` was URL-encoded — safer than pattern-matching `event.path`.
   const isFileRoute = event.resource === "/documents/{id}/file";
   try {
-    if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params);
-    if (id) return await getById(decodeURIComponent(id), params);
-    return await query(params);
+    const caller = await resolveCallerApp(event);
+    if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params, caller);
+    if (id) return await getById(decodeURIComponent(id), params, caller);
+    return await query(params, caller);
   } catch (err) {
     return json(500, { error: "INTERNAL_ERROR", message: String(err && err.message || err) });
   }

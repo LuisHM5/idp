@@ -1,0 +1,604 @@
+{
+  "CERTIFICADO_POLIZA": {
+    "schema_version": "5.0.0",
+    "display_name": "Certificado de Póliza de Seguro",
+    "aliases": [
+      "certificado de póliza",
+      "certificado individual de seguro",
+      "certificado de cobertura",
+      "carátula de póliza",
+      "póliza de seguro",
+      "constancia de seguro"
+    ],
+    "description": "Certificado, carátula o constancia emitida por una aseguradora para acreditar una póliza y sus coberturas. El diseño y las etiquetas cambian entre aseguradoras y ramos; puede corresponder a gastos médicos, vida, automóvil, daños, hogar, transporte u otro seguro individual, colectivo o de grupo. Se reconoce por una combinación de número de póliza o certificado, aseguradora, contratante o asegurado, vigencia, plan/ramo y coberturas, sumas aseguradas, deducibles o primas. No confundir con recibo de pago, factura de prima, aviso de siniestro, cotización, condiciones generales sin datos individualizados ni estado de cuenta.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "CERTIFICADO_POLIZA",
+    "min_confidence": 0.8,
+    "fields": {
+      "ASEGURADORA_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre legal o comercial de la compañía aseguradora que emite el certificado. Puede aparecer en el logotipo, membrete, pie de página o texto de certificación. No tomar el nombre del agente, contratante, corredor, banco ni CONDUSEF.",
+        "validation": []
+      },
+      "ASEGURADORA_RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "RFC de la aseguradora únicamente cuando esté impreso y claramente asociado al emisor. Extraer en mayúsculas y sin espacios o guiones; no usar el RFC del contratante, asegurado, agente o proveedor.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC de la aseguradora tiene un formato inválido"
+          }
+        ]
+      },
+      "NUMERO_POLIZA": {
+        "type": "string",
+        "required": true,
+        "hint": "Identificador principal junto a etiquetas variables como 'Póliza', 'No. Póliza', 'Número de póliza', 'Policy No.' o 'Contrato'. Copiarlo literalmente, conservando letras, ceros, guiones y diagonales. No confundir con certificado, endoso, inciso, recibo, siniestro o registro CNSF.",
+        "validation": []
+      },
+      "NUMERO_CERTIFICADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número individual del certificado, constancia o integrante, identificado como 'Certificado', 'No. Certificado', 'Certificate No.' o equivalente. El formato depende de la aseguradora. No repetir NUMERO_POLIZA cuando no exista un número separado.",
+        "validation": []
+      },
+      "FOLIO_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Folio propio del documento cuando aparezca separado de la póliza y del certificado. Conservar el formato literal y dejar null si el formato no usa folio.",
+        "validation": []
+      },
+      "NUMERO_ENDOSO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de endoso, movimiento, suplemento o modificación cuando esté explícitamente etiquetado. No inferirlo de sufijos de la póliza.",
+        "validation": []
+      },
+      "NUMERO_INCISO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de inciso, unidad, riesgo o ubicación asegurada cuando el formato lo muestre. Es común en seguros de autos y daños; dejar null en otros ramos.",
+        "validation": []
+      },
+      "TIPO_SEGURO": {
+        "type": "string",
+        "required": false,
+        "hint": "Ramo, operación o tipo de seguro escrito en el título o datos de la póliza, por ejemplo Gastos Médicos Mayores, Vida, Automóvil, Daños, Hogar, Accidentes, Responsabilidad Civil, Transporte o Salud. Conservar la denominación del documento; no clasificarlo a partir de una cobertura aislada.",
+        "validation": []
+      },
+      "PLAN_PRODUCTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre del plan, producto, paquete, programa o versión comercial, aunque la aseguradora use otra etiqueta. No incluir plazo, moneda, forma de pago ni número de póliza.",
+        "validation": []
+      },
+      "MODALIDAD": {
+        "type": "string",
+        "required": false,
+        "hint": "Modalidad escrita del contrato, por ejemplo INDIVIDUAL, COLECTIVO, GRUPO, FAMILIAR o EMPRESARIAL. No inferirla únicamente porque aparezcan varios asegurados.",
+        "validation": []
+      },
+      "SUBGRUPO": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre o clave de subgrupo, colectividad, división o unidad organizacional cuando aparezca en seguros colectivos. Conservar número y descripción completos.",
+        "validation": []
+      },
+      "CATEGORIA": {
+        "type": "string",
+        "required": false,
+        "hint": "Categoría, clase, nivel o población asegurada indicada por la compañía, por ejemplo EMPLEADOS. Conservar clave y descripción; dejar null cuando el formato no use categorías.",
+        "validation": []
+      },
+      "CONTRATANTE": {
+        "type": "object",
+        "required": false,
+        "hint": "Bloque del tomador, contratante, cliente, empresa o policyholder. Las etiquetas y el desglose cambian por aseguradora. Extraer solo datos explícitamente asociados al contratante; puede ser la misma persona que el asegurado principal.",
+        "validation": [],
+        "fields": {
+          "NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre completo, denominación o razón social del contratante/tomador. No copiar el nombre de la aseguradora ni del titular si no está identificado también como contratante.",
+            "validation": []
+          },
+          "RFC": {
+            "type": "string",
+            "required": false,
+            "hint": "RFC del contratante o tomador, en mayúsculas y sin espacios ni guiones. No usar RFC de aseguradora, asegurado distinto, agente o proveedor.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+                "message": "El RFC del contratante tiene un formato inválido"
+              }
+            ]
+          },
+          "DOMICILIO": {
+            "type": "string",
+            "required": false,
+            "hint": "Domicilio completo del contratante, conservando calle, números, colonia, ciudad, entidad, código postal y país tal como aparecen. No tomar el domicilio corporativo de la aseguradora del pie de página.",
+            "validation": []
+          },
+          "NUMERO_CLIENTE": {
+            "type": "string",
+            "required": false,
+            "hint": "Número de cliente, cuenta o contratante cuando esté etiquetado. No confundir con póliza, certificado o agente.",
+            "validation": []
+          }
+        }
+      },
+      "ASEGURADOS": {
+        "type": "array",
+        "required": true,
+        "hint": "Extraer una fila por cada persona o entidad expresamente asegurada, incluidos titular y dependientes. Buscar tablas o bloques llamados Asegurado, Titular, Integrantes, Dependientes, Personas cubiertas o equivalentes; conservar el orden y no incluir al contratante si no está asegurado.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "El certificado debe identificar al menos un asegurado"
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo o razón social de la persona/entidad asegurada en esta fila.",
+            "validation": []
+          },
+          "ROL": {
+            "type": "string",
+            "required": false,
+            "hint": "Rol indicado, por ejemplo TITULAR, ASEGURADO, DEPENDIENTE, CÓNYUGE, HIJO, BENEFICIARIO o CONDUCTOR. No inferir parentesco por apellidos.",
+            "validation": []
+          },
+          "PARENTESCO": {
+            "type": "string",
+            "required": false,
+            "hint": "Parentesco literal respecto del titular cuando exista una columna o etiqueta específica. No duplicar ROL si el documento no distingue ambos conceptos.",
+            "validation": []
+          },
+          "RFC": {
+            "type": "string",
+            "required": false,
+            "hint": "RFC del asegurado de esta fila, solo cuando esté impreso y asociado inequívocamente a esa persona o entidad.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+                "message": "El RFC del asegurado tiene un formato inválido"
+              }
+            ]
+          },
+          "CURP": {
+            "type": "string",
+            "required": false,
+            "hint": "CURP del asegurado de esta fila cuando esté impresa. No reconstruirla a partir del nombre o fecha de nacimiento.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+                "message": "La CURP del asegurado tiene un formato inválido"
+              }
+            ]
+          },
+          "NUMERO_ASEGURADO": {
+            "type": "string",
+            "required": false,
+            "hint": "Número de asegurado, socio, empleado, afiliado o integrante asignado a esta fila. No usar certificado o póliza salvo que el documento lo identifique también como número del asegurado.",
+            "validation": []
+          },
+          "FECHA_NACIMIENTO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de nacimiento de esta persona. Normalizar a YYYY-MM-DD y no confundir con alta, antigüedad o vigencia.",
+            "validation": []
+          },
+          "EDAD": {
+            "type": "number",
+            "required": false,
+            "hint": "Edad impresa para esta persona. No calcularla si el documento solo muestra fecha de nacimiento.",
+            "validation": []
+          },
+          "FECHA_ALTA": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de alta, inclusión o incorporación de este asegurado. Normalizar a YYYY-MM-DD; no confundir con inicio de vigencia general.",
+            "validation": []
+          },
+          "ANTIGUEDAD": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha reconocida de antigüedad para este asegurado cuando esté impresa. Normalizar a YYYY-MM-DD; si la antigüedad se expresa como duración textual, conservarla en OBSERVACIONES de la fila.",
+            "validation": []
+          },
+          "OBSERVACIONES": {
+            "type": "string",
+            "required": false,
+            "hint": "Condición, restricción, antigüedad textual o nota específica de este asegurado. No copiar cláusulas generales aplicables a toda la póliza.",
+            "validation": []
+          }
+        }
+      },
+      "VIGENCIA_INICIO": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha inicial de cobertura junto a etiquetas como Inicio de vigencia, Desde, Fecha efectiva, Effective date o similar. Normalizar a YYYY-MM-DD. No usar fecha de expedición, alta del asegurado, antigüedad o nacimiento.",
+        "validation": []
+      },
+      "VIGENCIA_FIN": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha final de cobertura junto a Fin de vigencia, Hasta, Vencimiento, Expiration date o equivalente. Normalizar a YYYY-MM-DD. No usar fecha de expedición ni fin de un periodo de espera.",
+        "validation": [
+          {
+            "rule_type": "date_expiry",
+            "message": "El certificado o póliza ya no se encuentra vigente"
+          }
+        ]
+      },
+      "HORA_INICIO_VIGENCIA": {
+        "type": "string",
+        "required": false,
+        "hint": "Hora de inicio de vigencia cuando esté impresa junto a la fecha. Conservarla literalmente con a. m./p. m. o zona horaria; no inventar 12:00 si no aparece.",
+        "validation": []
+      },
+      "HORA_FIN_VIGENCIA": {
+        "type": "string",
+        "required": false,
+        "hint": "Hora de terminación de vigencia cuando esté impresa. Conservarla literalmente; no asumir que coincide con la hora inicial.",
+        "validation": []
+      },
+      "PLAZO": {
+        "type": "string",
+        "required": false,
+        "hint": "Plazo o duración contractual expresado por la aseguradora, por ejemplo 1 AÑO, ANUAL, TEMPORAL o VITALICIO. No calcularlo restando las fechas.",
+        "validation": []
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Moneda general de la póliza tal como está declarada, por ejemplo Moneda Nacional (M.N.), MXN, USD, dólares o UDIS. No elegirla a partir de una cobertura excepcional en otra moneda.",
+        "validation": []
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Periodicidad o forma de pago declarada, por ejemplo ANUAL, SEMESTRAL, TRIMESTRAL, MENSUAL, CONTADO o DOMICILIADO. Las aseguradoras usan etiquetas distintas; conservar el valor literal.",
+        "validation": []
+      },
+      "SUMA_ASEGURADA_GLOBAL": {
+        "type": "object",
+        "required": false,
+        "hint": "Suma asegurada principal o global destacada en la carátula/resumen. Puede ser dinero, UMAM, UDI, número de veces una unidad o una expresión como ILIMITADA/AMPARADA; no tomar automáticamente la primera fila de coberturas.",
+        "validation": [],
+        "fields": {
+          "VALOR_LITERAL": {
+            "type": "string",
+            "required": false,
+            "hint": "Valor completo tal como aparece, incluidos moneda, unidad, símbolos o expresiones como SIN LÍMITE. Este es el campo trazable cuando el valor no es puramente monetario.",
+            "validation": []
+          },
+          "MONTO": {
+            "type": "number",
+            "required": false,
+            "hint": "Importe numérico de la suma global, sin separadores ni símbolo, solo cuando el valor tenga un monto claro. Dejar null para AMPARADA, ILIMITADA o SIN TOPE.",
+            "validation": []
+          },
+          "MONEDA_O_UNIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Moneda o unidad asociada al monto, por ejemplo M.N., MXN, USD, UMAM, UMA o UDI. No asumir la moneda general si el documento no la asocia al valor.",
+            "validation": []
+          }
+        }
+      },
+      "DEDUCIBLE_GENERAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Deducible principal o general tal como aparece en la carátula/resumen, incluyendo monto, porcentaje, unidad o 'No aplica'. No tomar un deducible de cobertura específica como general.",
+        "validation": []
+      },
+      "COASEGURO_GENERAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Coaseguro, copago o participación general del asegurado, conservando porcentaje, monto, tope o 'No aplica'. No tomar el valor de una cobertura específica como general.",
+        "validation": []
+      },
+      "PRIMAS": {
+        "type": "object",
+        "required": false,
+        "hint": "Bloque de costo del seguro cuando el certificado o carátula incluya primas. Muchas constancias no muestran importes, por lo que todos los subcampos son opcionales. No tomar montos de coberturas, deducibles o sumas aseguradas.",
+        "validation": [],
+        "fields": {
+          "PRIMA_NETA": {
+            "type": "number",
+            "required": false,
+            "hint": "Prima neta antes de derechos, recargos e impuestos, sin símbolo de moneda.",
+            "validation": []
+          },
+          "RECARGO_PAGO_FRACCIONADO": {
+            "type": "number",
+            "required": false,
+            "hint": "Recargo por pago fraccionado, financiamiento o pago en parcialidades, sin símbolo de moneda.",
+            "validation": []
+          },
+          "DERECHOS_POLIZA": {
+            "type": "number",
+            "required": false,
+            "hint": "Derechos de póliza, gastos de expedición o cargo fijo equivalente, sin símbolo de moneda.",
+            "validation": []
+          },
+          "IMPUESTOS": {
+            "type": "number",
+            "required": false,
+            "hint": "IVA u otros impuestos aplicados a la prima, sin símbolo de moneda.",
+            "validation": []
+          },
+          "PRIMA_TOTAL": {
+            "type": "number",
+            "required": false,
+            "hint": "Total a pagar por la póliza después de cargos e impuestos, sin símbolo de moneda. No confundir con prima neta, suma asegurada o recibo parcial.",
+            "validation": []
+          },
+          "MONEDA": {
+            "type": "string",
+            "required": false,
+            "hint": "Moneda explícitamente asociada a las primas. No inferirla cuando el bloque de primas no la indique.",
+            "validation": []
+          }
+        }
+      },
+      "COBERTURAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Extraer una fila por cobertura, beneficio, amparo o riesgo cubierto. Los encabezados y valores cambian por aseguradora y ramo: conservar textos como AMPARADA, SIN TOPE, NO APLICA, unidades, porcentajes y monedas; no convertirlos en cero ni omitir filas sin monto.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "COBERTURA": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo de la cobertura, beneficio o riesgo de esta fila. Continuar el texto cuando esté dividido en varias líneas.",
+            "validation": []
+          },
+          "SUMA_ASEGURADA": {
+            "type": "string",
+            "required": false,
+            "hint": "Suma, límite, estatus o unidad de esta cobertura exactamente como aparece, por ejemplo '1,600,000.00 M.N.', '60,000 USD', '15 UMAM', 'Amparada', 'Sin límite' o 'No aplica'.",
+            "validation": []
+          },
+          "DEDUCIBLE": {
+            "type": "string",
+            "required": false,
+            "hint": "Deducible específico de esta cobertura, conservando monto, moneda, porcentaje, unidad, condición o 'No aplica'.",
+            "validation": []
+          },
+          "COASEGURO": {
+            "type": "string",
+            "required": false,
+            "hint": "Coaseguro, copago o participación específica de esta cobertura, incluidos porcentaje, monto o 'No aplica'.",
+            "validation": []
+          },
+          "TOPE_COASEGURO": {
+            "type": "string",
+            "required": false,
+            "hint": "Tope o máximo de coaseguro/copago para esta cobertura, incluidos monto, moneda, 'Sin Tope' o 'No aplica'.",
+            "validation": []
+          },
+          "PERIODO_ESPERA": {
+            "type": "string",
+            "required": false,
+            "hint": "Periodo de espera o carencia específico de la cobertura, por ejemplo 10 MESES, 48 MESES o NO APLICA. No confundir con vigencia de la póliza.",
+            "validation": []
+          },
+          "LIMITE_EVENTOS": {
+            "type": "string",
+            "required": false,
+            "hint": "Límite de eventos, servicios, días, consultas o indemnizaciones cuando exista una columna o nota específica.",
+            "validation": []
+          },
+          "ALCANCE_TERRITORIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "Territorio aplicable a esta cobertura, por ejemplo NACIONAL, EXTRANJERO, REPÚBLICA MEXICANA o MUNDIAL, solo si está expresamente indicado.",
+            "validation": []
+          },
+          "OBSERVACIONES": {
+            "type": "string",
+            "required": false,
+            "hint": "Condiciones, sublímites, exclusiones o notas que pertenezcan específicamente a esta cobertura. No copiar condiciones generales extensas.",
+            "validation": []
+          }
+        }
+      },
+      "BIEN_ASEGURADO": {
+        "type": "object",
+        "required": false,
+        "hint": "Datos del objeto, vehículo, inmueble, mercancía, equipo o riesgo asegurado cuando el ramo no sea exclusivamente de personas. El formato varía fuertemente; extraer solo atributos visibles y dejar el bloque vacío en seguros de vida o salud sin bien material.",
+        "validation": [],
+        "fields": {
+          "TIPO": {
+            "type": "string",
+            "required": false,
+            "hint": "Tipo de bien o riesgo: VEHÍCULO, INMUEBLE, MERCANCÍA, EQUIPO, EMBARCACIÓN u otra denominación impresa.",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": false,
+            "hint": "Descripción completa del bien, uso o riesgo asegurado sin repetir identificadores que tengan subcampo propio.",
+            "validation": []
+          },
+          "MARCA": {
+            "type": "string",
+            "required": false,
+            "hint": "Marca del vehículo, equipo u otro bien cuando esté impresa.",
+            "validation": []
+          },
+          "MODELO": {
+            "type": "string",
+            "required": false,
+            "hint": "Modelo o versión del bien. Conservarlo como string para no perder letras o ceros.",
+            "validation": []
+          },
+          "ANIO": {
+            "type": "string",
+            "required": false,
+            "hint": "Año/modelo del vehículo o bien cuando esté explícitamente etiquetado; no tomar el año de vigencia.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^(19|20)\\d{2}$",
+                "message": "El año del bien asegurado debe contener cuatro dígitos"
+              }
+            ]
+          },
+          "NUMERO_SERIE": {
+            "type": "string",
+            "required": false,
+            "hint": "Número de serie, VIN, chasis, motor, IMEI o identificador único del bien, conservando el formato literal.",
+            "validation": []
+          },
+          "PLACAS": {
+            "type": "string",
+            "required": false,
+            "hint": "Placas o matrícula del vehículo cuando estén impresas. No confundir con número de serie.",
+            "validation": []
+          },
+          "UBICACION_RIESGO": {
+            "type": "string",
+            "required": false,
+            "hint": "Domicilio, ubicación o territorio donde se encuentra el riesgo asegurado. No usar el domicilio de contratante o aseguradora salvo que esté identificado también como ubicación del riesgo.",
+            "validation": []
+          },
+          "ORIGEN": {
+            "type": "string",
+            "required": false,
+            "hint": "Origen del viaje o transporte cuando aplique a mercancías, carga o viaje asegurado.",
+            "validation": []
+          },
+          "DESTINO": {
+            "type": "string",
+            "required": false,
+            "hint": "Destino del viaje o transporte cuando aplique. No tomar el domicilio del asegurado como destino sin etiqueta explícita.",
+            "validation": []
+          }
+        }
+      },
+      "BENEFICIARIOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Lista de beneficiarios designados en seguros que los incluyan. Extraer solo personas o entidades explícitamente identificadas como beneficiarias; no incluir dependientes asegurados por ese solo hecho.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo o razón social del beneficiario.",
+            "validation": []
+          },
+          "PARENTESCO": {
+            "type": "string",
+            "required": false,
+            "hint": "Parentesco o relación con el asegurado cuando esté escrito.",
+            "validation": []
+          },
+          "PORCENTAJE": {
+            "type": "number",
+            "required": false,
+            "hint": "Porcentaje asignado al beneficiario, sin el símbolo %. No inferir repartos cuando el porcentaje no aparezca.",
+            "validation": []
+          },
+          "CARACTER": {
+            "type": "string",
+            "required": false,
+            "hint": "Carácter o condición del beneficiario, por ejemplo REVOCABLE, IRREVOCABLE, PREFERENTE o CONTINGENTE.",
+            "validation": []
+          }
+        }
+      },
+      "AGENTE": {
+        "type": "object",
+        "required": false,
+        "hint": "Datos del agente, corredor, intermediario o broker cuando aparezcan en la carátula. No confundir con la aseguradora, funcionario firmante o unidad de reclamaciones.",
+        "validation": [],
+        "fields": {
+          "NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre completo o razón social del agente/corredor/intermediario.",
+            "validation": []
+          },
+          "CLAVE": {
+            "type": "string",
+            "required": false,
+            "hint": "Clave, cédula o número de agente/corredor, conservando letras, ceros y separadores.",
+            "validation": []
+          },
+          "CONTACTO": {
+            "type": "string",
+            "required": false,
+            "hint": "Teléfono, correo o datos de contacto asociados específicamente al agente.",
+            "validation": []
+          }
+        }
+      },
+      "FECHA_EXPEDICION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha en que se emitió, expidió o firmó el certificado. Normalizar a YYYY-MM-DD. No confundir con inicio/fin de vigencia, fecha de alta o registro regulatorio.",
+        "validation": []
+      },
+      "LUGAR_EXPEDICION": {
+        "type": "string",
+        "required": false,
+        "hint": "Ciudad, entidad o lugar de expedición/firma indicado junto a la fecha. No tomar automáticamente el domicilio corporativo de la aseguradora.",
+        "validation": []
+      },
+      "FIRMANTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre y/o cargo de la persona autorizada que firma o valida el certificado. Si solo aparece 'Funcionario Autorizado' sin nombre, conservar esa leyenda.",
+        "validation": []
+      },
+      "REGISTRO_CNSF": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de registro del producto o documentación contractual ante la Comisión Nacional de Seguros y Fianzas, junto a CNSF. No confundir con póliza, certificado o registro CONDUSEF.",
+        "validation": []
+      },
+      "REGISTRO_CONDUSEF": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de registro ante CONDUSEF cuando esté impreso. No tomar teléfonos, domicilio, póliza ni registro CNSF.",
+        "validation": []
+      },
+      "OBSERVACIONES": {
+        "type": "string",
+        "required": false,
+        "hint": "Notas relevantes individualizadas sobre alcance, restricciones, territorio, renovación o condiciones especiales del certificado. Resumir solo el texto específico del riesgo o asegurado; no copiar páginas completas de condiciones generales o transcripciones legales.",
+        "validation": []
+      }
+    },
+    "cross_field_validation": []
+  }
+}

@@ -139,9 +139,9 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createSuccessChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Al terminar la ejecución SIN excepción (incluida una validación RECHAZADA — es un resultado de negocio, no una falla): mueve `raw/{TIPO?}/{uuid}/archivo` → `processed/{documentId}/{filename}`. Código propio no lo invoca directamente. |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createFailedChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Mismo movimiento pero a `failed/{documentId}/{filename}`, solo cuando la propia ejecución de Step Functions revienta (excepción no capturada, timeout) — no cuando el documento simplemente sale RECHAZADO. |
 
-### 2.4 Amazon DynamoDB — catálogo y tracking
+### 2.4 Amazon DynamoDB — catálogo, tracking y auditoría de costos
 
-Dos tablas distintas, mismo servicio:
+Tres tablas distintas, mismo servicio:
 
 | Operación | Quién la llama | Tabla | Nota |
 |---|---|---|---|
@@ -152,6 +152,8 @@ Dos tablas distintas, mismo servicio:
 | `UpdateItem` | `enrichment-lambda/indexing.py` | tracking | Promueve columnas indexadas al terminar de validar |
 | `Scan` | `enrichment-lambda/document_catalog.py` | catálogo | Carga tipos/reglas hot-reload al inicio de cada invocación |
 | `Scan` | `query-lambda/index.mjs` | catálogo | Resuelve nombre humano → `TYPE_ID` |
+| `PutItem` | `enrichment-lambda/cost_audit.py` | costos (`document-validation-costs[-dev]`) | Un item por documento procesado: $ desglosado por servicio (Bedrock segmentación/extracción/upstream, Textract, Lambda). Best-effort, tabla `RETAIN` separada de tracking — ver `COSTOS.md` §7 |
+| `Scan` / `GetItem` | `scripts/ver-costos.py` (boto3 directo, no `aws` CLI) | costos | `pnpm costos` / `pnpm costos -- --id <id>` — herramienta de auditoría, no runtime |
 
 ### 2.5 AWS Step Functions — orquestación
 

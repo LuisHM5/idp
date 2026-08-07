@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import TypeRegistryEntry, get_all_types, is_customs_type
 
@@ -163,27 +163,34 @@ def segment_pages(
     pages: List[PageText],
     declared_type: Optional[str] = None,
     model_id: Optional[str] = None,
-) -> List[Segment]:
+) -> Tuple[List[Segment], Dict[str, Any]]:
     """Split pages into typed segments.
 
     When `declared_type` names a single known type (not the multi-document
     expediente), the whole file is one segment and no model call is made.
+
+    Returns `(segments, usage_meta)` — `usage_meta` is `{}` whenever no
+    Bedrock call was made (declared type, empty input), or
+    `{"modelId": ..., "usage": {...}}` when one was, so callers can cost this
+    step the same way `text_extractor` already exposes extraction usage
+    (previously this call's tokens were only logged, never returned — a real
+    gap against Cost Explorer, see `documentacion/COSTOS.md`).
     """
     total = len(pages)
     if total == 0:
-        return []
+        return [], {}
     if declared_type and declared_type != "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO":
-        return [Segment(declared_type, 1, total, 1.0)]
+        return [Segment(declared_type, 1, total, 1.0)], {}
 
     prompt = _build_prompt(pages)
-    text, meta = converse(
-        prompt, model_id=model_id or resolve_model("segmenter"), max_tokens=4096
-    )
+    used_model_id = model_id or resolve_model("segmenter")
+    text, meta = converse(prompt, model_id=used_model_id, max_tokens=4096)
+    usage_meta = {"modelId": used_model_id, "usage": meta.get("usage") or {}}
     try:
         parsed = parse_json_response(text)
     except (ValueError, json.JSONDecodeError) as e:
         logger.error("segmenter: unparseable model output (%s); falling back to single segment", e)
-        return [Segment("OTRO", 1, total, 0.0)]
+        return [Segment("OTRO", 1, total, 0.0)], usage_meta
 
     segments: List[Segment] = []
     for d in parsed.get("documents", []):
@@ -205,10 +212,10 @@ def segment_pages(
             continue
 
     if not segments:
-        return [Segment("OTRO", 1, total, 0.0)]
+        return [Segment("OTRO", 1, total, 0.0)], usage_meta
     result = _sanitize(segments, total)
     logger.info(
         "segmenter: %d segments over %d pages (usage=%s)",
         len(result), total, meta.get("usage"),
     )
-    return result
+    return result, usage_meta

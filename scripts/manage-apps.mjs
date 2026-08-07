@@ -15,6 +15,10 @@
  *   pnpm apps:register -- --name ERP --env prod --rate-limit 30 --burst-limit 60 --quota-per-day 10000
  *   pnpm apps:rotate -- --name CEDIS --env dev          (key nueva, la vieja queda deshabilitada)
  *   pnpm apps:reconfigure -- --name CEDIS --env dev --rate-limit 50   (solo cambia límites, misma key)
+ *   pnpm apps:reconfigure -- --name CEDIS --env dev --access-scope all --allow-field-search
+ *   pnpm apps:reconfigure -- --name CEDIS --env dev --allowed-doctypes FACTURA_HONORARIOS_XML
+ *   pnpm apps:grant -- --name CEDIS --env dev --doctype PEDIMENTO_ADUANAL   (agrega SIN pisar lo existente)
+ *   pnpm apps:deny -- --name CEDIS --env dev --field-search                (quita SOLO ese permiso)
  *   pnpm apps:disable -- --name CEDIS --env dev         (deshabilita la key, no la borra)
  *   pnpm apps:enable -- --name CEDIS --env dev          (reactiva una app deshabilitada)
  *   pnpm apps:revoke -- --name CEDIS --env dev          (= disable)
@@ -22,8 +26,8 @@
  *   pnpm apps:adopt -- --name legacy-idp-default --api-key-id <ApiKeyId> --env prod
  *   pnpm apps:list -- --env prod
  *
- * TODOS los comandos que mutan algo (register/rotate/reconfigure/disable/
- * enable/revoke/adopt — `list` es de solo lectura) son interactivos cuando
+ * TODOS los comandos que mutan algo (register/rotate/reconfigure/grant/deny/
+ * disable/enable/revoke/adopt — `list` es de solo lectura) son interactivos cuando
  * corren en una terminal real y falta algún dato, y SIEMPRE terminan con una
  * confirmación S/n antes de tocar AWS — incluso si diste todos los flags,
  * salvo que pases `--yes` o no haya TTY (pipe/CI), en cuyo caso no preguntan
@@ -36,6 +40,25 @@
  *     la recomendación desde cero (aquí se edita algo que ya existe).
  *   - `revoke --delete` y `rotate` muestran una advertencia extra (son las
  *     acciones más difíciles/imposibles de deshacer) antes de confirmar.
+ *
+ * Permisos por app (ver documentacion/AMBIENTES_Y_SEGURIDAD.md → "Acceso por
+ * app" — los aplica query-lambda en cada GET /documents*). Dos formas de
+ * tocarlos, según si quieres REEMPLAZAR todo o solo AJUSTAR un permiso:
+ *   - `register`/`reconfigure --allowed-doctypes A,B`: fija la lista EXACTA
+ *     (pisa lo que hubiera). Para quitar la restricción: `--allowed-doctypes none`.
+ *   - `grant`/`deny --doctype A,B`: suma/resta esos tipos a la lista actual
+ *     SIN tocar el resto — no hace falta saber/retipear los que ya tenía.
+ * En ambos casos, los mismos tres permisos:
+ *   --access-scope own|all   own (default en register) = solo ve documentos
+ *                             que ELLA subió (tracking.appOrigin); all = sin restricción.
+ *   --allowed-doctypes A,B   (solo register/reconfigure) — ver arriba.
+ *   --doctype A,B            (solo grant/deny) — ver arriba.
+ *   --allow-field-search /
+ *   --disallow-field-search  (register/reconfigure) permite/quita el
+ *                             Scan-based GET /documents?field=&value=
+ *                             (default false — la ruta más cara y abusable).
+ *   --field-search            (grant/deny) mismo permiso, ya con el sentido
+ *                             de "otorgar"/"quitar" fijado por el comando.
  *
  * Opciones comunes:
  *   --env dev|prod     Ambiente (default: dev, igual que el deploy)
@@ -148,9 +171,40 @@ function unmarshal(item) {
     if ("S" in v) out[k] = v.S;
     else if ("N" in v) out[k] = Number(v.N);
     else if ("SS" in v) out[k] = v.SS;
+    else if ("BOOL" in v) out[k] = v.BOOL;
     else out[k] = v;
   }
   return out;
+}
+
+/**
+ * Parsea los flags de permisos por app (compartidos por `register` y
+ * `reconfigure`): --access-scope own|all, --allowed-doctypes A,B (o "none"
+ * para quitar la restricción), --allow-field-search/--disallow-field-search.
+ * `setAttrs` va directo a un put-item/update-item SET; `removeAttrs` son
+ * nombres de atributo para un REMOVE (DynamoDB no permite un String Set
+ * vacío, así que "quitar" AllowedDocTypes es un REMOVE, no un SS: []).
+ */
+function parsePermissionFlags(args) {
+  const setAttrs = {};
+  const removeAttrs = [];
+  if (args["access-scope"] !== undefined) {
+    const v = String(args["access-scope"]).trim().toLowerCase();
+    if (v !== "own" && v !== "all") fail("--access-scope debe ser 'own' o 'all'.");
+    setAttrs.AccessScope = { S: v };
+  }
+  if (args["allowed-doctypes"] !== undefined) {
+    const raw = String(args["allowed-doctypes"]).trim();
+    if (raw.toLowerCase() === "none") {
+      removeAttrs.push("AllowedDocTypes");
+    } else {
+      const list = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+      if (list.length) setAttrs.AllowedDocTypes = { SS: list };
+    }
+  }
+  if (args["allow-field-search"]) setAttrs.AllowFieldSearch = { BOOL: true };
+  if (args["disallow-field-search"]) setAttrs.AllowFieldSearch = { BOOL: false };
+  return { setAttrs, removeAttrs };
 }
 
 /** Scan completo (bajo volumen, uso administrativo — no hace falta un GSI). */
@@ -208,6 +262,27 @@ function ddbUpdateItem(table, key, attrs, region) {
       UpdateExpression: `SET ${sets.join(", ")}`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
+    },
+    region
+  );
+}
+
+/** REMOVE uno o más atributos — para "quitar" AllowedDocTypes (ver parsePermissionFlags). */
+function ddbRemoveAttrs(table, key, attrNames, region) {
+  if (!attrNames.length) return;
+  const names = {};
+  const removes = [];
+  attrNames.forEach((name, i) => {
+    names[`#r${i}`] = name;
+    removes.push(`#r${i}`);
+  });
+  ddbWrite(
+    "update-item",
+    {
+      TableName: table,
+      Key: key,
+      UpdateExpression: `REMOVE ${removes.join(", ")}`,
+      ExpressionAttributeNames: names,
     },
     region
   );
@@ -337,6 +412,10 @@ async function cmdRegister(args) {
   const rateLimit = Number(args["rate-limit"] || 20);
   const burstLimit = Number(args["burst-limit"] || 40);
   const quotaPerDay = Number(args["quota-per-day"] || 5000);
+  // Validar TODO (incl. --access-scope) antes de tocar AWS — si esto corriera
+  // después de crear la key/usage plan, un flag inválido dejaría recursos
+  // huérfanos en AWS sin fila en DynamoDB que los referencie.
+  const perms = parsePermissionFlags(args);
 
   console.log(`📋 Registrando app '${args.name}' (${envLabel}) contra ${stack}...`);
 
@@ -356,6 +435,9 @@ async function cmdRegister(args) {
     name: args.name, envLabel, apiId, stage, rateLimit, burstLimit, quotaPerDay, region,
   });
 
+  // Secure by default: AccessScope="own" (solo ve lo que ella subió) y
+  // AllowFieldSearch=false (sin el Scan caro) salvo que se pida lo contrario
+  // explícitamente — ver documentacion/AMBIENTES_Y_SEGURIDAD.md.
   ddbPutItem(
     table,
     {
@@ -368,12 +450,18 @@ async function cmdRegister(args) {
       QuotaPerDay: { N: String(quotaPerDay) },
       Environment: { S: envLabel },
       CreatedAt: { S: new Date().toISOString() },
+      AccessScope: perms.setAttrs.AccessScope || { S: "own" },
+      AllowFieldSearch: perms.setAttrs.AllowFieldSearch || { BOOL: false },
+      ...(perms.setAttrs.AllowedDocTypes ? { AllowedDocTypes: perms.setAttrs.AllowedDocTypes } : {}),
     },
     region
   );
 
   console.log(`\n✅ App '${args.name}' registrada.`);
   printNewKey({ name: args.name, apiKeyId, apiKeyValue, usagePlanId, rateLimit, burstLimit, quotaPerDay, region });
+  const scope = perms.setAttrs.AccessScope?.S || "own";
+  console.log(`   Permisos: accessScope=${scope}, allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? false}` +
+    (perms.setAttrs.AllowedDocTypes ? `, allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : ""));
 }
 
 /** Pregunta nombre/ambiente si faltan y SIEMPRE confirma antes de rotar (crea key nueva + deshabilita la vieja). */
@@ -527,8 +615,13 @@ async function cmdReconfigure(args) {
   const rateLimit = args["rate-limit"] !== undefined ? Number(args["rate-limit"]) : null;
   const burstLimit = args["burst-limit"] !== undefined ? Number(args["burst-limit"]) : null;
   const quotaPerDay = args["quota-per-day"] !== undefined ? Number(args["quota-per-day"]) : null;
-  if (rateLimit === null && burstLimit === null && quotaPerDay === null) {
-    fail("Falta al menos uno de --rate-limit/--burst-limit/--quota-per-day (esto solo cambia límites, no crea ni revoca nada — usa 'rotate' para eso).");
+  const perms = parsePermissionFlags(args);
+  const hasPermChanges = Object.keys(perms.setAttrs).length > 0 || perms.removeAttrs.length > 0;
+  if (rateLimit === null && burstLimit === null && quotaPerDay === null && !hasPermChanges) {
+    fail(
+      "Falta al menos uno de --rate-limit/--burst-limit/--quota-per-day/--access-scope/" +
+        "--allowed-doctypes/--allow-field-search (esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
+    );
   }
 
   const app = prompted.app || findAppByName(table, args.name, region, { activeOnly: true });
@@ -538,7 +631,14 @@ async function cmdReconfigure(args) {
         `Usa 'pnpm apps:list -- --table ${table}' para ver qué apps existen.`
     );
   }
-  if (!app.UsagePlanId) {
+
+  // Los límites (throttle/quota) viven en el usage plan de API Gateway y
+  // necesitan UsagePlanId; los permisos (AccessScope/AllowedDocTypes/
+  // AllowFieldSearch) son solo atributos en DynamoDB — no dependen de él, así
+  // que una app adoptada sin UsagePlanId conocido igual puede reconfigurar sus
+  // permisos, solo no sus límites.
+  const wantsLimitChange = rateLimit !== null || burstLimit !== null || quotaPerDay !== null;
+  if (wantsLimitChange && !app.UsagePlanId) {
     fail(
       `'${args.name}' no tiene UsagePlanId registrado (probablemente adoptada sin uno con 'apps:adopt') — ` +
         `ajusta su usage plan a mano en la consola/CLI, este comando no puede inferir cuál es.`
@@ -547,25 +647,181 @@ async function cmdReconfigure(args) {
 
   // Solo se tocan los campos pedidos — los que no se pasan se quedan como
   // estaban, tanto en API Gateway (JSON Patch por sub-path) como en DynamoDB.
-  const patches = [];
-  if (rateLimit !== null) patches.push(`op=replace,path=/throttle/rateLimit,value=${rateLimit}`);
-  if (burstLimit !== null) patches.push(`op=replace,path=/throttle/burstLimit,value=${burstLimit}`);
-  if (quotaPerDay !== null) patches.push(`op=replace,path=/quota/limit,value=${quotaPerDay}`);
+  if (wantsLimitChange) {
+    const patches = [];
+    if (rateLimit !== null) patches.push(`op=replace,path=/throttle/rateLimit,value=${rateLimit}`);
+    if (burstLimit !== null) patches.push(`op=replace,path=/throttle/burstLimit,value=${burstLimit}`);
+    if (quotaPerDay !== null) patches.push(`op=replace,path=/quota/limit,value=${quotaPerDay}`);
+    console.log(`⚙️  Reconfigurando límites de '${args.name}' (UsagePlanId ${app.UsagePlanId})...`);
+    run(`apigateway update-usage-plan --usage-plan-id ${app.UsagePlanId} --patch-operations ${patches.join(" ")} --output json`, region);
+  }
 
-  console.log(`⚙️  Reconfigurando límites de '${args.name}' (UsagePlanId ${app.UsagePlanId})...`);
-  run(`apigateway update-usage-plan --usage-plan-id ${app.UsagePlanId} --patch-operations ${patches.join(" ")} --output json`, region);
-
-  const updates = { UpdatedAt: { S: new Date().toISOString() } };
+  const updates = { UpdatedAt: { S: new Date().toISOString() }, ...perms.setAttrs };
   if (rateLimit !== null) updates.RateLimit = { N: String(rateLimit) };
   if (burstLimit !== null) updates.BurstLimit = { N: String(burstLimit) };
   if (quotaPerDay !== null) updates.QuotaPerDay = { N: String(quotaPerDay) };
   ddbUpdateItem(table, { ApiKeyId: { S: app.ApiKeyId } }, updates, region);
+  if (perms.removeAttrs.length) {
+    ddbRemoveAttrs(table, { ApiKeyId: { S: app.ApiKeyId } }, perms.removeAttrs, region);
+  }
 
   console.log(`\n✅ '${args.name}' reconfigurada. La API key NO cambió (${app.ApiKeyId}) — los consumidores no necesitan actualizar nada.`);
-  console.log(
-    `   rate=${rateLimit ?? app.RateLimit ?? "-"}/s burst=${burstLimit ?? app.BurstLimit ?? "-"} ` +
-      `quota/día=${quotaPerDay ?? app.QuotaPerDay ?? "-"}`
-  );
+  if (wantsLimitChange) {
+    console.log(
+      `   rate=${rateLimit ?? app.RateLimit ?? "-"}/s burst=${burstLimit ?? app.BurstLimit ?? "-"} ` +
+        `quota/día=${quotaPerDay ?? app.QuotaPerDay ?? "-"}`
+    );
+  }
+  if (hasPermChanges) {
+    console.log(
+      `   accessScope=${perms.setAttrs.AccessScope?.S ?? app.AccessScope ?? "own"} ` +
+        `allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? app.AllowFieldSearch ?? false}` +
+        (perms.setAttrs.AllowedDocTypes ? ` allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : "") +
+        (perms.removeAttrs.includes("AllowedDocTypes") ? " allowedDocTypes=(quitado, ve todos los tipos permitidos por su scope)" : "")
+    );
+  }
+}
+
+/**
+ * `AllowedDocTypes` unión/diferencia contra lo que la app YA tiene — a
+ * diferencia de `reconfigure --allowed-doctypes`, que REEMPLAZA la lista
+ * entera (hay que retipear los tipos existentes para agregar uno más), esto
+ * agrega/quita SOLO los tipos pedidos. Devuelve `{ setAttr, removeAttr }`:
+ * `removeAttr=true` cuando la resta deja la lista vacía — DynamoDB no permite
+ * un String Set vacío, así que "sin tipos restantes" es un REMOVE del
+ * atributo completo (mismo criterio que `--allowed-doctypes none`), lo que
+ * en la práctica significa "sin restricción de tipo", no "no puede ver nada".
+ */
+function computeDocTypes(current, requestedRaw, mode) {
+  const requested = String(requestedRaw)
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  const set = new Set(current || []);
+  if (mode === "add") requested.forEach((t) => set.add(t));
+  else requested.forEach((t) => set.delete(t));
+  const result = [...set];
+  return result.length ? { setAttr: { SS: result } } : { removeAttr: true };
+}
+
+/** Pregunta nombre/ambiente si faltan, busca la app, y confirma mostrando ANTES/DESPUÉS. Compartido por grant/deny. */
+async function promptGrantDeny(args, verb) {
+  if (!process.stdin.isTTY || args.yes) return { args, app: null };
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if (!args.name) args.name = await promptName(rl, `Nombre de la app a la que ${verb === "grant" ? "otorgar" : "quitar"} permisos`);
+    if (!args.env) args.env = await promptEnv(rl);
+
+    const region = args.region || process.env.AWS_REGION || "us-east-1";
+    const table = resolveAppsTable(args);
+    const app = findAppByName(table, args.name, region, { activeOnly: true });
+    if (!app) {
+      fail(
+        `No hay ninguna app ACTIVE llamada '${args.name}' en ${table}. ` +
+          `Usa 'pnpm apps:list -- --table ${table}' para ver qué apps existen.`
+      );
+    }
+    console.log(
+      `\nPermisos actuales de '${args.name}': accessScope=${app.AccessScope ?? "own"} ` +
+        `allowFieldSearch=${app.AllowFieldSearch ?? false}` +
+        (app.AllowedDocTypes ? ` allowedDocTypes=${app.AllowedDocTypes.join(",")}` : "")
+    );
+    return { args, app };
+  } finally {
+    rl.close();
+  }
+}
+
+/** Confirma con el resumen de qué va a cambiar — mismo mensaje para grant y deny, el propio caller arma `notes`. */
+async function confirmGrantDeny(args, verb, notes) {
+  if (!process.stdin.isTTY || args.yes) return;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log(`${verb === "grant" ? "Otorgar" : "Quitar"} a '${args.name}': ${notes.join(", ")}`);
+    await confirmOrExit(rl, "¿Aplicar?");
+  } finally {
+    rl.close();
+  }
+}
+
+async function cmdGrant(args) {
+  const prompted = await promptGrantDeny(args, "grant");
+  args = prompted.args;
+  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:grant -- --name <appName> [--doctype A,B] [--access-scope all] [--field-search]");
+
+  const region = args.region || process.env.AWS_REGION || "us-east-1";
+  const table = resolveAppsTable(args);
+  const app = prompted.app || findAppByName(table, args.name, region, { activeOnly: true });
+  if (!app) fail(`No hay ninguna app ACTIVE llamada '${args.name}' en ${table}.`);
+
+  const updates = { UpdatedAt: { S: new Date().toISOString() } };
+  const notes = [];
+
+  if (args["access-scope"] !== undefined) {
+    const v = String(args["access-scope"]).trim().toLowerCase();
+    if (v !== "own" && v !== "all") fail("--access-scope debe ser 'own' o 'all'.");
+    updates.AccessScope = { S: v };
+    notes.push(`accessScope=${v}`);
+  }
+  if (args.doctype !== undefined) {
+    const { setAttr } = computeDocTypes(app.AllowedDocTypes, args.doctype, "add");
+    if (setAttr) updates.AllowedDocTypes = setAttr; // "add" nunca vacía la lista, siempre hay setAttr
+    notes.push(`+doctype(s)=${args.doctype}`);
+  }
+  if (args["field-search"]) {
+    updates.AllowFieldSearch = { BOOL: true };
+    notes.push("allowFieldSearch=true");
+  }
+  if (!notes.length) {
+    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, y/o --field-search.");
+  }
+
+  await confirmGrantDeny(args, "grant", notes);
+  ddbUpdateItem(table, { ApiKeyId: { S: app.ApiKeyId } }, updates, region);
+  console.log(`\n✅ Otorgado a '${args.name}': ${notes.join(", ")}.`);
+}
+
+async function cmdDeny(args) {
+  const prompted = await promptGrantDeny(args, "deny");
+  args = prompted.args;
+  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:deny -- --name <appName> [--doctype A,B] [--access-scope own] [--field-search]");
+
+  const region = args.region || process.env.AWS_REGION || "us-east-1";
+  const table = resolveAppsTable(args);
+  const app = prompted.app || findAppByName(table, args.name, region, { activeOnly: true });
+  if (!app) fail(`No hay ninguna app ACTIVE llamada '${args.name}' en ${table}.`);
+
+  const updates = { UpdatedAt: { S: new Date().toISOString() } };
+  const removeAttrs = [];
+  const notes = [];
+
+  if (args["access-scope"] !== undefined) {
+    const v = String(args["access-scope"]).trim().toLowerCase();
+    if (v !== "own" && v !== "all") fail("--access-scope debe ser 'own' o 'all'.");
+    updates.AccessScope = { S: v };
+    notes.push(`accessScope=${v}`);
+  }
+  if (args.doctype !== undefined) {
+    const { setAttr, removeAttr } = computeDocTypes(app.AllowedDocTypes, args.doctype, "remove");
+    if (removeAttr) removeAttrs.push("AllowedDocTypes");
+    else updates.AllowedDocTypes = setAttr;
+    notes.push(`-doctype(s)=${args.doctype}`);
+  }
+  // Nombrado --field-search (no --disallow-field-search) por simetría con
+  // `deny`: aquí "field-search" siempre significa "quitar ese permiso".
+  if (args["field-search"]) {
+    updates.AllowFieldSearch = { BOOL: false };
+    notes.push("allowFieldSearch=false");
+  }
+  if (!notes.length) {
+    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, y/o --field-search.");
+  }
+
+  await confirmGrantDeny(args, "deny", notes);
+  ddbUpdateItem(table, { ApiKeyId: { S: app.ApiKeyId } }, updates, region);
+  if (removeAttrs.length) ddbRemoveAttrs(table, { ApiKeyId: { S: app.ApiKeyId } }, removeAttrs, region);
+  console.log(`\n✅ Quitado a '${args.name}': ${notes.join(", ")}.`);
 }
 
 function cmdList(args) {
@@ -586,7 +842,15 @@ function cmdList(args) {
     console.log(
       `     rate=${it.RateLimit ?? "-"}/s burst=${it.BurstLimit ?? "-"} quota/día=${it.QuotaPerDay ?? "-"}  creada ${it.CreatedAt || "-"}`
     );
-    if (it.RevokedAt) console.log(`     revocada ${it.RevokedAt}`);
+    console.log(
+      `     accessScope=${it.AccessScope ?? "own"} allowFieldSearch=${it.AllowFieldSearch ?? false}` +
+        (it.AllowedDocTypes ? ` allowedDocTypes=${it.AllowedDocTypes.join(",")}` : "")
+    );
+    // RevokedAt no se borra al hacer `enable` (queda como historial de
+    // cuándo se revocó la última vez) — solo mostrarlo como "revocada" si
+    // sigue siendo el estado actual, para no confundir una app ACTIVE que
+    // ya fue reactivada con una que sigue deshabilitada.
+    if (it.RevokedAt && it.Status !== "ACTIVE") console.log(`     revocada ${it.RevokedAt}`);
     console.log("");
   }
 }
@@ -801,8 +1065,15 @@ Uso: pnpm apps:<comando> -- [opciones]
 Comandos (todos interactivos en una terminal real si falta algo — siempre
 piden confirmación S/n antes de tocar AWS, salvo --yes o sin TTY):
   register     --name X [--rate-limit 20] [--burst-limit 40] [--quota-per-day 5000] [--force]
+               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search]
   rotate       --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]
-  reconfigure  --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]  (solo límites, misma key)
+  reconfigure  --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]
+               [--access-scope own|all] [--allowed-doctypes A,B|none]
+               [--allow-field-search] [--disallow-field-search]
+  grant        --name X [--doctype A,B] [--access-scope all] [--field-search]
+               (agrega/otorga SIN pisar lo que ya tenía — ver reconfigure para reemplazar todo)
+  deny         --name X [--doctype A,B] [--access-scope own] [--field-search]
+               (quita SOLO lo pedido — inverso de grant)
   disable      --name X                          (deshabilita la key, no la borra)
   enable       --name X                          (reactiva una app deshabilitada)
   revoke       --name X [--delete]                (= disable, + borra recursos AWS con --delete)
@@ -824,6 +1095,10 @@ async function main() {
       return await cmdRotate(args);
     case "reconfigure":
       return await cmdReconfigure(args);
+    case "grant":
+      return await cmdGrant(args);
+    case "deny":
+      return await cmdDeny(args);
     case "disable":
       return await cmdDisable(args);
     case "enable":

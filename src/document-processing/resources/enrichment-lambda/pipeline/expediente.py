@@ -45,6 +45,7 @@ from .normalize import (
 )
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import used_models
+from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import Segment, segment_pages
 from .text_extractor import extract_document
@@ -221,7 +222,7 @@ def process_pdf(
     if not pages:
         return _fail(f"{source_format} document has no pages", stage="page_load")
 
-    segments = segment_pages(pages, declared_type=declared_type, model_id=model_id)
+    segments, segmentation_usage = segment_pages(pages, declared_type=declared_type, model_id=model_id)
 
     if not is_image:
         # Shared reader for QR-recovery rasterization only (see qr_recovery.py) —
@@ -332,6 +333,19 @@ def process_pdf(
             "permanece sin modificar en S3 — reprocesar manualmente si se "
             "necesitan las páginas restantes."
         )
+    # Bedrock usage for cost tracking (documentacion/COSTOS.md /
+    # cost_audit.py): segmentation comes back from segment_pages() itself;
+    # extraction is summed across every segment's extractionMeta.usage (each
+    # segment is an independent Converse call, possibly several when chunked)
+    # so the whole document's token spend is available in one place instead
+    # of scattered per-document.
+    extraction_usage = merge_bedrock_usage(
+        *(d.get("extractionMeta", {}).get("usage") for d in documents)
+    )
+    usage_summary = {
+        "segmentation": segmentation_usage or None,
+        "extraction": {"modelId": used_models().get("extractor"), "usage": extraction_usage},
+    }
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
@@ -342,6 +356,7 @@ def process_pdf(
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
         "modelIds": used_models(),
+        "usage": usage_summary,
         "sourceFormat": source_format,
         "pages": pages_summary(pages),
         "status": overall,

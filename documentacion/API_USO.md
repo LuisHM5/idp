@@ -25,6 +25,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
 - **Autenticación (depende del ambiente):**
   - **dev** (`DocumentValidationStack-Dev`, URL execute-api random): **abierto**, sin auth.
   - **prod** (`DocumentValidationStack`): **requiere `x-api-key`** en todos los endpoints. Sin key válida → **403 nativo sin invocar la Lambda**. Obtén el valor: `aws apigateway get-api-key --api-key <ApiKeyId> --include-value --query value --output text`. Envíalo como header `x-api-key: <valor>`. Ver `AMBIENTES_Y_SEGURIDAD.md`.
+- **Autorización por app:** además de autenticar, la `x-api-key` decide **qué documentos** puede leer esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 4 y `AMBIENTES_Y_SEGURIDAD.md`.
 - **Formato:** JSON. Errores devuelven `{ "error": "CODIGO", "message": "..." }`.
 
 ## Resumen de endpoints
@@ -195,7 +196,7 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 Query params:
 - `full=1` → agrega **`fullResult`**: el detalle más profundo desde S3 (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`, más `value`/`valid`/`reason` (vista simple: valor resuelto, booleano y motivo si `valid` es falso)). El `result` del envelope trae las entidades y `liquidacionNormalizada`, pero el detalle por-campo solo está en `fullResult`.
 
-**Errores:** `404 NOT_FOUND` si no hay documento con ese id/prefijo (acepta id completo o prefijo).
+**Errores:** `404 NOT_FOUND` si no hay documento con ese id/prefijo, **o si existe pero la app que llama no tiene permiso de verlo** (ver "Seguridad — acceso por app" más abajo) — misma respuesta en ambos casos, a propósito: no confirma que un documento fuera de tu alcance exista.
 
 **Ejemplo:**
 ```bash
@@ -234,8 +235,8 @@ Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo t
 | `expiresIn` | `900` (15 min) | Segundos de validez de la URL. Se acota entre `60` y `3600` (1h) — un valor fuera de rango se recorta, no da error. |
 
 **Errores:**
-- `404 NOT_FOUND` — no hay documento con ese id/prefijo (igual que `GET /documents/{id}`).
-- `404 FILE_NOT_FOUND` — el documento existe pero no se encontró el objeto original en `processed/`/`failed/` (documento aún en `PROCESSING`, o el objeto se borró de S3 por fuera del sistema).
+- `404 NOT_FOUND` — no hay documento con ese id/prefijo, **o la app que llama no tiene permiso de verlo** (igual que `GET /documents/{id}` — ver "Seguridad — acceso por app" abajo).
+- `404 FILE_NOT_FOUND` — el documento existe (y es visible para esta app) pero no se encontró el objeto original en `processed/`/`failed/` (documento aún en `PROCESSING`, o el objeto se borró de S3 por fuera del sistema).
 
 **Ejemplo:**
 ```bash
@@ -248,8 +249,8 @@ curl -sS -o expediente.pdf "$(curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224b
 
 Este endpoint expone **bytes del archivo original** (posible PII: fotos de identificación, RFC/CURP, montos, direcciones), no solo el JSON de resultado — así que el modelo de autorización de este API pesa más aquí que en cualquier otro endpoint. Dos puntos concretos:
 
-1. **La `x-api-key` no filtra por dueño del documento.** Como ya advierte `AMBIENTES_Y_SEGURIDAD.md` ("API key = identificación + rate-limit + gate sobre TLS; no es auth fuerte"), este API **no** valida que la app dueña de la key sea la misma que subió el documento — `tracking.appOrigin` es solo trazabilidad (para saber después quién subió qué), nunca una ACL. En la práctica: **cualquier key válida (incluida una sola key compartida "por sistema") puede listar (`GET /documents?docType=...`), consultar y ahora también descargar el archivo original de CUALQUIER documento procesado en ese ambiente**, no solo los que subió esa misma app. Si varios sistemas comparten un ambiente (mismo stack dev o prod) y una key, todos pueden ver los documentos de todos. Mitigaciones posibles si esto es un problema real: (a) una key por sistema consumidor + un stack separado por sistema si los datos deben estar aislados de verdad, no solo etiquetados; (b) agregar una validación de `appOrigin` contra `tracking.appOrigin` en `query-lambda` antes de responder (cambio de código, no existe hoy); (c) subir a un authorizer Lambda/IAM si se necesita autorización real por sujeto en vez de por sistema.
-2. **La URL prefirmada es en sí misma una credencial de acceso**, independiente de la `x-api-key` que la generó: cualquiera que la obtenga (log de proxy, historial de navegador, un `Referer` filtrado, copiar-pegar a un chat) puede descargar el archivo **sin volver a pasar por autenticación** hasta que expira. Por eso el default es corto (15 min, tope 1h) — no subir `expiresIn` más de lo necesario, y tratar la URL resultante como un secreto de vida corta, no como un link para reenviar.
+1. **La `x-api-key` SÍ filtra por dueño del documento, por default.** `query-lambda` resuelve la app que llama (por su `x-api-key`, contra `document-validation-apps[-dev]`) y, salvo que esa app tenga `AccessScope=all` configurado explícitamente, solo puede ver/descargar documentos cuyo `tracking.appOrigin` sea ella misma — cualquier otro id existe pero responde `404` (ver "Seguridad — acceso por app" en la sección 4, más abajo, para el detalle completo del modelo). Esto es el default de **cualquier app registrada desde ahora** (`pnpm apps:register`); dos casos quedan sin restringir a propósito — sin `x-api-key` (dev abierto) y una key válida nunca registrada aquí (`idp-default` antes de `apps:adopt`, el caso "sistema preexistente") — ver `AMBIENTES_Y_SEGURIDAD.md`. Si necesitas que una app vea todo (ej. un portal admin interno), es explícito: `pnpm apps:reconfigure -- --name X --access-scope all`.
+2. **La URL prefirmada es en sí misma una credencial de acceso**, independiente de la `x-api-key` que la generó: cualquiera que la obtenga (log de proxy, historial de navegador, un `Referer` filtrado, copiar-pegar a un chat) puede descargar el archivo **sin volver a pasar por autenticación** hasta que expira. Por eso el default es corto (15 min, tope 1h) — no subir `expiresIn` más de lo necesario, y tratar la URL resultante como un secreto de vida corta, no como un link para reenviar. Esto es independiente del punto 1: la restricción por app decide **quién puede pedir** la URL; una vez emitida, cualquiera que la tenga puede usarla hasta que expire.
 
 **Tamaño de archivo — resumen:** sin límite real. La única cota que aplica es la del **upload** original (§1): ~4 MB si se subió inline, sin tope práctico si se subió vía URL prefirmada (S3 acepta objetos hasta 5 TB, `PUT` de una sola parte hasta 5 GB). La descarga hereda ese mismo tamaño sin ningún límite adicional propio, porque nunca pasa por Lambda/API Gateway.
 
@@ -300,6 +301,8 @@ Puedes usar uno, el otro o los dos. Con los dos, `docType` **acota primero** y e
   "summary": false,
   "full": false,
   "indexed": true,                    // true = Query al GSI; false = Scan
+  "restrictedToApp": "CEDIS",         // solo si la app que llama tiene AccessScope=own (ver abajo)
+  "restrictedToDocTypes": ["FACTURA_HONORARIOS_XML"], // solo si tiene AllowedDocTypes configurado
   "count": 1,
   "scanned": 2,                       // cuántos documentos se revisaron
   "matches": [
@@ -348,6 +351,31 @@ curl -sS "$API/documents?field=NOMBRE_IMPORTADOR_EXPORTADOR&value=futurama&op=co
 - **Con `docType`** (`"indexed": true`): Query al GSI `DocumentTypeIndex`, se leen **solo** los documentos de ese tipo, ya ordenados por fecha; `status`, `since`/`until` y el filtro de expedientes se evalúan en DynamoDB. El envelope completo se trae por lotes (BatchGet) solo de los documentos que pasaron el filtro.
 - **Sin `docType`** (`"indexed": false`): **Scan** de la tabla y filtrado en la Lambda, porque los campos buscables viven dentro del JSON de `EnrichmentResult`. Adecuado para volúmenes moderados; manda `docType` siempre que puedas. Si un campo se vuelve "caliente" (p. ej. `NUMERO_PEDIMENTO_NORMALIZADO`), el siguiente paso es promoverlo a columna + GSI igual que se hizo con el tipo.
 - **Documentos anteriores a la indexación:** los procesados antes de que existieran estas columnas no aparecen con `docType` hasta reconstruirlas con `pnpm backfill:index` (idempotente; `-- --dry-run` para revisar antes).
+
+### Seguridad — acceso por app
+
+Este endpoint respeta los mismos permisos por app que `GET /documents/{id}`
+(ver `documentacion/AMBIENTES_Y_SEGURIDAD.md` → "Acceso por app"), con dos
+diferencias respecto a un solo documento:
+
+- **Filtrado silencioso, no error:** un documento fuera de tu `AccessScope`
+  simplemente no aparece en `matches` (no cuenta como error, ni se distingue
+  de "no matcheó el filtro") — `restrictedToApp`/`restrictedToDocTypes` en la
+  respuesta (arriba) son la pista de que el resultado está acotado.
+- **`docType`/`field` explícitamente prohibidos SÍ dan error**, a diferencia
+  de un documento individual: pedir un `docType` fuera de tu `AllowedDocTypes`
+  → `403 FORBIDDEN`; usar `field=`/`value=` sin tener `AllowFieldSearch`
+  → `403 FORBIDDEN`. Aquí sí tiene sentido decir "no puedes" en vez de "no
+  hay nada" — a diferencia de un id concreto, pedir un tipo entero no es una
+  forma útil de enumerar/inferir datos ajenos.
+- Sin `docType` y con `AllowedDocTypes` configurado, la búsqueda se **acota
+  automáticamente** a esos tipos en vez de intentar (y fallar) un Scan sobre
+  toda la tabla — más barato para la app y sin necesidad de que lo pida.
+
+Para dar de alta/quitar estos permisos: `pnpm apps:register`/`reconfigure`
+(fijan el valor completo) o `pnpm apps:grant`/`apps:deny --doctype A,B`
+(suman/restan tipos sin pisar los que ya tenía la app) — ver
+`AMBIENTES_Y_SEGURIDAD.md` → "Acceso por app".
 
 ---
 

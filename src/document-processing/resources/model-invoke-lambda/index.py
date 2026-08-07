@@ -277,7 +277,7 @@ def handler(event, context):
                     unit=MetricUnit.Count,
                     value=1,
                 )
-                return {"documentClassification": manual_type, "modelId": None}
+                return {"documentClassification": manual_type, "modelId": None, "usage": {}}
 
     chunk_metadata = parse_chunk_metadata(event)
     if chunk_metadata:
@@ -300,6 +300,7 @@ def handler(event, context):
                 "documentClassification": classification,
                 "result": {"entities": []},
                 "modelId": None,
+                "usage": {},
             }
         prompt = prompt.replace("[ACTUAL_CLASSIFICATION]", classification)
 
@@ -334,6 +335,7 @@ def handler(event, context):
                     return {
                         "documentClassification": _LARGE_DOC_FALLBACK_TYPE,
                         "modelId": None,
+                        "usage": {},
                     }
                 classification = event.get("classificationResult", {}).get(
                     "documentClassification", _LARGE_DOC_FALLBACK_TYPE
@@ -342,6 +344,7 @@ def handler(event, context):
                     "documentClassification": classification,
                     "result": {"entities": []},
                     "modelId": None,
+                    "usage": {},
                 }
 
             with open(local_path, "rb") as f:
@@ -374,4 +377,12 @@ def handler(event, context):
     response = _converse_with_retry(kwargs)
 
     metrics.add_metric(name="SuccessfulInvocation", unit=MetricUnit.Count, value=1)
-    return extract_json_from_response(response)
+    # modelId/usage are infra-provided, not part of the model's own JSON
+    # output — set after unpacking so they always win over any accidental key
+    # collision in what the model returned. Needed downstream both for
+    # tracking (handler.py::_model_ids) and for pricing this call
+    # (cost_audit.py: pricing.bedrock_cost needs a model id to pick a rate).
+    parsed = extract_json_from_response(response)
+    parsed["modelId"] = kwargs["modelId"]
+    parsed["usage"] = response.get("usage", {})
+    return parsed

@@ -371,6 +371,28 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
     documentTable.grantWriteData(enrichmentFn);
 
+    // Cost audit table: one item per processed document, written by
+    // `enrichment-lambda/cost_audit.py`, with a $ breakdown per AWS service
+    // actually used (Bedrock segmentation/extraction/upstream classification,
+    // Textract OCR, an approximate Lambda compute cost) — see
+    // `documentacion/COSTOS.md`. Deliberately a SEPARATE table from
+    // `documentTable` above: this is a finance/audit concern (query by
+    // DocumentId, aggregate totals via `pnpm costos`), not a document-query
+    // concern, and mixing the two would mean every document-search Scan also
+    // drags cost data along. RETAIN, not DESTROY like appsTable below: audit
+    // history is exactly the kind of data a `pnpm run destroy` during dev
+    // iteration shouldn't be able to silently erase.
+    const costTable = new dynamodb.Table(this, "CostTable", {
+      tableName: `document-validation-costs${envSuffix}`,
+      partitionKey: { name: "DocumentId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    enrichmentFn.addEnvironment("COST_TABLE", costTable.tableName);
+    costTable.grantWriteData(enrichmentFn);
+
     // Grant broad Bedrock invoke permissions to all Lambda roles in the pipeline
     // The construct creates its own roles but customModelId with cross-region prefix
     // may not generate correct IAM ARNs for inference profiles
@@ -577,6 +599,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     if (catalogTable) {
       catalogTable.grantReadData(queryFn);
     }
+    // So the Query Lambda can resolve the caller's own app (from its
+    // x-api-key) and enforce per-app document access (AccessScope/
+    // AllowedDocTypes/AllowFieldSearch — see manage-apps.mjs) instead of any
+    // valid key being able to read any app's documents.
+    queryFn.addEnvironment("APPS_TABLE", appsTable.tableName);
+    appsTable.grantReadData(queryFn);
 
     // API Gateway for document upload
     const api = new apigateway.RestApi(this, "DocumentUploadApi", {

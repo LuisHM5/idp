@@ -200,8 +200,9 @@ def test_manual_classification_skips_the_model(mod, monkeypatch):
         },
         None,
     )
-    # modelId is None because no model ran — the caller records it per phase.
-    assert out == {"documentClassification": "PEDIMENTO_ADUANAL", "modelId": None}
+    # modelId is None and usage is empty because no model ran — the caller
+    # records model per phase, and cost_audit.py prices `usage: {}` at $0.
+    assert out == {"documentClassification": "PEDIMENTO_ADUANAL", "modelId": None, "usage": {}}
 
 
 def test_large_document_falls_back_instead_of_failing(mod, monkeypatch, tmp_path):
@@ -235,6 +236,7 @@ def test_large_document_falls_back_instead_of_failing(mod, monkeypatch, tmp_path
     assert out == {
         "documentClassification": mod._LARGE_DOC_FALLBACK_TYPE,
         "modelId": None,
+        "usage": {},
     }
 
 

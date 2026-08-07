@@ -1,7 +1,7 @@
 # Costos de procesamiento — Documents Validator
 
 > Generado 2026-07-28 a partir de datos reales: 14 ejecuciones guardadas en
-> `s3://<bucket-dev>/results/*.json` (27-28 jul 2026), cruzadas contra AWS
+> `s3://<bucket-dev>/results/*.json` (27-28 jul 2026), cruzadas contra AWSt
 > Cost Explorer (cuenta 886031931562, us-east-1) y precios obtenidos en vivo
 > con la AWS Pricing API. No son estimaciones de documentación — son
 > `usage` real de Bedrock (`extractionMeta.usage` en cada resultado) y
@@ -113,14 +113,14 @@ error ocurre antes de llamar a Bedrock/Textract; vale la pena revisar
 esos 2 casos si se van a subir más imágenes así). Costo real por tipo
 (Bedrock + Textract, atribuido documento-por-documento):
 
-| Tipo | n | costo/doc (avg) | páginas | $/página |
-| --- | ---: | ---: | ---: | ---: |
-| PEDIMENTO_ADUANAL (mezcla 3pág nativo + 27/50pág escaneado) | 46 | $0.0421 | 511 | $0.0038 |
-| PEDIMENTO_ADUANAL_V1 | 1 | $0.0714 | 2 | $0.0357 |
-| CONSTANCIA_SITUACION_FISCAL | 4 | $0.0175 | 8 | $0.0087 |
-| FACTURA_HONORARIOS | 1 | $0.0138 | 1 | $0.0138 |
-| **INE** (imagen, 100% OCR) | 3 | **$0.0080** | 3 | $0.0080 |
-| OTRO / CFDI_GASTO_TERCERO / FACTURA_LOGISTICA / PERMISO_CERTIFICADO_SANITARIO / FACTURA_AGENCIA_ADUANAL / FACTURA_HONORARIOS_XML | 48 | $0.0000 | 75 | $0.0000 |
+| Tipo                                                                                                                             |   n | costo/doc (avg) | páginas | $/página |
+| -------------------------------------------------------------------------------------------------------------------------------- | --: | --------------: | ------: | -------: |
+| PEDIMENTO_ADUANAL (mezcla 3pág nativo + 27/50pág escaneado)                                                                      |  46 |         $0.0421 |     511 |  $0.0038 |
+| PEDIMENTO_ADUANAL_V1                                                                                                             |   1 |         $0.0714 |       2 |  $0.0357 |
+| CONSTANCIA_SITUACION_FISCAL                                                                                                      |   4 |         $0.0175 |       8 |  $0.0087 |
+| FACTURA_HONORARIOS                                                                                                               |   1 |         $0.0138 |       1 |  $0.0138 |
+| **INE** (imagen, 100% OCR)                                                                                                       |   3 |     **$0.0080** |       3 |  $0.0080 |
+| OTRO / CFDI_GASTO_TERCERO / FACTURA_LOGISTICA / PERMISO_CERTIFICADO_SANITARIO / FACTURA_AGENCIA_ADUANAL / FACTURA_HONORARIOS_XML |  48 |         $0.0000 |      75 |  $0.0000 |
 
 Casos de referencia puros (un solo tipo, sin mezclar con expedientes):
 
@@ -144,14 +144,14 @@ infraestructura fija adicional, gateada por `isProd` (confirmado leyendo
 el código, líneas 552-667): Lambda usa el mismo `memorySize`/`timeout` en
 ambos ambientes, así que no hay diferencia de cómputo — sólo:
 
-| Extra sólo-prod | Precio real (verificado con `aws-pricing` MCP, us-east-1) |
-| --- | --- |
-| WAFv2 Web ACL | $5.00/mes |
-| Regla rate-based (`RateLimitPerIp`) | $1.00/mes |
+| Extra sólo-prod                                                                                | Precio real (verificado con `aws-pricing` MCP, us-east-1)                                                                                                                  |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WAFv2 Web ACL                                                                                  | $5.00/mes                                                                                                                                                                  |
+| Regla rate-based (`RateLimitPerIp`)                                                            | $1.00/mes                                                                                                                                                                  |
 | 3× AWS Managed Rule Group (`CommonRuleSet`, `KnownBadInputsRuleSet`, `AmazonIpReputationList`) | $1.00/mes **cada una** (se facturan como "Rule", no hay SKU separado para managed groups gratuitos de AWS — la sección 5 original sólo contaba 1 regla y subestimaba esto) |
-| WAF request processing | $0.60 / millón de requests (Tier0) — centavos al volumen actual |
-| API Gateway Usage Plan + API Key | $0 fijo (sólo se cobra el request, misma tarifa API Gateway de siempre) |
-| Dominio custom `idp.alsuper.com` + ACM (BYO cert) | $0 (CNAME externo, cert importado) |
+| WAF request processing                                                                         | $0.60 / millón de requests (Tier0) — centavos al volumen actual                                                                                                            |
+| API Gateway Usage Plan + API Key                                                               | $0 fijo (sólo se cobra el request, misma tarifa API Gateway de siempre)                                                                                                    |
+| Dominio custom `idp.alsuper.com` + ACM (BYO cert)                                              | $0 (CNAME externo, cert importado)                                                                                                                                         |
 
 **Piso fijo WAF corregido: $9.00/mes** (antes se documentó ~$6/mes —
 faltaban 3 de las 4 reglas).
@@ -166,11 +166,11 @@ variable al volumen de este sistema.
 
 ### Piso fijo total y costo mensual realista en prod
 
-| Ambiente | Piso fijo atribuible/mes |
-| --- | ---: |
-| Dev | ~$2.00 (2 claves KMS) |
-| Prod | ~$11.00 (2 claves KMS + $9 de WAFv2) |
-| Prod + dev desplegados simultáneamente | ~$13.00 |
+| Ambiente                               |             Piso fijo atribuible/mes |
+| -------------------------------------- | -----------------------------------: |
+| Dev                                    |                ~$2.00 (2 claves KMS) |
+| Prod                                   | ~$11.00 (2 claves KMS + $9 de WAFv2) |
+| Prod + dev desplegados simultáneamente |                              ~$13.00 |
 
 ### Proyección acordada: 2,430 documentos / 7,290 páginas al mes
 
@@ -184,15 +184,15 @@ prorratea conservadoramente desde la ventana real de 58 ejecuciones.
 **AWS Business Support+ se excluye expresamente**: es un cargo compartido de
 la cuenta y no forma parte del costo por página acordado para este proyecto.
 
-| Componente | Costo mensual | Costo/página |
-| --- | ---: | ---: |
-| Bedrock + Textract | $33.17 | $0.00455 |
-| Lambda, S3, SQS, CloudWatch, DynamoDB, Step Functions y API Gateway | ~$3.50 | ~$0.00048 |
-| Piso fijo de prod: 2 claves KMS + WAFv2 | $11.00 | $0.00151 |
-| **Subtotal técnico antes de IVA** | **$47.67** | **$0.00654** |
-| IVA 16% | $7.63 | $0.00105 |
-| **Total esperado con IVA** | **$55.30** | **$0.0076** |
-| **Presupuesto conservador: IVA + 15% de contingencia sobre el consumo variable** | **$61.68** | **$0.0085** |
+| Componente                                                                       | Costo mensual | Costo/página |
+| -------------------------------------------------------------------------------- | ------------: | -----------: |
+| Bedrock + Textract                                                               |        $33.17 |     $0.00455 |
+| Lambda, S3, SQS, CloudWatch, DynamoDB, Step Functions y API Gateway              |        ~$3.50 |    ~$0.00048 |
+| Piso fijo de prod: 2 claves KMS + WAFv2                                          |        $11.00 |     $0.00151 |
+| **Subtotal técnico antes de IVA**                                                |    **$47.67** | **$0.00654** |
+| IVA 16%                                                                          |         $7.63 |     $0.00105 |
+| **Total esperado con IVA**                                                       |    **$55.30** |  **$0.0076** |
+| **Presupuesto conservador: IVA + 15% de contingencia sobre el consumo variable** |    **$61.68** |  **$0.0085** |
 
 El valor recomendado para presupuesto es **$0.0085 USD/página**, equivalente
 a **$61.68 USD/mes** para 7,290 páginas. La diferencia contra el esperado de
@@ -338,11 +338,11 @@ costo por página en prod es esencialmente el mismo de la sección 2
 > para el volumen acordado. Los casos históricos de las secciones 1–5 se
 > conservan para explicar cómo cambió el costo con la optimización del DSL.
 
-| Unidad | Costo vigente |
-| --- | ---: |
-| Bedrock + Textract por pedimento de 3 páginas | ~$0.01365/documento |
-| Subtotal técnico antes de IVA | $47.67/mes — $0.00654/página |
-| Total esperado con IVA | $55.30/mes — $0.0076/página |
+| Unidad                                                             |                   Costo vigente |
+| ------------------------------------------------------------------ | ------------------------------: |
+| Bedrock + Textract por pedimento de 3 páginas                      |             ~$0.01365/documento |
+| Subtotal técnico antes de IVA                                      |    $47.67/mes — $0.00654/página |
+| Total esperado con IVA                                             |     $55.30/mes — $0.0076/página |
 | **Presupuesto recomendado con IVA y 15% de contingencia variable** | **$61.68/mes — $0.0085/página** |
 
 ### COSTO RECOMENDADO POR PÁGINA EN PROD
@@ -367,3 +367,60 @@ Para planeación financiera puede reservarse **$0.0131/página**, equivalente
 a **$95.50 USD/mes** para 7,290 páginas. Este importe es un colchón ampliado
 por encima del presupuesto técnico recomendado de $0.0085/página; no es el
 costo esperado y no atribuye AWS Business Support+ al proyecto.
+
+## 7. Auditoría de costos por documento (tabla DynamoDB, 2026-08-05)
+
+Todo lo anterior en este documento son cortes puntuales calculados a mano
+(S3 `results/*.json` cruzado contra Cost Explorer). Desde 2026-08-05 el
+enrichment Lambda escribe, **por cada documento procesado**, un registro con
+el costo real desglosado por servicio a una tabla dedicada:
+`document-validation-costs[-dev]` (PK `DocumentId`, `RETAIN` — no se borra
+con `pnpm run destroy`). Separada de la tabla de tracking a propósito: es un
+dato de auditoría/finanzas, no algo por lo que se busquen documentos.
+
+**Qué desglosa cada registro** (`enrichment-lambda/cost_audit.py` +
+`pipeline/pricing.py`, tarifas de la sección 1 de este documento):
+
+| Servicio                                                      | Qué mide                                                                                                                                                     | Cuándo es $0                                                                                                |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `BedrockSegmentation`                                         | Tokens de `segmenter.segment_pages` (clasifica rangos de página en un expediente)                                                                            | Tipo declarado explícitamente al subir (`raw/{TIPO}/...`) — no hay llamada al modelo                        |
+| `BedrockExtraction`                                           | Tokens sumados de TODOS los chunks/segmentos de `text_extractor.extract_document`                                                                            | Segmento sin campos de catálogo (ej. `OTRO`)                                                                |
+| `BedrockClassificationUpstream` / `BedrockProcessingUpstream` | Tokens de los pasos de clasificación/extracción del blueprint (Lambda `model-invoke-lambda`, corren ANTES del enrichment Lambda)                             | Bypass de clasificación manual o de extracción diferida — el caso normal para `PEDIMENTO_ADUANAL` declarado |
+| `TextractOcr`                                                 | Páginas OCR × $0.0015                                                                                                                                        | Documento 100% texto nativo (sin páginas escaneadas)                                                        |
+| `LambdaCompute`                                               | Aproximado: duración de la fase de procesamiento (no la invocación completa — excluye descarga S3 y las escrituras finales a S3/DynamoDB) × memoria asignada | Nunca — siempre hay algo de cómputo                                                                         |
+
+Este registro **cierra una brecha que las secciones 0/2 de este documento ya
+documentaban**: antes, los tokens de `segmenter.py` solo se logueaban
+(`logger.info`, que nunca se veía porque el root logger no tiene level
+configurado) y los del paso de clasificación/procesamiento del blueprint se
+descartaban por completo en `model-invoke-lambda/index.py` — ninguno de los
+dos llegaba a ningún lado calculable. Ambos se capturan y propagan ahora, así
+que el número que se ve por-documento debería acercarse más al de Cost
+Explorer que antes (aunque la brecha de ~31% de la sección 0 se midió antes
+de este cambio — no está re-validada contra Cost Explorer todavía).
+
+**Qué NO se trackea por documento, deliberadamente:** KMS, S3, SQS,
+CloudWatch, API Gateway, DynamoDB. Ninguno es atribuible a una invocación
+individual desde dentro del propio Lambda (no hay un conteo de tokens/páginas
+por-request como con Bedrock/Textract), y la sección 4 ya midió que juntos
+son ruido frente a Bedrock+Textract a este volumen (~$3.38 en dos semanas
+contra ~$18 de Bedrock+Textract en la misma ventana) — calcular un reparto
+por-documento de eso sería precisión inventada, no una medición real.
+
+**Cómo consultarlo:**
+
+```
+pnpm costos                       # resumen: total + desglose por tipo + últimos documentos
+pnpm costos -- --id <documentId>  # detalle de un documento (prefijo basta)
+pnpm costos -- --env prod
+```
+
+`PricingVersion` (`pipeline/pricing.py`, hoy `2026-08-05`) queda grabado en
+cada registro para que una futura repreciación de AWS no vuelva
+incomparables los registros viejos contra los nuevos sin decirlo.
+
+**Alcance:** solo documentos procesados DESPUÉS de este cambio tienen
+registro — no hay backfill retroactivo de los resultados que ya estaban en
+S3/tracking antes de 2026-08-05 (los datos de `usage`/`pages` sí existen ahí
+para quien quiera calcularlos a mano, igual que hizo este documento en las
+secciones anteriores).

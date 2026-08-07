@@ -27,6 +27,7 @@ import logging
 import mimetypes
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +39,7 @@ from document_catalog import (
     is_customs_type,
     reload_catalog,
 )
+from cost_audit import write_cost_record
 from extractors import get_extractor
 from indexing import write_index_attributes
 from pipeline.bedrock import reset_used_models, set_model_override, used_models
@@ -696,6 +698,12 @@ def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
         "crossDocumentChecks": result.get("crossDocumentChecks", []),
         "warnings": result.get("warnings", []),
         **({"truncated": result["truncated"]} if result.get("truncated") else {}),
+        # Bedrock token usage (segmentation + extraction), passed through
+        # unchanged from process_pdf's own aggregate (pipeline/expediente.py)
+        # so cost_audit.py can price this expediente without re-reading the
+        # full S3 result. Absent for the XML/tabular pipelines (genuinely
+        # zero Bedrock cost — no `usage` key to pass through).
+        **({"usage": result["usage"]} if result.get("usage") else {}),
     }
 
 
@@ -704,15 +712,26 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
 
     Runs the validation flow (`_process`) and then promotes the document type
     and friends to indexed DynamoDB columns (see `indexing.py`) so the query
-    API can filter by type with a GSI Query instead of a table Scan. Indexing
-    is best-effort and never changes the returned result.
+    API can filter by type with a GSI Query instead of a table Scan. Also
+    writes a per-document AWS cost audit record (see `cost_audit.py`) to a
+    separate table, so `pnpm costos` can answer "how much did processing this
+    document actually cost, broken down by service" without touching Cost
+    Explorer. Both writes are best-effort and never change the returned
+    result.
     """
     # Lambda containers are reused, so the per-phase model registry must start
     # empty or a warm invocation inherits the previous document's phases.
     reset_used_models()
+    started = time.time()
     result = _process(event, context)
+    # Proxy for billed Lambda duration: measured from inside the invocation,
+    # so it excludes init and undercounts slightly (see cost_audit.py), but
+    # it's the only duration available before the invocation itself finishes.
+    duration_ms = (time.time() - started) * 1000
     pointer = _extract_s3_pointer(event)
-    write_index_attributes(result, source_key=pointer[1] if pointer else None)
+    source_key = pointer[1] if pointer else None
+    write_index_attributes(result, source_key=source_key)
+    write_cost_record(result, event=event, duration_ms=duration_ms, source_key=source_key)
     return result
 
 
