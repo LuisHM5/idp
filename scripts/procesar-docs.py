@@ -33,23 +33,28 @@ Uso:
     avisa en consola si no coinciden). --file/--dir/--type/--model se
     mantienen por compatibilidad con scripts/docs viejos.
 
-Cada corrida escribe en su propia carpeta numerada — nunca pisa una corrida
-anterior: <out>/[<modelo>/]NNN/ (001, 002, ... — el número sigue subiendo aunque
-cambies de modelo o de --out; el modelo, si lo diste, agrupa antes del número).
-Sirve como historial: corre 3 veces con distintos --model y quedan 3 carpetas
-completas, listas para comparar costo/tiempo/calidad entre ellas.
+Nada se sobrescribe nunca — todo queda numerado como historial:
 
-Salida por documento (dentro de esa carpeta numerada):
-  - resumen legible en consola (tipo, estado, campos clave, costo real, warnings)
-  - <archivo>.json  → resultado completo (todos los campos, checks, confianzas)
-  - _resumen.md     → tabla consolidada de la corrida (costo, $/página, duración,
-                       campos válidos, confianza), reescrita después de CADA
-                       documento (progreso parcial sobrevive un crash/Ctrl+C), más
-                       un benchmark del dataset completo al final (promedios,
-                       totales, y qué campos fallan más) — igual si es un archivo
-                       o una carpeta entera
-  - _log-<fecha>.txt → copia exacta de todo lo impreso en consola (sin colores),
-                       para no perder el detalle si se cierra la terminal
+  <out>/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/<nombre-archivo>.json
+      resultado completo de ESE documento en ESA corrida (001, 002, ... — corre
+      el mismo archivo 5 veces, con el mismo o distinto modelo, y quedan 5
+      carpetas separadas listas para comparar). <TIPO> es el declarado
+      (--type / 2do posicional) o el detectado si no se declaró
+      ("EXPEDIENTE" si el segmentador encontró varios tipos en un mismo PDF).
+
+  <out>/[<modelo>/]_runs/NNN/
+      log + resumen de TODA la corrida (puede tocar varios documentos/tipos
+      si procesaste una carpeta) — también numerado, nunca se pisa:
+        - _log-<fecha>.txt → copia exacta de todo lo impreso en consola (sin
+          colores), para no perder el detalle si se cierra la terminal
+        - _resumen.md → tabla consolidada (costo, $/página, duración, campos
+          válidos, confianza) por archivo procesado en esta corrida, reescrita
+          después de CADA documento (progreso parcial sobrevive un
+          crash/Ctrl+C), más un benchmark agregado al final (promedios,
+          totales, y qué campos fallan más)
+
+  Consola: resumen legible por documento (tipo, estado, campos clave, costo
+  real, warnings) según se van procesando.
 
 Costo y calidad de campos son reales, no estimados: el costo sale de los tokens
 Bedrock/páginas Textract que esta corrida realmente facturó (mismas tarifas
@@ -187,6 +192,46 @@ def _walk_field_tree(node, path: str):
         yield path, node.get("valid"), node.get("confidence")
 
 
+def _slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-") or "x"
+
+
+def _next_numbered_dir(base: Path) -> Path:
+    """Crea y devuelve <base>/NNN, el siguiente número libre — nunca pisa uno
+    ya usado, así <base>/ queda como historial completo de todas las corridas
+    anteriores. mkdir() sin exist_ok fuerza a reintentar con el siguiente
+    número si dos corridas arrancan al mismo tiempo (evita una carrera
+    silenciosa donde ambas terminan escribiendo el mismo NNN)."""
+    base.mkdir(parents=True, exist_ok=True)
+    run_num = max((int(f.name) for f in base.iterdir() if f.is_dir() and f.name.isdigit()), default=0)
+    while True:
+        run_num += 1
+        run_dir = base / f"{run_num:03d}"
+        try:
+            run_dir.mkdir()
+            return run_dir
+        except FileExistsError:
+            continue
+
+
+def _doc_type_slug(declared_type: str | None, result: dict) -> str:
+    """Carpeta de tipo para el árbol de salida: el tipo declarado si se dio
+    (--type o el 2do posicional); si no, el tipo que detectó el segmentador
+    cuando resultó ser uno solo; "EXPEDIENTE" si detectó varios tipos
+    distintos dentro del mismo archivo; "SIN-TIPO" si no detectó ninguno."""
+    if declared_type:
+        return declared_type
+    types = {
+        d.get("documentType") for d in result.get("documents", [])
+        if d.get("documentType") and d.get("documentType") != "OTRO"
+    }
+    if len(types) == 1:
+        return next(iter(types))
+    if len(types) > 1:
+        return "EXPEDIENTE"
+    return "SIN-TIPO"
+
+
 def field_quality(doc: dict) -> list[tuple[str, bool | None, float | None]]:
     """Per-field (name, valid, confidence) for every leaf the rule engine
     actually evaluated. This is validation-derived quality — does the value
@@ -249,38 +294,28 @@ def main() -> int:
     model_arg = args.model or args.model_pos
 
     expected_values = {"IMPORTER_RFC": args.importer} if args.importer else {}
-    out_dir = Path(args.out)
-    # Comparing two models means two runs, and both would write
-    # <out>/<archivo>.json — give a pinned model its own subfolder so runs of
-    # different models don't mix (still useful on top of the numbering below:
-    # keeps each model's history grouped instead of interleaved by number).
+    # Todo lo de esta corrida cuelga de model_root: <out>/[<modelo-slug>/].
+    # Un modelo pinneado agrupa antes que nada, para no mezclar el historial
+    # de un modelo con el de otro.
     model_slug = model_arg or os.environ.get("BEDROCK_MODEL_ID")
+    model_root = Path(args.out)
     if model_slug:
-        out_dir = out_dir / re.sub(r"[^A-Za-z0-9]+", "-", model_slug).strip("-")
-    out_dir.mkdir(parents=True, exist_ok=True)
+        model_root = model_root / _slug(model_slug)
+    model_root.mkdir(parents=True, exist_ok=True)
 
-    # Cada corrida va a su propia carpeta numerada (001, 002, ...) — nunca
-    # pisa la salida de una corrida anterior, así <out>/[<modelo>/]NNN/ queda
-    # como historial completo. mkdir() sin exist_ok fuerza a reintentar con
-    # el siguiente número si dos corridas arrancan al mismo tiempo.
-    run_num = max((int(f.name) for f in out_dir.iterdir() if f.is_dir() and f.name.isdigit()), default=0)
-    while True:
-        run_num += 1
-        run_dir = out_dir / f"{run_num:03d}"
-        try:
-            run_dir.mkdir()
-            break
-        except FileExistsError:
-            continue
-    out_dir = run_dir
-
-    log_path = out_dir / f"_log-{datetime.now():%Y%m%d-%H%M%S}.txt"
+    # El log + _resumen.md de ESTA corrida (puede tocar varios documentos y
+    # tipos a la vez) viven en su propia carpeta numerada bajo _runs/ — nunca
+    # pisan los de una corrida anterior. Cada documento, aparte, arma su
+    # propio árbol <modelo>/<TIPO>/<nombre-doc>/NNN/ más abajo, una vez que
+    # se conoce su tipo (declarado o detectado) tras procesarlo.
+    run_dir = _next_numbered_dir(model_root / "_runs")
+    log_path = run_dir / f"_log-{datetime.now():%Y%m%d-%H%M%S}.txt"
     log_file = log_path.open("w", encoding="utf-8")
     real_stdout, real_stderr = sys.stdout, sys.stderr
     sys.stdout = _Tee(real_stdout, log_file)
     sys.stderr = _Tee(real_stderr, log_file)
 
-    resumen_path = out_dir / "_resumen.md"
+    resumen_path = run_dir / "_resumen.md"
     resumen_md = [
         f"# Resultados de procesamiento — {datetime.now():%Y-%m-%d %H:%M}",
         "",
@@ -302,8 +337,8 @@ def main() -> int:
         )
 
     try:
-        print(f"salida de esta corrida → {out_dir}/")
-        print(f"log completo → {log_path}")
+        print(f"salida por documento → {model_root}/<TIPO>/<nombre-doc>/NNN/")
+        print(f"log de esta corrida → {log_path}")
 
         from pipeline.expediente import process_pdf
         from pipeline.pricing import bedrock_cost, textract_cost
@@ -459,7 +494,13 @@ def main() -> int:
                 if c.get("valid") and not c.get("skipped"):
                     print(f"  {GREEN}✓ {c.get('rule')}: {c.get('message')}{RESET}")
 
-            out_file = out_dir / f"{doc_path.stem}.json"
+            # Árbol de historial por documento: modelo/tipo/nombre-doc/NNN —
+            # el tipo solo se conoce hasta aquí (declarado, o detectado si no
+            # se declaró), así que la carpeta numerada de este documento se
+            # crea recién ahora, no al arrancar la corrida.
+            tipo_slug = _slug(_doc_type_slug(declared_type, result))
+            doc_run_dir = _next_numbered_dir(model_root / tipo_slug / doc_path.stem)
+            out_file = doc_run_dir / f"{doc_path.stem}.json"
             out_file.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
             print(f"\n  {DIM}JSON completo → {out_file}{RESET}")
 

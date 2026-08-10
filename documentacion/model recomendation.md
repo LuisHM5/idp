@@ -38,15 +38,18 @@ supera esa inteligencia — todos entre 4.4 y 20.9. Kimi K2.5 sí la supera
 Nuevos candidatos que SÍ superan la inteligencia de Haiku 4.5 y cuestan
 menos, confirmados en el catálogo de Bedrock us-east-1:
 
-GLM 5 (Z AI): zai.glm5 — intel 40.6 (+36%), $1.00 in / $3.20 out (0.77x)
-Kimi K2.5: moonshotai.kimi-k2.5 — intel 36.0 (+20%), $0.60 in / $3.00 out (0.55x)
-MiniMax M2.5: minimax.minimax-m2.5 — intel 34.5 (+15%), $0.30 in / $1.20 out (0.25x) [mejor relación precio/inteligencia]
-Kimi K2 Thinking: moonshotai.kimi-k2-thinking — intel 33.5 (+12%), $0.60 in / $2.50 out (0.51x)
+GLM 5 (Z AI): zai.glm-5 — intel 40.6 (+36%), $1.00 in / $3.20 out (0.77x) — visión ✅ confirmada
+Kimi K2.5: moonshotai.kimi-k2.5 — intel 36.0 (+20%), $0.60 in / $3.00 out (0.55x) — visión ✅ confirmada
+MiniMax M2.5: minimax.minimax-m2.5 — intel 34.5 (+15%), $0.30 in / $1.20 out (0.25x) [mejor relación precio/inteligencia] — visión ⚠️ sin confirmar
+Kimi K2 Thinking: moonshotai.kimi-k2-thinking — intel 33.5 (+12%), $0.60 in / $2.50 out (0.51x) — visión ⚠️ sin confirmar
 
-⚠️ Ninguno de los 4 tiene soporte de visión (input imagen) confirmado —
-probablemente sólo texto (ningún proveedor le puso sufijo V/VL, que es como
-marcan sus variantes con visión). Verificar antes de usar, porque el
-pipeline extrae leyendo imágenes de páginas escaneadas.
+GLM 5 y Kimi K2.5 sí soportan visión (input texto+imagen, sin fallar) —
+la sospecha inicial de "probablemente sólo texto" por convención de
+nombres (V/VL) era incorrecta para estos dos. Kimi K2 Thinking y
+MiniMax M2.5 siguen sin confirmar — ningún MCP consultado
+(artificial-analysis, aws-billing) expone modalidad de input, así que hay
+que verificarlo contra la documentación del proveedor o probando
+directamente.
 
 Más inteligente que todo lo anterior (GPT-5.6 Luna, intel 52.3; GPT-5.6
 Terra, intel 56.6) pero sólo existen en AWS GovCloud (US-West), no en

@@ -153,5 +153,6 @@ Mismo pipeline, con tus credenciales AWS, sin stack desplegado:
 pnpm procesar -- "archivo.pdf" --importer TU_RFC
 ```
 
-Deja `resultados/NNN/<archivo>.json` + `_resumen.md` para revisión humana — cada
-corrida numera su propia carpeta (001, 002, ...), nunca pisa una anterior.
+Deja `resultados/<TIPO>/<archivo>/NNN/<archivo>.json` (+ `_runs/NNN/_resumen.md`)
+para revisión humana — cada documento y cada corrida numeran su propia carpeta
+(001, 002, ...), nunca pisan una anterior.

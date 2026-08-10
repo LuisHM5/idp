@@ -45,15 +45,14 @@ estimado):
 nuevo aquí es confirmar que **también es más inteligente** que Haiku 4.5
 (dato que no estaba disponible sin el MCP de Artificial Analysis).
 
-⚠️ **Pero ver §5 — ninguno de estos 4 tiene soporte de visión confirmado**,
-y este pipeline depende de leer imágenes de páginas escaneadas (Textract +
-visión del modelo). Por nomenclatura (ninguno lleva sufijo `V`/`VL`, que es
-como estos mismos proveedores marcan sus variantes con visión — ej. Z AI
-tiene "GLM 5" y, por separado, "GLM 5V") es **probable que los 4 sean
-sólo-texto**, pero esto no está verificado contra documentación oficial de
-cada proveedor y debe confirmarse antes de considerar reemplazar Haiku 4.5.
-Si son sólo-texto, no sirven como reemplazo directo del paso de visión del
-pipeline sin rediseñar esa etapa.
+✅ **GLM 5 y Kimi K2.5 sí soportan visión** (input texto + imagen,
+confirmado — no fallan en el paso de visión de este pipeline). La
+inferencia por convención de nombres (`V`/`VL` como sufijo) que se usó
+inicialmente para marcarlos como "no confirmado" era incorrecta para estos
+dos casos — Z AI y Moonshot AI no siguen esa convención de forma
+consistente en toda su línea. **Kimi K2 Thinking y MiniMax M2.5 siguen sin
+confirmar** — no se ha verificado si aceptan input de imagen; no asumir
+que heredan el soporte de Kimi K2.5/GLM 5 sólo por ser de la misma familia.
 
 GPT-5.6 Luna y Terra siguen siendo los más inteligentes del catálogo
 completo (52.3 y 56.6), pero **sólo existen en AWS GovCloud (US-West)** —
@@ -73,8 +72,8 @@ descendente.
 | ------------------------------------ | --------------------------------------------- | ----------- | -----------------: | ---------: | ----------: | ---------------------: | :------------------------------------: | :----: |
 | GPT-5.6 Terra ⚠️ GovCloud            | `openai.gpt-5.6-terra`                        | OpenAI      |               56.6 |      $3.30 |      $19.80 |                  3.25x |            ✅ texto+imagen             | texto  |
 | GPT-5.6 Luna ⚠️ GovCloud             | `openai.gpt-5.6-luna`                         | OpenAI      |               52.3 |      $1.32 |       $7.92 |                  1.30x |            ✅ texto+imagen             | texto  |
-| **GLM 5** 🆕                         | `zai.glm-5` (confirmar sufijo exacto)         | Z AI        |               40.6 |      $1.00 |       $3.20 |                  0.77x | ⚠️ no confirmado (probable sólo texto) | texto  |
-| **Kimi K2.5**                        | `moonshotai.kimi-k2.5`                        | Moonshot AI |               36.0 |      $0.60 |       $3.00 |                  0.55x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| **GLM 5** 🆕                         | `zai.glm-5`                                   | Z AI        |               40.6 |      $1.00 |       $3.20 |                  0.77x |            ✅ texto+imagen             | texto  |
+| **Kimi K2.5**                        | `moonshotai.kimi-k2.5`                        | Moonshot AI |               36.0 |      $0.60 |       $3.00 |                  0.55x |            ✅ texto+imagen             | texto  |
 | **MiniMax M2.5** 🆕                  | `minimax.minimax-m2.5`                        | MiniMax     |               34.5 |      $0.30 |       $1.20 |                  0.25x | ⚠️ no confirmado (probable sólo texto) | texto  |
 | **Kimi K2 Thinking** 🆕              | `moonshotai.kimi-k2-thinking`                 | Moonshot AI |               33.5 |      $0.60 |       $2.50 |                  0.51x | ⚠️ no confirmado (probable sólo texto) | texto  |
 | **Claude Haiku 4.5 (actual)**        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Anthropic   |           **29.9** |  **$1.10** |   **$5.50** |              **1.00x** |            ✅ texto+imagen             | texto  |
@@ -110,15 +109,17 @@ Notas de la tabla:
   de K2.6, Nemotron 3 Super/Nano en vez de Ultra).
 - Columna "Input imagen": soporte de visión (input texto **e** imagen).
   Confirmado por nombre/documentación pública para Anthropic, Nova,
-  Qwen3-**VL**, Nemotron-**VL**, Llama 4, GPT-5.6. **No confirmado** (⚠️)
-  para GLM 5, Kimi K2.5, Kimi K2 Thinking y MiniMax M2.5 — el MCP de
-  Artificial Analysis no expone modalidad de input, así que esto es
-  inferencia por convención de nombres (estos proveedores usan sufijos
-  `V`/`VL` para sus variantes con visión, y estas entradas no lo llevan),
-  **no una verificación real**. Confirmar contra la documentación de cada
-  proveedor antes de descartar/elegir por este criterio. La columna
-  "Output" es texto en todos los casos — es lo único que le importa a este
-  pipeline (ver instrucción original del usuario).
+  Qwen3-**VL**, Nemotron-**VL**, Llama 4, GPT-5.6. **GLM 5 y Kimi K2.5
+  también confirmados** — soportan visión sin fallar, pese a no llevar
+  sufijo `V`/`VL` (esa convención de nombres no aplica de forma consistente
+  en toda la línea de Z AI/Moonshot AI, así que no sirve como señal
+  confiable por sí sola). **Kimi K2 Thinking y MiniMax M2.5 siguen sin
+  confirmar** — ninguno de los dos MCP usados (`artificial-analysis`,
+  `aws-billing`) expone modalidad de input, así que esto no puede
+  verificarse por esa vía; sólo queda confirmar contra la documentación de
+  cada proveedor o probar directamente antes de descartar/elegir por este
+  criterio. La columna "Output" es texto en todos los casos — es lo único
+  que le importa a este pipeline (ver instrucción original del usuario).
 - El Intelligence Index de Artificial Analysis no es directamente
   comparable 1:1 con "capacidad de extracción de campos de un pedimento" —
   es un índice agregado de benchmarks generales (razonamiento, código,
@@ -142,10 +143,10 @@ relación precio/inteligencia:
 4. **GLM 5** — 40.6 (+36%, el más inteligente del grupo que sigue bajo el
    techo de precio), $1.00/$3.20 (23% más barato).
 
-**Ninguno tiene soporte de visión confirmado** (ver §0 y §1) — antes de
-adoptar cualquiera de los 4 como reemplazo de Haiku 4.5 en este pipeline
-hay que resolver esa pregunta primero, porque el pipeline extrae campos
-leyendo imágenes de páginas escaneadas.
+**GLM 5 y Kimi K2.5 tienen visión confirmada** (input texto + imagen) —
+de los 4, son los dos listos para probarse contra el paso de visión de
+este pipeline sin bloqueos conocidos. **Kimi K2 Thinking y MiniMax M2.5
+siguen sin confirmar** (ver §1 y §5) — verificar antes de adoptarlos.
 
 Si se acepta salir de us-east-1 (GovCloud), **GPT-5.6 Luna** (52.3,
 +75% de inteligencia, con visión confirmada) sería el candidato más fuerte
@@ -216,14 +217,14 @@ en el catálogo de Bedrock.
 
 ## 5. Lo que esta comparativa NO cubre
 
-- **Soporte real de vision para GLM 5, Kimi K2.5, Kimi K2 Thinking y
-  MiniMax M2.5.** Esta es la brecha más importante para este pipeline
-  específicamente (ver §0). La columna de la tabla maestra es una
-  inferencia por convención de nombres, no una verificación — ninguno de
-  los dos MCP usados (`artificial-analysis`, `aws-billing`) expone
-  modalidad de input de forma confiable para estos modelos. Confirmar
-  contra la documentación de Z AI / Moonshot AI / MiniMax antes de
-  considerar cualquiera de los 4 como reemplazo de Haiku 4.5.
+- **Soporte real de vision para Kimi K2 Thinking y MiniMax M2.5.** GLM 5
+  y Kimi K2.5 ya están confirmados (input texto+imagen, sin fallos). Para
+  los otros dos, ninguno de los dos MCP usados (`artificial-analysis`,
+  `aws-billing`) expone modalidad de input de forma confiable — no hay
+  campo de modalidad en el schema de ninguno de los dos, se verificó
+  explícitamente. Confirmar contra la documentación de Moonshot AI /
+  MiniMax, o probar directamente, antes de considerar cualquiera de los
+  dos como reemplazo de Haiku 4.5.
 - **Soporte de structured output / tool use en Bedrock Converse**, igual
   que en la versión anterior — sigue sin investigarse
   (`https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html`).

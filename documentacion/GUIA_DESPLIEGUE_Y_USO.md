@@ -152,15 +152,23 @@ hace falta decir `--file` o `--dir` (se mantienen como alias legado). El 2do y 3
 posicional son atajos de `--type`/`--model` (mismo orden: `PATH [TYPE] [MODEL]`);
 si además pasas el flag y no coincide con el posicional, el flag gana y se avisa.
 
-Salida (tú solo validas el resultado final). Cada corrida escribe en su propia
-carpeta numerada — nunca pisa una corrida anterior: `resultados/[<modelo>/]NNN/`
-(001, 002, ...), historial completo listo para comparar entre corridas/modelos.
-Dentro de esa carpeta:
+Salida (tú solo validas el resultado final). Nada se sobrescribe nunca:
 
+- **`resultados/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/<nombre-archivo>.json`**:
+  resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`)
+  de ESE documento en ESA corrida (001, 002, ...) — corre el mismo archivo varias
+  veces, con el mismo o distinto modelo, y quedan todas las corridas separadas
+  para comparar. `<TIPO>` es el declarado (`--type`/2do posicional) o el
+  detectado si no se declaró (`EXPEDIENTE` si el segmentador encontró varios
+  tipos en un mismo PDF).
+- **`resultados/[<modelo>/]_runs/NNN/_resumen.md`**: tabla consolidada de toda
+  la corrida (puede tocar varios documentos si procesaste una carpeta) — costo,
+  $/página, duración, campos válidos, confianza — + benchmark agregado del
+  dataset al final; se reescribe tras cada documento, sobrevive un crash/Ctrl+C.
+  También numerada, también historial completo.
+- **`resultados/[<modelo>/]_runs/NNN/_log-<fecha>.txt`**: copia completa de la
+  consola de esa corrida, por si se cierra la terminal.
 - **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, costo real (Bedrock+Textract), arrays extraídos y checks fallidos.
-- **`<archivo>.json`**: resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`).
-- **`_resumen.md`**: tabla consolidada de toda la corrida (costo, $/página, duración, campos válidos, confianza) + benchmark agregado del dataset al final; se reescribe tras cada documento, sobrevive un crash/Ctrl+C.
-- **`_log-<fecha>.txt`**: copia completa de la consola, por si se cierra la terminal.
 
 ### 4.0.1 ¿Dónde están las reglas de extracción y validación?
 
