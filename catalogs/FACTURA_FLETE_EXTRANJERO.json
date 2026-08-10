@@ -1,0 +1,457 @@
+{
+  "FACTURA_FLETE_EXTRANJERO": {
+    "schema_version": "5.0.0",
+    "display_name": "Factura de Flete Extranjero",
+    "aliases": [
+      "factura de flete extranjero",
+      "foreign freight invoice",
+      "freight invoice",
+      "transportation invoice",
+      "trucking invoice",
+      "carrier invoice",
+      "factura de transporte internacional",
+      "pago de flete americano"
+    ],
+    "description": "Factura comercial no-CFDI emitida por un transportista, freight forwarder, broker logístico o proveedor extranjero por servicios de flete terrestre, marítimo, aéreo, ferroviario o multimodal. El diseño, idioma, moneda y etiquetas cambian por proveedor y país; suele contener Invoice/Invoice No., fecha, Bill To/Customer, términos de pago, uno o más conceptos de freight/transportation/trucking, rutas o referencias logísticas y total o balance due. Puede incluir BOL, load/shipment/PRO number, contenedor, combustible y cargos accesorios, pero no son universales. No confundir con la factura extranjera de mercancías, CFDI mexicano, bill of lading sin importes, packing list, carta porte, cotización ni estado de cuenta.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "expediente",
+    "business_destination": "PAGO_FLETE_AMERICANO",
+    "min_confidence": 0.8,
+    "fields": {
+      "NUMERO_FACTURA": {
+        "type": "string",
+        "required": true,
+        "hint": "Identificador principal junto a etiquetas variables como INVOICE #, INVOICE NO., INVOICE NUMBER, BILL NO., FOLIO o equivalente. Copiar literalmente letras, números, guiones y ceros. No confundir con PO, BOL, load, shipment, PRO, account, pedimento o número de cliente.",
+        "validation": []
+      },
+      "FECHA_FACTURA": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de emisión junto a DATE, INVOICE DATE, BILL DATE, FECHA o equivalente. Normalizar a YYYY-MM-DD. El orden cambia por país: resolver MM/DD/YYYY o DD/MM/YYYY usando el domicilio/país del emisor, nombres de mes, fecha de vencimiento y términos de pago; si sigue siendo realmente ambiguo, no inventar una interpretación.",
+        "validation": []
+      },
+      "FECHA_VENCIMIENTO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha límite de pago indicada como DUE DATE, PAYMENT DUE, PAY BY, VENCIMIENTO o equivalente. Normalizar a YYYY-MM-DD aplicando el formato de fecha del país del emisor. No confundir con fecha de servicio, recolección, entrega o factura.",
+        "validation": []
+      },
+      "TERMINOS_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Condiciones o plazo de pago como NET 30, DUE ON RECEIPT, PREPAID, COD, CONTADO o texto equivalente. Conservar el valor literal; no calcularlo a partir de las fechas si no está impreso.",
+        "validation": []
+      },
+      "PROVEEDOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre legal o comercial del transportista, freight forwarder, broker o proveedor que emite la factura, normalmente en el membrete o bloque superior. No tomar el cliente Bill To, consignatario, shipper, banco o proveedor de mercancía mencionado en una referencia.",
+        "validation": []
+      },
+      "PROVEEDOR_IDENTIFICADOR_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Identificador fiscal extranjero del proveedor cuando esté impreso, por ejemplo EIN, TIN, VAT, Tax ID, RFC, NIT o equivalente. Conservar prefijos y formato literal; no exigir estructura de RFC mexicano.",
+        "validation": []
+      },
+      "PROVEEDOR_DOMICILIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio completo del emisor/proveedor, conservando calle, ciudad, estado/provincia, código postal y país. No tomar el domicilio de Bill To, banco, origen, destino o sucursal operativa salvo que también sea el domicilio del emisor.",
+        "validation": []
+      },
+      "PROVEEDOR_PAIS": {
+        "type": "string",
+        "required": false,
+        "hint": "País del proveedor cuando esté escrito explícitamente o forme parte inequívoca de su domicilio. Conservar nombre o código literal. No inferirlo únicamente por idioma, dominio de correo, moneda o símbolo $.",
+        "validation": []
+      },
+      "PROVEEDOR_TELEFONO": {
+        "type": "string",
+        "required": false,
+        "hint": "Teléfono principal del proveedor en el membrete, incluidos código de país, extensión y separadores. No tomar teléfonos del cliente o banco.",
+        "validation": []
+      },
+      "PROVEEDOR_CORREO": {
+        "type": "string",
+        "required": false,
+        "hint": "Correo electrónico de contacto del proveedor. No tomar correos del cliente, banco o aviso legal.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+            "message": "El correo del proveedor tiene un formato inválido"
+          }
+        ]
+      },
+      "CLIENTE_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o razón social a quien se factura, dentro de BILL TO, CUSTOMER, SOLD TO, CLIENT, FACTURAR A o equivalente. No tomar proveedor, shipper, consignatario o destinatario logístico a menos que el documento también lo identifique como cliente facturado.",
+        "validation": []
+      },
+      "IMPORTADOR_RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "RFC mexicano del cliente/importador únicamente cuando aparezca en Bill To o datos fiscales del receptor. Extraer en mayúsculas y sin espacios o guiones. No usar Tax ID del proveedor extranjero ni RFC genérico salvo que esté impreso para el cliente.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del importador tiene un formato inválido"
+          },
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC del cliente no corresponde al importador configurado"
+          }
+        ]
+      },
+      "CLIENTE_IDENTIFICADOR_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Identificador fiscal del cliente/receptor cuando no corresponda al RFC mexicano o cuando la factura lo presente bajo Tax ID, VAT, EIN, NIT u otra etiqueta. Conservar formato literal y no duplicar IMPORTADOR_RFC.",
+        "validation": []
+      },
+      "CLIENTE_DOMICILIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio completo del bloque Bill To/Customer, con todas sus líneas. No tomar origen/destino del flete ni domicilio del proveedor.",
+        "validation": []
+      },
+      "CLIENTE_PAIS": {
+        "type": "string",
+        "required": false,
+        "hint": "País impreso en el domicilio del cliente/receptor. No inferirlo de la ruta, idioma o moneda.",
+        "validation": []
+      },
+      "NUMERO_ORDEN_COMPRA": {
+        "type": "string",
+        "required": false,
+        "hint": "Orden de compra o referencia del cliente junto a PO, P.O., PURCHASE ORDER, CUSTOMER PO, OC o equivalente, incluso cuando aparezca dentro de la descripción de una partida. No confundir con invoice, BOL, load, pedimento o número de servicio.",
+        "validation": []
+      },
+      "PEDIMENTO_REFERENCE": {
+        "type": "string",
+        "required": false,
+        "hint": "Número o referencia de pedimento únicamente cuando la factura lo mencione explícitamente como PEDIMENTO, ENTRY o CUSTOMS ENTRY. Conservar el formato impreso; no sustituirlo con PO, invoice, BOL, load o shipment.",
+        "validation": []
+      },
+      "TIPO_TRANSPORTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Modalidad de transporte escrita en el documento o concepto, por ejemplo TRUCKING/TERRESTRE, OCEAN/MARÍTIMO, AIR/AÉREO, RAIL/FERROVIARIO, COURIER o MULTIMODAL. No inferirla solo por el país o nombre del proveedor.",
+        "validation": []
+      },
+      "ORIGEN": {
+        "type": "string",
+        "required": false,
+        "hint": "Origen general del servicio indicado como FROM, ORIGIN, PICKUP, SHIP FROM, PORT OF LOADING o dentro de descripciones como 'Freight services from X to Y'. Conservar ciudad, instalación, puerto, estado y país disponibles; no usar el domicilio del proveedor por defecto.",
+        "validation": []
+      },
+      "DESTINO": {
+        "type": "string",
+        "required": false,
+        "hint": "Destino general del servicio indicado como TO, DESTINATION, DELIVERY, SHIP TO, PORT OF DISCHARGE o dentro de 'from X to Y'. No usar automáticamente el domicilio Bill To si el documento no lo identifica como destino.",
+        "validation": []
+      },
+      "RUTA": {
+        "type": "string",
+        "required": false,
+        "hint": "Ruta completa escrita para el servicio, conservando el texto literal y escalas relevantes, por ejemplo 'Valley Cold to Allende'. No construirla si origen y destino no están expresados.",
+        "validation": []
+      },
+      "FECHA_RECOLECCION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de pickup, collection, carga o salida cuando esté asociada al embarque. Normalizar a YYYY-MM-DD usando el formato del país del documento; no confundir con fecha de factura.",
+        "validation": []
+      },
+      "FECHA_ENTREGA": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de delivery, entrega, descarga o llegada cuando esté asociada al embarque. Normalizar a YYYY-MM-DD; no usar due date de pago.",
+        "validation": []
+      },
+      "BOL_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de Bill of Lading junto a BOL, B/L, BILL OF LADING o equivalente. No confundir con Master BOL, House BOL, invoice, PO, load o PRO cuando existan por separado.",
+        "validation": []
+      },
+      "MASTER_BOL": {
+        "type": "string",
+        "required": false,
+        "hint": "Master Bill of Lading, MBL o MAWB claramente etiquetado. No copiar BOL genérico o House BOL sin evidencia.",
+        "validation": []
+      },
+      "HOUSE_BOL": {
+        "type": "string",
+        "required": false,
+        "hint": "House Bill of Lading, HBL o HAWB claramente etiquetado. No copiar Master BOL.",
+        "validation": []
+      },
+      "LOAD_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de carga o viaje junto a LOAD, LOAD #, TRIP, MOVE o equivalente. No confundir con cantidad de una partida.",
+        "validation": []
+      },
+      "SHIPMENT_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de embarque, shipment, tracking o referencia logística cuando esté etiquetado. Conservar el formato completo.",
+        "validation": []
+      },
+      "PRO_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "PRO number del transportista terrestre cuando aparezca explícitamente. No tomar cualquier número de referencia como PRO.",
+        "validation": []
+      },
+      "BOOKING_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de booking o reservación marítima/aérea cuando esté explícitamente etiquetado.",
+        "validation": []
+      },
+      "SCAC_CODE": {
+        "type": "string",
+        "required": false,
+        "hint": "Código SCAC del transportista cuando se muestre como SCAC o carrier code. No inferirlo del nombre de la empresa.",
+        "validation": []
+      },
+      "TRAILER_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de caja, remolque o trailer asociado al servicio. No confundir con contenedor, placas o unidad tractora.",
+        "validation": []
+      },
+      "CONTAINER_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de contenedor marítimo/intermodal cuando esté impreso. Conservar prefijo y dígito verificador; no tomar trailer o sello.",
+        "validation": []
+      },
+      "SEAL_NUMBER": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de sello o precinto asociado al contenedor/caja. No confundir con contenedor o folio.",
+        "validation": []
+      },
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "hint": "Extraer una fila por concepto, servicio, cargo o partida facturada, aunque la descripción ocupe varias líneas. Incluir flete principal, fuel surcharge, detention, waiting time, handling, tolls, maniobras, seguro, impuestos y otros cargos si aparecen. Conservar el orden y no omitir una fila porque alguna columna esté vacía.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La factura debe contener al menos un concepto de flete o transporte"
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "FECHA_SERVICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de esta partida o servicio. Normalizar a YYYY-MM-DD según el formato del emisor; no copiar la fecha general de factura si la fila no trae una propia.",
+            "validation": []
+          },
+          "CODIGO": {
+            "type": "string",
+            "required": false,
+            "hint": "Código, item, service code, SKU o referencia corta de esta fila, por ejemplo 'Freight VC-A'. No tomar el número de factura o PO salvo que la columna lo identifique como código de partida.",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción completa del servicio/cargo, uniendo sus renglones en orden. Incluir texto de ruta o referencia que pertenezca a la fila, pero no encabezados ni totales.",
+            "validation": []
+          },
+          "TIPO_CARGO": {
+            "type": "string",
+            "required": false,
+            "hint": "Tipo o categoría solo cuando esté indicada, por ejemplo FREIGHT, LINEHAUL, FUEL SURCHARGE, DETENTION, ACCESSORIAL, TAX o INSURANCE. No clasificar libremente una descripción ambigua.",
+            "validation": []
+          },
+          "ORIGEN": {
+            "type": "string",
+            "required": false,
+            "hint": "Origen específico de esta fila, incluso si está embebido en la descripción como 'From X'. No copiar el origen general si la fila no lo menciona.",
+            "validation": []
+          },
+          "DESTINO": {
+            "type": "string",
+            "required": false,
+            "hint": "Destino específico de esta fila, incluso si está embebido como 'To Y'. No copiar el destino general sin evidencia en la fila.",
+            "validation": []
+          },
+          "REFERENCIA": {
+            "type": "string",
+            "required": false,
+            "hint": "PO, BOL, load, shipment, container u otra referencia impresa dentro de esta fila. Conservar también la etiqueta cuando sea necesaria para distinguir el tipo.",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": false,
+            "hint": "Cantidad de servicios/unidades en esta fila, sin unidad. No asumir 1 cuando la columna está vacía.",
+            "validation": []
+          },
+          "UNIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Unidad facturada, por ejemplo trip, load, mile, hour, day, pallet, kg, container o service, solo cuando aparezca.",
+            "validation": []
+          },
+          "TARIFA": {
+            "type": "number",
+            "required": false,
+            "hint": "Rate, unit price o tarifa unitaria de esta fila, sin símbolo de moneda ni separadores de miles. No copiar el importe total de la fila.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "hint": "Amount, line total o importe de esta fila, sin símbolo de moneda ni separadores de miles. No confundir con tarifa cuando cantidad y amount están separados.",
+            "validation": []
+          },
+          "MONEDA": {
+            "type": "string",
+            "required": false,
+            "hint": "Código o símbolo de moneda asociado específicamente a esta fila. Si solo aparece '$', conservar '$' y no inventar USD, MXN o CAD.",
+            "validation": []
+          }
+        }
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Moneda general de la factura exactamente como esté indicada: USD, US DOLLARS, MXN, CAD, EUR u otra. Si el único indicador es '$', devolver '$' en vez de asumir una moneda por domicilio, idioma o ruta.",
+        "validation": []
+      },
+      "SUBTOTAL": {
+        "type": "number",
+        "required": false,
+        "hint": "Subtotal antes de impuestos, descuentos y ajustes, sin símbolo de moneda. No calcularlo si no está impreso.",
+        "validation": []
+      },
+      "FREIGHT_AMOUNT": {
+        "type": "number",
+        "required": false,
+        "hint": "Importe del transporte/flete principal, sin combustible, impuestos ni cargos accesorios cuando estén separados. Si la factura tiene una única partida claramente descrita como freight y ningún otro cargo, usar el IMPORTE de esa partida; no usar automáticamente el balance due de una factura con varios conceptos.",
+        "validation": []
+      },
+      "FUEL_SURCHARGE": {
+        "type": "number",
+        "required": false,
+        "hint": "Total explícito de fuel surcharge, combustible, FSC o cargo por diésel, sin símbolo de moneda. No inferirlo de una tarifa global.",
+        "validation": []
+      },
+      "ACCESSORIAL_CHARGES": {
+        "type": "number",
+        "required": false,
+        "hint": "Total explícito de cargos accesorios diferentes del flete y combustible, por ejemplo detention, waiting, handling, tolls, lumper o maniobras. No sumar mentalmente partidas si el documento no muestra este subtotal.",
+        "validation": []
+      },
+      "TAX_AMOUNT": {
+        "type": "number",
+        "required": false,
+        "hint": "Total de sales tax, VAT, IVA u otros impuestos cobrado en la factura, sin símbolo de moneda. No confundir con Tax ID.",
+        "validation": []
+      },
+      "DESCUENTO": {
+        "type": "number",
+        "required": false,
+        "hint": "Descuento, credit o allowance aplicado, expresado como magnitud positiva sin símbolo. No usar pagos previos como descuento.",
+        "validation": []
+      },
+      "OTROS_CARGOS": {
+        "type": "number",
+        "required": false,
+        "hint": "Otros cargos globales explícitos no incluidos en flete, combustible, accesorios o impuestos, sin símbolo. No inventar un remanente para cuadrar el total.",
+        "validation": []
+      },
+      "TOTAL": {
+        "type": "number",
+        "required": true,
+        "hint": "Importe total facturado junto a TOTAL, INVOICE TOTAL, GRAND TOTAL o equivalente, sin símbolo de moneda. Si el formato no imprime un total separado y solo muestra BALANCE DUE sin pagos/créditos previos, extraer ese saldo como TOTAL; si hay pagos o ajustes, conservar TOTAL y BALANCE_DUE por separado.",
+        "validation": []
+      },
+      "IMPORTE_PAGADO": {
+        "type": "number",
+        "required": false,
+        "hint": "Monto ya pagado, deposit, payment, credit applied o paid amount, sin símbolo. No confundir con descuento o saldo pendiente.",
+        "validation": []
+      },
+      "BALANCE_DUE": {
+        "type": "number",
+        "required": false,
+        "hint": "Saldo pendiente indicado como BALANCE DUE, AMOUNT DUE, TOTAL DUE, OPEN BALANCE o equivalente, sin símbolo de moneda. Puede coincidir con TOTAL cuando no hay pagos; aun así extraerlo aquí si está etiquetado como saldo.",
+        "validation": []
+      },
+      "DATOS_PAGO": {
+        "type": "object",
+        "required": false,
+        "hint": "Instrucciones bancarias o de pago del proveedor cuando la factura las incluya. El formato cambia por país; extraer únicamente valores etiquetados y no mezclar teléfonos o números de cliente.",
+        "validation": [],
+        "fields": {
+          "BENEFICIARIO": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre del beneficiario de la transferencia o titular de la cuenta. No asumir que coincide con el proveedor si no está impreso.",
+            "validation": []
+          },
+          "BANCO": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre del banco receptor.",
+            "validation": []
+          },
+          "NUMERO_CUENTA": {
+            "type": "string",
+            "required": false,
+            "hint": "Número de cuenta bancaria, conservando ceros y separadores. No confundir con número de cliente o invoice.",
+            "validation": []
+          },
+          "ROUTING_ABA": {
+            "type": "string",
+            "required": false,
+            "hint": "Routing number o ABA para pagos en Estados Unidos, conservando ceros iniciales.",
+            "validation": []
+          },
+          "SWIFT_BIC": {
+            "type": "string",
+            "required": false,
+            "hint": "Código SWIFT/BIC del banco cuando esté etiquetado.",
+            "validation": []
+          },
+          "IBAN_CLABE": {
+            "type": "string",
+            "required": false,
+            "hint": "IBAN, CLABE u otro identificador bancario internacional etiquetado, conservando el formato literal.",
+            "validation": []
+          },
+          "REFERENCIA_PAGO": {
+            "type": "string",
+            "required": false,
+            "hint": "Referencia o concepto que debe incluirse al pagar, por ejemplo el número de invoice o customer account, solo cuando la instrucción lo indique.",
+            "validation": []
+          }
+        }
+      },
+      "NOTAS": {
+        "type": "string",
+        "required": false,
+        "hint": "Notas relevantes sobre servicio, pago, reclamaciones o condiciones particulares de esta factura. No copiar textos legales extensos, publicidad, encabezados ni datos ya extraídos en otros campos.",
+        "validation": []
+      }
+    },
+    "cross_field_validation": []
+  }
+}

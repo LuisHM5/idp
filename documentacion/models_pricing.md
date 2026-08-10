@@ -261,14 +261,13 @@ en el catálogo de Bedrock.
 
 ## 5. Lo que esta comparativa NO cubre
 
-- **Soporte real de vision para Kimi K2 Thinking y MiniMax M2.5.** GLM 5
-  y Kimi K2.5 ya están confirmados (input texto+imagen, sin fallos). Para
-  los otros dos, ninguno de los dos MCP usados (`artificial-analysis`,
+- **Soporte real de vision para Kimi K2 Thinking.** GLM 5, Kimi K2.5 y
+  MiniMax M2.5 ya están confirmados (input texto+imagen, sin fallos). Para
+  Kimi K2 Thinking, ninguno de los dos MCP usados (`artificial-analysis`,
   `aws-billing`) expone modalidad de input de forma confiable — no hay
   campo de modalidad en el schema de ninguno de los dos, se verificó
-  explícitamente. Confirmar contra la documentación de Moonshot AI /
-  MiniMax, o probar directamente, antes de considerar cualquiera de los
-  dos como reemplazo de Haiku 4.5.
+  explícitamente. Confirmar contra la documentación de Moonshot AI, o
+  probar directamente, antes de considerarlo como reemplazo de Haiku 4.5.
 - **Soporte de structured output / tool use en Bedrock Converse**, igual
   que en la versión anterior — sigue sin investigarse
   (`https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html`).
@@ -330,10 +329,14 @@ sin migrar de región.
 
 ## 7. Recomendación final — calidad/precio
 
+> **Actualizado 2026-08-10**: MiniMax M2.5 confirmó soporte de visión
+> (texto+imagen, sin fallar) — entra a esta comparación de pleno derecho.
+> Sólo Kimi K2 Thinking sigue sin confirmar y queda fuera.
+
 Restringiendo a lo que es realmente usable *hoy* en este pipeline (en
-Bedrock us-east-1, con visión confirmada) quedan sólo dos candidatos frente
-al baseline: **GLM 5** y **Kimi K2.5**. Todo lo demás está descartado por
-alguna razón dura: Kimi K2 Thinking/MiniMax M2.5 (visión sin confirmar),
+Bedrock us-east-1, con visión confirmada) quedan tres candidatos frente al
+baseline: **GLM 5**, **Kimi K2.5** y **MiniMax M2.5**. Todo lo demás está
+descartado por alguna razón dura: Kimi K2 Thinking (visión sin confirmar),
 Nemotron 3 Ultra/Gemini (no están en Bedrock), GPT-5.6 (GovCloud only).
 
 Comparar sólo por Intelligence Index agregado esconde algo relevante para
@@ -341,40 +344,92 @@ esta tarea específica — desglosando los benchmarks de Artificial Analysis
 que más se parecen a "extraer campos exactos de un documento" (no
 matemáticas/código, que aquí no aplican):
 
-| Benchmark | Qué mide | Claude Haiku 4.5 | GLM 5 | Kimi K2.5 |
-| --- | --- | ---: | ---: | ---: |
-| GPQA (conocimiento/razonamiento) | precisión en preguntas de nivel experto | 0.672 | 0.820 | **0.879** |
-| HLE (razonamiento difícil) | precisión en tareas de razonamiento exigente | 0.104 | 0.293 | **0.307** |
-| IFBench (seguir instrucciones exactas) | qué tan literal sigue el formato pedido | 0.543 | **0.723** | 0.702 |
-| Tau2 (tool-use / salida estructurada) | fiabilidad en llamadas a herramientas / formato rígido | 0.547 | **0.982** | 0.959 |
-| Precio por documento (mezcla real) | costo directo | $0.01249 | $0.00964 | **$0.00681** |
+| Benchmark | Qué mide | Claude Haiku 4.5 | GLM 5 | Kimi K2.5 | MiniMax M2.5 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| GPQA (conocimiento/razonamiento) | precisión en preguntas de nivel experto | 0.672 | 0.820 | **0.879** | 0.848 |
+| HLE (razonamiento difícil) | precisión en tareas de razonamiento exigente | 0.104 | 0.293 | **0.307** | 0.205 |
+| IFBench (seguir instrucciones exactas) | qué tan literal sigue el formato pedido | 0.543 | 0.723 | 0.702 | **0.716** |
+| Tau2 (tool-use / salida estructurada) | fiabilidad en llamadas a herramientas / formato rígido | 0.547 | **0.982** | 0.959 | 0.953 |
+| Precio por documento (mezcla real) | costo directo | $0.01249 | $0.00964 | $0.00681 | **$0.00312** |
 
-**Elegiría Kimi K2.5.** Razones, en orden de peso:
+**Elegiría MiniMax M2.5.** Razones, en orden de peso:
 
-1. **Es el más barato de los dos que sí califican** — $0.00681/doc vs
-   $0.00964 de GLM 5 (29% más barato que GLM 5, 45% más barato que Haiku
-   4.5). En una mezcla de tokens dominada por input (6,600 in / 950 out),
-   el precio de input pesa más que el de output, y Kimi K2.5 ($0.60) le
-   gana ahí a GLM 5 ($1.00) por un margen amplio.
-2. **Gana en los dos benchmarks más cercanos a "leer bien un documento y
-   dar la respuesta correcta"** (GPQA y HLE) — pese a tener un Intelligence
-   Index agregado más bajo que GLM 5. El índice agregado incluye
-   componentes (terminalbench_hard, code) que no son relevantes para este
-   pipeline; GPQA/HLE sí lo son.
-3. **Tau2 (0.959) es casi 2x el de Haiku 4.5 (0.547)** — señal fuerte de
-   que sostiene mejor una salida con formato rígido (relevante porque el
-   pipeline pide JSON exacto del catálogo), aunque esto es tool-use
-   genérico, no una prueba directa de `output_config.format` en Bedrock
-   Converse específicamente (sigue sin verificarse, ver §5).
-4. GLM 5 gana en IFBench por un margen pequeño (0.723 vs 0.702) y en
-   Intelligence Index agregado (40.6 vs 36.0) — si el criterio fuera
-   "máxima inteligencia general sin importar el costo extra", GLM 5 sería
-   la elección. Pero a precio equivalente (ambos muy por debajo del techo
-   de Haiku), Kimi K2.5 da más por menos en las métricas que importan aquí.
+1. **Es, por lejos, el más barato de los tres** — $0.00312/doc: 54% más
+   barato que Kimi K2.5, 68% más barato que GLM 5, 75% más barato que
+   Haiku 4.5. Nada más en la tabla se le acerca en precio.
+2. **Ese ahorro casi no cuesta calidad en los benchmarks que importan
+   aquí.** Frente a Kimi K2.5 (el segundo más barato): GPQA 0.848 vs 0.879
+   (-3.5%), IFBench 0.716 vs 0.702 (MiniMax **gana**), Tau2 0.953 vs 0.959
+   (prácticamente empatados). La única caída real es HLE (0.205 vs 0.307,
+   -33%) — y HLE mide razonamiento de nivel "examen más difícil del mundo"
+   en dominios generales, el benchmark menos parecido a "leer un pedimento
+   y llenar un JSON" de toda la tabla.
+3. **Tau2 (0.953) sigue casi 2x el de Haiku 4.5 (0.547)** — misma lectura
+   que con Kimi K2.5/GLM 5: buena señal de fiabilidad en salida
+   estructurada, no una prueba directa de `output_config.format` en
+   Bedrock Converse (sigue sin verificarse, ver §5).
+4. Si el criterio fuera "máxima inteligencia general sin ver el costo
+   extra", **GLM 5** (Intelligence Index 40.6, el más alto de los tres, y
+   el que gana en Tau2) seguiría siendo la opción — y si se quiere más
+   margen específicamente en razonamiento difícil (HLE), **Kimi K2.5** es
+   el punto medio. MiniMax M2.5 es la apuesta cuando el costo por documento
+   pesa tanto como la inteligencia, que es como está planteada esta
+   comparativa desde el principio (techo de precio de Haiku).
 
-**Lo que esto NO reemplaza:** ninguno de los dos se ha corrido contra
+**Orden de respaldo si MiniMax M2.5 no funciona bien en la prueba real:**
+1. MiniMax M2.5 (mejor precio/calidad) → 2. Kimi K2.5 (mejor equilibrio,
+más margen en HLE) → 3. GLM 5 (mayor inteligencia agregada y mejor Tau2,
+al precio más alto de los tres) → 4. Claude Haiku 4.5 (baseline conocido).
+
+**Lo que esto NO reemplaza:** ninguno de los tres se ha corrido contra
 `tests/integration/expected_pedimentos.json`, y el soporte de
 `output_config.format`/structured output en Bedrock Converse sigue sin
-confirmarse para ninguno de los dos (§5) — esta recomendación es la mejor
+confirmarse para ninguno de los tres (§5) — esta recomendación es la mejor
 apuesta *por especificaciones publicadas*, no un reemplazo de la prueba
-real antes de mover producción.
+real antes de mover producción. Dado lo barato que es MiniMax M2.5, es el
+primer candidato razonable para esa prueba.
+
+### 7.1 Refinamiento — enfocado específicamente en extracción + validación
+
+La comparación de arriba usa GPQA/HLE como proxy de "inteligencia
+general". Para el caso de uso concreto de este pipeline —
+**extracción de campos de un documento + validación contra el
+catálogo**, no razonamiento abierto — hay tres benchmarks de Artificial
+Analysis más cercanos a la tarea real:
+
+| Benchmark | Por qué aplica a extracción+validación |
+| --- | --- |
+| **LCR** (Long Context Retrieval) | encontrar el dato correcto dentro de un contexto largo — análogo directo a "leer el documento y sacar el campo correcto" |
+| **Tau2** (tool-use / salida estructurada) | sostener un formato rígido en una llamada estructurada — análogo directo a devolver el JSON exacto del catálogo |
+| **IFBench** (seguir instrucciones al pie de la letra) | análogo directo a las reglas de validación (p. ej. "si el campo está vacío, no inventes un valor") |
+
+| | Claude Haiku 4.5 | GLM 5 | Kimi K2.5 | MiniMax M2.5 |
+| --- | ---: | ---: | ---: | ---: |
+| LCR (encontrar el dato) | **0.737** | 0.707 | 0.730 | 0.720 |
+| Tau2 (formato rígido) | 0.547 | **0.982** | 0.959 | 0.953 |
+| IFBench (seguir reglas) | 0.543 | 0.723 | 0.702 | **0.716** |
+| Promedio de los 3 | 0.609 | **0.804** | 0.797 | 0.796 |
+| $/documento | $0.01249 | $0.00964 | $0.00681 | **$0.00312** |
+
+**Hallazgo:** en este compuesto — el más relevante para la tarea real —
+GLM 5, Kimi K2.5 y MiniMax M2.5 quedan **prácticamente empatados** (0.804
+/ 0.797 / 0.796, <1% de diferencia entre ellos), y los tres superan a
+Haiku 4.5 (0.609) por un margen que sí es real. Con la calidad
+esencialmente empatada entre los tres candidatos, el precio deja de ser
+un desempate menor y pasa a ser el criterio que decide: **elegir MiniMax
+M2.5 no sacrifica precisión medible frente a GLM 5/Kimi K2.5 en LCR,
+Tau2 ni IFBench**, y sí ahorra 54–68% frente a ellos.
+
+Matiz importante para la parte de **validación** específicamente: si las
+reglas de negocio del catálogo requieren razonamiento más allá de "sigue
+el formato" (casos ambiguos, cruces de campos, interpretación de códigos),
+GPQA vuelve a ser relevante — ahí Kimi K2.5 (0.879) le saca ventaja a
+MiniMax M2.5 (0.848), y sería el respaldo natural si MiniMax falla en
+casos de validación complejos.
+
+**Límite real de este refinamiento:** ninguno de LCR/Tau2/IFBench mide
+extracción visual de documentos ni tasa de alucinación en campos
+vacíos/ilegibles, que es el riesgo que más importa en "validación" para
+este pipeline — eso no lo cubre ningún benchmark de Artificial Analysis,
+sólo `pnpm test:pedimentos` contra `expected_pedimentos.json` lo
+confirma.

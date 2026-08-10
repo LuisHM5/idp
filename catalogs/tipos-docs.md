@@ -7,6 +7,6 @@ Honorarios Extranjeros FACTURA_PROVEEDOR_EXTRANJERO, con subtipo de honorarios, 
 Operaciones Logísticas Internacionales FACTURA_LOGISTICA o DOCUMENTO_TRANSPORTE
 Factura Proveedores Extranjeros FACTURA_PROVEEDOR_EXTRANJERO
 Gastos Terceros CFDI_GASTO_TERCERO
-Pago Flete Americano FACTURA_FLETE_EXTRANJERO
+Factura de Flete Extranjero / Freight Invoice / Pago Flete Americano FACTURA_FLETE_EXTRANJERO
 Permiso Salud PERMISO_CERTIFICADO_SANITARIO
 PDF completo con varios anexos EXPEDIENTE_ADUANAL_MULTIDOCUMENTO

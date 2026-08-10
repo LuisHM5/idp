@@ -2,7 +2,7 @@
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
-El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay seis tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
+El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay siete tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `FACTURA_FLETE_EXTRANJERO`, para facturas no-CFDI de transportistas extranjeros; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
 
 ## Documentación
 
@@ -133,6 +133,7 @@ documents-validator/
 │   ├── PEDIMENTO_ADUANAL.json              # tipo activo: expediente aduanal
 │   ├── FACTURA_HONORARIOS.json              # tipo activo: CFDI de honorarios aduanales
 │   ├── FACTURA_HONORARIOS_XML.json         # tipo activo: CFDI XML determinístico
+│   ├── FACTURA_FLETE_EXTRANJERO.json        # tipo activo: factura de flete no-CFDI
 │   ├── CONSTANCIA_SITUACION_FISCAL.json    # tipo activo: constancia individual del SAT
 │   ├── INE.json                             # tipo activo: Credencial para Votar E–J
 │   ├── CERTIFICADO_POLIZA.json              # tipo activo: certificado/carátula de seguro
