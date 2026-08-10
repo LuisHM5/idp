@@ -150,7 +150,8 @@ source `document-validation-pipeline`).
 Mismo pipeline, con tus credenciales AWS, sin stack desplegado:
 
 ```bash
-pnpm procesar -- --file "archivo.pdf" --importer TU_RFC
+pnpm procesar -- "archivo.pdf" --importer TU_RFC
 ```
 
-Deja `resultados/<archivo>.json` + `_resumen.md` para revisión humana.
+Deja `resultados/NNN/<archivo>.json` + `_resumen.md` para revisión humana — cada
+corrida numera su propia carpeta (001, 002, ...), nunca pisa una anterior.

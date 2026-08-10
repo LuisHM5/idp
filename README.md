@@ -81,7 +81,7 @@ pnpm run deploy / deploy:dev / deploy:prod
 pnpm run diff                         # cambios pendientes vs. lo desplegado
 pnpm sync                             # sube TODA la carpeta catalogs/ a DynamoDB (hot-reload)
 pnpm sync:one -- --type PEDIMENTO_ADUANAL   # sube un solo tipo (--dry-run para validar)
-pnpm procesar -- --file mi_doc.pdf    # procesa localmente sin pasar por el stack (tus credenciales AWS)
+pnpm procesar -- mi_doc.pdf           # procesa localmente sin pasar por el stack (tus credenciales AWS)
 pnpm enviar mi_doc.pdf PEDIMENTO_ADUANAL     # sube al stack desplegado
 pnpm resultado -- --id <documentId>   # trae y formatea el resultado
 pnpm test:unit                        # tests offline del motor de reglas ($0)

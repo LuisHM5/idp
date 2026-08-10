@@ -13,8 +13,8 @@
 > (`us.anthropic.claude-haiku-4-5-20251001-v1:0`, ver `pipeline/pricing.py`
 > y `COSTOS.md` §1) — se usa aquí como **techo de precio** ($1.10 input /
 > $5.50 output por 1M tokens, verificado en AWS Pricing API), **no como
-> techo de inteligencia**. Es decir: se buscan modelos que cuesten *lo mismo
-> o menos* que Haiku 4.5, sin importar si son más o menos inteligentes —
+> techo de inteligencia**. Es decir: se buscan modelos que cuesten _lo mismo
+> o menos_ que Haiku 4.5, sin importar si son más o menos inteligentes —
 > y luego se filtra por cuáles superan la inteligencia de Haiku 4.5 según
 > Artificial Analysis (Intelligence Index = **29.9** para Claude Haiku 4.5,
 > variante "Reasoning"/adaptive thinking, que es como corre este pipeline).
@@ -27,19 +27,19 @@ de Haiku 4.5** — todos están muy por debajo (Intelligence Index 4.4–20.9 vs
 29.9 de Haiku). Son más baratos, pero también claramente menos capaces; no
 son "igual o más inteligentes" como pidió el usuario.
 
-Cruzando el catálogo de Artificial Analysis contra el catálogo *en vivo* de
+Cruzando el catálogo de Artificial Analysis contra el catálogo _en vivo_ de
 Amazon Bedrock (`AmazonBedrock` → atributo `model`, us-east-1) sí aparecen
 **4 modelos nuevos, ya disponibles en Bedrock, que superan la inteligencia
 de Haiku 4.5 y cuestan menos** (verificado con AWS Pricing API, no
 estimado):
 
-| Modelo | Intelligence Index (AA) | vs Haiku 4.5 (29.9) | Precio in/out por 1M | vs techo de precio Haiku |
-| --- | ---: | ---: | ---: | ---: |
-| **GLM 5** (Z AI) | 40.6 | +36% | $1.00 / $3.20 | 0.77x (23% más barato) |
-| **Kimi K2.5** (Moonshot AI) | 36.0 | +20% | $0.60 / $3.00 | 0.55x (45% más barato) |
-| **MiniMax M2.5** | 34.5 | +15% | $0.30 / $1.20 | 0.25x (75% más barato) |
-| **Kimi K2 Thinking** (Moonshot AI) | 33.5 | +12% | $0.60 / $2.50 | 0.51x (49% más barato) |
-| **Claude Haiku 4.5 (actual)** | **29.9** | — | **$1.10 / $5.50** | **1.00x** |
+| Modelo                             | Intelligence Index (AA) | vs Haiku 4.5 (29.9) | Precio in/out por 1M | vs techo de precio Haiku |
+| ---------------------------------- | ----------------------: | ------------------: | -------------------: | -----------------------: |
+| **GLM 5** (Z AI)                   |                    40.6 |                +36% |        $1.00 / $3.20 |   0.77x (23% más barato) |
+| **Kimi K2.5** (Moonshot AI)        |                    36.0 |                +20% |        $0.60 / $3.00 |   0.55x (45% más barato) |
+| **MiniMax M2.5**                   |                    34.5 |                +15% |        $0.30 / $1.20 |   0.25x (75% más barato) |
+| **Kimi K2 Thinking** (Moonshot AI) |                    33.5 |                +12% |        $0.60 / $2.50 |   0.51x (49% más barato) |
+| **Claude Haiku 4.5 (actual)**      |                **29.9** |                   — |    **$1.10 / $5.50** |                **1.00x** |
 
 `Kimi K2.5` ya estaba en la lista original de candidatos por precio — lo
 nuevo aquí es confirmar que **también es más inteligente** que Haiku 4.5
@@ -69,27 +69,27 @@ marcado 🆕). El Intelligence Index es de Artificial Analysis (variante
 Haiku 4.5 corriendo en modo reasoning). Ordenado por inteligencia
 descendente.
 
-| Modelo | Bedrock model ID | Proveedor | Intelligence Index | Input $/1M | Output $/1M | vs. Haiku 4.5 (precio) | Input imagen | Output |
-| --- | --- | --- | ---: | ---: | ---: | ---: | :---: | :---: |
-| GPT-5.6 Terra ⚠️ GovCloud | `openai.gpt-5.6-terra` | OpenAI | 56.6 | $3.30 | $19.80 | 3.25x | ✅ texto+imagen | texto |
-| GPT-5.6 Luna ⚠️ GovCloud | `openai.gpt-5.6-luna` | OpenAI | 52.3 | $1.32 | $7.92 | 1.30x | ✅ texto+imagen | texto |
-| **GLM 5** 🆕 | `zai.glm5` (confirmar sufijo exacto) | Z AI | 40.6 | $1.00 | $3.20 | 0.77x | ⚠️ no confirmado (probable sólo texto) | texto |
-| **Kimi K2.5** | `moonshotai.kimi-k2.5` | Moonshot AI | 36.0 | $0.60 | $3.00 | 0.55x | ⚠️ no confirmado (probable sólo texto) | texto |
-| **MiniMax M2.5** 🆕 | `minimax.minimax-m2.5` | MiniMax | 34.5 | $0.30 | $1.20 | 0.25x | ⚠️ no confirmado (probable sólo texto) | texto |
-| **Kimi K2 Thinking** 🆕 | `moonshotai.kimi-k2-thinking` | Moonshot AI | 33.5 | $0.60 | $2.50 | 0.51x | ⚠️ no confirmado (probable sólo texto) | texto |
-| **Claude Haiku 4.5 (actual)** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Anthropic | **29.9** | **$1.10** | **$5.50** | **1.00x** | ✅ texto+imagen | texto |
-| DeepSeek R1 🆕 | `DeepSeek R1` (verificar ID exacto) | DeepSeek | 20.4 | $1.35 | $5.40 | 1.12x | ❌ sólo texto | texto |
-| Qwen3 VL 235B A22B Instruct | `qwen.qwen3-vl-235b-a22b-instruct` | Qwen | 20.9 | $0.53 | $2.66 | 0.48x | ✅ texto+imagen (VL) | texto |
-| DeepSeek V3.2 🆕 | `deepseek.v3.2` | DeepSeek | 25.1 | $0.62 | $1.85 | 0.47x | ❌ sólo texto | texto |
-| NVIDIA Nemotron 3 Super 120B A12B 🆕 | `nvidia.nemotron-super-3-120b` | NVIDIA | 25.7 | $0.20 | $0.80 | 0.17x | ❌ sólo texto | texto |
-| NVIDIA Nemotron Nano 12B v2 VL | `nvidia.nemotron-nano-12b-v2` | NVIDIA | 8.8 | $0.20 | $0.60 | 0.15x | ✅ texto+imagen (VL) | texto |
-| Llama 4 Maverick 17B 🆕 | `meta.llama4-maverick-17b` | Meta | 14.5 | $0.24 | $0.97 | 0.20x | ✅ texto+imagen | texto |
-| NVIDIA Nemotron 3 Nano 30B A3B 🆕 | `nvidia.nemotron-nano-3-30b` | NVIDIA | 14.5 | $0.06 | $0.24 | 0.05x | ❌ sólo texto | texto |
-| Amazon Nova 2 Lite | `amazon.nova-2-lite-v1:0` | Amazon | 11.8 | $0.33 | $2.75 | 0.38x | ✅ texto+imagen | texto |
-| Llama 3.3 70B Instruct | `us.meta.llama3-3-70b-instruct-v1:0` | Meta | 9.3 | $0.72 | $0.72 | 0.44x | ❌ sólo texto | texto |
-| Amazon Nova Pro | `amazon.nova-pro-v1:0` | Amazon | 7.5 | $0.80 | $3.20 | 0.67x | ✅ texto+imagen | texto |
-| Qwen3 235B A22B 2507 Instruct 🆕 | `qwen.qwen3-235b-a22b-2507` | Qwen | 18.4 | $0.22 | $0.88 | 0.18x | ❌ sólo texto (no-VL) | texto |
-| Amazon Nova Micro | `amazon.nova-micro-v1:0` | Amazon | 4.4 | $0.035 | $0.14 | 0.03x | ❌ sólo texto | texto |
+| Modelo                               | Bedrock model ID                              | Proveedor   | Intelligence Index | Input $/1M | Output $/1M | vs. Haiku 4.5 (precio) |              Input imagen              | Output |
+| ------------------------------------ | --------------------------------------------- | ----------- | -----------------: | ---------: | ----------: | ---------------------: | :------------------------------------: | :----: |
+| GPT-5.6 Terra ⚠️ GovCloud            | `openai.gpt-5.6-terra`                        | OpenAI      |               56.6 |      $3.30 |      $19.80 |                  3.25x |            ✅ texto+imagen             | texto  |
+| GPT-5.6 Luna ⚠️ GovCloud             | `openai.gpt-5.6-luna`                         | OpenAI      |               52.3 |      $1.32 |       $7.92 |                  1.30x |            ✅ texto+imagen             | texto  |
+| **GLM 5** 🆕                         | `zai.glm-5` (confirmar sufijo exacto)         | Z AI        |               40.6 |      $1.00 |       $3.20 |                  0.77x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| **Kimi K2.5**                        | `moonshotai.kimi-k2.5`                        | Moonshot AI |               36.0 |      $0.60 |       $3.00 |                  0.55x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| **MiniMax M2.5** 🆕                  | `minimax.minimax-m2.5`                        | MiniMax     |               34.5 |      $0.30 |       $1.20 |                  0.25x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| **Kimi K2 Thinking** 🆕              | `moonshotai.kimi-k2-thinking`                 | Moonshot AI |               33.5 |      $0.60 |       $2.50 |                  0.51x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| **Claude Haiku 4.5 (actual)**        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Anthropic   |           **29.9** |  **$1.10** |   **$5.50** |              **1.00x** |            ✅ texto+imagen             | texto  |
+| DeepSeek R1 🆕                       | `DeepSeek R1` (verificar ID exacto)           | DeepSeek    |               20.4 |      $1.35 |       $5.40 |                  1.12x |             ❌ sólo texto              | texto  |
+| Qwen3 VL 235B A22B Instruct          | `qwen.qwen3-vl-235b-a22b-instruct`            | Qwen        |               20.9 |      $0.53 |       $2.66 |                  0.48x |          ✅ texto+imagen (VL)          | texto  |
+| DeepSeek V3.2 🆕                     | `deepseek.v3.2`                               | DeepSeek    |               25.1 |      $0.62 |       $1.85 |                  0.47x |             ❌ sólo texto              | texto  |
+| NVIDIA Nemotron 3 Super 120B A12B 🆕 | `nvidia.nemotron-super-3-120b`                | NVIDIA      |               25.7 |      $0.20 |       $0.80 |                  0.17x |             ❌ sólo texto              | texto  |
+| NVIDIA Nemotron Nano 12B v2 VL       | `nvidia.nemotron-nano-12b-v2`                 | NVIDIA      |                8.8 |      $0.20 |       $0.60 |                  0.15x |          ✅ texto+imagen (VL)          | texto  |
+| Llama 4 Maverick 17B 🆕              | `meta.llama4-maverick-17b`                    | Meta        |               14.5 |      $0.24 |       $0.97 |                  0.20x |            ✅ texto+imagen             | texto  |
+| NVIDIA Nemotron 3 Nano 30B A3B 🆕    | `nvidia.nemotron-nano-3-30b`                  | NVIDIA      |               14.5 |      $0.06 |       $0.24 |                  0.05x |             ❌ sólo texto              | texto  |
+| Amazon Nova 2 Lite                   | `amazon.nova-2-lite-v1:0`                     | Amazon      |               11.8 |      $0.33 |       $2.75 |                  0.38x |            ✅ texto+imagen             | texto  |
+| Llama 3.3 70B Instruct               | `us.meta.llama3-3-70b-instruct-v1:0`          | Meta        |                9.3 |      $0.72 |       $0.72 |                  0.44x |             ❌ sólo texto              | texto  |
+| Amazon Nova Pro                      | `amazon.nova-pro-v1:0`                        | Amazon      |                7.5 |      $0.80 |       $3.20 |                  0.67x |            ✅ texto+imagen             | texto  |
+| Qwen3 235B A22B 2507 Instruct 🆕     | `qwen.qwen3-235b-a22b-2507`                   | Qwen        |               18.4 |      $0.22 |       $0.88 |                  0.18x |         ❌ sólo texto (no-VL)          | texto  |
+| Amazon Nova Micro                    | `amazon.nova-micro-v1:0`                      | Amazon      |                4.4 |     $0.035 |       $0.14 |                  0.03x |             ❌ sólo texto              | texto  |
 
 Notas de la tabla:
 
@@ -105,7 +105,7 @@ Notas de la tabla:
   **no están en el catálogo actual de Bedrock** (verificado 2026-08-10):
   `DeepSeek V4 Flash`, `MiniMax M3`, `Kimi K2.6`, `Qwen3.6 Plus`,
   `Nemotron 3 Ultra 550B A55B`, `Gemini 3 Flash` (Google no es partner de
-  Bedrock — sólo Vertex AI). Se usaron sus equivalentes *sí* disponibles en
+  Bedrock — sólo Vertex AI). Se usaron sus equivalentes _sí_ disponibles en
   Bedrock (p. ej. MiniMax M2.5 en vez de M3, Kimi K2.5/K2 Thinking en vez
   de K2.6, Nemotron 3 Super/Nano en vez de Ultra).
 - Columna "Input imagen": soporte de visión (input texto **e** imagen).
@@ -129,8 +129,8 @@ Notas de la tabla:
 ## 2. Candidatos recomendados (igual o más inteligentes que Haiku 4.5, precio ≤ techo de Haiku)
 
 Aplicando el filtro pedido — **inteligencia ≥ Haiku 4.5 (29.9) Y precio ≤
-techo de Haiku 4.5 ($1.10 in / $5.50 out)** — sobre el catálogo *disponible
-en Bedrock en us-east-1 hoy*, quedan exactamente estos 4, de mejor a peor
+techo de Haiku 4.5 ($1.10 in / $5.50 out)** — sobre el catálogo _disponible
+en Bedrock en us-east-1 hoy_, quedan exactamente estos 4, de mejor a peor
 relación precio/inteligencia:
 
 1. **MiniMax M2.5** — 34.5 (+15% vs Haiku), $0.30/$1.20 (**75% más barato**
@@ -159,20 +159,20 @@ ofrecen tiers **flex** (más barato, sin SLA de latencia) y **priority**
 (más caro, con SLA). GLM 5, Kimi K2.5, Kimi K2 Thinking y MiniMax M2.5 los
 tienen todos en us-east-1:
 
-| Modelo | Tier | Input $/1M | Output $/1M |
-| --- | --- | ---: | ---: |
-| GLM 5 | flex | $0.50 | $1.60 |
-| GLM 5 | standard | $1.00 | $3.20 |
-| GLM 5 | priority | $1.75 | $5.60 |
-| Kimi K2.5 | flex | $0.30 | $1.50 |
-| Kimi K2.5 | standard | $0.60 | $3.00 |
-| Kimi K2.5 | priority | $1.05 | $5.25 |
-| Kimi K2 Thinking | flex | $0.30 | $1.25 |
-| Kimi K2 Thinking | standard | $0.60 | $2.50 |
-| Kimi K2 Thinking | priority | $1.05 | $4.38 |
-| MiniMax M2.5 | flex | $0.15 | $0.60 |
-| MiniMax M2.5 | standard | $0.30 | $1.20 |
-| MiniMax M2.5 | priority | $0.525 | $2.10 |
+| Modelo           | Tier     | Input $/1M | Output $/1M |
+| ---------------- | -------- | ---------: | ----------: |
+| GLM 5            | flex     |      $0.50 |       $1.60 |
+| GLM 5            | standard |      $1.00 |       $3.20 |
+| GLM 5            | priority |      $1.75 |       $5.60 |
+| Kimi K2.5        | flex     |      $0.30 |       $1.50 |
+| Kimi K2.5        | standard |      $0.60 |       $3.00 |
+| Kimi K2.5        | priority |      $1.05 |       $5.25 |
+| Kimi K2 Thinking | flex     |      $0.30 |       $1.25 |
+| Kimi K2 Thinking | standard |      $0.60 |       $2.50 |
+| Kimi K2 Thinking | priority |      $1.05 |       $4.38 |
+| MiniMax M2.5     | flex     |      $0.15 |       $0.60 |
+| MiniMax M2.5     | standard |      $0.30 |       $1.20 |
+| MiniMax M2.5     | priority |     $0.525 |       $2.10 |
 
 Ver la comparativa original (Qwen3 VL 235B, Kimi K2.5 previo, NVIDIA
 Nemotron Nano) en la versión anterior de este documento para esos tiers —
@@ -182,31 +182,31 @@ no cambiaron.
 
 Misma metodología que la versión anterior: **6,600 input / 950 output
 tokens** por documento (mezcla medida para un pedimento nativo de 3
-páginas, `COSTOS.md` §0 Caso A). Sólo costo del *modelo*; no incluye
+páginas, `COSTOS.md` §0 Caso A). Sólo costo del _modelo_; no incluye
 Textract, Lambda ni el piso fijo de infraestructura
 (`COSTOS.md` §6, $0.0085/página).
 
-| Modelo | $/documento | $/mes (2,430 docs) | Intelligence Index |
-| --- | ---: | ---: | ---: |
-| Amazon Nova Micro | $0.00036 | $0.88 | 4.4 |
-| NVIDIA Nemotron 3 Nano 30B A3B 🆕 | $0.00062 | $1.52 | 14.5 |
-| NVIDIA Nemotron 3 Super 120B A12B 🆕 | $0.00208 | $5.05 | 25.7 |
-| Qwen3 235B A22B 2507 🆕 | $0.00229 | $5.56 | 18.4 |
-| Llama 4 Maverick 17B 🆕 | $0.00251 | $6.09 | 14.5 |
-| NVIDIA Nemotron Nano 2 VL | $0.00189 | $4.59 | 8.8 |
-| Amazon Nova 2 Lite | $0.00479 | $11.64 | 11.8 |
-| Llama 3.3 70B Instruct | $0.00544 | $13.21 | 9.3 |
-| Qwen3 VL 235B A22B Instruct | $0.00603 | $14.64 | 20.9 |
-| DeepSeek V3.2 🆕 | $0.00585 | $14.21 | 25.1 |
-| **MiniMax M2.5 🆕** | **$0.00312** | **$7.58** | **34.5** |
-| **Kimi K2 Thinking 🆕** | **$0.00634** | **$15.39** | **33.5** |
-| Kimi K2.5 | $0.00681 | $16.55 | 36.0 |
-| Amazon Nova Pro | $0.00832 | $20.22 | 7.5 |
-| **GLM 5 🆕** | **$0.00964** | **$23.41** | **40.6** |
-| **Claude Haiku 4.5 (actual)** | **$0.01249** | **$30.34** | **29.9** |
-| DeepSeek R1 🆕 | $0.01404 | $34.10 | 20.4 |
-| GPT-5.6 Luna ⚠️ GovCloud only | $0.01624 | $39.45 | 52.3 |
-| GPT-5.6 Terra ⚠️ GovCloud only | $0.04059 | $98.63 | 56.6 |
+| Modelo                               |  $/documento | $/mes (2,430 docs) | Intelligence Index |
+| ------------------------------------ | -----------: | -----------------: | -----------------: |
+| Amazon Nova Micro                    |     $0.00036 |              $0.88 |                4.4 |
+| NVIDIA Nemotron 3 Nano 30B A3B 🆕    |     $0.00062 |              $1.52 |               14.5 |
+| NVIDIA Nemotron 3 Super 120B A12B 🆕 |     $0.00208 |              $5.05 |               25.7 |
+| Qwen3 235B A22B 2507 🆕              |     $0.00229 |              $5.56 |               18.4 |
+| Llama 4 Maverick 17B 🆕              |     $0.00251 |              $6.09 |               14.5 |
+| NVIDIA Nemotron Nano 2 VL            |     $0.00189 |              $4.59 |                8.8 |
+| Amazon Nova 2 Lite                   |     $0.00479 |             $11.64 |               11.8 |
+| Llama 3.3 70B Instruct               |     $0.00544 |             $13.21 |                9.3 |
+| Qwen3 VL 235B A22B Instruct          |     $0.00603 |             $14.64 |               20.9 |
+| DeepSeek V3.2 🆕                     |     $0.00585 |             $14.21 |               25.1 |
+| **MiniMax M2.5 🆕**                  | **$0.00312** |          **$7.58** |           **34.5** |
+| **Kimi K2 Thinking 🆕**              | **$0.00634** |         **$15.39** |           **33.5** |
+| Kimi K2.5                            |     $0.00681 |             $16.55 |               36.0 |
+| Amazon Nova Pro                      |     $0.00832 |             $20.22 |                7.5 |
+| **GLM 5 🆕**                         | **$0.00964** |         **$23.41** |           **40.6** |
+| **Claude Haiku 4.5 (actual)**        | **$0.01249** |         **$30.34** |           **29.9** |
+| DeepSeek R1 🆕                       |     $0.01404 |             $34.10 |               20.4 |
+| GPT-5.6 Luna ⚠️ GovCloud only        |     $0.01624 |             $39.45 |               52.3 |
+| GPT-5.6 Terra ⚠️ GovCloud only       |     $0.04059 |             $98.63 |               56.6 |
 
 Filas en **negrita** = los 4 candidatos que cumplen "igual o más
 inteligente que Haiku 4.5 Y precio ≤ techo de Haiku" (§2). Nótese que

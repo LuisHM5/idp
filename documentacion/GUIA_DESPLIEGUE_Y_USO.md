@@ -14,7 +14,7 @@ Guía operativa completa: subir, actualizar, eliminar (total o parcial), gestion
 > | Validar el sync sin escribir                            | `pnpm sync -- --dry-run`                                    |
 > | Eliminar el stack (conserva tabla DynamoDB)             | `pnpm run destroy`                                          |
 > | Eliminar TODO (stack + tabla)                           | `pnpm run destroy:full`                                     |
-> | **Procesar MIS documentos y solo revisar el resultado** | `pnpm procesar -- --dir /ruta/a/mis/docs --importer MI_RFC` |
+> | **Procesar MIS documentos y solo revisar el resultado** | `pnpm procesar -- /ruta/a/mis/docs --importer MI_RFC`       |
 > | Subir un documento al stack (<4 MB)                     | `pnpm test-e2e --file doc.pdf --no-wait`                    |
 > | Subir un documento grande (≥4 MB)                       | `aws s3 cp doc.pdf s3://<bucket>/raw/$(uuidgen)/doc.pdf`    |
 > | Ver el resultado de un documento subido                 | `pnpm resultado -- --id <documentId>`                       |
@@ -132,7 +132,7 @@ los tres cuando trabajes con producción.
 
 La salida muestra: estado general del expediente, cada documento detectado con su rango de páginas/tipo/estado, los campos clave con confianza, los checks cruzados (mismo pedimento, RFC importador, UUIDs duplicados) y warnings. El JSON guardado trae el detalle completo de todos los campos (`extractedValue`/`normalizedValue`/`status`/`checks`).
 
-**Alternativa sin stack** (mismo pipeline, corre local con tus credenciales): `pnpm procesar -- --file "test-docs/pedimentos docs/docs/pedimentos.pdf" --importer TU_RFC`.
+**Alternativa sin stack** (mismo pipeline, corre local con tus credenciales): `pnpm procesar -- "test-docs/pedimentos docs/docs/pedimentos.pdf" --importer TU_RFC`.
 
 ### 4.0 Modo más simple: procesar documentos localmente (`pnpm procesar`)
 
@@ -140,17 +140,27 @@ Para probar con tus propios documentos **sin pasar por el API** (usa el mismo pi
 
 ```bash
 pnpm procesar                                        # toda la carpeta test-docs/pedimentos docs/docs
-pnpm procesar -- --file "mi expediente.pdf"          # un solo archivo
-pnpm procesar -- --dir ~/Descargas/expedientes       # tu carpeta completa
-pnpm procesar -- --dir ~/docs --importer OFU910626UQ0   # + checks cruzados de RFC importador
+pnpm procesar -- "mi expediente.pdf"                 # un solo archivo — se auto-detecta
+pnpm procesar -- ~/Descargas/expedientes             # tu carpeta completa — se auto-detecta
+pnpm procesar -- ~/docs PEDIMENTO_ADUANAL moonshotai.kimi-k2.5   # + tipo y modelo, posicionales
+pnpm procesar -- ~/docs --importer OFU910626UQ0      # + checks cruzados de RFC importador
 pnpm procesar -- --out /tmp/salida                   # dónde dejar los resultados
 ```
 
-Salida (tú solo validas el resultado final):
+El primer argumento (archivo o carpeta) se auto-detecta con el filesystem — ya no
+hace falta decir `--file` o `--dir` (se mantienen como alias legado). El 2do y 3er
+posicional son atajos de `--type`/`--model` (mismo orden: `PATH [TYPE] [MODEL]`);
+si además pasas el flag y no coincide con el posicional, el flag gana y se avisa.
 
-- **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, arrays extraídos y checks fallidos.
-- **`resultados/<archivo>.json`**: resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`).
-- **`resultados/_resumen.md`**: tabla consolidada de toda la corrida para revisar de un vistazo.
+Salida (tú solo validas el resultado final). Cada corrida escribe en su propia
+carpeta numerada — nunca pisa una corrida anterior: `resultados/[<modelo>/]NNN/`
+(001, 002, ...), historial completo listo para comparar entre corridas/modelos.
+Dentro de esa carpeta:
+
+- **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, costo real (Bedrock+Textract), arrays extraídos y checks fallidos.
+- **`<archivo>.json`**: resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`).
+- **`_resumen.md`**: tabla consolidada de toda la corrida (costo, $/página, duración, campos válidos, confianza) + benchmark agregado del dataset al final; se reescribe tras cada documento, sobrevive un crash/Ctrl+C.
+- **`_log-<fecha>.txt`**: copia completa de la consola, por si se cierra la terminal.
 
 ### 4.0.1 ¿Dónde están las reglas de extracción y validación?
 

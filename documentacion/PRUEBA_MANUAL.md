@@ -55,15 +55,22 @@ Detalle completo: `documentacion/ENVIAR_DOCUMENTO_API.md`.
 2. Procesa uno o varios documentos:
 
    ```bash
-   pnpm run procesar -- --file "mi expediente.pdf"
-   pnpm run procesar -- --dir /ruta/a/mis/docs
-   pnpm run procesar -- --file factura.xml --type FACTURA_HONORARIOS_XML   # --type obligatorio en .xml/.xlsx/.csv
+   pnpm run procesar -- "mi expediente.pdf"        # un archivo — se auto-detecta
+   pnpm run procesar -- /ruta/a/mis/docs           # una carpeta entera — se auto-detecta
+   pnpm run procesar -- /ruta/a/mis/docs PEDIMENTO_ADUANAL moonshotai.kimi-k2.5
+        # posicionales opcionales, en este orden: PATH [TYPE] [MODEL]
+   pnpm run procesar -- factura.xml --type FACTURA_HONORARIOS_XML   # --type obligatorio en .xml/.xlsx/.csv
    ```
 
-3. Revisa el resultado:
-   - Resumen legible impreso en consola (tipo, estado, campos clave, warnings).
-   - `resultados/<archivo>.json` → resultado completo.
-   - `resultados/_resumen.md` → tabla de toda la corrida.
+3. Revisa el resultado. Cada corrida escribe en su propia carpeta numerada,
+   nunca pisa una corrida anterior: `resultados/[<modelo>/]NNN/` (001, 002, ...).
+   Dentro de esa carpeta:
+   - Resumen legible impreso en consola (tipo, estado, campos clave, costo real, warnings).
+   - `<archivo>.json` → resultado completo.
+   - `_resumen.md` → tabla de toda la corrida (costo, $/página, duración, campos
+     válidos, confianza) + benchmark agregado del dataset al final; se reescribe después de
+     cada documento, así que sobrevive un crash o Ctrl+C a la mitad.
+   - `_log-<fecha>.txt` → copia completa de todo lo impreso en consola.
 
 ---
 
@@ -124,12 +131,19 @@ Full details: `documentacion/ENVIAR_DOCUMENTO_API.md`.
 2. Process one or several documents:
 
    ```bash
-   pnpm run procesar -- --file "my file.pdf"
-   pnpm run procesar -- --dir /path/to/my/docs
-   pnpm run procesar -- --file invoice.xml --type FACTURA_HONORARIOS_XML   # --type required for .xml/.xlsx/.csv
+   pnpm run procesar -- "my file.pdf"              # a single file — auto-detected
+   pnpm run procesar -- /path/to/my/docs           # a whole folder — auto-detected
+   pnpm run procesar -- /path/to/my/docs PEDIMENTO_ADUANAL moonshotai.kimi-k2.5
+        # optional positionals, in this order: PATH [TYPE] [MODEL]
+   pnpm run procesar -- invoice.xml --type FACTURA_HONORARIOS_XML   # --type required for .xml/.xlsx/.csv
    ```
 
-3. Check the result:
-   - Human-readable summary printed to the console (type, status, key fields, warnings).
-   - `resultados/<file>.json` → full result.
-   - `resultados/_resumen.md` → table summarizing the whole run.
+3. Check the result. Every run writes to its own numbered folder, never
+   overwriting a previous run: `resultados/[<model>/]NNN/` (001, 002, ...).
+   Inside that folder:
+   - Human-readable summary printed to the console (type, status, key fields, real cost, warnings).
+   - `<file>.json` → full result.
+   - `_resumen.md` → table summarizing the whole run (cost, $/page, duration,
+     valid fields, confidence) + a dataset-wide benchmark at the end; rewritten after every
+     document, so it survives a crash or Ctrl+C partway through.
+   - `_log-<date>.txt` → exact copy of everything printed to the console.
