@@ -109,6 +109,7 @@ como en el DSL viejo.
 | `min_confidence` | sí | Umbral 0-1: un campo escalar con confianza por debajo se marca inválido (`confidence {x} below minimum {min}`). Default 0.70. |
 | `schema_version` | solo informativo | Se registra en `tracking.schema.typeVersions` de cada resultado para saber qué versión de schema procesó el documento. **No cambia ningún comportamiento del código** — no hay ningún `if schema_version == ...` en el pipeline. Súbelo cuando quieras dejar rastro de un cambio relevante, no por obligación. |
 | `pipeline: "expediente"` | sí, pero opcional | Ver [`pipeline: expediente`](#pipeline-expediente-qué-controla-realmente) abajo — **ya no es requisito para que se extraigan los campos.** |
+| `model_id` | sí, opcional | ID de modelo Bedrock (o ARN de inference-profile) que extrae específicamente ESTE tipo — pisa `BEDROCK_EXTRACTOR_MODEL_ID`/`BEDROCK_MODEL_ID` configurados por variable de entorno. Ausente o `null` → hereda lo configurado. Sigue cediendo ante el override de desarrollo por request (`ALLOW_MODEL_OVERRIDE`, ver `document-validation-stack.ts`), que fuerza un modelo para toda la invocación sin importar el tipo. Ver `pipeline/bedrock.py::resolve_model`. |
 | `validator_module` | sí, **solo en el flujo estándar** | Ver [Custom con scripts](#custom-con-scripts). |
 | `custom_validator` | sí, **solo en el flujo estándar** | Ídem. |
 | `business_destination` | sí | Metadato de ruteo de negocio; aparece como `businessDestination` en cada documento del expediente. Puramente informativo para el consumidor. |

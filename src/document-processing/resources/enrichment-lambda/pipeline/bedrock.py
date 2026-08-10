@@ -75,8 +75,15 @@ def used_models() -> Dict[str, str]:
     return dict(_USED_MODELS)
 
 
-def resolve_model(stage: str) -> str:
+def resolve_model(stage: str, catalog_model_id: Optional[str] = None) -> str:
     """Model for `stage`, falling back to the base model.
+
+    `catalog_model_id` is a document type's own `model_id` (catalogs/README.md
+    → "Entry de nivel de tipo"), when the caller has one in scope. It outranks
+    the deployment's stage/base env config — a type that opted into a
+    specific model did so on purpose — but still yields to `_MODEL_OVERRIDE`,
+    the dev-only per-request override, since that's an explicit ad hoc
+    request to force every stage onto one model regardless of type.
 
     Read at call time (not import time) so a test or a script can change the
     environment between calls.
@@ -84,6 +91,7 @@ def resolve_model(stage: str) -> str:
     env_var = _STAGE_ENV.get(stage)
     model = (
         _MODEL_OVERRIDE
+        or catalog_model_id
         or (os.environ.get(env_var) if env_var else None)
         or base_model_id()
     )

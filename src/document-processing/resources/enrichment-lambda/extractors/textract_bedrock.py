@@ -146,7 +146,7 @@ class TextractBedrockExtractor:
         type_entry: TypeRegistryEntry,
     ) -> ExtractionResult:
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-        model_id = resolve_model("recovery")
+        model_id = resolve_model("recovery", type_entry.model_id)
         max_tokens = int(os.environ.get("BEDROCK_EXTRACTOR_MAX_TOKENS", str(_DEFAULT_MAX_TOKENS)))
 
         logger.info(

@@ -114,6 +114,29 @@ def test_falls_back_to_a_known_model_with_no_config():
     assert bedrock.resolve_model("segmenter")  # never empty
 
 
+def test_catalog_model_id_outranks_configured_env(monkeypatch):
+    """A type's own `model_id` (catalogs/README.md) beats env-configured
+    stage/base models — it's a deliberate per-type choice, not a fallback."""
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    monkeypatch.setenv("BEDROCK_EXTRACTOR_MODEL_ID", "stage-model")
+    assert bedrock.resolve_model("extractor", "catalog-model") == "catalog-model"
+
+
+def test_request_override_still_beats_catalog_model_id(monkeypatch):
+    """The dev-only per-request override forces every stage regardless of
+    what the type's catalog entry declares."""
+    bedrock.set_model_override("forced-model")
+    try:
+        assert bedrock.resolve_model("extractor", "catalog-model") == "forced-model"
+    finally:
+        bedrock.set_model_override(None)
+
+
+def test_no_catalog_model_id_falls_through_to_env_as_before(monkeypatch):
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    assert bedrock.resolve_model("extractor", None) == "base-model"
+
+
 # --- caching degradation -----------------------------------------------------
 
 
