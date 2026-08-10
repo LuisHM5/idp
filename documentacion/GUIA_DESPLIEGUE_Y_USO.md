@@ -152,23 +152,21 @@ hace falta decir `--file` o `--dir` (se mantienen como alias legado). El 2do y 3
 posicional son atajos de `--type`/`--model` (mismo orden: `PATH [TYPE] [MODEL]`);
 si además pasas el flag y no coincide con el posicional, el flag gana y se avisa.
 
-Salida (tú solo validas el resultado final). Nada se sobrescribe nunca:
+Salida (tú solo validas el resultado final). Nada se sobrescribe nunca, y el
+json, el log y el resumen de cada documento quedan **juntos en la misma
+carpeta**: `resultados/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/` (001, 002, ...
+— corre el mismo archivo varias veces, con el mismo o distinto modelo, y
+quedan todas las corridas separadas para comparar). `<TIPO>` es el declarado
+(`--type`/2do posicional) o el detectado si no se declaró (`EXPEDIENTE` si el
+segmentador encontró varios tipos en un mismo PDF). Dentro de esa carpeta:
 
-- **`resultados/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/<nombre-archivo>.json`**:
-  resultado completo (todos los campos con `extractedValue`/`normalizedValue`/`status`/`checks`)
-  de ESE documento en ESA corrida (001, 002, ...) — corre el mismo archivo varias
-  veces, con el mismo o distinto modelo, y quedan todas las corridas separadas
-  para comparar. `<TIPO>` es el declarado (`--type`/2do posicional) o el
-  detectado si no se declaró (`EXPEDIENTE` si el segmentador encontró varios
-  tipos en un mismo PDF).
-- **`resultados/[<modelo>/]_runs/NNN/_resumen.md`**: tabla consolidada de toda
-  la corrida (puede tocar varios documentos si procesaste una carpeta) — costo,
-  $/página, duración, campos válidos, confianza — + benchmark agregado del
-  dataset al final; se reescribe tras cada documento, sobrevive un crash/Ctrl+C.
-  También numerada, también historial completo.
-- **`resultados/[<modelo>/]_runs/NNN/_log-<fecha>.txt`**: copia completa de la
-  consola de esa corrida, por si se cierra la terminal.
-- **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, costo real (Bedrock+Textract), arrays extraídos y checks fallidos.
+- **`<nombre-archivo>.json`**: resultado completo (todos los campos con
+  `extractedValue`/`normalizedValue`/`status`/`checks`) de ESE documento en ESA corrida.
+- **`_resumen.md`**: costo real, $/página, duración, campos válidos, confianza
+  promedio y tabla campo-por-campo de ESE documento.
+- **`_log.txt`**: copia exacta de la consola mientras se procesaba ESE
+  documento, por si se cierra la terminal.
+- **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, costo real (Bedrock+Textract), arrays extraídos y checks fallidos, más un benchmark agregado al final si procesaste una carpeta con varios archivos (solo en consola).
 
 ### 4.0.1 ¿Dónde están las reglas de extracción y validación?
 

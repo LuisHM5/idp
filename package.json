@@ -17,6 +17,7 @@
     "test:e2e:pedimento": ".venv/bin/python scripts/test-e2e-pedimento.py",
     "schema:sensitivity": ".venv/bin/python scripts/schema-sensitivity.py",
     "procesar": ".venv/bin/python scripts/procesar-docs.py",
+    "analizar": ".venv/bin/python scripts/analizar-resultados.py",
     "resultado": ".venv/bin/python scripts/ver-resultado.py",
     "costos": ".venv/bin/python scripts/ver-costos.py",
     "enviar": "bash scripts/enviar-documento.sh",

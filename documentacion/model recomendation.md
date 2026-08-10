@@ -1,4 +1,10 @@
-us.anthropic.claude-haiku-4-5-20251001-v1:0
+# Modelos ganadores calidad precio
+
+1. moonshotai.kimi-k2.5
+2. zai.glm-5
+3. us.anthropic.claude-haiku-4-5-20251001-v1:0
+4. minimax.minimax-m2.5
+
 qwen.qwen3-vl-235b-a22b-instruct
 amazon.nova-pro-v1:0
 
@@ -65,3 +71,36 @@ No en el catálogo de Bedrock todavía (existen según Artificial Analysis
 pero no aparecen en AmazonBedrock/us-east-1 al 2026-08-10): DeepSeek V4
 Flash, MiniMax M3, Kimi K2.6, Qwen3.6 Plus, Nemotron 3 Ultra 550B A55B.
 Gemini 3 Flash tampoco — Google no es partner de Bedrock (sólo Vertex AI).
+
+# Respuesta a "¿hay algo parecido de Google o NVIDIA?" (2026-08-10)
+
+NVIDIA: sólo Nemotron 3 Ultra 550B A55B cumple (intel 38.3, $0.60 in /
+$2.75 out, 0.53x) — pero no está en Bedrock todavía, sólo vigilar.
+Los Nemotron que SÍ están en Bedrock hoy (Super 120B, Nano 3 30B, Nano 2)
+están todos por debajo de Haiku en inteligencia.
+
+Google: dos cumplen intel+precio, ambos con visión nativa —
+Gemini 3 Flash (Reasoning): intel 38.7, $0.50 in / $3.00 out (0.49x)
+Gemini 3.5 Flash-Lite: intel 37.4, $0.30 in / $2.50 out (0.35x) — mejor
+relación precio/inteligencia de toda la comparativa
+Pero Google no está en Bedrock — usar cualquiera de los dos implica meter
+Vertex AI como proveedor nuevo (SDK y auth distintos), no cambiar sólo el
+model ID.
+
+# Veredicto calidad/precio (2026-08-10, detalle en §7 de models_pricing.md)
+
+Entre lo usable hoy (Bedrock + visión confirmada): GLM 5 vs Kimi K2.5.
+
+Elegiría **Kimi K2.5**: más barato que GLM 5 (29% menos por doc — pesa
+porque el pipeline es input-heavy y Kimi gana ahí, $0.60 vs $1.00), y gana
+en GPQA (0.879 vs 0.820) y HLE (0.307 vs 0.293) — los benchmarks más
+parecidos a "leer bien un documento". Tau2 (fiabilidad en salida
+estructurada/tool-use) 0.959, casi 2x el de Haiku 4.5 (0.547). GLM 5 gana
+en IFBench (0.723 vs 0.702) e Intelligence Index agregado (40.6 vs 36.0)
+por márgenes chicos — sería la opción si el criterio fuera sólo "máxima
+inteligencia sin ver el costo extra".
+
+Pendiente antes de mover producción: correr contra
+tests/integration/expected_pedimentos.json y confirmar
+output_config.format / structured output en Bedrock Converse para
+cualquiera de los dos — ninguno se ha probado en la tarea real todavía.

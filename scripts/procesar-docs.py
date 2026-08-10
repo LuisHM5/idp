@@ -33,28 +33,28 @@ Uso:
     avisa en consola si no coinciden). --file/--dir/--type/--model se
     mantienen por compatibilidad con scripts/docs viejos.
 
-Nada se sobrescribe nunca — todo queda numerado como historial:
+Nada se sobrescribe nunca — cada documento procesado queda numerado como
+historial, y los tres archivos de ESE intento viven juntos en la misma
+carpeta:
 
-  <out>/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/<nombre-archivo>.json
-      resultado completo de ESE documento en ESA corrida (001, 002, ... — corre
-      el mismo archivo 5 veces, con el mismo o distinto modelo, y quedan 5
-      carpetas separadas listas para comparar). <TIPO> es el declarado
-      (--type / 2do posicional) o el detectado si no se declaró
-      ("EXPEDIENTE" si el segmentador encontró varios tipos en un mismo PDF).
+  <out>/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/
+      - <nombre-archivo>.json → resultado completo (todos los campos, checks,
+        confianzas)
+      - _log.txt   → copia exacta de la consola de ESE documento (sin
+        colores), para no perder el detalle si se cierra la terminal
+      - _resumen.md → costo real, $/página, duración, campos válidos,
+        confianza promedio y tabla campo-por-campo de ESE documento
 
-  <out>/[<modelo>/]_runs/NNN/
-      log + resumen de TODA la corrida (puede tocar varios documentos/tipos
-      si procesaste una carpeta) — también numerado, nunca se pisa:
-        - _log-<fecha>.txt → copia exacta de todo lo impreso en consola (sin
-          colores), para no perder el detalle si se cierra la terminal
-        - _resumen.md → tabla consolidada (costo, $/página, duración, campos
-          válidos, confianza) por archivo procesado en esta corrida, reescrita
-          después de CADA documento (progreso parcial sobrevive un
-          crash/Ctrl+C), más un benchmark agregado al final (promedios,
-          totales, y qué campos fallan más)
+  NNN sube (001, 002, ...) cada vez que reprocesas el mismo archivo — con el
+  mismo modelo o con otro — así que las corridas anteriores nunca se pierden,
+  quedan listas para comparar. <TIPO> es el declarado (--type / 2do
+  posicional) o el detectado si no se declaró ("EXPEDIENTE" si el
+  segmentador encontró varios tipos en un mismo PDF).
 
   Consola: resumen legible por documento (tipo, estado, campos clave, costo
-  real, warnings) según se van procesando.
+  real, warnings) según se van procesando, más un benchmark agregado al final
+  si procesaste una carpeta con varios archivos (solo en consola, no se
+  guarda — cada documento ya tiene su propio detalle guardado arriba).
 
 Costo y calidad de campos son reales, no estimados: el costo sale de los tokens
 Bedrock/páginas Textract que esta corrida realmente facturó (mismas tarifas
@@ -67,6 +67,7 @@ es "¿pasó las reglas del catálogo con la confianza que reportó el modelo?").
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -303,42 +304,33 @@ def main() -> int:
         model_root = model_root / _slug(model_slug)
     model_root.mkdir(parents=True, exist_ok=True)
 
-    # El log + _resumen.md de ESTA corrida (puede tocar varios documentos y
-    # tipos a la vez) viven en su propia carpeta numerada bajo _runs/ — nunca
-    # pisan los de una corrida anterior. Cada documento, aparte, arma su
-    # propio árbol <modelo>/<TIPO>/<nombre-doc>/NNN/ más abajo, una vez que
-    # se conoce su tipo (declarado o detectado) tras procesarlo.
-    run_dir = _next_numbered_dir(model_root / "_runs")
-    log_path = run_dir / f"_log-{datetime.now():%Y%m%d-%H%M%S}.txt"
-    log_file = log_path.open("w", encoding="utf-8")
     real_stdout, real_stderr = sys.stdout, sys.stderr
-    sys.stdout = _Tee(real_stdout, log_file)
-    sys.stderr = _Tee(real_stderr, log_file)
-
-    resumen_path = run_dir / "_resumen.md"
-    resumen_md = [
-        f"# Resultados de procesamiento — {datetime.now():%Y-%m-%d %H:%M}",
-        "",
-        f"Comando: `{' '.join(sys.argv)}`",
-        "",
-        "| Archivo | Estado | Documentos detectados | Costo | $/página | Duración | Campos válidos | Confianza | Warnings |",
-        "|---|---|---|---|---|---|---|---|---|",
-    ]
+    # Agregados de TODA la corrida — solo para el benchmark que se imprime al
+    # final en consola (no se guarda en archivo aparte: cada documento ya
+    # tiene su propio json+log+resumen juntos en su carpeta numerada).
     counts: dict[str, int] = {}
     bench_rows: list[dict] = []
     field_stats: dict[str, dict] = {}
 
-    def flush_resumen(footer: list[str] | None = None) -> None:
-        # Reescribe el resumen completo en cada iteración (es chico) para que
-        # un crash a la mitad de la corrida deje progreso parcial en disco en
-        # vez de nada.
-        resumen_path.write_text(
-            "\n".join(resumen_md + (footer or [])) + "\n", encoding="utf-8"
-        )
+    def save_doc_result(
+        tipo: str, doc_path: Path, buf: io.StringIO,
+        result_json: dict | None, resumen_lines: list[str] | None,
+    ) -> Path:
+        # El json, el log de consola y el resumen de ESTE documento en ESTA
+        # corrida van todos juntos en la misma carpeta numerada — nada en un
+        # lugar aparte.
+        doc_dir = _next_numbered_dir(model_root / _slug(tipo) / doc_path.stem)
+        if result_json is not None:
+            (doc_dir / f"{doc_path.stem}.json").write_text(
+                json.dumps(result_json, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+        (doc_dir / "_log.txt").write_text(ANSI_RE.sub("", buf.getvalue()), encoding="utf-8")
+        if resumen_lines is not None:
+            (doc_dir / "_resumen.md").write_text("\n".join(resumen_lines) + "\n", encoding="utf-8")
+        return doc_dir
 
     try:
-        print(f"salida por documento → {model_root}/<TIPO>/<nombre-doc>/NNN/")
-        print(f"log de esta corrida → {log_path}")
+        print(f"salida por documento → {model_root}/<TIPO>/<nombre-doc>/NNN/ (json + log + resumen juntos)")
 
         from pipeline.expediente import process_pdf
         from pipeline.pricing import bedrock_cost, textract_cost
@@ -370,149 +362,181 @@ def main() -> int:
             )
         if not docs:
             print(f"No encontré PDFs/XMLs/XLSX/CSVs/imágenes ({target or args.dir})")
-            flush_resumen()
             return 2
 
         for doc_path in docs:
-            print(f"\n{CYAN}{'=' * 72}\n{doc_path.name}{RESET}")
-            started = time.time()
-            ext = doc_path.suffix.lower().lstrip(".")
+            buf = io.StringIO()
+            sys.stdout = _Tee(real_stdout, buf)
+            sys.stderr = _Tee(real_stderr, buf)
+            result = None
+            resumen_lines = None
+            tipo_for_save = "ERROR"
             try:
-                if ext == "xml":
-                    result = process_xml(
-                        doc_path.read_bytes(),
-                        declared_type=declared_type,
-                        expected_values=expected_values,
-                        source_name=doc_path.name,
+                print(f"\n{CYAN}{'=' * 72}\n{doc_path.name}{RESET}")
+                started = time.time()
+                ext = doc_path.suffix.lower().lstrip(".")
+                try:
+                    if ext == "xml":
+                        result = process_xml(
+                            doc_path.read_bytes(),
+                            declared_type=declared_type,
+                            expected_values=expected_values,
+                            source_name=doc_path.name,
+                        )
+                    elif ext in ("xlsx", "csv"):
+                        result = process_tabular(
+                            doc_path.read_bytes(),
+                            source_format=ext,
+                            declared_type=declared_type,
+                            expected_values=expected_values,
+                            source_name=doc_path.name,
+                        )
+                    else:
+                        # A field-centric type isn't necessarily backed by a PDF —
+                        # a photographed/scanned ID (INE, CSF, ...) is routinely a
+                        # raw JPG/PNG. process_pdf branches its page-loading
+                        # internally on source_format; anything else (a real
+                        # .pdf, or an unknown extension) keeps the existing pypdf
+                        # path via the "pdf" default.
+                        result = process_pdf(
+                            doc_path.read_bytes(),
+                            declared_type=declared_type,
+                            expected_values=expected_values,
+                            model_id=model_arg,
+                            source_name=doc_path.name,
+                            source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
+                        )
+                except Exception as e:
+                    print(f"  {RED}ERROR: {e}{RESET}")
+                    traceback.print_exc()
+                    counts["ERROR"] = counts.get("ERROR", 0) + 1
+                    tipo_for_save = declared_type or "ERROR"
+                    continue
+
+                status = result.get("status", "?")
+                counts[status] = counts.get(status, 0) + 1
+                color = STATUS_COLOR.get(status, "")
+                pages = result.get("pages", {})
+                elapsed_wall = time.time() - started
+                # elapsed_wall rounds to "0s" for the XML pipeline (no Bedrock/Textract
+                # round-trip) — fall back to the pipeline's own millisecond figure,
+                # which is accurate down to sub-second work instead of just wall time.
+                duration = (
+                    f"{elapsed_wall * 1000:.0f}ms" if elapsed_wall < 1
+                    else f"{elapsed_wall:.0f}s"
+                )
+                source_note = SOURCE_FORMAT_NOTE.get(result.get("sourceFormat")) or (
+                    f"{pages.get('totalPages')} páginas "
+                    f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
+                )
+
+                # Costo real de ESTA corrida: tokens Bedrock/páginas Textract que
+                # el pipeline acaba de facturar de verdad (no estimado). No incluye
+                # cómputo Lambda — aquí corre localmente, no dentro de una Lambda.
+                usage = result.get("usage") or {}
+                segmentation, extraction = usage.get("segmentation") or {}, usage.get("extraction") or {}
+                seg_cost = bedrock_cost(segmentation.get("usage"), segmentation.get("modelId"))
+                ext_cost = bedrock_cost(extraction.get("usage"), extraction.get("modelId"))
+                ocr_cost = textract_cost(pages.get("ocrPages"))
+                doc_cost = round(seg_cost["costUsd"] + ext_cost["costUsd"] + ocr_cost["costUsd"], 6)
+                total_pages = pages.get("totalPages") or 0
+                cost_per_page = (doc_cost / total_pages) if total_pages else None
+
+                cost_note = f"${doc_cost:.4f}" + (f" (${cost_per_page:.4f}/pág)" if cost_per_page is not None else "")
+                print(f"  Estado: {color}{status}{RESET}  |  {source_note}  |  {duration}  |  {cost_note}")
+
+                detected = []
+                field_ok = field_total = 0
+                conf_sum, conf_n = 0.0, 0
+                doc_field_stats: dict[str, dict] = {}
+                for doc in result.get("documents", []):
+                    dt = doc.get("documentType")
+                    ds = doc.get("status", "-")
+                    dcolor = STATUS_COLOR.get(ds, "")
+                    print(f"\n   📄 p{doc.get('pageStart')}-{doc.get('pageEnd')}  {dt}  →  {dcolor}{ds}{RESET}")
+                    for line in summarize_doc(doc):
+                        print(line)
+                    if dt != "OTRO":
+                        detected.append(f"{dt} ({ds})")
+                    for name, valid, conf in field_quality(doc):
+                        field_total += 1
+                        stat = field_stats.setdefault(name, {"ok": 0, "total": 0, "conf_sum": 0.0, "conf_n": 0})
+                        dstat = doc_field_stats.setdefault(name, {"ok": 0, "total": 0, "conf_sum": 0.0, "conf_n": 0})
+                        stat["total"] += 1
+                        dstat["total"] += 1
+                        if valid:
+                            field_ok += 1
+                            stat["ok"] += 1
+                            dstat["ok"] += 1
+                        if isinstance(conf, (int, float)):
+                            conf_sum += conf
+                            conf_n += 1
+                            stat["conf_sum"] += conf
+                            stat["conf_n"] += 1
+                            dstat["conf_sum"] += conf
+                            dstat["conf_n"] += 1
+                field_rate = (field_ok / field_total) if field_total else None
+                conf_avg = (conf_sum / conf_n) if conf_n else None
+                if field_total:
+                    quality_note = f"campos válidos {field_ok}/{field_total} ({field_rate:.0%})"
+                    if conf_avg is not None:
+                        quality_note += f"  |  confianza prom. {conf_avg:.0%}"
+                    print(f"  {DIM}{quality_note}{RESET}")
+
+                bench_rows.append({
+                    "duration_s": elapsed_wall,
+                    "pages": total_pages,
+                    "cost": doc_cost,
+                    "field_ok": field_ok,
+                    "field_total": field_total,
+                })
+
+                warnings = result.get("warnings", [])
+                for w in warnings:
+                    print(f"\n  {YELLOW}⚠ {w}{RESET}")
+                for c in result.get("crossDocumentChecks", []):
+                    if c.get("valid") and not c.get("skipped"):
+                        print(f"  {GREEN}✓ {c.get('rule')}: {c.get('message')}{RESET}")
+
+                tipo_for_save = _doc_type_slug(declared_type, result)
+                field_cell = f"{field_ok}/{field_total}" + (f" ({field_rate:.0%})" if field_rate is not None else "")
+                cost_per_page_cell = f"${cost_per_page:.4f}" if cost_per_page is not None else "—"
+                conf_cell = f"{conf_avg:.0%}" if conf_avg is not None else "—"
+                resumen_lines = [
+                    f"# {doc_path.name} — {status}",
+                    "",
+                    f"Comando: `{' '.join(sys.argv)}`",
+                    f"Procesado: {datetime.now():%Y-%m-%d %H:%M:%S}",
+                    "",
+                    "| Métrica | Valor |",
+                    "|---|---|",
+                    f"| Estado | {status} |",
+                    f"| Documentos detectados | {'<br>'.join(detected) or '—'} |",
+                    f"| Costo | ${doc_cost:.4f} ({cost_per_page_cell}/página) |",
+                    f"| Duración | {duration} |",
+                    f"| Páginas | {total_pages} |",
+                    f"| Campos válidos | {field_cell} |",
+                    f"| Confianza promedio | {conf_cell} |",
+                    f"| Warnings | {'<br>'.join(warnings) or '—'} |",
+                ]
+                if doc_field_stats:
+                    resumen_lines += ["", "| Campo | Válido | Confianza |", "|---|---|---|"]
+                    worst_first = sorted(
+                        doc_field_stats.items(),
+                        key=lambda kv: (kv[1]["ok"] / kv[1]["total"]) if kv[1]["total"] else 1.0,
                     )
-                elif ext in ("xlsx", "csv"):
-                    result = process_tabular(
-                        doc_path.read_bytes(),
-                        source_format=ext,
-                        declared_type=declared_type,
-                        expected_values=expected_values,
-                        source_name=doc_path.name,
-                    )
-                else:
-                    # A field-centric type isn't necessarily backed by a PDF — a
-                    # photographed/scanned ID (INE, CSF, ...) is routinely a raw
-                    # JPG/PNG. process_pdf branches its page-loading internally on
-                    # source_format; anything else (a real .pdf, or an unknown
-                    # extension) keeps the existing pypdf path via the "pdf" default.
-                    result = process_pdf(
-                        doc_path.read_bytes(),
-                        declared_type=declared_type,
-                        expected_values=expected_values,
-                        model_id=model_arg,
-                        source_name=doc_path.name,
-                        source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
-                    )
-            except Exception as e:
-                print(f"  {RED}ERROR: {e}{RESET}")
-                traceback.print_exc()
-                resumen_md.append(f"| {doc_path.name} | ERROR | — | — | — | — | — | — | {e} |")
-                counts["ERROR"] = counts.get("ERROR", 0) + 1
-                flush_resumen()
-                continue
-
-            status = result.get("status", "?")
-            counts[status] = counts.get(status, 0) + 1
-            color = STATUS_COLOR.get(status, "")
-            pages = result.get("pages", {})
-            elapsed_wall = time.time() - started
-            # elapsed_wall rounds to "0s" for the XML pipeline (no Bedrock/Textract
-            # round-trip) — fall back to the pipeline's own millisecond figure,
-            # which is accurate down to sub-second work instead of just wall time.
-            duration = (
-                f"{elapsed_wall * 1000:.0f}ms" if elapsed_wall < 1
-                else f"{elapsed_wall:.0f}s"
-            )
-            source_note = SOURCE_FORMAT_NOTE.get(result.get("sourceFormat")) or (
-                f"{pages.get('totalPages')} páginas "
-                f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
-            )
-
-            # Costo real de ESTA corrida: tokens Bedrock/páginas Textract que
-            # el pipeline acaba de facturar de verdad (no estimado). No incluye
-            # cómputo Lambda — aquí corre localmente, no dentro de una Lambda.
-            usage = result.get("usage") or {}
-            segmentation, extraction = usage.get("segmentation") or {}, usage.get("extraction") or {}
-            seg_cost = bedrock_cost(segmentation.get("usage"), segmentation.get("modelId"))
-            ext_cost = bedrock_cost(extraction.get("usage"), extraction.get("modelId"))
-            ocr_cost = textract_cost(pages.get("ocrPages"))
-            doc_cost = round(seg_cost["costUsd"] + ext_cost["costUsd"] + ocr_cost["costUsd"], 6)
-            total_pages = pages.get("totalPages") or 0
-            cost_per_page = (doc_cost / total_pages) if total_pages else None
-
-            cost_note = f"${doc_cost:.4f}" + (f" (${cost_per_page:.4f}/pág)" if cost_per_page is not None else "")
-            print(f"  Estado: {color}{status}{RESET}  |  {source_note}  |  {duration}  |  {cost_note}")
-
-            detected = []
-            field_ok = field_total = 0
-            conf_sum, conf_n = 0.0, 0
-            for doc in result.get("documents", []):
-                dt = doc.get("documentType")
-                ds = doc.get("status", "-")
-                dcolor = STATUS_COLOR.get(ds, "")
-                print(f"\n   📄 p{doc.get('pageStart')}-{doc.get('pageEnd')}  {dt}  →  {dcolor}{ds}{RESET}")
-                for line in summarize_doc(doc):
-                    print(line)
-                if dt != "OTRO":
-                    detected.append(f"{dt} ({ds})")
-                for name, valid, conf in field_quality(doc):
-                    field_total += 1
-                    stat = field_stats.setdefault(name, {"ok": 0, "total": 0, "conf_sum": 0.0, "conf_n": 0})
-                    stat["total"] += 1
-                    if valid:
-                        field_ok += 1
-                        stat["ok"] += 1
-                    if isinstance(conf, (int, float)):
-                        conf_sum += conf
-                        conf_n += 1
-                        stat["conf_sum"] += conf
-                        stat["conf_n"] += 1
-            field_rate = (field_ok / field_total) if field_total else None
-            conf_avg = (conf_sum / conf_n) if conf_n else None
-            if field_total:
-                quality_note = f"campos válidos {field_ok}/{field_total} ({field_rate:.0%})"
-                if conf_avg is not None:
-                    quality_note += f"  |  confianza prom. {conf_avg:.0%}"
-                print(f"  {DIM}{quality_note}{RESET}")
-
-            bench_rows.append({
-                "duration_s": elapsed_wall,
-                "pages": total_pages,
-                "cost": doc_cost,
-                "field_ok": field_ok,
-                "field_total": field_total,
-            })
-
-            warnings = result.get("warnings", [])
-            for w in warnings:
-                print(f"\n  {YELLOW}⚠ {w}{RESET}")
-            for c in result.get("crossDocumentChecks", []):
-                if c.get("valid") and not c.get("skipped"):
-                    print(f"  {GREEN}✓ {c.get('rule')}: {c.get('message')}{RESET}")
-
-            # Árbol de historial por documento: modelo/tipo/nombre-doc/NNN —
-            # el tipo solo se conoce hasta aquí (declarado, o detectado si no
-            # se declaró), así que la carpeta numerada de este documento se
-            # crea recién ahora, no al arrancar la corrida.
-            tipo_slug = _slug(_doc_type_slug(declared_type, result))
-            doc_run_dir = _next_numbered_dir(model_root / tipo_slug / doc_path.stem)
-            out_file = doc_run_dir / f"{doc_path.stem}.json"
-            out_file.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            print(f"\n  {DIM}JSON completo → {out_file}{RESET}")
-
-            field_cell = f"{field_ok}/{field_total}" + (f" ({field_rate:.0%})" if field_rate is not None else "")
-            cost_per_page_cell = f"${cost_per_page:.4f}" if cost_per_page is not None else "—"
-            conf_cell = f"{conf_avg:.0%}" if conf_avg is not None else "—"
-            resumen_md.append(
-                f"| {doc_path.name} | {status} | {'<br>'.join(detected) or '—'} | "
-                f"${doc_cost:.4f} | {cost_per_page_cell} | {duration} | {field_cell} | {conf_cell} | "
-                f"{'<br>'.join(warnings) or '—'} |"
-            )
-            flush_resumen()
+                    for name, s in worst_first:
+                        rate = s["ok"] / s["total"] if s["total"] else None
+                        conf = s["conf_sum"] / s["conf_n"] if s["conf_n"] else None
+                        resumen_lines.append(
+                            f"| {name} | {s['ok']}/{s['total']}"
+                            + (f" ({rate:.0%})" if rate is not None else "")
+                            + f" | {f'{conf:.0%}' if conf is not None else '—'} |"
+                        )
+            finally:
+                sys.stdout, sys.stderr = real_stdout, real_stderr
+                doc_dir = save_doc_result(tipo_for_save, doc_path, buf, result, resumen_lines)
+                print(f"  {DIM}Guardado en → {doc_dir}/{RESET}")
 
         return 0
     except KeyboardInterrupt:
@@ -523,13 +547,14 @@ def main() -> int:
         traceback.print_exc()
         return 1
     finally:
+        sys.stdout, sys.stderr = real_stdout, real_stderr
         summary_line = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())) or "sin documentos procesados"
         print(f"\n{'=' * 72}\nResumen por estado: {summary_line}")
-        footer = ["", f"**Resumen por estado:** {summary_line}"]
 
-        # Benchmark del dataset completo — misma agregación si es un solo
-        # --file o una carpeta entera (bench_rows tiene una fila por documento
-        # que sí llegó a procesarse, sin importar cuántos fueron).
+        # Benchmark del dataset completo, solo en consola — misma agregación
+        # si es un solo --file o una carpeta entera (bench_rows tiene una
+        # fila por documento que sí llegó a procesarse). No se guarda en
+        # archivo: cada documento ya tiene su propio detalle junto a su json.
         if bench_rows:
             n = len(bench_rows)
             total_cost = sum(r["cost"] for r in bench_rows)
@@ -559,7 +584,6 @@ def main() -> int:
             print(f"\n{CYAN}Benchmark del dataset{RESET}")
             for line in stats_lines:
                 print(f"  {line}")
-            footer += ["", "## Benchmark del dataset", ""] + [f"- {line}" for line in stats_lines]
 
             worst_first = sorted(
                 field_stats.items(),
@@ -570,23 +594,6 @@ def main() -> int:
                 print(f"  {DIM}Campos con más fallas:{RESET}")
                 for name, s in bad_fields[:5]:
                     print(f"    {YELLOW}{name}: {s['ok']}/{s['total']} ({s['ok'] / s['total']:.0%}){RESET}")
-
-            if field_stats:
-                footer += ["", "| Campo | Válidos | Confianza prom. |", "|---|---|---|"]
-                for name, s in worst_first:
-                    rate = s["ok"] / s["total"] if s["total"] else None
-                    conf = s["conf_sum"] / s["conf_n"] if s["conf_n"] else None
-                    footer.append(
-                        f"| {name} | {s['ok']}/{s['total']}"
-                        + (f" ({rate:.0%})" if rate is not None else "")
-                        + f" | {f'{conf:.0%}' if conf is not None else '—'} |"
-                    )
-
-        print(f"\nResumen consolidado → {resumen_path}")
-        print(f"Log completo → {log_path}")
-        flush_resumen(footer)
-        sys.stdout, sys.stderr = real_stdout, real_stderr
-        log_file.close()
 
 
 if __name__ == "__main__":

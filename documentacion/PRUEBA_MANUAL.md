@@ -62,17 +62,19 @@ Detalle completo: `documentacion/ENVIAR_DOCUMENTO_API.md`.
    pnpm run procesar -- factura.xml --type FACTURA_HONORARIOS_XML   # --type obligatorio en .xml/.xlsx/.csv
    ```
 
-3. Revisa el resultado. Nada se sobrescribe nunca:
-   - `resultados/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/<nombre-archivo>.json`
-     → resultado completo de ESE documento en ESA corrida (001, 002, ...) —
-     corre el mismo archivo varias veces y quedan todas las corridas para comparar.
-   - `resultados/[<modelo>/]_runs/NNN/_resumen.md` → tabla de toda la corrida
-     (costo, $/página, duración, campos válidos, confianza) + benchmark agregado
-     al final; se reescribe después de cada documento, así que sobrevive un
-     crash o Ctrl+C a la mitad.
-   - `resultados/[<modelo>/]_runs/NNN/_log-<fecha>.txt` → copia completa de
-     todo lo impreso en consola durante esa corrida.
-   - Resumen legible impreso en consola (tipo, estado, campos clave, costo real, warnings).
+3. Revisa el resultado. Nada se sobrescribe nunca, y el json, el log y el
+   resumen de cada documento quedan juntos en la misma carpeta:
+   `resultados/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/` (001, 002, ... —
+   corre el mismo archivo varias veces y quedan todas las corridas para
+   comparar), con:
+   - `<nombre-archivo>.json` → resultado completo de ESE documento en ESA corrida.
+   - `_log.txt` → copia exacta de todo lo impreso en consola mientras se
+     procesaba ESE documento.
+   - `_resumen.md` → costo real, $/página, duración, campos válidos,
+     confianza promedio y tabla campo-por-campo de ESE documento.
+   - Además, resumen legible impreso en consola (tipo, estado, campos clave,
+     costo real, warnings) según se procesa cada uno, y un benchmark agregado
+     al final si procesaste una carpeta con varios archivos (solo en consola).
 
 ---
 
@@ -140,14 +142,15 @@ Full details: `documentacion/ENVIAR_DOCUMENTO_API.md`.
    pnpm run procesar -- invoice.xml --type FACTURA_HONORARIOS_XML   # --type required for .xml/.xlsx/.csv
    ```
 
-3. Check the result. Nothing is ever overwritten:
-   - `resultados/[<model>/]<TYPE>/<filename>/NNN/<filename>.json` → full result
-     of THAT document from THAT run (001, 002, ...) — run the same file
-     several times and every attempt sticks around for comparison.
-   - `resultados/[<model>/]_runs/NNN/_resumen.md` → table summarizing the whole
-     run (cost, $/page, duration, valid fields, confidence) + a dataset-wide
-     benchmark at the end; rewritten after every document, so it survives a
-     crash or Ctrl+C partway through.
-   - `resultados/[<model>/]_runs/NNN/_log-<date>.txt` → exact copy of
-     everything printed to the console during that run.
-   - Human-readable summary printed to the console (type, status, key fields, real cost, warnings).
+3. Check the result. Nothing is ever overwritten, and each document's json,
+   log, and summary live together in the same folder:
+   `resultados/[<model>/]<TYPE>/<filename>/NNN/` (001, 002, ... — run the
+   same file several times and every attempt sticks around for comparison), with:
+   - `<filename>.json` → full result of THAT document from THAT run.
+   - `_log.txt` → exact copy of everything printed to the console while
+     THAT document was being processed.
+   - `_resumen.md` → real cost, $/page, duration, valid fields, average
+     confidence, and a field-by-field table for THAT document.
+   - Plus a human-readable summary printed to the console (type, status, key
+     fields, real cost, warnings) as each one is processed, and a dataset-wide
+     benchmark at the end when you process a whole folder (console only).

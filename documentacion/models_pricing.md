@@ -45,19 +45,48 @@ estimado):
 nuevo aquí es confirmar que **también es más inteligente** que Haiku 4.5
 (dato que no estaba disponible sin el MCP de Artificial Analysis).
 
-✅ **GLM 5 y Kimi K2.5 sí soportan visión** (input texto + imagen,
-confirmado — no fallan en el paso de visión de este pipeline). La
+✅ **GLM 5, Kimi K2.5 y MiniMax M2.5 sí soportan visión** (input texto +
+imagen, confirmado — no fallan en el paso de visión de este pipeline). La
 inferencia por convención de nombres (`V`/`VL` como sufijo) que se usó
-inicialmente para marcarlos como "no confirmado" era incorrecta para estos
-dos casos — Z AI y Moonshot AI no siguen esa convención de forma
-consistente en toda su línea. **Kimi K2 Thinking y MiniMax M2.5 siguen sin
-confirmar** — no se ha verificado si aceptan input de imagen; no asumir
-que heredan el soporte de Kimi K2.5/GLM 5 sólo por ser de la misma familia.
+inicialmente para marcarlos como "no confirmado" era incorrecta para los
+tres — Z AI, Moonshot AI y MiniMax no siguen esa convención de forma
+consistente en toda su línea. **Sólo Kimi K2 Thinking sigue sin
+confirmar** — no se ha verificado si acepta input de imagen; no asumir que
+lo hereda de Kimi K2.5 sólo por ser de la misma familia.
 
 GPT-5.6 Luna y Terra siguen siendo los más inteligentes del catálogo
 completo (52.3 y 56.6), pero **sólo existen en AWS GovCloud (US-West)** —
 no utilizables en este stack (us-east-1) sin migrar de región (ver §1 y
 nota original más abajo).
+
+### 0.1 ¿Hay algo parecido de NVIDIA o Google? (revisado 2026-08-10)
+
+**NVIDIA:** un solo modelo de NVIDIA cumple intel ≥ Haiku y precio ≤ techo
+de Haiku — **Nemotron 3 Ultra 550B A55B** (intel 38.3, $0.60/$2.75, 0.53x
+el costo de Haiku). Pero **no está en el catálogo en vivo de Bedrock
+todavía** (verificado 2026-08-10 contra `AmazonBedrock` → atributo
+`model`) — sólo están disponibles sus hermanos menores ("Nemotron 3 Super
+120B A12B", intel 25.7; "Nemotron Nano 3 30B", intel 14.5; "Nemotron Nano
+2", intel 8.7), todos por debajo de Haiku. Es un candidato a **vigilar**,
+no uno usable hoy.
+
+**Google:** Google **no es partner de Amazon Bedrock** — ningún modelo
+Gemini aparece en el catálogo de `AmazonBedrock` (sólo existen vía Vertex
+AI / Google Cloud, una integración de proveedor completamente aparte, no
+un cambio de `BEDROCK_MODEL_ID`). Aun así, dos sí cumplen intel+precio si
+algún día se integra Vertex AI:
+
+| Modelo | Intelligence Index | Input $/1M | Output $/1M | vs techo Haiku | Visión |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| Gemini 3 Flash Preview (Reasoning) | 38.7 | $0.50 | $3.00 | 0.49x | ✅ nativa (todo Gemini es multimodal) |
+| Gemini 3.5 Flash-Lite | 37.4 | $0.30 | $2.50 | 0.35x | ✅ nativa |
+
+Gemini 3.5 Flash-Lite sería, en pura relación precio/inteligencia, uno de
+los mejores candidatos de toda la comparativa — pero usarlo implica añadir
+un proveedor nuevo al pipeline (Google Cloud SDK, auth GCP, cliente
+distinto), no sólo cambiar el modelo. Precio reportado por Artificial
+Analysis es pricing directo de Google (no hay equivalente en Bedrock que
+verificar, porque no existe ahí).
 
 ## 1. Tabla maestra — inteligencia (Artificial Analysis) vs precio (AWS Bedrock, us-east-1)
 
@@ -73,8 +102,11 @@ descendente.
 | GPT-5.6 Terra ⚠️ GovCloud            | `openai.gpt-5.6-terra`                        | OpenAI      |               56.6 |      $3.30 |      $19.80 |                  3.25x |            ✅ texto+imagen             | texto  |
 | GPT-5.6 Luna ⚠️ GovCloud             | `openai.gpt-5.6-luna`                         | OpenAI      |               52.3 |      $1.32 |       $7.92 |                  1.30x |            ✅ texto+imagen             | texto  |
 | **GLM 5** 🆕                         | `zai.glm-5`                                   | Z AI        |               40.6 |      $1.00 |       $3.20 |                  0.77x |            ✅ texto+imagen             | texto  |
+| Gemini 3 Flash Preview (Reasoning) 🆕 ⚠️ no Bedrock | — (sólo Vertex AI) | Google | 38.7 |      $0.50 |       $3.00 |                  0.49x |            ✅ texto+imagen             | texto  |
+| Nemotron 3 Ultra 550B A55B 🆕 ⚠️ no Bedrock | — (aún no en catálogo) | NVIDIA | 38.3 |      $0.60 |       $2.75 |                  0.53x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| Gemini 3.5 Flash-Lite 🆕 ⚠️ no Bedrock | — (sólo Vertex AI)          | Google      |               37.4 |      $0.30 |       $2.50 |                  0.35x |            ✅ texto+imagen             | texto  |
 | **Kimi K2.5**                        | `moonshotai.kimi-k2.5`                        | Moonshot AI |               36.0 |      $0.60 |       $3.00 |                  0.55x |            ✅ texto+imagen             | texto  |
-| **MiniMax M2.5** 🆕                  | `minimax.minimax-m2.5`                        | MiniMax     |               34.5 |      $0.30 |       $1.20 |                  0.25x | ⚠️ no confirmado (probable sólo texto) | texto  |
+| **MiniMax M2.5** 🆕                  | `minimax.minimax-m2.5`                        | MiniMax     |               34.5 |      $0.30 |       $1.20 |                  0.25x |            ✅ texto+imagen             | texto  |
 | **Kimi K2 Thinking** 🆕              | `moonshotai.kimi-k2-thinking`                 | Moonshot AI |               33.5 |      $0.60 |       $2.50 |                  0.51x | ⚠️ no confirmado (probable sólo texto) | texto  |
 | **Claude Haiku 4.5 (actual)**        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Anthropic   |           **29.9** |  **$1.10** |   **$5.50** |              **1.00x** |            ✅ texto+imagen             | texto  |
 | DeepSeek R1 🆕                       | `DeepSeek R1` (verificar ID exacto)           | DeepSeek    |               20.4 |      $1.35 |       $5.40 |                  1.12x |             ❌ sólo texto              | texto  |
@@ -94,6 +126,11 @@ Notas de la tabla:
 
 - **🆕** = modelo agregado en esta expansión (2026-08-10), no estaba en la
   versión anterior de este documento.
+- **⚠️ no Bedrock** = cumple intel ≥ Haiku y precio ≤ techo de Haiku, pero
+  **no es usable en este pipeline hoy**: Gemini (Google no es partner de
+  Bedrock, requeriría integrar Vertex AI como proveedor nuevo) o Nemotron
+  3 Ultra 550B A55B (todavía no aparece en el catálogo en vivo de
+  Bedrock — candidato a vigilar, no a usar). Ver §0.1.
 - Confirmado en el catálogo en vivo de `AmazonBedrock` (atributo `model`,
   84 valores, us-east-1) el 2026-08-10: `GLM 5`, `Kimi K2.5`,
   `Kimi K2 Thinking`, `MiniMax M2.5`, `DeepSeek v3.2`, `R1` (DeepSeek R1),
@@ -109,15 +146,15 @@ Notas de la tabla:
   de K2.6, Nemotron 3 Super/Nano en vez de Ultra).
 - Columna "Input imagen": soporte de visión (input texto **e** imagen).
   Confirmado por nombre/documentación pública para Anthropic, Nova,
-  Qwen3-**VL**, Nemotron-**VL**, Llama 4, GPT-5.6. **GLM 5 y Kimi K2.5
-  también confirmados** — soportan visión sin fallar, pese a no llevar
-  sufijo `V`/`VL` (esa convención de nombres no aplica de forma consistente
-  en toda la línea de Z AI/Moonshot AI, así que no sirve como señal
-  confiable por sí sola). **Kimi K2 Thinking y MiniMax M2.5 siguen sin
-  confirmar** — ninguno de los dos MCP usados (`artificial-analysis`,
+  Qwen3-**VL**, Nemotron-**VL**, Llama 4, GPT-5.6. **GLM 5, Kimi K2.5 y
+  MiniMax M2.5 también confirmados** — soportan visión sin fallar, pese a
+  no llevar sufijo `V`/`VL` (esa convención de nombres no aplica de forma
+  consistente en toda la línea de Z AI/Moonshot AI/MiniMax, así que no
+  sirve como señal confiable por sí sola). **Sólo Kimi K2 Thinking sigue
+  sin confirmar** — ninguno de los dos MCP usados (`artificial-analysis`,
   `aws-billing`) expone modalidad de input, así que esto no puede
   verificarse por esa vía; sólo queda confirmar contra la documentación de
-  cada proveedor o probar directamente antes de descartar/elegir por este
+  Moonshot AI o probar directamente antes de descartar/elegir por este
   criterio. La columna "Output" es texto en todos los casos — es lo único
   que le importa a este pipeline (ver instrucción original del usuario).
 - El Intelligence Index de Artificial Analysis no es directamente
@@ -143,15 +180,22 @@ relación precio/inteligencia:
 4. **GLM 5** — 40.6 (+36%, el más inteligente del grupo que sigue bajo el
    techo de precio), $1.00/$3.20 (23% más barato).
 
-**GLM 5 y Kimi K2.5 tienen visión confirmada** (input texto + imagen) —
-de los 4, son los dos listos para probarse contra el paso de visión de
-este pipeline sin bloqueos conocidos. **Kimi K2 Thinking y MiniMax M2.5
-siguen sin confirmar** (ver §1 y §5) — verificar antes de adoptarlos.
+**GLM 5, Kimi K2.5 y MiniMax M2.5 tienen visión confirmada** (input texto
++ imagen) — de los 4, son los tres listos para probarse contra el paso de
+visión de este pipeline sin bloqueos conocidos. **Sólo Kimi K2 Thinking
+sigue sin confirmar** (ver §1 y §5) — verificar antes de adoptarlo.
 
 Si se acepta salir de us-east-1 (GovCloud), **GPT-5.6 Luna** (52.3,
 +75% de inteligencia, con visión confirmada) sería el candidato más fuerte
 en inteligencia pura, a 1.30x el precio de Haiku — pero implica migrar
 región, algo fuera del alcance de esta comparativa.
+
+Si se acepta salir de Bedrock por completo, **Gemini 3.5 Flash-Lite**
+(intel 37.4, $0.30/$2.50, 0.35x el precio de Haiku, visión nativa) es la
+mejor relación precio/inteligencia de *toda* la comparativa — mejor que
+MiniMax M2.5 en inteligencia a un precio casi igual de bajo. El obstáculo
+no es el modelo, es que Google no está en Bedrock: implica añadir Vertex
+AI como proveedor nuevo al pipeline. Ver §0.1.
 
 ## 3. Tiers alternativos (flex / priority) — grupo nuevo
 
@@ -283,3 +327,54 @@ Bedrock GovCloud (verificado previamente contra AWS Pricing API, ver
 versión anterior de este documento) porque es el único canal relevante
 para un stack en AWS, aunque GovCloud en sí no es usable desde us-east-1
 sin migrar de región.
+
+## 7. Recomendación final — calidad/precio
+
+Restringiendo a lo que es realmente usable *hoy* en este pipeline (en
+Bedrock us-east-1, con visión confirmada) quedan sólo dos candidatos frente
+al baseline: **GLM 5** y **Kimi K2.5**. Todo lo demás está descartado por
+alguna razón dura: Kimi K2 Thinking/MiniMax M2.5 (visión sin confirmar),
+Nemotron 3 Ultra/Gemini (no están en Bedrock), GPT-5.6 (GovCloud only).
+
+Comparar sólo por Intelligence Index agregado esconde algo relevante para
+esta tarea específica — desglosando los benchmarks de Artificial Analysis
+que más se parecen a "extraer campos exactos de un documento" (no
+matemáticas/código, que aquí no aplican):
+
+| Benchmark | Qué mide | Claude Haiku 4.5 | GLM 5 | Kimi K2.5 |
+| --- | --- | ---: | ---: | ---: |
+| GPQA (conocimiento/razonamiento) | precisión en preguntas de nivel experto | 0.672 | 0.820 | **0.879** |
+| HLE (razonamiento difícil) | precisión en tareas de razonamiento exigente | 0.104 | 0.293 | **0.307** |
+| IFBench (seguir instrucciones exactas) | qué tan literal sigue el formato pedido | 0.543 | **0.723** | 0.702 |
+| Tau2 (tool-use / salida estructurada) | fiabilidad en llamadas a herramientas / formato rígido | 0.547 | **0.982** | 0.959 |
+| Precio por documento (mezcla real) | costo directo | $0.01249 | $0.00964 | **$0.00681** |
+
+**Elegiría Kimi K2.5.** Razones, en orden de peso:
+
+1. **Es el más barato de los dos que sí califican** — $0.00681/doc vs
+   $0.00964 de GLM 5 (29% más barato que GLM 5, 45% más barato que Haiku
+   4.5). En una mezcla de tokens dominada por input (6,600 in / 950 out),
+   el precio de input pesa más que el de output, y Kimi K2.5 ($0.60) le
+   gana ahí a GLM 5 ($1.00) por un margen amplio.
+2. **Gana en los dos benchmarks más cercanos a "leer bien un documento y
+   dar la respuesta correcta"** (GPQA y HLE) — pese a tener un Intelligence
+   Index agregado más bajo que GLM 5. El índice agregado incluye
+   componentes (terminalbench_hard, code) que no son relevantes para este
+   pipeline; GPQA/HLE sí lo son.
+3. **Tau2 (0.959) es casi 2x el de Haiku 4.5 (0.547)** — señal fuerte de
+   que sostiene mejor una salida con formato rígido (relevante porque el
+   pipeline pide JSON exacto del catálogo), aunque esto es tool-use
+   genérico, no una prueba directa de `output_config.format` en Bedrock
+   Converse específicamente (sigue sin verificarse, ver §5).
+4. GLM 5 gana en IFBench por un margen pequeño (0.723 vs 0.702) y en
+   Intelligence Index agregado (40.6 vs 36.0) — si el criterio fuera
+   "máxima inteligencia general sin importar el costo extra", GLM 5 sería
+   la elección. Pero a precio equivalente (ambos muy por debajo del techo
+   de Haiku), Kimi K2.5 da más por menos en las métricas que importan aquí.
+
+**Lo que esto NO reemplaza:** ninguno de los dos se ha corrido contra
+`tests/integration/expected_pedimentos.json`, y el soporte de
+`output_config.format`/structured output en Bedrock Converse sigue sin
+confirmarse para ninguno de los dos (§5) — esta recomendación es la mejor
+apuesta *por especificaciones publicadas*, no un reemplazo de la prueba
+real antes de mover producción.
