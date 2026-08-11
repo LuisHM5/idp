@@ -14,8 +14,10 @@
     "pipeline": "single_document",
     "min_confidence": 0.8,
     "form_mapping": {},
-    "__COMENTARIO_model_id__": "Opcional. Fija el modelo Bedrock (ARN o inference-profile id) que extrae ESTE tipo, sin importar qué esté configurado por variable de entorno (BEDROCK_EXTRACTOR_MODEL_ID/BEDROCK_MODEL_ID). Omite la llave (o deja null) para heredar lo configurado.",
+    "__COMENTARIO_model_id__": "Opcional. Fija el modelo Bedrock (ARN o inference-profile id) que extrae ESTE tipo para cualquier fase que corra (extractor, y recovery si aplica), sin importar qué esté configurado por variable de entorno (BEDROCK_EXTRACTOR_MODEL_ID/BEDROCK_MODEL_ID). Omite la llave (o deja null) para heredar lo configurado. Jerarquía completa y `model_ids` (override por fase individual) en catalogs/README.md -> 'Entry de nivel de tipo'.",
     "model_id": null,
+    "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase.",
+    "model_ids": {},
 
     "__COMENTARIO_fields__": "Un campo escalar. `type` decide qué shape de salida arma el pipeline: string/number/boolean/date -> {value, confidence, valid, reason}. `hint` es texto libre en español: dónde vive el dato o cómo derivarlo (antes vivía en extraction_hints, ahora junto al campo). `required` reemplaza a la lista required_fields. `validation` reemplaza las entradas de validation_rules que tenían `\"field\": \"NOMBRE\"` — ya no hace falta repetir el nombre, es implícito por estar anidado aquí.",
     "fields": {

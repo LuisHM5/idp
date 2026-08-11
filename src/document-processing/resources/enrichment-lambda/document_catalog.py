@@ -130,13 +130,16 @@ class TypeRegistryEntry:
     # multi-document customs pipeline (segmenter + cross-document rules); any
     # other value (or None) uses the standard single-document flow.
     pipeline: Optional[str] = None
-    # Optional per-type Bedrock model override for this type's own extraction
-    # (and, for the legacy DSL, its Textract+Bedrock recovery fallback) — see
-    # `pipeline.bedrock.resolve_model`. Takes priority over the deployment's
-    # BEDROCK_EXTRACTOR_MODEL_ID/BEDROCK_MODEL_ID env config, but still yields
-    # to a dev-only per-request override (ALLOW_MODEL_OVERRIDE). None (the
-    # default) means this type has no opinion and just uses what's configured.
+    # Optional per-type Bedrock model overrides — see
+    # `pipeline.bedrock.resolve_model` for the full priority chain across
+    # these two, the deployment's env config, and the dev-only per-request
+    # override. `model_ids` (stage -> model id, e.g. {"extractor": "...",
+    # "recovery": "..."}) wins over the blanket `model_id` when both name the
+    # same stage, so a type can pin one phase while leaving the rest on its
+    # general override. Neither is required; an unset/absent stage just falls
+    # through to whatever's configured for the deployment.
     model_id: Optional[str] = None
+    model_ids: Dict[str, str] = field(default_factory=dict)
     # Target shapes for derived/structured outputs (e.g. LIQUIDACION_NORMALIZADA
     # defaults). Consumed by post-extraction normalizers.
     structured_fields: Dict[str, Any] = field(default_factory=dict)
@@ -317,6 +320,7 @@ def _parse_entry(
             form_mapping=data.get("form_mapping", {}) or {},
             pipeline=data.get("pipeline"),
             model_id=data.get("model_id") or None,
+            model_ids=data.get("model_ids", {}) or {},
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
             qr_recovery=data.get("qr_recovery"),
             namespaces=data.get("namespaces", {}) or {},
@@ -353,6 +357,7 @@ def _parse_entry(
         form_mapping=data.get("form_mapping", {}) or {},
         pipeline=data.get("pipeline"),
         model_id=data.get("model_id") or None,
+        model_ids=data.get("model_ids", {}) or {},
         qr_recovery=data.get("qr_recovery"),
     )
 

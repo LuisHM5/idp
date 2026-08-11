@@ -25,7 +25,18 @@ sys.path.insert(0, str(LAMBDA_DIR))
 
 from botocore.exceptions import ClientError  # noqa: E402
 
+from document_catalog import TypeRegistryEntry  # noqa: E402
 from pipeline import bedrock  # noqa: E402
+
+
+def _type_entry(model_id=None, model_ids=None):
+    return TypeRegistryEntry(
+        type_id="TEST_TYPE",
+        extraction_fields=[],
+        required_fields=[],
+        model_id=model_id,
+        model_ids=model_ids or {},
+    )
 
 MODEL_ENV = (
     "BEDROCK_MODEL_ID",
@@ -119,22 +130,56 @@ def test_catalog_model_id_outranks_configured_env(monkeypatch):
     stage/base models — it's a deliberate per-type choice, not a fallback."""
     monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
     monkeypatch.setenv("BEDROCK_EXTRACTOR_MODEL_ID", "stage-model")
-    assert bedrock.resolve_model("extractor", "catalog-model") == "catalog-model"
+    entry = _type_entry(model_id="catalog-model")
+    assert bedrock.resolve_model("extractor", entry) == "catalog-model"
 
 
-def test_request_override_still_beats_catalog_model_id(monkeypatch):
+def test_catalog_model_ids_stage_entry_outranks_catalog_model_id(monkeypatch):
+    """`model_ids[stage]` pins one phase; `model_id` is the type's blanket
+    fallback for every OTHER phase it didn't pin."""
+    entry = _type_entry(model_id="catalog-general", model_ids={"recovery": "catalog-recovery"})
+    assert bedrock.resolve_model("recovery", entry) == "catalog-recovery"
+    assert bedrock.resolve_model("extractor", entry) == "catalog-general"
+
+
+def test_request_override_still_beats_catalog_model_ids(monkeypatch):
     """The dev-only per-request override forces every stage regardless of
-    what the type's catalog entry declares."""
+    what the type's catalog entry declares, even a per-stage pin."""
+    entry = _type_entry(model_ids={"extractor": "catalog-extractor"})
     bedrock.set_model_override("forced-model")
     try:
-        assert bedrock.resolve_model("extractor", "catalog-model") == "forced-model"
+        assert bedrock.resolve_model("extractor", entry) == "forced-model"
     finally:
         bedrock.set_model_override(None)
 
 
-def test_no_catalog_model_id_falls_through_to_env_as_before(monkeypatch):
+def test_no_catalog_override_falls_through_to_env_as_before(monkeypatch):
     monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
     assert bedrock.resolve_model("extractor", None) == "base-model"
+    assert bedrock.resolve_model("extractor", _type_entry()) == "base-model"
+
+
+def test_explain_model_resolution_reports_every_candidate_and_the_winner(monkeypatch):
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    monkeypatch.setenv("BEDROCK_EXTRACTOR_MODEL_ID", "stage-model")
+    entry = _type_entry(model_id="catalog-general", model_ids={"extractor": "catalog-extractor"})
+
+    report = bedrock.explain_model_resolution("extractor", entry)
+
+    assert report["resolved"] == "catalog-extractor"
+    labels = [label for label, _ in report["candidates"]]
+    assert labels == [
+        "request override",
+        "catalog model_ids[stage]",
+        "catalog model_id",
+        "stage env var",
+        "base model",
+    ]
+    assert dict(report["candidates"])["stage env var"] == "stage-model"
+    # Read-only: doesn't feed `used_models()` the way `resolve_model` does.
+    bedrock.reset_used_models()
+    bedrock.explain_model_resolution("extractor", entry)
+    assert bedrock.used_models() == {}
 
 
 # --- caching degradation -----------------------------------------------------

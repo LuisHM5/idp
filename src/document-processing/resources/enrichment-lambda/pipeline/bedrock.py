@@ -9,11 +9,13 @@ import os
 import re
 import time
 from functools import lru_cache
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
+from document_catalog import TypeRegistryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -75,28 +77,73 @@ def used_models() -> Dict[str, str]:
     return dict(_USED_MODELS)
 
 
-def resolve_model(stage: str, catalog_model_id: Optional[str] = None) -> str:
-    """Model for `stage`, falling back to the base model.
+def _model_candidates(
+    stage: str, type_entry: Optional[TypeRegistryEntry]
+) -> List[Tuple[str, Optional[str]]]:
+    """Every model-id source for `stage`, highest priority first.
 
-    `catalog_model_id` is a document type's own `model_id` (catalogs/README.md
-    → "Entry de nivel de tipo"), when the caller has one in scope. It outranks
-    the deployment's stage/base env config — a type that opted into a
-    specific model did so on purpose — but still yields to `_MODEL_OVERRIDE`,
-    the dev-only per-request override, since that's an explicit ad hoc
-    request to force every stage onto one model regardless of type.
+    THE single place this order is defined — `resolve_model` and
+    `explain_model_resolution` both just walk this list, so the two can never
+    disagree about which override wins:
+
+      1. request override — `_MODEL_OVERRIDE`, set by `set_model_override`
+         (dev-only, `ALLOW_MODEL_OVERRIDE` upload metadata — see
+         `handler.py::_apply_model_override`). An explicit "try this model
+         right now" for the whole invocation, so nothing outranks it —
+         not even a type's own catalog config.
+      2. catalog model_ids[stage] — `type_entry.model_ids`, the per-STAGE
+         override on this document type's catalog entry (catalogs/README.md).
+         Lets a type pin e.g. only its "recovery" phase without touching
+         "extractor".
+      3. catalog model_id — `type_entry.model_id`, the type's blanket
+         override, used when it has no more specific entry in `model_ids`
+         for this stage.
+      4. stage env var — `BEDROCK_<STAGE>_MODEL_ID` (`_STAGE_ENV`), the
+         deployment-wide override for this one stage, same for every type.
+      5. base model — `base_model_id()`: `BEDROCK_MODEL_ID`, or the hardcoded
+         fallback. Always non-empty, so resolution can never come up short.
+    """
+    env_var = _STAGE_ENV.get(stage)
+    return [
+        ("request override", _MODEL_OVERRIDE),
+        ("catalog model_ids[stage]", type_entry.model_ids.get(stage) if type_entry else None),
+        ("catalog model_id", type_entry.model_id if type_entry else None),
+        ("stage env var", os.environ.get(env_var) if env_var else None),
+        ("base model", base_model_id()),
+    ]
+
+
+def resolve_model(stage: str, type_entry: Optional[TypeRegistryEntry] = None) -> str:
+    """Model used for `stage`, honouring every override layer.
+
+    `type_entry` is the document type currently being processed, when the
+    caller has one in scope (extraction and Textract+Bedrock recovery both
+    run per-type; segmentation doesn't, so it always resolves with
+    `type_entry=None` and only the request/env/base layers apply). See
+    `_model_candidates` for the full priority order.
 
     Read at call time (not import time) so a test or a script can change the
     environment between calls.
     """
-    env_var = _STAGE_ENV.get(stage)
-    model = (
-        _MODEL_OVERRIDE
-        or catalog_model_id
-        or (os.environ.get(env_var) if env_var else None)
-        or base_model_id()
-    )
-    _USED_MODELS[stage] = model
-    return model
+    for _source, model in _model_candidates(stage, type_entry):
+        if model:
+            _USED_MODELS[stage] = model
+            return model
+    raise AssertionError("base model candidate must never be empty")  # pragma: no cover
+
+
+def explain_model_resolution(
+    stage: str, type_entry: Optional[TypeRegistryEntry] = None
+) -> Dict[str, Any]:
+    """Read-only introspection: every candidate for `stage` in priority
+    order, plus which one wins — without recording into `_USED_MODELS` (use
+    `resolve_model` for the real call). Meant for a debug log line or a CLI
+    check when it's unclear which override layer produced a given model,
+    since `_model_candidates` alone doesn't say which source "wins".
+    """
+    candidates = _model_candidates(stage, type_entry)
+    resolved = next((model for _source, model in candidates if model), None)
+    return {"stage": stage, "resolved": resolved, "candidates": candidates}
 
 
 _RETRYABLE = {"ThrottlingException", "ModelNotReadyException", "ServiceUnavailableException"}
