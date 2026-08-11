@@ -34,8 +34,7 @@ Uso:
     mantienen por compatibilidad con scripts/docs viejos.
 
 Nada se sobrescribe nunca — cada documento procesado queda numerado como
-historial, y los tres archivos de ESE intento viven juntos en la misma
-carpeta:
+historial, y los archivos de ESE intento viven juntos en la misma carpeta:
 
   <out>/[<modelo>/]<TIPO>/<nombre-archivo>/NNN/
       - <nombre-archivo>.json → resultado completo (todos los campos, checks,
@@ -44,6 +43,12 @@ carpeta:
         colores), para no perder el detalle si se cierra la terminal
       - _resumen.md → costo real, $/página, duración, campos válidos,
         confianza promedio y tabla campo-por-campo de ESE documento
+      - _prompt_input.json / _prompt_output.json → cada llamada a Bedrock de
+        ESE documento (segmentación, extracción por chunk, recovery), en el
+        mismo orden en ambos archivos: _prompt_input.json trae el prompt/
+        system/schema que se envió, _prompt_output.json trae el texto o
+        tool_input que respondió el modelo. Solo se generan si el documento
+        pasó por Bedrock (no aplica a .xml/.xlsx/.csv)
 
   NNN sube (001, 002, ...) cada vez que reprocesas el mismo archivo — con el
   mismo modelo o con otro — así que las corridas anteriores nunca se pierden,
@@ -315,6 +320,7 @@ def main() -> int:
     def save_doc_result(
         tipo: str, doc_path: Path, buf: io.StringIO,
         result_json: dict | None, resumen_lines: list[str] | None,
+        calls: list[dict],
     ) -> Path:
         # El json, el log de consola y el resumen de ESTE documento en ESTA
         # corrida van todos juntos en la misma carpeta numerada — nada en un
@@ -327,11 +333,31 @@ def main() -> int:
         (doc_dir / "_log.txt").write_text(ANSI_RE.sub("", buf.getvalue()), encoding="utf-8")
         if resumen_lines is not None:
             (doc_dir / "_resumen.md").write_text("\n".join(resumen_lines) + "\n", encoding="utf-8")
+        # Un JSON con el prompt de entrada y otro con la respuesta de salida
+        # de CADA llamada a Bedrock de este documento (segmentación,
+        # extracción por chunk, recovery), en el mismo orden — solo si el
+        # documento pasó por Bedrock (XML/XLSX/CSV no llaman al modelo).
+        if calls:
+            entrada = [
+                {"call": i, "stage": c.get("stage"), "modelId": c.get("usedModelId"), **c["input"]}
+                for i, c in enumerate(calls, start=1)
+            ]
+            salida = [
+                {"call": i, "stage": c.get("stage"), "modelId": c.get("usedModelId"), **c["output"]}
+                for i, c in enumerate(calls, start=1)
+            ]
+            (doc_dir / "_prompt_input.json").write_text(
+                json.dumps(entrada, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+            (doc_dir / "_prompt_output.json").write_text(
+                json.dumps(salida, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
         return doc_dir
 
     try:
         print(f"salida por documento → {model_root}/<TIPO>/<nombre-doc>/NNN/ (json + log + resumen juntos)")
 
+        from pipeline.bedrock import prompt_log, reset_used_models
         from pipeline.expediente import process_pdf
         from pipeline.pricing import bedrock_cost, textract_cost
         from pipeline.tabular_document import process_tabular
@@ -368,6 +394,10 @@ def main() -> int:
             buf = io.StringIO()
             sys.stdout = _Tee(real_stdout, buf)
             sys.stderr = _Tee(real_stderr, buf)
+            # Aísla el log de prompts/respuestas de Bedrock por documento —
+            # sin esto, un expediente de varias páginas dejaría en su carpeta
+            # las llamadas del documento anterior también.
+            reset_used_models()
             result = None
             resumen_lines = None
             tipo_for_save = "ERROR"
@@ -535,7 +565,7 @@ def main() -> int:
                         )
             finally:
                 sys.stdout, sys.stderr = real_stdout, real_stderr
-                doc_dir = save_doc_result(tipo_for_save, doc_path, buf, result, resumen_lines)
+                doc_dir = save_doc_result(tipo_for_save, doc_path, buf, result, resumen_lines, prompt_log())
                 print(f"  {DIM}Guardado en → {doc_dir}/{RESET}")
 
         return 0

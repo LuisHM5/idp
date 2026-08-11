@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
@@ -73,6 +74,18 @@ _MODEL_OVERRIDE: Optional[str] = None
 _FALLBACK_EVENTS: Dict[str, Dict[str, Any]] = {}
 
 
+# Every prompt/response pair sent to Bedrock this invocation, in call order —
+# one entry per `converse`/`converse_structured` call, appended by
+# `_record_prompt`. Extraction runs several calls concurrently (per-segment
+# and per-chunk thread pools — `pipeline/expediente.py::_EXTRACT_WORKERS`,
+# `pipeline/text_extractor.py::_CHUNK_WORKERS`), so appends go through
+# `_PROMPT_LOG_LOCK`. Consumed by `scripts/procesar-docs.py` to dump the
+# exact input/output prompts next to its usual per-document result; cleared
+# per invocation alongside `_USED_MODELS`/`_FALLBACK_EVENTS`.
+_PROMPT_LOG: List[Dict[str, Any]] = []
+_PROMPT_LOG_LOCK = threading.Lock()
+
+
 def set_model_override(model_id: Optional[str]) -> None:
     """Force every stage of this invocation onto `model_id`."""
     global _MODEL_OVERRIDE
@@ -84,10 +97,38 @@ def reset_used_models() -> None:
     _MODEL_OVERRIDE = None
     _USED_MODELS.clear()
     _FALLBACK_EVENTS.clear()
+    with _PROMPT_LOG_LOCK:
+        _PROMPT_LOG.clear()
 
 
 def used_models() -> Dict[str, str]:
     return dict(_USED_MODELS)
+
+
+def prompt_log() -> List[Dict[str, Any]]:
+    """Snapshot of `_PROMPT_LOG`: every Bedrock call recorded so far this
+    invocation, each `{"stage", "requestedModelId", "usedModelId", "input",
+    "output"}` — see `_record_prompt`."""
+    with _PROMPT_LOG_LOCK:
+        return [dict(entry) for entry in _PROMPT_LOG]
+
+
+def _record_prompt(
+    stage: Optional[str],
+    requested_model_id: str,
+    used_model_id: str,
+    input_payload: Dict[str, Any],
+    output_payload: Dict[str, Any],
+) -> None:
+    entry = {
+        "stage": stage,
+        "requestedModelId": requested_model_id,
+        "usedModelId": used_model_id,
+        "input": input_payload,
+        "output": output_payload,
+    }
+    with _PROMPT_LOG_LOCK:
+        _PROMPT_LOG.append(entry)
 
 
 def fallback_events() -> Dict[str, Dict[str, Any]]:
@@ -518,6 +559,19 @@ def converse(
         "stopReason": response.get("stopReason"),
         "usage": response.get("usage", {}),
     }
+    _record_prompt(
+        stage,
+        model_id,
+        used_model_id,
+        input_payload={
+            "system": system,
+            "cacheSystem": cache_system,
+            "prompt": prompt,
+            "prefill": prefill,
+            "maxTokens": max_tokens,
+        },
+        output_payload={"text": text, "stopReason": meta["stopReason"], "usage": meta["usage"]},
+    )
     return text, meta
 
 
@@ -586,6 +640,21 @@ def converse_structured(
         "stopReason": response.get("stopReason"),
         "usage": response.get("usage", {}),
     }
+    _record_prompt(
+        stage,
+        model_id,
+        used_model_id,
+        input_payload={
+            "system": system,
+            "cacheSystem": cache_system,
+            "prompt": prompt,
+            "maxTokens": max_tokens,
+            "toolName": tool_name,
+            "toolDescription": tool_description,
+            "toolSchema": tool_schema,
+        },
+        output_payload={"toolInput": tool_input, "stopReason": meta["stopReason"], "usage": meta["usage"]},
+    )
     return tool_input, meta
 
 

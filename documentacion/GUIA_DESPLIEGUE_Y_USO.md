@@ -178,6 +178,11 @@ segmentador encontró varios tipos en un mismo PDF). Dentro de esa carpeta:
   promedio y tabla campo-por-campo de ESE documento.
 - **`_log.txt`**: copia exacta de la consola mientras se procesaba ESE
   documento, por si se cierra la terminal.
+- **`_prompt_input.json` / `_prompt_output.json`**: cada llamada a Bedrock de
+  ESE documento (segmentación, extracción por chunk, recovery), en el mismo
+  orden en ambos archivos — el de entrada trae el prompt/system/schema que se
+  envió, el de salida trae el texto o `tool_input` que respondió el modelo.
+  Solo se generan si el documento pasó por Bedrock (no aplica a `.xml`/`.xlsx`/`.csv`).
 - **Consola**: por documento — tipo detectado, estado (`APPROVED`/`REVIEW_REQUIRED`/...), campos clave con su confianza, costo real (Bedrock+Textract), arrays extraídos y checks fallidos, más un benchmark agregado al final si procesaste una carpeta con varios archivos (solo en consola).
 
 ### 4.0.1 ¿Dónde están las reglas de extracción y validación?
