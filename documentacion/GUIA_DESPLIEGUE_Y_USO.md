@@ -54,8 +54,10 @@ cp .env.example .env.production   # si no existe; revisa BEDROCK_MODEL_ID
 | -------------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------- |
 | `BEDROCK_MODEL_ID`                           | Modelo de clasificación/extracción del pipeline                                        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 | `BEDROCK_EXTRACTOR_MODEL_ID`                 | Modelo del pipeline de pedimentos/re-extracción (permite usar uno más fuerte solo ahí) | igual a `BEDROCK_MODEL_ID`                    |
+| `MODEL_FALLBACK_MAX_RETRIES`                 | Cuántas veces puede cambiar de modelo una sola llamada Bedrock cuando el modelo pedido no está disponible, antes de rendirse (ver §5.6) | `4`                            |
 | `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION` | Cuenta/región destino                                                                  | región `us-east-1`                            |
 | `CATALOG_TABLE`                              | Nombre de la tabla DynamoDB del catálogo                                               | `document-validation-catalog`                 |
+| `FALLBACK_MODELS_TABLE`                      | Nombre de la tabla DynamoDB de modelos de fallback ordenados (ver §5.6)                | `document-validation-fallback-models`         |
 
 ## 3. Primer despliegue
 
@@ -80,6 +82,16 @@ aws dynamodb create-table \
   --table-name document-validation-catalog \
   --attribute-definitions AttributeName=type_id,AttributeType=S \
   --key-schema AttributeName=type_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST --region us-east-1
+```
+
+Lo mismo aplica a la tabla de modelos de fallback (§5.6) — también importada, no creada, y opcional: si no existe, el pipeline simplemente usa su orden por default en código.
+
+```bash
+aws dynamodb create-table \
+  --table-name document-validation-fallback-models \
+  --attribute-definitions AttributeName=Rank,AttributeType=N \
+  --key-schema AttributeName=Rank,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST --region us-east-1
 ```
 
@@ -304,6 +316,49 @@ Después: `pnpm sync` (inmediato) o `pnpm build && pnpm run deploy` (versionado)
 
 Con `forceReloadCatalog: true` (default en `bin/app.ts`) los cambios en DynamoDB aplican en la siguiente invocación.
 
+### 5.6 Fallback de modelo cuando Bedrock falla por el proveedor
+
+Cuando una llamada Bedrock falla porque el modelo pedido no está disponible (no habilitado en la cuenta/región, no existe, o error/timeout del lado del modelo — no un simple throttling, que ya se reintenta solo sobre el mismo modelo), el pipeline reintenta la MISMA solicitud sobre el siguiente modelo de una lista ordenada, en vez de fallar la extracción completa. Implementado en `pipeline/bedrock.py::_invoke_with_fallback` (código: `pipeline/bedrock.py::_MODEL_UNAVAILABLE`) y `pipeline/model_fallback.py`.
+
+**Orden de prioridad de qué modelo se usa** (de mayor a menor, ver `pipeline/bedrock.py::_model_candidates` — la única fuente de verdad):
+
+1. Override de desarrollo por request (`ALLOW_MODEL_OVERRIDE`, dev-only).
+2. `model_ids[fase]` del catálogo del tipo (ver `catalogs/README.md`).
+3. `model_id` del catálogo del tipo.
+4. `BEDROCK_<FASE>_MODEL_ID` de entorno.
+5. `BEDROCK_MODEL_ID` de entorno / fallback fijo en código.
+
+Esto decide **qué modelo se intenta primero**. Si ESE modelo falla por indisponibilidad, entra el mecanismo de esta sección para decidir **a qué modelo cambiar después** — son dos listas independientes: el catálogo nunca aparece como candidato de fallback, y la tabla de fallback nunca decide qué se intenta primero.
+
+**Tabla de modelos de fallback** (`FALLBACK_MODELS_TABLE`, default `document-validation-fallback-models`, opcional — ver §3 para crearla):
+
+| Atributo   | Tipo | Descripción                                                        |
+| ---------- | ---- | ------------------------------------------------------------------- |
+| `Rank`     | N (PK) | Prioridad ascendente — se prueba primero el `Rank` más bajo.      |
+| `ModelId`  | S    | ID de modelo Bedrock o ARN de inference profile.                    |
+| `Enabled`  | BOOL | Opcional, default `true`. Ponlo en `false` para pausar una entrada sin renumerar las demás. |
+
+Si la tabla no existe, está vacía, o falla la lectura, el pipeline usa este orden fijo en código (`pipeline/model_fallback.py::DEFAULT_FALLBACK_MODELS`):
+
+```
+1. minimax.minimax-m2.5
+2. moonshotai.kimi-k2.5
+3. zai.glm-5
+4. us.anthropic.claude-haiku-4-5-20251001-v1:0
+```
+
+`MODEL_FALLBACK_MAX_RETRIES` (default `4`) limita cuántas veces puede cambiar de modelo una sola llamada antes de rendirse y propagar el error — independiente de los reintentos sobre el mismo modelo (throttling), que se agotan primero.
+
+**Antes de reordenar o agregar un modelo:** verifica que soporte lo que la fase necesita — Converse, tool use forzado (el extractor lo requiere para catálogos de 100+ campos) y, si aplica, caching de prompt (ver notas de modelos en `AGENTS.md`). Un modelo incompatible falla distinto (extracción vacía o mal formada) en vez de con un error reintentable, así que este mecanismo no lo salta automáticamente.
+
+Editar la tabla (ejemplo, agregar una entrada):
+
+```bash
+aws dynamodb put-item --table-name document-validation-fallback-models \
+  --item '{"Rank": {"N": "5"}, "ModelId": {"S": "otro.modelo-v1:0"}}' \
+  --region us-east-1
+```
+
 ## 6. Eliminar
 
 ### 6.1 Eliminación parcial (tipos del catálogo)
@@ -360,7 +415,8 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Unable to import module 'handler'... pypdf` en la Lambda              | Bundle sin dependencias                                                                              | Rehacer `pnpm build && pnpm run deploy`; verifica que el asset en `cdk.out` contenga `pypdf/`                                                                                                                                                                                                                                               |
 | Synth falla en bundling y no hay Docker                                | Sin `pip3` local ni Docker                                                                           | Instalar python3-pip, o Docker para el fallback                                                                                                                                                                                                                                                                                             |
-| `AccessDeniedException` de Bedrock                                     | Modelo no habilitado en la cuenta/región                                                             | Consola Bedrock → Model access → habilitar Claude Haiku 4.5 en us-east-1                                                                                                                                                                                                                                                                    |
+| `AccessDeniedException` de Bedrock                                     | Modelo no habilitado en la cuenta/región                                                             | Desde que existe el fallback de modelo (§5.6) esto ya no falla la extracción de inmediato — el pipeline cambia solo al siguiente modelo configurado y solo ves este error si TODA la lista de fallback también falla. Consola Bedrock → Model access → habilitar el/los modelo(s) en la región, o revisa `MODEL_FALLBACK_MAX_RETRIES`/la tabla `document-validation-fallback-models` |
+| Log con `bedrock: <modelo> unavailable (...); falling back to <otro>`  | El modelo pedido (configurado o del catálogo) no respondió — comportamiento normal del fallback (§5.6) | Informativo, no es un error a menos que se repita mucho: revisa por qué ese modelo falla (cuota, no habilitado) o reordena la tabla de fallback                                                                                                                                                                                            |
 | Task timed out (Lambda)                                                | Expediente muy grande                                                                                | La Lambda ya corre a 15 min / 1024 MB; para archivos mayores dividir el PDF o subir memoria en el stack                                                                                                                                                                                                                                     |
 | Resultado `REQUIERE_REVISION` con segmentos `OTRO`                     | Páginas sin tipo en el catálogo (COVE, DODA, manifestación…)                                         | Normal y conservador; si quieres que aprueben, agrega esos tipos al catálogo JSON                                                                                                                                                                                                                                                           |
 | Tipos nuevos no aplican                                                | Se editó la copia generada (`config/catalogs.json`)                                                  | Editar el archivo del tipo en `catalogs/` y correr `pnpm sync` (hot-reload) o `pnpm run build && pnpm run deploy`                                                                                                                                                                                                                            |

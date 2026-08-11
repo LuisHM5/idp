@@ -44,6 +44,22 @@ export interface DocumentValidationStackProps extends cdk.StackProps {
   forceReloadCatalog?: boolean;
 
   /**
+   * Enable the DynamoDB-backed ordered fallback-model list: when a Bedrock
+   * call fails because the requested model itself is unavailable (not
+   * granted, doesn't exist, or errors/times out — see
+   * `pipeline/bedrock.py::_MODEL_UNAVAILABLE`), the enrichment Lambda
+   * retries the SAME request against the next model in this table instead
+   * of failing outright. Same import-not-create, RETAIN pattern as
+   * `enableDynamoCatalog` (see `documentacion/GUIA_DESPLIEGUE_Y_USO.md` for
+   * the one-time `aws dynamodb create-table` step). Entirely optional even
+   * when true — the Python side falls back to a hardcoded default order
+   * (`pipeline/model_fallback.py::DEFAULT_FALLBACK_MODELS`) whenever the
+   * table is unset, empty, or unreachable.
+   * @default false
+   */
+  enableFallbackModels?: boolean;
+
+  /**
    * Deployment environment. In "prod" the API is hardened: API keys required,
    * WAF (rate limiting + managed rules), and a custom domain when configured.
    * In "dev" the API stays open on the random execute-api URL for easy testing.
@@ -97,6 +113,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     const enableDynamo = props?.enableDynamoCatalog ?? false;
     const forceReload = props?.forceReloadCatalog ?? false;
+    const enableFallbackModels = props?.enableFallbackModels ?? false;
     // Base model for every step. Each step below can be pointed at a different
     // Bedrock model — any model, not just Anthropic — to trade cost against
     // accuracy per step. Unset overrides fall back to this one, so
@@ -157,6 +174,20 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         this,
         "DocumentCatalogTable",
         tableName
+      );
+    }
+
+    // Optional: DynamoDB ordered fallback-model list (see
+    // `enableFallbackModels` above for what this controls). Same
+    // import-not-create pattern as the catalog table: the table survives
+    // `pnpm run destroy`, and its absence is never fatal — the Python side
+    // just uses its hardcoded default order instead.
+    let fallbackModelsTable: dynamodb.ITable | undefined;
+    if (enableFallbackModels) {
+      fallbackModelsTable = dynamodb.Table.fromTableName(
+        this,
+        "FallbackModelsTable",
+        "document-validation-fallback-models"
       );
     }
 
@@ -253,6 +284,16 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         ...(process.env.BEDROCK_RECOVERY_MODEL_ID && {
           BEDROCK_RECOVERY_MODEL_ID: process.env.BEDROCK_RECOVERY_MODEL_ID,
         }),
+        ...(fallbackModelsTable && {
+          FALLBACK_MODELS_TABLE: "document-validation-fallback-models",
+        }),
+        // How many times a single Bedrock call may switch models after a
+        // model-unavailable error (pipeline/model_fallback.py) before giving
+        // up — independent of `enableFallbackModels`/the table above, since
+        // the Python default order applies either way.
+        ...(process.env.MODEL_FALLBACK_MAX_RETRIES && {
+          MODEL_FALLBACK_MAX_RETRIES: process.env.MODEL_FALLBACK_MAX_RETRIES,
+        }),
         // Dev only: let an upload pick the model for its own request (via
         // `pnpm enviar ... --model <id>`), so trying a model doesn't need a
         // redeploy. Never set in prod — the value comes from whoever uploaded
@@ -265,6 +306,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // Grant DynamoDB read access if enabled
     if (catalogTable) {
       catalogTable.grantReadData(enrichmentFn);
+    }
+    if (fallbackModelsTable) {
+      fallbackModelsTable.grantReadData(enrichmentFn);
     }
 
     // Textract AnalyzeID + DetectDocumentText fallback: cuando Bedrock falla el

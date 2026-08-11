@@ -43,6 +43,7 @@ from cost_audit import write_cost_record
 from extractors import get_extractor
 from indexing import write_index_attributes
 from pipeline.bedrock import reset_used_models, set_model_override, used_models
+from pipeline.model_fallback import reload_fallback_models
 
 logger = logging.getLogger(__name__)
 
@@ -751,9 +752,13 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     from S3. If it is missing, re-extraction is silently skipped.
     """
     try:
-        # Force reload catalog if configured (useful for DynamoDB hot-reload)
+        # Force reload catalog + fallback-model list if configured (useful
+        # for DynamoDB hot-reload — CATALOG_FORCE_RELOAD covers both tables,
+        # not just the catalog one, since a warm container would otherwise
+        # keep serving a stale fallback order until it cold-starts).
         if _FORCE_RELOAD:
             reload_catalog()
+            reload_fallback_models()
 
         document_id = event.get("documentId", "unknown")
         classification_result = event.get("classificationResult", {})

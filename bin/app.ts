@@ -42,6 +42,7 @@ new BedrockDocumentProcessingStack(app, stackId, {
   environment,
   enableDynamoCatalog: true,
   forceReloadCatalog: true,
+  enableFallbackModels: true,
   // Custom domain applies in prod only; unset in dev → random execute-api URL.
   domainName: environment === "prod" ? process.env.DOMAIN_NAME : undefined,
   certArn: environment === "prod" ? process.env.CERT_ARN : undefined,

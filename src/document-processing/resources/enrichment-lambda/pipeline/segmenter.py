@@ -184,8 +184,11 @@ def segment_pages(
 
     prompt = _build_prompt(pages)
     used_model_id = model_id or resolve_model("segmenter")
-    text, meta = converse(prompt, model_id=used_model_id, max_tokens=4096)
-    usage_meta = {"modelId": used_model_id, "usage": meta.get("usage") or {}}
+    text, meta = converse(prompt, model_id=used_model_id, max_tokens=4096, stage="segmenter")
+    # `meta["modelId"]` (not the pre-call `used_model_id`) so a model-unavailable
+    # fallback (pipeline.bedrock._invoke_with_fallback) is reflected here too —
+    # this feeds the segmentation cost line in cost_audit.py.
+    usage_meta = {"modelId": meta["modelId"], "usage": meta.get("usage") or {}}
     try:
         parsed = parse_json_response(text)
     except (ValueError, json.JSONDecodeError) as e:

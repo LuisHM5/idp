@@ -169,7 +169,9 @@ class TextractBedrockExtractor:
             )
 
         prompt = _build_extraction_prompt(type_entry, ocr_lines)
-        response_text, _ = converse(prompt, model_id=model_id, max_tokens=max_tokens)
+        response_text, meta = converse(
+            prompt, model_id=model_id, max_tokens=max_tokens, stage="recovery"
+        )
         parsed = parse_json_response(response_text)
         values = _flatten_values(parsed)
 
@@ -184,6 +186,8 @@ class TextractBedrockExtractor:
             strategy=self.strategy_name,
             raw={
                 "textract_lines": len(ocr_lines),
-                "bedrock_model": model_id,
+                # `meta["modelId"]`, not the requested `model_id`: a
+                # model-unavailable fallback may have switched models mid-call.
+                "bedrock_model": meta["modelId"],
             },
         )

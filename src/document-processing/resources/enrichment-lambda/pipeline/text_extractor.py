@@ -228,6 +228,7 @@ def _call_model(
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
         model_id=model_id or resolve_model("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
         cache_system=cache_prefix if cache else None,
+        stage="extractor",
     )
     usage: Dict[str, int] = {
         k: v for k, v in (meta.get("usage") or {}).items() if isinstance(v, int)
@@ -460,6 +461,7 @@ def _call_model_field_tree(
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
         model_id=model_id or resolve_model("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
         cache_system=cache_prefix if cache else None,
+        stage="extractor",
     )
     usage: Dict[str, int] = {k: v for k, v in (meta.get("usage") or {}).items() if isinstance(v, int)}
 

@@ -17,6 +17,8 @@ from botocore.exceptions import ClientError
 
 from document_catalog import TypeRegistryEntry
 
+from .model_fallback import get_fallback_models, get_max_fallback_retries
+
 logger = logging.getLogger(__name__)
 
 _FALLBACK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -317,6 +319,76 @@ def _invoke_with_retry(kwargs: Dict[str, Any], max_retries: int) -> Dict[str, An
     raise AssertionError("unreachable")  # loop always returns or raises
 
 
+# Bedrock error codes that mean the MODEL is the problem (down, not granted
+# to this account/region, doesn't exist, or broke mid-response) rather than
+# "retry me" or "your request needs adjusting". `_RETRYABLE` above already
+# retries the SAME model for its three transient codes; once that budget is
+# exhausted (or immediately, for the codes `_invoke_with_retry` never retries
+# at all) this set decides whether to switch to the next model in
+# `model_fallback.get_fallback_models()` instead of failing the whole call.
+_MODEL_UNAVAILABLE = _RETRYABLE | {
+    "ModelErrorException",
+    "ModelTimeoutException",
+    "ModelNotSupportedException",
+    "ResourceNotFoundException",
+    # NOT the cache-related AccessDeniedException — `_invoke_with_retry`
+    # already recognizes and swallows that one internally (strips the
+    # cachePoint, retries the same model; see `_is_cache_unsupported`). Any
+    # AccessDeniedException that reaches here is a genuine one — the model
+    # isn't enabled for this account/region — which is exactly "not
+    # available" in the sense this fallback exists for.
+    "AccessDeniedException",
+}
+
+
+def _invoke_with_fallback(
+    kwargs: Dict[str, Any],
+    max_retries: int,
+    stage: Optional[str] = None,
+    max_fallback_retries: Optional[int] = None,
+) -> Tuple[Dict[str, Any], str]:
+    """`_invoke_with_retry`, plus: when the model itself is the problem
+    (`_MODEL_UNAVAILABLE`), switch to the next model in
+    `model_fallback.get_fallback_models()` and retry the whole request there
+    — up to `max_fallback_retries` switches (default
+    `model_fallback.get_max_fallback_retries()`).
+
+    Returns `(response, model_id_actually_used)`: the two can differ from the
+    requested `kwargs["modelId"]` after a switch, so callers (`converse`,
+    `converse_structured`) report and cost the model that really served the
+    request, not just the one they asked for.
+
+    `stage`, when given, keeps `_USED_MODELS` in sync with a switch —
+    `resolve_model` already records the PRE-call intent there; this corrects
+    it after the fact if a fallback actually happened, so `used_models()` /
+    `tracking.modelIds` / cost audit reflect reality.
+    """
+    budget = get_max_fallback_retries() if max_fallback_retries is None else max_fallback_retries
+    tried = {kwargs.get("modelId")}
+    current = kwargs
+    while True:
+        try:
+            return _invoke_with_retry(current, max_retries), current["modelId"]
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code not in _MODEL_UNAVAILABLE or budget <= 0:
+                raise
+            next_model = next(
+                (m for m in get_fallback_models() if m not in tried), None
+            )
+            if next_model is None:
+                raise
+            logger.warning(
+                "bedrock: %s unavailable (%s); falling back to %s",
+                current.get("modelId"), code, next_model,
+            )
+            tried.add(next_model)
+            current = {**current, "modelId": next_model}
+            budget -= 1
+            if stage:
+                _USED_MODELS[stage] = next_model
+
+
 def converse(
     prompt: str,
     model_id: Optional[str] = None,
@@ -325,6 +397,8 @@ def converse(
     cache_system: Optional[str] = None,
     max_retries: int = 4,
     prefill: Optional[str] = None,
+    stage: Optional[str] = None,
+    max_fallback_retries: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Single-turn Converse call. Returns (text, meta) where meta carries
     usage tokens and stopReason for cost tracking.
@@ -338,6 +412,13 @@ def converse(
 
     `prefill` seeds an assistant turn (e.g. "{") so the model continues from
     there instead of choosing its own response shape.
+
+    `stage` ("segmenter"/"extractor"/"recovery") lets a model-unavailable
+    fallback (see `_invoke_with_fallback`) correct `_USED_MODELS` for that
+    stage when it switches models mid-call; omit it for ad hoc calls that
+    don't correspond to one of the pipeline's own stages. `max_fallback_retries`
+    overrides `model_fallback.get_max_fallback_retries()` for this call only
+    (mainly for tests/scripts); leave it unset to use the configured budget.
 
     For schemas too large for the model to follow reliably as prose
     instructions (many extraction fields), prefer `converse_structured()`
@@ -356,14 +437,16 @@ def converse(
     if blocks:
         kwargs["system"] = blocks
 
-    response = _invoke_with_retry(kwargs, max_retries)
+    response, used_model_id = _invoke_with_fallback(
+        kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries
+    )
 
     output = response.get("output", {}).get("message", {})
     text = "\n".join(b.get("text", "") for b in output.get("content", []) if "text" in b).strip()
     if prefill:
         text = prefill + text
     meta = {
-        "modelId": model_id,
+        "modelId": used_model_id,
         "stopReason": response.get("stopReason"),
         "usage": response.get("usage", {}),
     }
@@ -380,6 +463,8 @@ def converse_structured(
     system: Optional[str] = None,
     cache_system: Optional[str] = None,
     max_retries: int = 4,
+    stage: Optional[str] = None,
+    max_fallback_retries: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Single-turn Converse call constrained to a tool's JSON schema.
 
@@ -393,6 +478,8 @@ def converse_structured(
     validated against `tool_schema`, so it structurally cannot rename or
     restructure the fields. Returns (parsed_input, meta) — no JSON parsing
     needed, botocore already gives back a Python dict.
+
+    `stage` — see `converse()`'s docstring; same purpose here.
     """
     model_id = model_id or base_model_id()
     kwargs: Dict[str, Any] = {
@@ -416,7 +503,9 @@ def converse_structured(
     if blocks:
         kwargs["system"] = blocks
 
-    response = _invoke_with_retry(kwargs, max_retries)
+    response, used_model_id = _invoke_with_fallback(
+        kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries
+    )
 
     output = response.get("output", {}).get("message", {})
     tool_input: Dict[str, Any] = {}
@@ -425,7 +514,7 @@ def converse_structured(
             tool_input = block["toolUse"].get("input") or {}
             break
     meta = {
-        "modelId": model_id,
+        "modelId": used_model_id,
         "stopReason": response.get("stopReason"),
         "usage": response.get("usage", {}),
     }

@@ -26,7 +26,7 @@ sys.path.insert(0, str(LAMBDA_DIR))
 from botocore.exceptions import ClientError  # noqa: E402
 
 from document_catalog import TypeRegistryEntry  # noqa: E402
-from pipeline import bedrock  # noqa: E402
+from pipeline import bedrock, model_fallback  # noqa: E402
 
 
 def _type_entry(model_id=None, model_ids=None):
@@ -43,6 +43,8 @@ MODEL_ENV = (
     "BEDROCK_EXTRACTOR_MODEL_ID",
     "BEDROCK_SEGMENTER_MODEL_ID",
     "BEDROCK_RECOVERY_MODEL_ID",
+    "FALLBACK_MODELS_TABLE",
+    "MODEL_FALLBACK_MAX_RETRIES",
 )
 
 
@@ -52,9 +54,13 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     bedrock._NO_CACHE_SUPPORT.clear()
     bedrock._MODEL_MAX_TOKENS.clear()
+    bedrock.reset_used_models()
+    model_fallback.reload_fallback_models()
     yield
     bedrock._NO_CACHE_SUPPORT.clear()
     bedrock._MODEL_MAX_TOKENS.clear()
+    bedrock.reset_used_models()
+    model_fallback.reload_fallback_models()
 
 
 def _access_denied(message):
@@ -226,23 +232,38 @@ def test_structured_calls_degrade_too(fake):
     assert out == {}  # stub returns text, not toolUse — the point is it returned
 
 
-def test_a_real_access_denial_is_not_swallowed(fake):
-    """Same error code as the caching rejection — must still propagate."""
+def test_a_real_access_denial_is_not_treated_as_a_cache_issue(fake):
+    """Same error code as the caching rejection, but a different message —
+    must not be swallowed as a cachePoint retry on the SAME model. It's still
+    handled, just one layer up: see the model-fallback tests below."""
     denied = _access_denied("You don't have access to the model with the specified model ID.")
-    fake(fail_times=1, error=denied)
+    kwargs = {
+        "modelId": "forbidden-model",
+        "messages": [{"role": "user", "content": [{"text": "hola"}]}],
+        "inferenceConfig": {"maxTokens": 8192, "temperature": 0},
+        "system": [{"text": "ctx"}, {"cachePoint": {"type": "default"}}],
+    }
+    fake(fail_times=99, error=denied)
 
     with pytest.raises(ClientError):
-        bedrock.converse("hola", model_id="forbidden-model", cache_system="ctx")
+        bedrock._invoke_with_retry(kwargs, max_retries=4)
 
     assert "forbidden-model" not in bedrock._NO_CACHE_SUPPORT
 
 
 def test_no_retry_when_the_request_carried_no_cache_point(fake):
-    """Nothing to strip means nothing to retry — don't mask the error."""
+    """Nothing to strip means nothing to retry (same-model) — don't mask the
+    error at that layer. Uses `_invoke_with_retry` directly to isolate this
+    from the model-fallback layer above it (tested separately below)."""
     client = fake(fail_times=1, error=CACHE_UNSUPPORTED)
+    kwargs = {
+        "modelId": "some-model",
+        "messages": [{"role": "user", "content": [{"text": "hola"}]}],
+        "inferenceConfig": {"maxTokens": 8192, "temperature": 0},
+    }
 
     with pytest.raises(ClientError):
-        bedrock.converse("hola", model_id="some-model")  # no cache_system
+        bedrock._invoke_with_retry(kwargs, max_retries=4)  # no cache_system
 
     assert len(client.calls) == 1
 
@@ -329,3 +350,130 @@ def test_caching_is_preserved_for_models_that_support_it(fake):
     assert len(client.calls) == 1
     assert any("cachePoint" in b for b in client.calls[0]["system"])
     assert not bedrock._NO_CACHE_SUPPORT
+
+
+# --- model-unavailable fallback ----------------------------------------------
+#
+# `model_fallback.DEFAULT_FALLBACK_MODELS` (no FALLBACK_MODELS_TABLE set in
+# these tests) is ["minimax.minimax-m2.5", "moonshotai.kimi-k2.5",
+# "zai.glm-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"], and the
+# default budget is 4 switches — one per entry.
+
+
+def test_model_unavailable_falls_back_to_the_next_configured_model(fake):
+    """A genuine AccessDeniedException (model not granted — NOT the caching
+    heuristic, which `_invoke_with_retry` already handles on the same model)
+    now means 'try the next model' instead of failing the whole call."""
+    denied = _access_denied("You don't have access to the model with the specified model ID.")
+    client = fake(fail_times=1, error=denied)
+
+    text, meta = bedrock.converse("hola", model_id="forbidden-model")
+
+    assert text == "OK"
+    assert meta["modelId"] == "minimax.minimax-m2.5"  # first configured fallback
+    assert len(client.calls) == 2
+    assert client.calls[0]["modelId"] == "forbidden-model"
+    assert client.calls[1]["modelId"] == "minimax.minimax-m2.5"
+
+
+def test_fallback_keeps_switching_past_the_first_candidate(fake):
+    """Two unavailable models in a row: falls all the way to the third."""
+    denied = _access_denied("no access")
+    client = fake(fail_times=2, error=denied)
+
+    text, meta = bedrock.converse("hola", model_id="forbidden-model")
+
+    assert text == "OK"
+    assert meta["modelId"] == "moonshotai.kimi-k2.5"
+    assert [c["modelId"] for c in client.calls] == [
+        "forbidden-model",
+        "minimax.minimax-m2.5",
+        "moonshotai.kimi-k2.5",
+    ]
+
+
+def test_fallback_corrects_used_models_for_the_given_stage(fake):
+    """`stage` keeps `_USED_MODELS` (and therefore `used_models()` /
+    tracking.modelIds / cost audit) in sync with a mid-call switch — without
+    it, cost tracking would blame the originally-resolved model instead of
+    the one that actually served the request."""
+    bedrock.resolve_model("extractor")  # simulates the pre-call resolution
+    denied = _access_denied("no access")
+    fake(fail_times=1, error=denied)
+
+    bedrock.converse("hola", model_id="forbidden-model", stage="extractor")
+
+    assert bedrock.used_models()["extractor"] == "minimax.minimax-m2.5"
+
+
+def test_fallback_exhausts_the_configured_list_then_raises(fake):
+    """Every candidate unavailable, including the last resort — must still
+    surface as a real error instead of silently returning nothing."""
+    denied = _access_denied("no access")
+    client = fake(fail_times=99, error=denied)  # never recovers
+
+    with pytest.raises(ClientError):
+        bedrock.converse("hola", model_id="forbidden-model")
+
+    # original + all 4 configured fallbacks, none repeated
+    assert len(client.calls) == 5
+    assert len({c["modelId"] for c in client.calls}) == 5
+
+
+def test_zero_fallback_budget_propagates_immediately(fake):
+    """`max_fallback_retries=0` disables the switch entirely — the original
+    error propagates on the first failure, same as before this feature
+    existed."""
+    denied = _access_denied("no access")
+    client = fake(fail_times=1, error=denied)
+
+    with pytest.raises(ClientError):
+        bedrock.converse("hola", model_id="forbidden-model", max_fallback_retries=0)
+
+    assert len(client.calls) == 1
+
+
+def test_env_configured_max_fallback_retries_limits_the_switches(fake, monkeypatch):
+    monkeypatch.setenv("MODEL_FALLBACK_MAX_RETRIES", "1")
+    denied = _access_denied("no access")
+    client = fake(fail_times=99, error=denied)
+
+    with pytest.raises(ClientError):
+        bedrock.converse("hola", model_id="forbidden-model")
+
+    # original + exactly 1 switch
+    assert len(client.calls) == 2
+    assert client.calls[1]["modelId"] == "minimax.minimax-m2.5"
+
+
+def test_a_retryable_error_still_exhausts_same_model_retries_before_switching(fake, monkeypatch):
+    """`ThrottlingException` is in both `_RETRYABLE` (same-model backoff) and
+    `_MODEL_UNAVAILABLE` (cross-model fallback) — the same-model retries run
+    first; only once THOSE are exhausted does a switch happen."""
+    monkeypatch.setattr(bedrock.time, "sleep", lambda _seconds: None)
+    throttled = ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "Converse")
+    client = fake(fail_times=2, error=throttled)
+
+    text, meta = bedrock.converse("hola", model_id="slow-model", max_retries=1)
+
+    # max_retries=1 same-model retry isn't enough (2 failures needed to clear it)
+    # so it must have switched models rather than exhausting more same-model
+    # attempts.
+    assert text == "OK"
+    assert meta["modelId"] == "minimax.minimax-m2.5"
+    assert [c["modelId"] for c in client.calls] == ["slow-model", "slow-model", "minimax.minimax-m2.5"]
+
+
+def test_a_validation_error_is_not_treated_as_model_unavailable(fake):
+    """A generic `ValidationException` unrelated to max-tokens (the only
+    message `_invoke_with_retry` special-cases) is a caller/request problem,
+    not a provider outage — must propagate, not trigger a model switch."""
+    bad_request = ClientError(
+        {"Error": {"Code": "ValidationException", "Message": "malformed input"}}, "Converse"
+    )
+    client = fake(fail_times=99, error=bad_request)
+
+    with pytest.raises(ClientError):
+        bedrock.converse("hola", model_id="some-model")
+
+    assert len(client.calls) == 1

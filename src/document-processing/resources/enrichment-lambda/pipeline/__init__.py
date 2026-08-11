@@ -7,4 +7,6 @@ Modules:
 - expediente: orchestrator (pages -> segments -> extraction -> validation)
 - normalize: deterministic normalizers (amounts, dates, pedimento numbers)
 - bedrock: shared Bedrock Converse helper with JSON parsing and retries
+- model_fallback: ordered fallback-model list + switch budget for bedrock's
+  model-unavailable fallback
 """
