@@ -15,11 +15,12 @@ run a DynamoDB Query against the `DocumentTypeIndex` GSI:
     IndexedAt               (S)  when these columns were written
     Tracking                (M)  {CreatedAt, UpdatedAt?, ProcessingStartedAt?,
                                  ProcessingCompletedAt?, ProcessingSeconds?,
-                                 ProcessingTime?, Schema?, AppOrigin?, ModelIds?} —
-                                 every field the envelope's `tracking.*` has
-                                 (see _TRACKING_FIELD_MAP), promoted so it's
-                                 on the item itself (Scan/console), not only
-                                 inside the `EnrichmentResult` JSON blob
+                                 ProcessingTime?, Schema?, AppOrigin?, ModelIds?,
+                                 ModelFallbacks?} — every field the envelope's
+                                 `tracking.*` has (see _TRACKING_FIELD_MAP),
+                                 promoted so it's on the item itself
+                                 (Scan/console), not only inside the
+                                 `EnrichmentResult` JSON blob
 
 `DocumentType` is the classification the enrichment Lambda settled on (the
 segmenter's verdict for expedientes), NOT the upstream vision guess — which is
@@ -100,8 +101,11 @@ def _decimalize(value: Any) -> Any:
 
 # camelCase (envelope's `tracking`) -> PascalCase (this module's DynamoDB
 # column naming convention) — every field build_tracking() sets (see
-# pipeline/result_common.py) plus modelIds/appOrigin, so this column never
-# lags behind what the nested `expediente.tracking` already carries.
+# pipeline/result_common.py) plus modelIds/appOrigin/modelFallbacks, so this
+# column never lags behind what the nested `expediente.tracking` already
+# carries. modelFallbacks (pipeline/bedrock.py::fallback_events) is present
+# only for stages that actually switched models this run — expected vs.
+# actual model and retry count, see catalogs/README.md's fallback section.
 _TRACKING_FIELD_MAP = {
     "createdAt": "CreatedAt",
     "updatedAt": "UpdatedAt",
@@ -112,6 +116,7 @@ _TRACKING_FIELD_MAP = {
     "schema": "Schema",
     "appOrigin": "AppOrigin",
     "modelIds": "ModelIds",
+    "modelFallbacks": "ModelFallbacks",
 }
 
 

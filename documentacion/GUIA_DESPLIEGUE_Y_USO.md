@@ -318,7 +318,24 @@ Con `forceReloadCatalog: true` (default en `bin/app.ts`) los cambios en DynamoDB
 
 ### 5.6 Fallback de modelo cuando Bedrock falla por el proveedor
 
-Cuando una llamada Bedrock falla porque el modelo pedido no está disponible (no habilitado en la cuenta/región, no existe, o error/timeout del lado del modelo — no un simple throttling, que ya se reintenta solo sobre el mismo modelo), el pipeline reintenta la MISMA solicitud sobre el siguiente modelo de una lista ordenada, en vez de fallar la extracción completa. Implementado en `pipeline/bedrock.py::_invoke_with_fallback` (código: `pipeline/bedrock.py::_MODEL_UNAVAILABLE`) y `pipeline/model_fallback.py`.
+Cuando una llamada Bedrock falla porque el modelo pedido no está disponible o falla por algo del lado del proveedor, el pipeline reintenta la MISMA solicitud sobre el siguiente modelo de una lista ordenada, en vez de fallar la extracción completa. Implementado en `pipeline/bedrock.py::_invoke_with_fallback` y `pipeline/model_fallback.py`.
+
+**Qué cuenta como "no disponible" (`pipeline/bedrock.py::_MODEL_UNAVAILABLE`)** — solo estos códigos de error de Bedrock disparan un cambio de modelo:
+
+| Código | Por qué cuenta | Reintenta antes el MISMO modelo? |
+| --- | --- | --- |
+| `ThrottlingException` | Límite de tasa en este modelo | Sí — backoff exponencial primero |
+| `ModelNotReadyException` | El modelo está calentando (custom/provisioned) | Sí |
+| `ServiceUnavailableException` | Bedrock no responde | Sí |
+| `InternalServerException` | Error 500 genérico de Bedrock, normalmente transitorio | Sí |
+| `ModelErrorException` | El modelo falló procesando esta solicitud puntual | No — cambia de inmediato |
+| `ModelTimeoutException` | El modelo no respondió a tiempo | No |
+| `ModelNotSupportedException` | El modelo no soporta lo pedido en esta región | No |
+| `ResourceNotFoundException` | El model id / ARN de inference profile no existe | No |
+| `ServiceQuotaExceededException` | Cuota de la cuenta agotada para ESE modelo | No — la cuota no se recupera en segundos |
+| `AccessDeniedException` **genuino** | Modelo no habilitado en esta cuenta/región | No |
+
+Los códigos con reintento "Sí" primero agotan sus reintentos sobre el MISMO modelo (backoff normal) antes de considerarse indisponibles y pasar a la tabla de fallback. **Deliberadamente excluido:** `ValidationException` — es un problema del REQUEST (schema, tool-use no soportado, etc.), no del proveedor; cambiar de modelo no lo arregla y podría enmascarar un bug real, así que siempre propaga tal cual (la única excepción es el límite de `maxTokens`, que ya se detecta y ajusta aparte antes de llegar aquí). El `AccessDeniedException` de un `cachePoint` no soportado tampoco cuenta — ese caso ya se resuelve solo, reintentando el mismo modelo sin caching.
 
 **Orden de prioridad de qué modelo se usa** (de mayor a menor, ver `pipeline/bedrock.py::_model_candidates` — la única fuente de verdad):
 
@@ -348,6 +365,33 @@ Si la tabla no existe, está vacía, o falla la lectura, el pipeline usa este or
 ```
 
 `MODEL_FALLBACK_MAX_RETRIES` (default `4`) limita cuántas veces puede cambiar de modelo una sola llamada antes de rendirse y propagar el error — independiente de los reintentos sobre el mismo modelo (throttling), que se agotan primero.
+
+**Log de cada cambio** (CloudWatch, logger `pipeline.bedrock`), un `WARNING` por switch:
+
+```
+bedrock: stage=extractor us.anthropic.claude-haiku-4-5-20251001-v1:0 unavailable
+(AccessDeniedException); switching to minimax.minimax-m2.5 (switch 1/4,
+originally requested us.anthropic.claude-haiku-4-5-20251001-v1:0)
+```
+
+Si se agotan los reintentos (o toda la lista) sin éxito, un `ERROR` final antes de propagar la excepción original: `bedrock: stage=<fase> giving up after N fallback switch(es) starting from <modelo original> (last error on <último modelo>: <código>)`. Una fase que nunca tuvo que cambiar de modelo no genera ningún log de esta sección — solo lo inusual queda registrado.
+
+**En los datos finales:** `tracking.modelIds` siempre refleja el modelo que REALMENTE corrió (no el configurado) — eso ya pasa aunque hubo un cambio. Además, solo para las fases donde hubo un cambio, `tracking.modelFallbacks` (promovido también a la columna DynamoDB `Tracking.ModelFallbacks`, ver `documentacion/API_USO.md`) reporta el detalle completo:
+
+```jsonc
+"modelFallbacks": {
+  "extractor": {
+    "expectedModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",  // el que tocaba
+    "actualModel": "minimax.minimax-m2.5",                           // el que realmente corrió
+    "retries": 1,                                                    // cuántas veces cambió
+    "attempts": [                                                    // un elemento por intento fallido, en orden
+      { "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "error": "AccessDeniedException" }
+    ]
+  }
+}
+```
+
+Una fase ausente de `modelFallbacks` corrió en su modelo esperado sin ningún cambio — igual que `modelIds` ya reporta, `modelFallbacks` solo aparece cuando hay algo que reportar (nunca un `{}` vacío por default).
 
 **Antes de reordenar o agregar un modelo:** verifica que soporte lo que la fase necesita — Converse, tool use forzado (el extractor lo requiere para catálogos de 100+ campos) y, si aplica, caching de prompt (ver notas de modelos en `AGENTS.md`). Un modelo incompatible falla distinto (extracción vacía o mal formada) en vez de con un error reintentable, así que este mecanismo no lo salta automáticamente.
 

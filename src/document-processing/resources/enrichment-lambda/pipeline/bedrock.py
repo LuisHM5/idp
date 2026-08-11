@@ -63,6 +63,16 @@ _USED_MODELS: Dict[str, str] = {}
 _MODEL_OVERRIDE: Optional[str] = None
 
 
+# Stage -> fallback summary, populated by `_invoke_with_fallback` ONLY when
+# it actually switched models for that stage AND the switched-to model went
+# on to succeed (a stage that never had to switch — the common case — is
+# simply absent here, same "only report what happened" rule `_USED_MODELS`
+# already follows). Surfaced in the result envelope as `tracking.modelFallbacks`
+# — see `pipeline/result_common.py::build_tracking` and `handler.py`. Cleared
+# per invocation alongside `_USED_MODELS` (Lambda containers are reused).
+_FALLBACK_EVENTS: Dict[str, Dict[str, Any]] = {}
+
+
 def set_model_override(model_id: Optional[str]) -> None:
     """Force every stage of this invocation onto `model_id`."""
     global _MODEL_OVERRIDE
@@ -73,10 +83,25 @@ def reset_used_models() -> None:
     global _MODEL_OVERRIDE
     _MODEL_OVERRIDE = None
     _USED_MODELS.clear()
+    _FALLBACK_EVENTS.clear()
 
 
 def used_models() -> Dict[str, str]:
     return dict(_USED_MODELS)
+
+
+def fallback_events() -> Dict[str, Dict[str, Any]]:
+    """Stage -> `{"expectedModel", "actualModel", "retries", "attempts"}` for
+    every stage where a model-unavailable fallback (`_invoke_with_fallback`)
+    actually switched models this invocation:
+
+      - `expectedModel` — what `resolve_model()` picked before the call ran.
+      - `actualModel`   — what really served the request (== `used_models()[stage]`).
+      - `retries`       — how many switches it took (`len(attempts)`).
+      - `attempts`      — `[{"model", "error"}, ...]`, one entry per model that
+        failed along the way, in the order they were tried.
+    """
+    return {stage: dict(event) for stage, event in _FALLBACK_EVENTS.items()}
 
 
 def _model_candidates(
@@ -148,7 +173,15 @@ def explain_model_resolution(
     return {"stage": stage, "resolved": resolved, "candidates": candidates}
 
 
-_RETRYABLE = {"ThrottlingException", "ModelNotReadyException", "ServiceUnavailableException"}
+_RETRYABLE = {
+    "ThrottlingException",
+    "ModelNotReadyException",
+    "ServiceUnavailableException",
+    # Bedrock's generic 500 — AWS's own general guidance treats it as
+    # transient, so it gets the same same-model backoff as the three above
+    # before `_MODEL_UNAVAILABLE` below considers switching models.
+    "InternalServerException",
+}
 
 # Models observed to reject `cachePoint`. Populated at runtime by the first
 # rejection — see `_invoke_with_retry`.
@@ -331,6 +364,10 @@ _MODEL_UNAVAILABLE = _RETRYABLE | {
     "ModelTimeoutException",
     "ModelNotSupportedException",
     "ResourceNotFoundException",
+    # The model (or the account) is over its own quota for this specific
+    # model — retrying the SAME model won't help (quotas don't refill in
+    # seconds), but a different model likely has separate headroom.
+    "ServiceQuotaExceededException",
     # NOT the cache-related AccessDeniedException — `_invoke_with_retry`
     # already recognizes and swallows that one internally (strips the
     # cachePoint, retries the same model; see `_is_cache_unsupported`). Any
@@ -339,6 +376,12 @@ _MODEL_UNAVAILABLE = _RETRYABLE | {
     # available" in the sense this fallback exists for.
     "AccessDeniedException",
 }
+# Deliberately NOT here: ValidationException (a malformed/unsupported
+# REQUEST — e.g. bad schema, forced tool-use the model doesn't support — is
+# a caller-side problem a different model won't fix, and conflating it with
+# a provider outage would mask real bugs) — the max-tokens-ceiling case is
+# already special-cased above in `_invoke_with_retry` before this is ever
+# consulted.
 
 
 def _invoke_with_fallback(
@@ -348,9 +391,10 @@ def _invoke_with_fallback(
     max_fallback_retries: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """`_invoke_with_retry`, plus: when the model itself is the problem
-    (`_MODEL_UNAVAILABLE`), switch to the next model in
-    `model_fallback.get_fallback_models()` and retry the whole request there
-    — up to `max_fallback_retries` switches (default
+    (`_MODEL_UNAVAILABLE` — never a request-shape issue like
+    `ValidationException`, see the note above that set), switch to the next
+    model in `model_fallback.get_fallback_models()` and retry the whole
+    request there — up to `max_fallback_retries` switches (default
     `model_fallback.get_max_fallback_retries()`).
 
     Returns `(response, model_id_actually_used)`: the two can differ from the
@@ -358,29 +402,53 @@ def _invoke_with_fallback(
     `converse_structured`) report and cost the model that really served the
     request, not just the one they asked for.
 
-    `stage`, when given, keeps `_USED_MODELS` in sync with a switch —
-    `resolve_model` already records the PRE-call intent there; this corrects
-    it after the fact if a fallback actually happened, so `used_models()` /
-    `tracking.modelIds` / cost audit reflect reality.
+    `stage`, when given, keeps two registries in sync with what actually
+    happened (both cleared per invocation by `reset_used_models()`):
+      - `_USED_MODELS` — `resolve_model` already records the PRE-call intent
+        there; this corrects it after the fact if a switch happened, so
+        `used_models()` / `tracking.modelIds` / cost audit reflect reality.
+      - `_FALLBACK_EVENTS` — set only if a switch actually happened AND the
+        call went on to succeed, with the full expected-vs-actual model and
+        retry count for `tracking.modelFallbacks` (see `fallback_events()`).
     """
+    requested_model = kwargs.get("modelId")
     budget = get_max_fallback_retries() if max_fallback_retries is None else max_fallback_retries
-    tried = {kwargs.get("modelId")}
+    total_budget = budget
+    tried = {requested_model}
+    attempts: List[Dict[str, str]] = []
     current = kwargs
     while True:
         try:
-            return _invoke_with_retry(current, max_retries), current["modelId"]
+            response = _invoke_with_retry(current, max_retries)
+            if stage and attempts:
+                _FALLBACK_EVENTS[stage] = {
+                    "expectedModel": requested_model,
+                    "actualModel": current["modelId"],
+                    "retries": len(attempts),
+                    "attempts": list(attempts),
+                }
+            return response, current["modelId"]
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
-            if code not in _MODEL_UNAVAILABLE or budget <= 0:
-                raise
-            next_model = next(
-                (m for m in get_fallback_models() if m not in tried), None
+            next_model = (
+                next((m for m in get_fallback_models() if m not in tried), None)
+                if code in _MODEL_UNAVAILABLE and budget > 0
+                else None
             )
             if next_model is None:
+                if attempts:
+                    logger.error(
+                        "bedrock: stage=%s giving up after %d fallback switch(es) starting "
+                        "from %s (last error on %s: %s)",
+                        stage or "-", len(attempts), requested_model, current.get("modelId"), code,
+                    )
                 raise
+            attempts.append({"model": current.get("modelId"), "error": code})
             logger.warning(
-                "bedrock: %s unavailable (%s); falling back to %s",
-                current.get("modelId"), code, next_model,
+                "bedrock: stage=%s %s unavailable (%s); switching to %s "
+                "(switch %d/%d, originally requested %s)",
+                stage or "-", current.get("modelId"), code, next_model,
+                len(attempts), total_budget, requested_model,
             )
             tried.add(next_model)
             current = {**current, "modelId": next_model}

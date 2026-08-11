@@ -44,7 +44,7 @@ from .normalize import (
     pedimento_consecutivo,
 )
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
-from .bedrock import used_models
+from .bedrock import fallback_events, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import Segment, segment_pages
@@ -356,6 +356,9 @@ def process_pdf(
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
         "modelIds": used_models(),
+        # Only phases that actually switched models mid-call — see
+        # pipeline/bedrock.py::fallback_events.
+        "modelFallbacks": fallback_events(),
         "usage": usage_summary,
         "sourceFormat": source_format,
         "pages": pages_summary(pages),

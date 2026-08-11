@@ -42,7 +42,7 @@ from document_catalog import (
 from cost_audit import write_cost_record
 from extractors import get_extractor
 from indexing import write_index_attributes
-from pipeline.bedrock import reset_used_models, set_model_override, used_models
+from pipeline.bedrock import fallback_events, reset_used_models, set_model_override, used_models
 from pipeline.model_fallback import reload_fallback_models
 
 logger = logging.getLogger(__name__)
@@ -98,6 +98,7 @@ def build_canonical_result(
     status: str,
     model_ids: Optional[Dict[str, str]] = None,
     app_origin: Optional[str] = None,
+    model_fallbacks: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Assemble the Canonical_Result output JSON."""
     total = len(checks)
@@ -112,17 +113,19 @@ def build_canonical_result(
         summary = f"{failed} of {total} checks failed"
 
     # Provenance, consolidated under one top-level object (createdAt always
-    # present; modelIds/appOrigin only when there's something to report) —
-    # mirrors the shape _run_expediente builds from pipeline.result_common's
-    # build_tracking(), so both flows expose the same `tracking.*` fields
-    # even though the standard flow doesn't compute the richer schema/
-    # processing-window info the expediente pipeline does.
+    # present; modelIds/appOrigin/modelFallbacks only when there's something
+    # to report) — mirrors the shape _run_expediente builds from
+    # pipeline.result_common's build_tracking(), so both flows expose the
+    # same `tracking.*` fields even though the standard flow doesn't compute
+    # the richer schema/processing-window info the expediente pipeline does.
     processed_at = datetime.now(timezone.utc).isoformat()
     tracking: Dict[str, Any] = {"createdAt": processed_at}
     if model_ids:
         tracking["modelIds"] = model_ids
     if app_origin:
         tracking["appOrigin"] = app_origin
+    if model_fallbacks:
+        tracking["modelFallbacks"] = model_fallbacks
 
     return {
         "documentId": document_id,
@@ -542,12 +545,13 @@ def _run_expediente(
     # (createdAt/updatedAt/processingStartedAt/processingCompletedAt/
     # processingSeconds/processingMs/schema, set by every pipeline branch:
     # expediente.py, xml_document.py, tabular_document.py) and adds
-    # modelIds/appOrigin on top, instead of those living as separate
-    # loose top-level envelope keys.
+    # modelIds/appOrigin/modelFallbacks on top, instead of those living as
+    # separate loose top-level envelope keys.
     tracking = {
         **(result.get("tracking") or {}),
         "modelIds": _model_ids(event),
         **({"appOrigin": event.get("appOrigin")} if event.get("appOrigin") else {}),
+        **({"modelFallbacks": fallback_events()} if fallback_events() else {}),
     }
 
     return {
@@ -826,6 +830,7 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
             document_id, classification, entity_map, checks, status,
             model_ids=_model_ids(event),
             app_origin=event.get("appOrigin"),
+            model_fallbacks=fallback_events(),
         )
         if reextraction_meta:
             result["validation"]["reextraction"] = reextraction_meta

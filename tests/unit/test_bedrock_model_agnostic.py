@@ -477,3 +477,85 @@ def test_a_validation_error_is_not_treated_as_model_unavailable(fake):
         bedrock.converse("hola", model_id="some-model")
 
     assert len(client.calls) == 1
+
+
+def test_internal_server_error_exhausts_same_model_retries_then_switches(fake, monkeypatch):
+    """`InternalServerException` is AWS's generic transient 500 — retry the
+    same model a couple of times (like throttling) before concluding the
+    model itself is the problem."""
+    monkeypatch.setattr(bedrock.time, "sleep", lambda _seconds: None)
+    broken = ClientError(
+        {"Error": {"Code": "InternalServerException", "Message": "internal error"}}, "Converse"
+    )
+    client = fake(fail_times=2, error=broken)
+
+    text, meta = bedrock.converse("hola", model_id="flaky-model", max_retries=1)
+
+    assert text == "OK"
+    assert meta["modelId"] == "minimax.minimax-m2.5"
+    assert [c["modelId"] for c in client.calls] == ["flaky-model", "flaky-model", "minimax.minimax-m2.5"]
+
+
+def test_quota_exceeded_switches_immediately_without_same_model_retries(fake):
+    """A quota error on THIS model won't clear itself within a backoff
+    window — no point burning same-model retries before switching."""
+    quota = ClientError(
+        {"Error": {"Code": "ServiceQuotaExceededException", "Message": "quota exceeded"}}, "Converse"
+    )
+    client = fake(fail_times=1, error=quota)
+
+    text, meta = bedrock.converse("hola", model_id="over-quota-model")
+
+    assert text == "OK"
+    assert meta["modelId"] == "minimax.minimax-m2.5"
+    assert [c["modelId"] for c in client.calls] == ["over-quota-model", "minimax.minimax-m2.5"]
+
+
+# --- fallback logging ---------------------------------------------------------
+
+
+def test_switch_is_logged_with_stage_and_switch_count(fake, caplog):
+    denied = _access_denied("no access")
+    fake(fail_times=1, error=denied)
+
+    with caplog.at_level("WARNING", logger="pipeline.bedrock"):
+        bedrock.converse("hola", model_id="forbidden-model", stage="extractor")
+
+    [record] = [r for r in caplog.records if "switching to" in r.getMessage()]
+    message = record.getMessage()
+    assert "stage=extractor" in message
+    assert "forbidden-model" in message
+    assert "AccessDeniedException" in message
+    assert "minimax.minimax-m2.5" in message
+    assert "switch 1/4" in message  # default budget is 4
+
+
+def test_exhaustion_is_logged_at_error_level_after_at_least_one_switch(fake, caplog):
+    denied = _access_denied("no access")
+    fake(fail_times=99, error=denied)
+
+    with caplog.at_level("WARNING", logger="pipeline.bedrock"):
+        with pytest.raises(ClientError):
+            bedrock.converse("hola", model_id="forbidden-model", stage="recovery")
+
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    message = error_records[0].getMessage()
+    assert "stage=recovery" in message
+    assert "giving up" in message
+    assert "forbidden-model" in message
+
+
+def test_no_exhaustion_log_when_the_very_first_call_is_not_fallback_worthy(fake, caplog):
+    """A plain single-model failure (nothing fallback-related ever happened)
+    must not be logged as if a fallback had been attempted."""
+    bad_request = ClientError(
+        {"Error": {"Code": "ValidationException", "Message": "malformed input"}}, "Converse"
+    )
+    fake(fail_times=99, error=bad_request)
+
+    with caplog.at_level("WARNING", logger="pipeline.bedrock"):
+        with pytest.raises(ClientError):
+            bedrock.converse("hola", model_id="some-model", stage="extractor")
+
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]

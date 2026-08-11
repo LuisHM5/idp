@@ -13,7 +13,7 @@ from document_catalog import get_schema_info, get_type_entry
 from validators import engine
 from validators.engine import RuleCheck
 
-from .bedrock import base_model_id, used_models
+from .bedrock import base_model_id, fallback_events, used_models
 
 # Bump when extraction/validation logic changes in a way consumers should
 # notice (recorded in every result's tracking block).
@@ -128,6 +128,7 @@ def error_result(
         # Model per phase that actually ran. The handler merges in the
         # classification/processing phases, which run in a different Lambda.
         "modelIds": used_models(),
+        "modelFallbacks": fallback_events(),
         **({"sourceFormat": source_format} if source_format else {}),
         "status": engine.DOC_ERROR,
         "reviewRequired": True,
