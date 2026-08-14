@@ -2,7 +2,7 @@
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
-El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay siete tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `FACTURA_FLETE_EXTRANJERO`, para facturas no-CFDI de transportistas extranjeros; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
+El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay ocho tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento PDF; `PEDIMENTO_ADUANAL_XML`, para extraer exhaustivamente el CFDI XML relacionado sin inventar datos aduanales que la fuente no contiene; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `FACTURA_FLETE_EXTRANJERO`, para facturas no-CFDI de transportistas extranjeros; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
 
 ## Documentación
 
@@ -10,6 +10,7 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado princi
 |---|---|
 | [`documentacion/COMO_FUNCIONA.md`](documentacion/COMO_FUNCIONA.md) | 🧭 Explicación general con diagramas — el mejor punto de partida. |
 | [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Diagrama de arquitectura AWS + diagrama de flujo de ejecución, y qué modelo de Bedrock se usa. |
+| [`documentacion/RESUMEN_EJECUTIVO.md`](documentacion/RESUMEN_EJECUTIVO.md) | 👔 Versión para directivos: el proceso explicado en una imagen, sin nombres de servicios ni tecnicismos. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
 | [`documentacion/API_USO.md`](documentacion/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
 | [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
@@ -131,6 +132,7 @@ documents-validator/
 │   ├── _shared.json                        # field_sets, reglas cross-documento, campos comunes
 │   ├── _TEMPLATE.json                      # plantilla DSL field-centric para tipos nuevos
 │   ├── PEDIMENTO_ADUANAL.json              # tipo activo: expediente aduanal
+│   ├── PEDIMENTO_ADUANAL_XML.json          # tipo activo: CFDI XML relacionado, exhaustivo
 │   ├── FACTURA_HONORARIOS.json              # tipo activo: CFDI de honorarios aduanales
 │   ├── FACTURA_HONORARIOS_XML.json         # tipo activo: CFDI XML determinístico
 │   ├── FACTURA_FLETE_EXTRANJERO.json        # tipo activo: factura de flete no-CFDI

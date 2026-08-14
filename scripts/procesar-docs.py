@@ -42,7 +42,10 @@ historial, y los archivos de ESE intento viven juntos en la misma carpeta:
       - _log.txt   → copia exacta de la consola de ESE documento (sin
         colores), para no perder el detalle si se cierra la terminal
       - _resumen.md → costo real, $/página, duración, campos válidos,
-        confianza promedio y tabla campo-por-campo de ESE documento
+        confianza promedio, tabla campo-por-campo, y una tabla "Costos por
+        servicio" (Bedrock segmentación/extracción, Textract OCR) con tokens
+        entrada/salida/cache y las tarifas $/millón de tokens aplicadas en
+        ESA corrida — un servicio que no se llamó no aparece en la tabla
       - _prompt_input.json / _prompt_output.json → cada llamada a Bedrock de
         ESE documento (segmentación, extracción por chunk, recovery), en el
         mismo orden en ambos archivos: _prompt_input.json trae el prompt/
@@ -260,6 +263,42 @@ def field_quality(doc: dict) -> list[tuple[str, bool | None, float | None]]:
     return out
 
 
+def _service_rows(seg_cost: dict, ext_cost: dict, ocr_cost: dict) -> list[dict]:
+    """Una fila por servicio AWS que ESTA corrida realmente facturó — omite
+    un servicio que nunca se llamó (costo y tokens en cero, ej. Bedrock en un
+    documento .xml/.xlsx/.csv, o Textract en un PDF 100% texto nativo) para
+    no ensuciar el desglose con líneas de $0.0000."""
+    rows = []
+    for label, c in (("Bedrock segmentación", seg_cost), ("Bedrock extracción", ext_cost)):
+        if c["costUsd"] or c["inputTokens"] or c["outputTokens"]:
+            rows.append({
+                "label": label,
+                "detail": c["modelId"] or "—",
+                "in_tok": c["inputTokens"],
+                "out_tok": c["outputTokens"],
+                "cache_read": c["cacheReadTokens"],
+                "cache_write": c["cacheWriteTokens"],
+                "in_rate": c["inputRatePerMTokUsd"],
+                "out_rate": c["outputRatePerMTokUsd"],
+                "cost": c["costUsd"],
+                # True cuando `modelId` no tiene tarifa verificada en
+                # `pipeline/pricing.py::_BEDROCK_PRICING` y bedrock_cost()
+                # tuvo que usar la de Haiku 4.5 como aproximación — el $ de
+                # esta fila NO es la tarifa real del modelo que corrió.
+                "approx": bool(c.get("approximatePricing")),
+            })
+    if ocr_cost["pages"]:
+        rows.append({
+            "label": "Textract OCR",
+            "detail": f"{ocr_cost['pages']} pág × ${ocr_cost['ratePerPageUsd']:.4f}",
+            "in_tok": None, "out_tok": None, "cache_read": None, "cache_write": None,
+            "in_rate": None, "out_rate": None,
+            "cost": ocr_cost["costUsd"],
+            "approx": False,
+        })
+    return rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -359,7 +398,7 @@ def main() -> int:
 
         from pipeline.bedrock import prompt_log, reset_used_models
         from pipeline.expediente import process_pdf
-        from pipeline.pricing import bedrock_cost, textract_cost
+        from pipeline.pricing import PRICING_VERSION, bedrock_cost, textract_cost
         from pipeline.tabular_document import process_tabular
         from pipeline.xml_document import process_xml
 
@@ -471,9 +510,21 @@ def main() -> int:
                 doc_cost = round(seg_cost["costUsd"] + ext_cost["costUsd"] + ocr_cost["costUsd"], 6)
                 total_pages = pages.get("totalPages") or 0
                 cost_per_page = (doc_cost / total_pages) if total_pages else None
+                any_approx = bool(seg_cost.get("approximatePricing") or ext_cost.get("approximatePricing"))
 
                 cost_note = f"${doc_cost:.4f}" + (f" (${cost_per_page:.4f}/pág)" if cost_per_page is not None else "")
+                if any_approx:
+                    cost_note += f"  {YELLOW}⚠ tarifa aprox.{RESET}"
                 print(f"  Estado: {color}{status}{RESET}  |  {source_note}  |  {duration}  |  {cost_note}")
+
+                service_rows = _service_rows(seg_cost, ext_cost, ocr_cost)
+                if service_rows:
+                    parts = []
+                    for r in service_rows:
+                        tok_note = f", {r['in_tok']}→{r['out_tok']} tok" if r["in_tok"] is not None else ""
+                        approx_note = f"  {YELLOW}⚠ sin tarifa verificada para este modelo, usando Haiku 4.5{RESET}" if r["approx"] else ""
+                        parts.append(f"{r['label']} ${r['cost']:.4f} ({r['detail']}{tok_note}){approx_note}")
+                    print(f"  {DIM}Servicios:{RESET} " + f"  {DIM}|{RESET}  ".join(parts))
 
                 detected = []
                 field_ok = field_total = 0
@@ -542,13 +593,49 @@ def main() -> int:
                     "|---|---|",
                     f"| Estado | {status} |",
                     f"| Documentos detectados | {'<br>'.join(detected) or '—'} |",
-                    f"| Costo | ${doc_cost:.4f} ({cost_per_page_cell}/página) |",
+                    f"| Costo | ${doc_cost:.4f} ({cost_per_page_cell}/página)"
+                    + (" ⚠ incluye tarifa aproximada, ver abajo" if any_approx else "") + " |",
                     f"| Duración | {duration} |",
                     f"| Páginas | {total_pages} |",
                     f"| Campos válidos | {field_cell} |",
                     f"| Confianza promedio | {conf_cell} |",
                     f"| Warnings | {'<br>'.join(warnings) or '—'} |",
                 ]
+                if service_rows:
+                    resumen_lines += [
+                        "",
+                        "## Costos por servicio",
+                        "",
+                        f"Tarifas vigentes al momento de esta corrida (`pipeline/pricing.py`, "
+                        f"`pricingVersion` {PRICING_VERSION}) — cambian si AWS repriega.",
+                        "",
+                        "| Servicio | Detalle | Tokens entrada | Tokens salida | Cache lectura | "
+                        "Cache escritura | Tarifa entrada ($/M tok) | Tarifa salida ($/M tok) | Costo |",
+                        "|---|---|---|---|---|---|---|---|---|",
+                    ]
+                    cell = lambda v, fmt="{}": "—" if v is None else fmt.format(v)
+                    for r in service_rows:
+                        approx_mark = " ⚠" if r["approx"] else ""
+                        resumen_lines.append(
+                            f"| {r['label']} | {r['detail']} | {cell(r['in_tok'])} | {cell(r['out_tok'])} | "
+                            f"{cell(r['cache_read'])} | {cell(r['cache_write'])} | "
+                            f"{cell(r['in_rate'], '${:.2f}')} | {cell(r['out_rate'], '${:.2f}')} | "
+                            f"${r['cost']:.4f}{approx_mark} |"
+                        )
+                    resumen_lines.append(
+                        f"| **Total** | | | | | | | | **${doc_cost:.4f}** |"
+                    )
+                    if any(r["approx"] for r in service_rows):
+                        resumen_lines.append("")
+                        resumen_lines.append(
+                            "⚠ **Tarifa aproximada**: `pipeline/pricing.py` todavía no tiene una "
+                            "tarifa verificada para el modelo que realmente corrió esa fila (solo "
+                            "`us.anthropic.claude-haiku-4-5-20251001-v1:0` está verificada contra "
+                            "Cost Explorer) — el costo mostrado se calculó con la tarifa de Haiku 4.5 "
+                            "como aproximación, así que el gasto real de ese modelo puede ser distinto. "
+                            "Para que sea exacto, agrega una entrada para ese modelo en "
+                            "`_BEDROCK_PRICING` (`pipeline/pricing.py`)."
+                        )
                 if doc_field_stats:
                     resumen_lines += ["", "| Campo | Válido | Confianza |", "|---|---|---|"]
                     worst_first = sorted(

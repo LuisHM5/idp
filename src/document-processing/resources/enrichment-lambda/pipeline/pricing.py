@@ -76,6 +76,16 @@ def bedrock_cost(usage: Optional[Dict[str, Any]], model_id: Optional[str]) -> Di
         "outputTokens": output_tok,
         "cacheReadTokens": cache_read,
         "cacheWriteTokens": cache_write,
+        # The $/M-token rates actually applied, so a caller (e.g. a saved
+        # per-document summary) can show "this is what input/output tokens
+        # cost at the time this ran" without re-deriving it from modelId —
+        # useful once PRICING_VERSION moves on and the live table no longer
+        # matches what an old record was billed at.
+        "inputRatePerMTokUsd": rates["input"],
+        "outputRatePerMTokUsd": rates["output"],
+        "cacheReadRatePerMTokUsd": rates["cacheRead"],
+        "cacheWriteRatePerMTokUsd": rates["cacheWrite"],
+        "pricingVersion": PRICING_VERSION,
         "costUsd": round(cost, 6),
         **({"approximatePricing": True} if approximate else {}),
     }
@@ -84,7 +94,12 @@ def bedrock_cost(usage: Optional[Dict[str, Any]], model_id: Optional[str]) -> Di
 def textract_cost(pages: int) -> Dict[str, Any]:
     """$ breakdown for `pages` synchronous Textract `DetectDocumentText` calls."""
     pages = max(0, int(pages or 0))
-    return {"pages": pages, "costUsd": round(pages * _TEXTRACT_SYNC_PAGE, 6)}
+    return {
+        "pages": pages,
+        "ratePerPageUsd": _TEXTRACT_SYNC_PAGE,
+        "pricingVersion": PRICING_VERSION,
+        "costUsd": round(pages * _TEXTRACT_SYNC_PAGE, 6),
+    }
 
 
 def lambda_cost(duration_ms: float, memory_mb: int) -> Dict[str, Any]:

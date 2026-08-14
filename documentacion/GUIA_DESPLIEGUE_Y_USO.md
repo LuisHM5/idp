@@ -175,7 +175,12 @@ segmentador encontró varios tipos en un mismo PDF). Dentro de esa carpeta:
 - **`<nombre-archivo>.json`**: resultado completo (todos los campos con
   `extractedValue`/`normalizedValue`/`status`/`checks`) de ESE documento en ESA corrida.
 - **`_resumen.md`**: costo real, $/página, duración, campos válidos, confianza
-  promedio y tabla campo-por-campo de ESE documento.
+  promedio y tabla campo-por-campo de ESE documento, más una tabla "Costos por
+  servicio" (Bedrock segmentación / Bedrock extracción / Textract OCR) con
+  tokens de entrada, salida y cache por servicio, y las tarifas $/millón de
+  tokens de entrada/salida realmente aplicadas en esa corrida (quedan
+  fijas ahí aunque `pipeline/pricing.py` reprecie después) — un servicio que
+  no se llamó (ej. Bedrock en un `.xml`/`.xlsx`/`.csv`) no aparece en la tabla.
 - **`_log.txt`**: copia exacta de la consola mientras se procesaba ESE
   documento, por si se cierra la terminal.
 - **`_prompt_input.json` / `_prompt_output.json`**: cada llamada a Bedrock de

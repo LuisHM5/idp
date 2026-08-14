@@ -1,0 +1,618 @@
+{
+  "PEDIMENTO_ADUANAL_XML": {
+    "schema_version": "1.0.0",
+    "display_name": "Pedimento Aduanal XML (CFDI relacionado)",
+    "aliases": [
+      "pedimento aduanal xml",
+      "pedimento xml",
+      "cfdi relacionado con pedimento"
+    ],
+    "description": "XML nativo CFDI 4.0 relacionado con un expediente de pedimento. Extrae exhaustivamente todos los atributos presentes en el comprobante, emisor, receptor, conceptos, impuestos por concepto, impuestos globales y Timbre Fiscal Digital. El archivo XML de referencia no contiene la estructura de un pedimento aduanal ni datos como patente, aduana, número de pedimento, partidas aduanales o liquidación; esos valores no se inventan.",
+    "business_destination": "PEDIMENTO_ADUANAL",
+    "min_confidence": 0.7,
+    "namespaces": {
+      "cfdi": "http://www.sat.gob.mx/cfd/4",
+      "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
+      "xsi": "http://www.w3.org/2001/XMLSchema-instance"
+    },
+    "fields": {
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Version",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "El comprobante debe corresponder a CFDI versión 4.0"
+          }
+        ]
+      },
+      "SERIE": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Serie",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Folio",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Fecha",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de emisión debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "SELLO_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Sello",
+        "validation": []
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@FormaPago",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La forma de pago debe contener dos dígitos"
+          }
+        ]
+      },
+      "NUMERO_CERTIFICADO": {
+        "type": "string",
+        "required": true,
+        "xpath": "@NoCertificado",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{20}$",
+            "message": "El número de certificado debe contener 20 dígitos"
+          }
+        ]
+      },
+      "CERTIFICADO": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Certificado",
+        "validation": []
+      },
+      "SUBTOTAL": {
+        "type": "number",
+        "required": true,
+        "xpath": "@SubTotal",
+        "validation": []
+      },
+      "DESCUENTO": {
+        "type": "number",
+        "required": false,
+        "xpath": "@Descuento",
+        "validation": []
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Moneda",
+        "validation": []
+      },
+      "TIPO_CAMBIO": {
+        "type": "number",
+        "required": false,
+        "xpath": "@TipoCambio",
+        "validation": [
+          {
+            "rule_type": "greater_than",
+            "value": 0,
+            "message": "El tipo de cambio debe ser mayor que cero"
+          }
+        ]
+      },
+      "TOTAL": {
+        "type": "number",
+        "required": true,
+        "xpath": "@Total",
+        "validation": []
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "xpath": "@TipoDeComprobante",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[IEPNT]$",
+            "message": "El tipo de comprobante no es una clave CFDI válida"
+          }
+        ]
+      },
+      "EXPORTACION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Exportacion",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La clave de exportación debe contener dos dígitos"
+          }
+        ]
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@MetodoPago",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(PUE|PPD)$",
+            "message": "El método de pago debe ser PUE o PPD"
+          }
+        ]
+      },
+      "LUGAR_EXPEDICION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@LugarExpedicion",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El lugar de expedición debe ser un código postal de cinco dígitos"
+          }
+        ]
+      },
+      "XSI_SCHEMA_LOCATION": {
+        "type": "string",
+        "required": false,
+        "xpath": "@{http://www.w3.org/2001/XMLSchema-instance}schemaLocation",
+        "validation": []
+      },
+      "EMISOR": {
+        "type": "object",
+        "required": true,
+        "xpath": "cfdi:Emisor",
+        "validation": [],
+        "fields": {
+          "RFC": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Rfc",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+                "message": "El RFC del emisor tiene un formato inválido"
+              }
+            ]
+          },
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Nombre",
+            "validation": []
+          },
+          "REGIMEN_FISCAL": {
+            "type": "string",
+            "required": true,
+            "xpath": "@RegimenFiscal",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{3}$",
+                "message": "El régimen fiscal del emisor debe contener tres dígitos"
+              }
+            ]
+          }
+        }
+      },
+      "RECEPTOR": {
+        "type": "object",
+        "required": true,
+        "xpath": "cfdi:Receptor",
+        "validation": [],
+        "fields": {
+          "RFC": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Rfc",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+                "message": "El RFC del receptor tiene un formato inválido"
+              }
+            ]
+          },
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Nombre",
+            "validation": []
+          },
+          "DOMICILIO_FISCAL": {
+            "type": "string",
+            "required": true,
+            "xpath": "@DomicilioFiscalReceptor",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{5}$",
+                "message": "El domicilio fiscal del receptor debe ser un código postal de cinco dígitos"
+              }
+            ]
+          },
+          "REGIMEN_FISCAL": {
+            "type": "string",
+            "required": true,
+            "xpath": "@RegimenFiscalReceptor",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{3}$",
+                "message": "El régimen fiscal del receptor debe contener tres dígitos"
+              }
+            ]
+          },
+          "USO_CFDI": {
+            "type": "string",
+            "required": true,
+            "xpath": "@UsoCFDI",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z0-9]{3}$",
+                "message": "El uso CFDI debe contener tres caracteres"
+              }
+            ]
+          }
+        }
+      },
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": "cfdi:Conceptos/cfdi:Concepto",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "El CFDI debe contener al menos un concepto"
+          }
+        ],
+        "item_fields": {
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveProdServ",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{8}$",
+                "message": "La clave de producto o servicio debe contener ocho dígitos"
+              }
+            ]
+          },
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "xpath": "@NoIdentificacion",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Cantidad",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveUnidad",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": []
+          },
+          "VALOR_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "xpath": "@ValorUnitario",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          },
+          "DESCUENTO": {
+            "type": "number",
+            "required": false,
+            "xpath": "@Descuento",
+            "validation": []
+          },
+          "OBJETO_IMPUESTO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ObjetoImp",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{2}$",
+                "message": "La clave de objeto de impuesto debe contener dos dígitos"
+              }
+            ]
+          },
+          "IMPUESTOS": {
+            "type": "object",
+            "required": false,
+            "xpath": "cfdi:Impuestos",
+            "validation": [],
+            "fields": {
+              "TRASLADOS": {
+                "type": "array",
+                "required": false,
+                "item_xpath": "cfdi:Traslados/cfdi:Traslado",
+                "validation": [],
+                "item_fields": {
+                  "BASE": {
+                    "type": "number",
+                    "required": true,
+                    "xpath": "@Base",
+                    "validation": []
+                  },
+                  "IMPUESTO": {
+                    "type": "string",
+                    "required": true,
+                    "xpath": "@Impuesto",
+                    "validation": [
+                      {
+                        "rule_type": "regex",
+                        "pattern": "^\\d{3}$",
+                        "message": "La clave del impuesto debe contener tres dígitos"
+                      }
+                    ]
+                  },
+                  "TIPO_FACTOR": {
+                    "type": "string",
+                    "required": true,
+                    "xpath": "@TipoFactor",
+                    "validation": []
+                  },
+                  "TASA_O_CUOTA": {
+                    "type": "number",
+                    "required": false,
+                    "xpath": "@TasaOCuota",
+                    "validation": []
+                  },
+                  "IMPORTE": {
+                    "type": "number",
+                    "required": false,
+                    "xpath": "@Importe",
+                    "validation": []
+                  }
+                }
+              },
+              "RETENCIONES": {
+                "type": "array",
+                "required": false,
+                "item_xpath": "cfdi:Retenciones/cfdi:Retencion",
+                "validation": [],
+                "item_fields": {
+                  "BASE": {
+                    "type": "number",
+                    "required": true,
+                    "xpath": "@Base",
+                    "validation": []
+                  },
+                  "IMPUESTO": {
+                    "type": "string",
+                    "required": true,
+                    "xpath": "@Impuesto",
+                    "validation": []
+                  },
+                  "TIPO_FACTOR": {
+                    "type": "string",
+                    "required": true,
+                    "xpath": "@TipoFactor",
+                    "validation": []
+                  },
+                  "TASA_O_CUOTA": {
+                    "type": "number",
+                    "required": false,
+                    "xpath": "@TasaOCuota",
+                    "validation": []
+                  },
+                  "IMPORTE": {
+                    "type": "number",
+                    "required": true,
+                    "xpath": "@Importe",
+                    "validation": []
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "IMPUESTOS": {
+        "type": "object",
+        "required": false,
+        "xpath": "cfdi:Impuestos",
+        "validation": [],
+        "fields": {
+          "TOTAL_IMPUESTOS_TRASLADADOS": {
+            "type": "number",
+            "required": false,
+            "xpath": "@TotalImpuestosTrasladados",
+            "validation": []
+          },
+          "TOTAL_IMPUESTOS_RETENIDOS": {
+            "type": "number",
+            "required": false,
+            "xpath": "@TotalImpuestosRetenidos",
+            "validation": []
+          },
+          "TRASLADOS": {
+            "type": "array",
+            "required": false,
+            "item_xpath": "cfdi:Traslados/cfdi:Traslado",
+            "validation": [],
+            "item_fields": {
+              "BASE": {
+                "type": "number",
+                "required": true,
+                "xpath": "@Base",
+                "validation": []
+              },
+              "IMPUESTO": {
+                "type": "string",
+                "required": true,
+                "xpath": "@Impuesto",
+                "validation": []
+              },
+              "TIPO_FACTOR": {
+                "type": "string",
+                "required": true,
+                "xpath": "@TipoFactor",
+                "validation": []
+              },
+              "TASA_O_CUOTA": {
+                "type": "number",
+                "required": false,
+                "xpath": "@TasaOCuota",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": false,
+                "xpath": "@Importe",
+                "validation": []
+              }
+            }
+          },
+          "RETENCIONES": {
+            "type": "array",
+            "required": false,
+            "item_xpath": "cfdi:Retenciones/cfdi:Retencion",
+            "validation": [],
+            "item_fields": {
+              "IMPUESTO": {
+                "type": "string",
+                "required": true,
+                "xpath": "@Impuesto",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": true,
+                "xpath": "@Importe",
+                "validation": []
+              }
+            }
+          }
+        }
+      },
+      "TIMBRE_FISCAL_DIGITAL": {
+        "type": "object",
+        "required": true,
+        "xpath": ".//tfd:TimbreFiscalDigital",
+        "validation": [],
+        "fields": {
+          "VERSION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Version",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^1\\.1$",
+                "message": "El Timbre Fiscal Digital debe corresponder a la versión 1.1"
+              }
+            ]
+          },
+          "UUID": {
+            "type": "string",
+            "required": true,
+            "xpath": "@UUID",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                "message": "El UUID del CFDI tiene un formato inválido"
+              }
+            ]
+          },
+          "FECHA_TIMBRADO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@FechaTimbrado",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                "message": "La fecha de timbrado debe usar el formato YYYY-MM-DDTHH:MM:SS"
+              }
+            ]
+          },
+          "SELLO_CFD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@SelloCFD",
+            "validation": []
+          },
+          "NUMERO_CERTIFICADO_SAT": {
+            "type": "string",
+            "required": true,
+            "xpath": "@NoCertificadoSAT",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{20}$",
+                "message": "El certificado del SAT debe contener 20 dígitos"
+              }
+            ]
+          },
+          "SELLO_SAT": {
+            "type": "string",
+            "required": true,
+            "xpath": "@SelloSAT",
+            "validation": []
+          },
+          "RFC_PROVEEDOR_CERTIFICACION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@RfcProvCertif",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+                "message": "El RFC del proveedor de certificación tiene un formato inválido"
+              }
+            ]
+          },
+          "XSI_SCHEMA_LOCATION": {
+            "type": "string",
+            "required": false,
+            "xpath": "@{http://www.w3.org/2001/XMLSchema-instance}schemaLocation",
+            "validation": []
+          }
+        }
+      }
+    },
+    "cross_field_validation": []
+  }
+}
