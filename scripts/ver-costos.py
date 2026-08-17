@@ -96,6 +96,11 @@ def print_detail(item: Dict[str, Any]) -> None:
         print(f"{name:<28}{_service_detail(svc):<52}{money(svc.get('costUsd', 0)):>10}")
     print("-" * 90)
     print(f"{'TOTAL':<80}{money(item.get('TotalCostUsd', 0)):>10}")
+    if item.get("TotalInputTokens") is not None or item.get("TotalOutputTokens") is not None:
+        print(
+            f"{DIM}Tokens totales: in={item.get('TotalInputTokens', 0)} "
+            f"out={item.get('TotalOutputTokens', 0)}{RESET}"
+        )
     if item.get("CostPerPageUsd") is not None:
         print(f"{DIM}Costo por página: {money(item['CostPerPageUsd'])}  (pricingVersion {item.get('PricingVersion', '?')}){RESET}")
     print()

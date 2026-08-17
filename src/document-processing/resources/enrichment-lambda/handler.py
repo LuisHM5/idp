@@ -71,6 +71,19 @@ def determine_status(checks: List[CheckResult]) -> str:
     return "APROBADO"
 
 
+# `pipeline/bedrock.py::resolve_model` records into `used_models()` under its
+# own internal stage names ("extractor", "segmenter" — see `stage=` call
+# sites in text_extractor.py/segmenter.py), not the phase names this
+# envelope's `tracking.modelIds` otherwise uses ("extraction",
+# "segmentation" — the same ones `expediente.py:347` already translates to
+# for `usage.extraction.modelId`). Rename here too, or `tracking.modelIds`
+# silently disagrees with `usage`/cost_audit.py about what to call the same
+# phase, and any consumer keyed on the phase name (e.g. a report reading
+# `Tracking.ModelIds`) finds nothing for "extraction" even though the model
+# is right there under "extractor".
+_STAGE_TO_PHASE = {"extractor": "extraction", "segmenter": "segmentation"}
+
+
 def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
     """Which model ran in each phase of this invocation.
 
@@ -86,7 +99,8 @@ def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
         model = (event.get(key) or {}).get("modelId")
         if model:
             ids[phase] = model
-    ids.update(used_models())
+    for stage, model in used_models().items():
+        ids[_STAGE_TO_PHASE.get(stage, stage)] = model
     return ids
 
 

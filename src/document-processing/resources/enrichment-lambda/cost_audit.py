@@ -98,10 +98,17 @@ def build_cost_breakdown(
         ),
     }
     total = round(sum(s["costUsd"] for s in services.values()), 6)
+    # Every Bedrock line item (the only services with token counts) summed
+    # across the four phases — so "how many tokens did this document cost in
+    # total" doesn't require a caller to know which services carry tokens.
+    total_input_tokens = sum(s.get("inputTokens", 0) for s in services.values())
+    total_output_tokens = sum(s.get("outputTokens", 0) for s in services.values())
 
     breakdown: Dict[str, Any] = {
         "services": services,
         "totalCostUsd": total,
+        "totalInputTokens": total_input_tokens,
+        "totalOutputTokens": total_output_tokens,
         "pricingVersion": PRICING_VERSION,
     }
     if pages:
@@ -139,6 +146,8 @@ def write_cost_record(
             name: _decimalize(svc) for name, svc in breakdown["services"].items()
         },
         "TotalCostUsd": Decimal(str(breakdown["totalCostUsd"])),
+        "TotalInputTokens": breakdown["totalInputTokens"],
+        "TotalOutputTokens": breakdown["totalOutputTokens"],
         "PricingVersion": breakdown["pricingVersion"],
     }
     if event.get("appOrigin"):

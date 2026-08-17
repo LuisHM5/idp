@@ -57,6 +57,12 @@ test-docs/**
 **/cdk.*
 # Resultados de procesamiento local
 resultados/
+# Reportes de costos generados por scripts/reporte-costos.py
+reportes-costos/
+# Reportes de salud operativa generados por scripts/reporte-documentos.py
+reportes-documentos/
+# Reporte unificado (costos + documentos) generado por scripts/reporte.py
+reportes/
 
 
 /data

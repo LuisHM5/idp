@@ -39,7 +39,10 @@ def test_reports_only_phases_that_actually_ran(monkeypatch):
 
     ids = handler._model_ids({})
 
-    assert ids == {"segmenter": "base-model", "extractor": "base-model"}
+    # _model_ids() renames the registry's internal stage names ("segmenter"/
+    # "extractor") to the same phase names expediente.py's own usage summary
+    # uses ("segmentation"/"extraction") — see _STAGE_TO_PHASE.
+    assert ids == {"segmentation": "base-model", "extraction": "base-model"}
     assert "recovery" not in ids  # never invoked → must not be reported
 
 
@@ -57,7 +60,7 @@ def test_merges_the_phases_from_the_other_lambda(monkeypatch):
     assert ids == {
         "classification": "vision-model",
         "processing": "vision-model",
-        "extractor": "base-model",
+        "extraction": "base-model",
     }
 
 
@@ -79,8 +82,8 @@ def test_each_phase_can_run_a_different_model(monkeypatch):
 
     assert ids == {
         "classification": "vision-model",
-        "segmenter": "cheap-model",
-        "extractor": "base-model",
+        "segmentation": "cheap-model",
+        "extraction": "base-model",
     }
 
 
@@ -166,7 +169,7 @@ def test_the_override_is_recorded_in_model_ids(monkeypatch):
     handler._apply_model_override({"model-id": "amazon.nova-pro-v1:0"})
     bedrock.resolve_model("extractor")
 
-    assert handler._model_ids({}) == {"extractor": "amazon.nova-pro-v1:0"}
+    assert handler._model_ids({}) == {"extraction": "amazon.nova-pro-v1:0"}
 
 
 def test_uploads_without_an_override_are_unaffected(monkeypatch):
