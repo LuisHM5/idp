@@ -10,10 +10,10 @@ API keys); `dev` queda abierto en el URL random de Amazon para probar fácil.
 | Auth | ninguna por default; **API key** opcional vía `DEV_API_KEY_REQUIRED=true` + redeploy | **API key** (`x-api-key`) en todos los endpoints, siempre |
 | Rate limit / anti-DDoS | no (WAF no aplica en dev); throttle ciego a nivel de stage | **WAF** (rate-based + managed rules) + usage plan por app |
 | TLS | sí (execute-api) | sí (cert propio, TLS 1.2+) |
-| Recursos globales | sufijo `-dev` (`idp-broker-dev`, alias KMS `…/pipeline-dev`) | nombres base (`idp-broker`, `…/pipeline`) |
+| Recursos globales | sufijo `-dev` (`idp-broker-dev`); **sin CMK propia** | nombres base (`idp-broker`, alias KMS `…/pipeline`) |
 
 Cada ambiente es un **stack aislado y completo** (sus propias Lambdas, Step
-Functions, S3, tabla DynamoDB de tracking, KMS, EventBus). Comparten solo la
+Functions, S3, tabla DynamoDB de tracking y EventBus). Comparten solo la
 **tabla de catálogo** `document-validation-catalog` (importada por nombre, no se
 crea). Por eso dev es un espejo funcional para probar sin tocar prod.
 
@@ -40,11 +40,18 @@ tocar prod. Cambiar el modelo requiere **redeploy** de ese ambiente (la var se
 hornea en la Lambda). Los catálogos generados (`config/catalogs.json`,
 `query-lambda/document-types.json`) están gitignored: se regeneran con `pnpm build`.
 
-### Nombres únicos por cuenta
-El alias de KMS y el nombre del EventBus son **únicos por cuenta**, así que dev
-usa un sufijo `-dev` para coexistir con prod (lo resuelve `envSuffix` en
-`src/document-validation-stack.ts`). Prod conserva los nombres base con los que
-ya se desplegó.
+### Cifrado por ambiente y nombres únicos
+
+Dev conserva cifrado en reposo sin crear llaves facturables del proyecto:
+SSE-S3 en el bucket, SSE-SQS en las colas, llave propia del servicio en
+DynamoDB/Step Functions y cifrado default en Lambda, logs, EventBridge y SNS.
+El synth se protege con `pnpm test:encryption`, que exige **0** recursos
+`AWS::KMS::Key` en dev.
+
+Prod utiliza un único CMK con alias `document-validation/pipeline`, compartido
+por los recursos que requieren control de llave, incluido S3. El mismo test
+exige exactamente **1** llave en el template de prod. El nombre del EventBus sí
+es único por cuenta, por lo que dev usa `idp-broker-dev` y prod `idp-broker`.
 
 ## Dominio propio `idp.alsuper.com` (solo prod)
 

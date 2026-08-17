@@ -20,7 +20,7 @@ flowchart TB
     DDBT[("DynamoDB<br/>tracking")]:::database
     DDBC[("DynamoDB<br/>catálogo")]:::database
     EB["EventBridge<br/>idp-broker"]:::integration
-    KMSN[("KMS")]:::security
+    KMSN[("Prod: 1 CMK compartido<br/>Dev: cifrado default AWS")]:::security
     QL["Query Lambda"]:::compute
 
     CLIENTE -->|"< 4 MB"| UP --> RAW
@@ -31,7 +31,12 @@ flowchart TB
     LAMBDA --> EB
     LAMBDA -.-> TX
     DDBC -.->|"gana sobre bundle"| LAMBDA
-    RAW -.-> KMSN
+    KMSN -.-> RAW
+    KMSN -.-> SQS
+    KMSN -.-> SFN
+    KMSN -.-> DDBT
+    KMSN -.-> EB
+    KMSN -.-> LAMBDA
 
     CLIENTE -->|"consulta"| QG --> QL
     QL --> DDBT

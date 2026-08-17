@@ -127,9 +127,9 @@ export class MultiModelDocumentProcessing extends BedrockDocumentProcessing {
 
     // An explicit function name is required, not cosmetic: when observability
     // is on, the blueprint injects a log group named
-    // `/aws/lambda/${functionName}-secured` and grants the encryption key
-    // against that exact ARN. Leaving the name undefined yields a literal
-    // `/aws/lambda/undefined-secured` log group and a KMS grant pointing at it.
+    // `/aws/lambda/${functionName}-secured`. In prod it also grants the shared
+    // encryption key against that exact ARN. Leaving the name undefined yields
+    // a literal `/aws/lambda/undefined-secured` log group.
     const logs = LambdaIamUtils.createLogsPermissions({
       scope: this,
       functionName: `idp-${invokeType}`,
@@ -214,7 +214,7 @@ export class MultiModelDocumentProcessing extends BedrockDocumentProcessing {
     for (const statement of logs.policyStatements) {
       fn.role?.addToPrincipalPolicy(statement);
     }
-    this.encryptionKey.grantEncryptDecrypt(fn);
+    this.encryptionKey?.grantEncryptDecrypt(fn);
     return fn;
   }
 

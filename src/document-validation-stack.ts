@@ -136,26 +136,32 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // dev stays open on the random execute-api URL.
     const environment = props?.environment ?? "dev";
     const isProd = environment === "prod";
-    // Suffix for account-global resource names (KMS alias, EventBus) so dev can
-    // coexist with prod. Prod keeps the bare names it was first deployed with.
+    // Suffix for account-global resource names (EventBus and the prod-only KMS
+    // alias) so dev can coexist with prod. Prod keeps the bare names it was
+    // first deployed with.
     const envSuffix = isProd ? "" : "-dev";
 
-    // ONE customer-managed KMS key shared across the pipeline instead of a
-    // separate CMK per component. Each CMK costs ~$1/month just to exist; the
-    // blueprint otherwise creates 5 (base, log group, adapter, broker, bucket).
-    // Consolidating cuts fixed KMS spend with no change to encryption at rest —
-    // only that components share one customer key instead of isolated keys.
-    const encryptionKey = new kms.Key(this, "PipelineEncryptionKey", {
-      enableKeyRotation: true,
-      alias: `document-validation/pipeline${envSuffix}`,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
+    // Prod uses ONE customer-managed key for the complete pipeline, including
+    // S3. Dev deliberately creates no customer-managed KMS resources: every
+    // service keeps its AWS-owned/default encryption instead. The blueprint is
+    // patched by scripts/patch-construct.mjs to support that mode and to reuse
+    // this key for the adapter bucket instead of minting a second CMK.
+    const encryptionKey = isProd
+      ? new kms.Key(this, "PipelineEncryptionKey", {
+          enableKeyRotation: true,
+          alias: "document-validation/pipeline",
+          // CostTable is RETAIN, so its encryption key must outlive a normal
+          // stack destroy too. Retiring it requires an explicit audited cleanup.
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+        })
+      : undefined;
 
     // EventBridge broker for pipeline notifications
     const broker = new EventbridgeBroker(this, "IDPBroker", {
       name: `idp-broker${envSuffix}`,
       eventSource: "document-validation-pipeline",
       kmsKey: encryptionKey,
+      useCustomerManagedEncryption: isProd,
     });
 
     // Generate prompts dynamically from the JSON config catalog
@@ -374,10 +380,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       classificationPrompt,
       processingPrompt,
       enrichmentLambdaFunction: enrichmentFn,
-      // Share the single CMK for the table + state machine, and for the log
-      // group data-protection key (else the blueprint mints its own CMK each).
+      // Prod shares one CMK across the whole construct. Dev uses service-owned
+      // encryption and must synthesize zero AWS::KMS::Key resources.
+      useCustomerManagedEncryption: isProd,
       encryptionKey,
-      logGroupDataProtection: { logGroupEncryptionKey: encryptionKey },
+      ...(encryptionKey && {
+        logGroupDataProtection: { logGroupEncryptionKey: encryptionKey },
+      }),
     });
 
     // Tipo de documento como COLUMNA INDEXADA.
@@ -430,8 +439,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       tableName: `document-validation-costs${envSuffix}`,
       partitionKey: { name: "DocumentId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey,
+      ...(encryptionKey
+        ? {
+            encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryptionKey,
+          }
+        : { encryption: dynamodb.TableEncryption.DEFAULT }),
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
     enrichmentFn.addEnvironment("COST_TABLE", costTable.tableName);
@@ -471,11 +484,10 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       );
     }
 
-    // The adapter's bucket is SSE-KMS encrypted with its OWN key (not
-    // pipeline.encryptionKey). grantReadWrite wires s3:Get/PutObject AND the
-    // KMS decrypt/encrypt on the right key — the expediente pipeline reads
-    // raw documents and persists full results under results/ (Step Functions
-    // payloads only carry a compact summary).
+    // The adapter bucket uses the shared CMK in prod and SSE-S3 in dev.
+    // grantReadWrite automatically adds KMS permissions only in prod — the
+    // expediente pipeline reads raw documents and persists complete results
+    // under results/ (Step Functions payloads only carry a compact summary).
     documentBucket.grantReadWrite(enrichmentFn);
 
     // Apps/API keys registry: `pnpm apps:register`/`list`/`revoke` (see
@@ -494,8 +506,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       tableName: `document-validation-apps${envSuffix}`,
       partitionKey: { name: "ApiKeyId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey,
+      ...(encryptionKey
+        ? {
+            encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryptionKey,
+          }
+        : { encryption: dynamodb.TableEncryption.DEFAULT }),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 

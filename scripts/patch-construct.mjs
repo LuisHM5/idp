@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /**
- * Patches Lambdas bundled inside @cdklabs/cdk-appmod-catalog-blueprints that
- * we need to fix without forking the whole package:
+ * Applies the project-owned compatibility patches required on
+ * @cdklabs/cdk-appmod-catalog-blueprints without forking the whole package:
+ *
+ * - configurable encryption: AWS-owned/default encryption with zero CMKs in
+ *   dev; one caller-supplied key reused everywhere in prod. The upstream 1.17
+ *   construct otherwise creates customer-managed keys unconditionally.
  *
  * - default-sqs-consumer: derives `documentId` from the uuid segment right
  *   before the filename instead of blindly stripping the `raw/` prefix, so
@@ -15,12 +19,37 @@
  * see `src/document-processing/multi-model-document-processing.ts`. Overwriting
  * a file inside node_modules only held until the next dependency bump.
  */
-import { copyFileSync, existsSync } from "fs";
+import { copyFileSync, existsSync, realpathSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
+import { patchBlueprintEncryption } from "../patches/configurable-encryption.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const packageRoots = new Set();
+const directPackageRoot = resolve(
+  __dirname,
+  "../node_modules/@cdklabs/cdk-appmod-catalog-blueprints"
+);
+if (existsSync(directPackageRoot)) packageRoots.add(realpathSync(directPackageRoot));
+try {
+  const nestedPackageJson = execSync(
+    "find node_modules/.pnpm -path '*/node_modules/@cdklabs/cdk-appmod-catalog-blueprints/package.json' 2>/dev/null",
+    { encoding: "utf8", cwd: resolve(__dirname, "..") }
+  ).trim();
+  for (const packageJson of nestedPackageJson ? nestedPackageJson.split("\n") : []) {
+    packageRoots.add(realpathSync(dirname(resolve(__dirname, "..", packageJson.trim()))));
+  }
+} catch {}
+
+if (packageRoots.size === 0) {
+  throw new Error("@cdklabs/cdk-appmod-catalog-blueprints is not installed");
+}
+for (const packageRoot of packageRoots) {
+  patchBlueprintEncryption(packageRoot);
+  console.log(`  ✅ Patched configurable encryption: ${packageRoot.split("node_modules/").pop()}`);
+}
 
 const PATCHES = [
   {
@@ -33,9 +62,13 @@ const PATCHES = [
 let totalPatched = 0;
 for (const { source, relTarget, label } of PATCHES) {
   // Find the target(s) in node_modules
-  const targets = [
-    resolve(__dirname, "../node_modules/@cdklabs/cdk-appmod-catalog-blueprints", relTarget),
-  ];
+  const targets = new Set();
+  const directTarget = resolve(
+    __dirname,
+    "../node_modules/@cdklabs/cdk-appmod-catalog-blueprints",
+    relTarget
+  );
+  if (existsSync(directTarget)) targets.add(realpathSync(directTarget));
 
   // Also check pnpm nested path
   try {
@@ -45,7 +78,8 @@ for (const { source, relTarget, label } of PATCHES) {
     ).trim();
     if (pnpmPath) {
       for (const p of pnpmPath.split("\n")) {
-        targets.push(resolve(__dirname, "..", p.trim()));
+        const nestedTarget = resolve(__dirname, "..", p.trim());
+        if (existsSync(nestedTarget)) targets.add(realpathSync(nestedTarget));
       }
     }
   } catch {}

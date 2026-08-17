@@ -70,6 +70,8 @@ pnpm run diff       # opcional: revisar qué se va a crear
 pnpm run deploy     # crea el stack "DocumentValidationStack"
 ```
 
+**Tablas DynamoDB pendientes:** `deploy`/`deploy:dev`/`deploy:prod` corren `scripts/check-pending-tables.mjs` antes de tocar AWS — lista cualquier tabla DynamoDB que el diff vaya a crear/actualizar/borrar (así una tabla nueva del código, como `CostTable`, no queda commiteada sin desplegar sin que nadie lo note) y pide confirmación `(S/n)` si hay una terminal interactiva; en CI o con `--yes` no bloquea. Ejecútalo solo para inspeccionar: `node scripts/check-pending-tables.mjs -- --env dev`.
+
 Al terminar, la salida muestra:
 
 - **`ApiEndpoint`** — URL del API de subida de documentos.
@@ -412,6 +414,45 @@ aws dynamodb put-item --table-name document-validation-fallback-models \
   --item '{"Rank": {"N": "5"}, "ModelId": {"S": "otro.modelo-v1:0"}}' \
   --region us-east-1
 ```
+
+### 5.7 Migración única al CMK compartido de producción
+
+Dev no crea llaves KMS propias; prod utiliza una sola llave compartida,
+incluido S3. Al desplegar esta optimización sobre un prod existente, el cifrado
+default del bucket cambia para objetos nuevos, pero los objetos históricos aún
+dependen de la llave anterior hasta reescribirlos.
+
+#### Dev existente: descartar datos y retirar sus llaves
+
+Los datos históricos de dev no se migran. Antes del despliegue, registra los ARN
+de sus llaves y vacía el bucket de dev (incluidas sus versiones, si las hay) y
+los logs que no necesites conservar. Después de `pnpm run deploy:dev`, confirma
+con `pnpm test:encryption` que la plantilla contiene 0 CMK y programa la
+eliminación de las llaves antiguas por ARN exacto. Una llave retenida por el
+stack anterior no desaparece por sí sola; no la retires mientras conserve algún
+objeto que quieras recuperar. DynamoDB cambia al cifrado default de AWS en sitio.
+
+#### Prod existente: preservar y recifrar objetos
+
+Detén uploads, espera a que no haya ejecuciones activas ni objetos en `raw/`,
+despliega y ejecuta primero el inventario sin reescrituras:
+
+```bash
+pnpm migrate:kms
+```
+
+El comando es dry-run por default, resuelve el bucket desde
+`DocumentValidationStack` y muestra cuántos objetos usan cada llave. Para
+reescribirlos en sitio conservando metadata y tags:
+
+```bash
+pnpm migrate:kms --apply
+pnpm migrate:kms                    # debe terminar con 0 objetos por migrar
+```
+
+El script se niega a correr si encuentra objetos en `raw/` o mayores a 5 GiB,
+y nunca elimina llaves. Programa la eliminación de la antigua llave del bucket
+solo después del segundo dry-run, un E2E exitoso y la revisión del ARN exacto.
 
 ## 6. Eliminar
 

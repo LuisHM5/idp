@@ -16,7 +16,7 @@
 
 # Arquitectura AWS y Flujo de Ejecución
 
-Diagrama de referencia de la infraestructura y del recorrido de un documento, de principio a fin. Para la explicación conceptual (qué hace el sistema, sin código) ver [`COMO_FUNCIONA.md`](COMO_FUNCIONA.md); para el recorrido con referencias a archivo:línea, ver [`FLUJO_EJECUCION.md`](FLUJO_EJECUCION.md).
+Diagrama de referencia de la infraestructura y del recorrido de un documento, de principio a fin. Para la explicación conceptual (qué hace el sistema, sin código) ver [`COMO_FUNCIONA.md`](COMO_FUNCIONA.md); para el recorrido exacto con referencias a archivo:línea, ver [`TRAZA_CODIGO_COMPLETA.md`](TRAZA_CODIGO_COMPLETA.md).
 
 > Versión PDF de este documento (mismos diagramas, para imprimir o compartir sin depender de un visor de Markdown): [`ARQUITECTURA.pdf`](ARQUITECTURA.pdf).
 
@@ -77,7 +77,7 @@ En resumen, para el sistema tal como corre hoy (solo `PEDIMENTO_ADUANAL`/`CERTIF
 
 ## Arquitectura AWS
 
-Todo el stack es serverless (`DocumentValidationStack-Dev` en dev, `DocumentValidationStack` en prod — dos stacks aislados y completos, ver [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md)). La Step Function la crea el blueprint `@cdklabs/cdk-appmod-catalog-blueprints`; este repo aporta las tres Lambdas propias (Upload, Enrichment, Query) y toda la configuración del catálogo.
+Todo el stack es serverless (`DocumentValidationStack-Dev` en dev, `DocumentValidationStack` en prod — dos stacks aislados y completos, ver [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md)). La Step Function la crea el blueprint `@cdklabs/cdk-appmod-catalog-blueprints`; este repo aporta Upload, Enrichment y Query, además de las dos Lambdas de clasificación/procesamiento creadas desde `model-invoke-lambda`, y toda la configuración del catálogo.
 
 Los colores de los nodos siguen la paleta oficial por categoría de servicio de AWS (la misma de los AWS Architecture Icons), para que cada pieza se identifique de un vistazo:
 
@@ -93,15 +93,15 @@ _Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mm
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Upload Lambda**              | Valida el request, decide inline vs. presigned URL, escribe a `S3 raw/`. El prefijo `raw/{TIPO}/` es cómo se "fuerza" la clasificación.                                                                                                                          |
 | **S3 `raw/`**                  | Recibir un objeto aquí dispara todo el pipeline (trigger vía SQS → Step Functions).                                                                                                                                                                              |
-| **Step Functions**             | Orquestador del blueprint. Para tipos aduanales, `ClassificationStep`/`ProcessingStep` corren pero su resultado se **descarta** — el handler re-clasifica y re-extrae dentro del pipeline de expediente (ver "Oportunidades de mejora" en `FLUJO_EJECUCION.md`). |
+| **Step Functions**             | Orquestador del blueprint. La clasificación manual se resuelve sin Bedrock; la automática sí llama al modelo. `ProcessingStep` omite la llamada cuando el tipo no tiene campos en el prompt legacy y difiere la extracción al enrichment. El pipeline field-centric usa después su propia segmentación/extracción por texto. |
 | **Enrichment Lambda** ⭐       | El cerebro: aquí vive `handler.py` y todo `pipeline/`. Ver diagrama de flujo abajo.                                                                                                                                                                              |
 | **Textract**                   | OCR **solo** en páginas de PDF sin capa de texto (el resto usa pypdf, gratis).                                                                                                                                                                                   |
 | **DynamoDB catálogo**          | Tipos y reglas editables en caliente (`pnpm sync`), `RETAIN` — sobrevive a un `destroy` del stack. Gana siempre sobre el JSON empaquetado en runtime.                                                                                                            |
 | **DynamoDB tracking**          | Envelope **compacto** por documento (escalares, `arrayCounts`, `liquidacionNormalizada`, `tracking`) — acotado por el límite de payload de Step Functions (256 KB).                                                                                              |
 | **S3 `results/`**              | Resultado **completo**: todos los campos, arrays completos, checks y confianzas.                                                                                                                                                                                 |
-| **EventBridge (`idp-broker`)** | Publica el resultado final (`document-processed`) para que sistemas externos se suscriban.                                                                                                                                                                       |
+| **EventBridge (`idp-broker`)** | Publica la notificación terminal (`document-processed-successful` o `document-processing-failed`) con el id y datos de origen. El resultado enriquecido se consulta por id en DynamoDB/S3.                                                                         |
 | **Query Lambda**               | `GET /documents/{id}` y `GET /documents?docType=&field=` — lee DynamoDB (indexado por GSI `DocumentTypeIndex` cuando hay `docType`, `Scan` si no) y S3 (`fullResult` con `full=1`).                                                                              |
-| **KMS**                        | Cifra el bucket S3. Es el rubro de infraestructura (no-IA) más caro medido — ver `COSTOS.md`.                                                                                                                                                                    |
+| **KMS**                        | En prod, un CMK compartido cifra los recursos del pipeline, incluido S3. Dev usa cifrado administrado por cada servicio y no crea CMKs propios. Ver `COSTOS.md`.                                                                                                  |
 
 Seguridad por ambiente (API keys, WAFv2, dominio propio) solo aplica a **prod**, gateada por `environment === "prod"` — detalle completo en [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md).
 
@@ -111,19 +111,20 @@ Seguridad por ambiente (API keys, WAFv2, dominio propio) solo aplica a **prod**,
 
 El `handler.py` de la Enrichment Lambda bifurca en dos caminos según el tipo de documento clasificado. Mismos colores por servicio que el diagrama de arquitectura: 🟠 Compute (Lambda/lógica propia) · 🟢 Storage (S3) · 🔵 Database (DynamoDB) · 🩷 App Integration (EventBridge/Step Functions) · 🩵 Machine Learning (Bedrock/Textract).
 
-![Diagrama de flujo de ejecución: un documento en S3 raw/ pasa por Step Functions (Bedrock), la Enrichment Lambda decide entre el Camino A (pipeline de expediente: pdf_pages, segmenter, text_extractor, normalize+engine, reglas cross-documento) o el Camino B (flujo estándar: reutiliza extracción, validator_module, fallback Textract, custom_validator); ambos terminan en Ensamblado, se persisten en S3 results/ y DynamoDB, y publican en EventBridge.](diagrams/flujo-ejecucion.png)
+![Diagrama de flujo de ejecución: un documento en S3 raw/ pasa por Step Functions, la Enrichment Lambda decide entre el Camino A (pipeline de expediente: pdf_pages, segmenter, text_extractor, normalize+engine, reglas cross-documento) o el Camino B (flujo estándar: reutiliza extracción, validator_module, fallback Textract, custom_validator); ambos producen un envelope para DynamoDB y el Camino A también persiste el resultado profundo en S3 results/.](diagrams/flujo-ejecucion.png)
 
 _Fuente editable: [`diagrams/flujo-ejecucion.mmd`](diagrams/flujo-ejecucion.mmd)._
 
-**Notas de enrutamiento y detalle por paso** (recortado del diagrama para que quepa en una vista — el detalle completo está aquí y en `FLUJO_EJECUCION.md`):
+**Notas de enrutamiento y detalle por paso** (recortado del diagrama para que quepa en una vista — la traza completa está en `TRAZA_CODIGO_COMPLETA.md`):
 
 - La condición de la izquierda decide el **camino de extracción**; `pipeline: "expediente"` en el catálogo controla además, por separado, la **candidatura a auto-segmentación** (solo tipos con ese flag se consideran cuando el PDF se sube sin declarar tipo) y la **elegibilidad para reglas cross-documento**. Detalle: [`../catalogs/README.md`](../catalogs/README.md#pipeline-expediente-qué-controla-realmente).
+- Antes de enrichment, clasificación manual y extracción field-centric pueden hacer bypass sin llamar Bedrock. En clasificación automática sí existe una llamada upstream; el segmentador del Camino A puede corregir después esa clasificación con texto y rangos de página.
 - **Camino A, paso 1**: `pdf_pages.load_pages` — texto nativo (pypdf, layout) + Textract OCR **en paralelo** solo en páginas escaneadas.
 - **Camino A, paso 2**: `segmenter.segment_pages` — si el uploader declaró el tipo (`declared_type`), 1 solo segmento sin llamar al modelo; si no, Bedrock clasifica los rangos de página.
 - **Camino A, paso 3**: extracción por segmento **paralela** (`ThreadPoolExecutor`, env var `EXTRACT_WORKERS`) vía `text_extractor.extract_document`, con el schema del catálogo.
 - **Camino A, paso 4-5**: `normalize._recover_references` (regex) + `liquidacion.build_liquidacion_normalizada` + `qr_recovery` (si `QR_RECOVERY_ENABLED`), luego `engine.run_rules`/`resolve_fields`/`document_status`.
 - **Camino A, paso 6**: `_run_cross_document_rules` — mismo pedimento, RFC importador, UUIDs únicos, conciliación de gastos/valores.
-- El Camino B (`custom_validators/*.mjs`, `validator_module`) **no corre** para tipos field-centric como `PEDIMENTO_ADUANAL` — solo aplica a los tipos legacy aparcados en `catalogs/save/`.
+- El Camino B (`custom_validators/*.mjs`, `validator_module`) **no corre** para tipos field-centric como `PEDIMENTO_ADUANAL`; solo aplica a entradas que aún usan el DSL legacy.
 - Tiempos medidos: 1 página ≈ 30 s · 27 páginas escaneadas ≈ 4 min · 86 páginas ≈ 6-8 min (límite duro de la Lambda: 15 min).
 
-Recorrido con referencias exactas a archivo:línea y la lista priorizada de mejoras de dataflow pendientes: **[`FLUJO_EJECUCION.md`](FLUJO_EJECUCION.md)**.
+Recorrido con referencias exactas a archivo:línea, payloads y llamadas externas: **[`TRAZA_CODIGO_COMPLETA.md`](TRAZA_CODIGO_COMPLETA.md)**.

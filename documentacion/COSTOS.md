@@ -159,18 +159,18 @@ faltaban 3 de las 4 reglas).
 Cost Explorer registró ~$5.94/mes al prorratear la infraestructura de la
 **cuenta completa**, pero no es correcto asignar ese importe como piso fijo
 del proyecto: la mayor parte era almacenamiento de otras claves KMS de la
-cuenta. El stack desplegado crea dos claves KMS propias (la compartida del
-pipeline y la propia del bucket), a $1/mes cada una. Lambda, DynamoDB, SQS,
-S3, CloudWatch, Step Functions y API Gateway son principalmente consumo
-variable al volumen de este sistema.
+cuenta. La configuración actual crea **cero CMK en dev** (cifrado default de
+AWS) y **una sola CMK compartida en prod**, incluido el bucket. Lambda,
+DynamoDB, SQS, S3, CloudWatch, Step Functions y API Gateway son
+principalmente consumo variable al volumen de este sistema.
 
 ### Piso fijo total y costo mensual realista en prod
 
 | Ambiente                               |             Piso fijo atribuible/mes |
 | -------------------------------------- | -----------------------------------: |
-| Dev                                    |                ~$2.00 (2 claves KMS) |
-| Prod                                   | ~$11.00 (2 claves KMS + $9 de WAFv2) |
-| Prod + dev desplegados simultáneamente |                              ~$13.00 |
+| Dev                                    |       $0 fijo (cifrado default AWS) |
+| Prod                                   | ~$10.00 (1 clave KMS + $9 de WAFv2) |
+| Prod + dev desplegados simultáneamente |                            ~$10.00 |
 
 ### Proyección acordada: 2,430 documentos / 7,290 páginas al mes
 
@@ -188,17 +188,17 @@ la cuenta y no forma parte del costo por página acordado para este proyecto.
 | -------------------------------------------------------------------------------- | ------------: | -----------: |
 | Bedrock + Textract                                                               |        $33.17 |     $0.00455 |
 | Lambda, S3, SQS, CloudWatch, DynamoDB, Step Functions y API Gateway              |        ~$3.50 |    ~$0.00048 |
-| Piso fijo de prod: 2 claves KMS + WAFv2                                          |        $11.00 |     $0.00151 |
-| **Subtotal técnico antes de IVA**                                                |    **$47.67** | **$0.00654** |
-| IVA 16%                                                                          |         $7.63 |     $0.00105 |
-| **Total esperado con IVA**                                                       |    **$55.30** |  **$0.0076** |
-| **Presupuesto conservador: IVA + 15% de contingencia sobre el consumo variable** |    **$61.68** |  **$0.0085** |
+| Piso fijo de prod: 1 clave KMS + WAFv2                                           |        $10.00 |     $0.00137 |
+| **Subtotal técnico antes de IVA**                                                |    **$46.67** | **$0.00640** |
+| IVA 16%                                                                          |         $7.47 |     $0.00102 |
+| **Total esperado con IVA**                                                       |    **$54.14** | **$0.00743** |
+| **Presupuesto conservador: IVA + 15% de contingencia sobre el consumo variable** |    **$60.52** |  **$0.0083** |
 
-El valor recomendado para presupuesto es **$0.0085 USD/página**, equivalente
-a **$61.68 USD/mes** para 7,290 páginas. La diferencia contra el esperado de
-$0.0076/página cubre variación de tokens, reintentos y errores de proceso.
-Si dev permanece desplegado junto con prod, sumar aproximadamente $2/mes por
-sus dos claves KMS, más su consumo de pruebas.
+El valor recomendado para presupuesto es **$0.0083 USD/página**, equivalente
+a **$60.52 USD/mes** para 7,290 páginas. La diferencia contra el esperado de
+$0.00743/página cubre variación de tokens, reintentos y errores de proceso.
+Mantener dev desplegado ya no suma un piso fijo de KMS; solo agrega su consumo
+de pruebas.
 
 ## 1. Modelo desplegado y precio real
 
@@ -278,7 +278,7 @@ Mismo volumen de tokens, Sonnet 4.5 ≈ 3x el costo/página; Opus ≈ 5x.
 > **Corte histórico, no usar como piso fijo actual.** Cost Explorer mezclaba
 > las claves KMS de toda la cuenta: el cargo de KMS indicado abajo no era
 > atribuible íntegramente al proyecto. La corrección vigente está en la
-> sección 0.1: ~$2/mes de KMS para dev y ~$11/mes de piso fijo para prod.
+> sección 0.1: $0 fijo de KMS para dev y ~$10/mes de piso fijo para prod.
 
 Costo real del resto del stack en 2026-07-14 → 2026-07-28 (KMS, Lambda,
 Step Functions, DynamoDB, SQS, S3, API Gateway, CloudWatch — todo lo que
@@ -334,20 +334,20 @@ costo por página en prod es esencialmente el mismo de la sección 2
 
 ## 6. Resumen vigente — 2,430 documentos / 7,290 páginas al mes
 
-> Actualizado 2026-08-04. Esta sección reemplaza las proyecciones anteriores
+> Actualizado 2026-08-17. Esta sección reemplaza las proyecciones anteriores
 > para el volumen acordado. Los casos históricos de las secciones 1–5 se
 > conservan para explicar cómo cambió el costo con la optimización del DSL.
 
 | Unidad                                                             |                   Costo vigente |
 | ------------------------------------------------------------------ | ------------------------------: |
 | Bedrock + Textract por pedimento de 3 páginas                      |             ~$0.01365/documento |
-| Subtotal técnico antes de IVA                                      |    $47.67/mes — $0.00654/página |
-| Total esperado con IVA                                             |     $55.30/mes — $0.0076/página |
-| **Presupuesto recomendado con IVA y 15% de contingencia variable** | **$61.68/mes — $0.0085/página** |
+| Subtotal técnico antes de IVA                                      |    $46.67/mes — $0.00640/página |
+| Total esperado con IVA                                             |    $54.14/mes — $0.00743/página |
+| **Presupuesto recomendado con IVA y 15% de contingencia variable** | **$60.52/mes — $0.0083/página** |
 
 ### COSTO RECOMENDADO POR PÁGINA EN PROD
 
-# **$0.0085 USD / página**
+# **$0.0083 USD / página**
 
 Este costo incluye Bedrock, Textract, Lambda, DynamoDB, S3, API Gateway,
 KMS, SQS, CloudWatch, Step Functions, WAFv2, IVA y 15% de contingencia
@@ -365,7 +365,7 @@ o se omite `documentType`, se debe volver a medir antes de usar este valor.
 
 Para planeación financiera puede reservarse **$0.0131/página**, equivalente
 a **$95.50 USD/mes** para 7,290 páginas. Este importe es un colchón ampliado
-por encima del presupuesto técnico recomendado de $0.0085/página; no es el
+por encima del presupuesto técnico recomendado de $0.0083/página; no es el
 costo esperado y no atribuye AWS Business Support+ al proyecto.
 
 ## 7. Auditoría de costos por documento (tabla DynamoDB, 2026-08-05)
