@@ -13,6 +13,7 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado princi
 | [`documentacion/RESUMEN_EJECUTIVO.md`](documentacion/RESUMEN_EJECUTIVO.md) | 👔 Versión para directivos: el proceso explicado en una imagen, sin nombres de servicios ni tecnicismos. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
 | [`documentacion/API_USO.md`](documentacion/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
+| [`openapi/openapi.yaml`](openapi/openapi.yaml) | Contrato OpenAPI 3.1 del mismo API. Ver localmente con `pnpm docs:api` (Scalar en `/`, Swagger UI en `/swagger`). |
 | [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
 | [`documentacion/TESTS.md`](documentacion/TESTS.md) | Qué comando de test correr para cada caso, costos, cómo diagnosticar un bug. |

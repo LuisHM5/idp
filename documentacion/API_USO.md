@@ -4,12 +4,19 @@
   `src/document-validation-stack.ts` (RestApi "DocumentUploadApi") y con los
   handlers en `src/document-processing/resources/{upload,query}-lambda/`.
   Si agregas, quitas o cambias un endpoint (ruta, método, params, body o
-  respuesta), ACTUALIZA este archivo en el mismo cambio. Ver AGENTS.md.
+  respuesta), ACTUALIZA este archivo Y `openapi/openapi.yaml` en el mismo
+  cambio. Ver AGENTS.md.
 -->
 
 # API REST — Guía de uso
 
 Referencia de todos los endpoints del API de la app de validación documental.
+
+> **Documentación interactiva local (Scalar/Swagger):** `pnpm docs:api` sirve
+> el contrato formal [`openapi/openapi.yaml`](../openapi/openapi.yaml) en
+> `http://localhost:4001` — Scalar por default (`/`), Swagger UI en
+> `/swagger`. Esta guía sigue siendo la referencia narrativa con ejemplos
+> curl; el YAML es el contrato tipado de request/response.
 
 ## Base URL y autenticación
 

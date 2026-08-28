@@ -23,6 +23,7 @@ This repo documents itself extensively in Spanish — **read the relevant doc in
 | `documentacion/TRAZA_CODIGO_COMPLETA.md` | Full code-level execution trace: exact functions/file:line references, payloads, AWS API calls, every pipeline branch, persistence, queries, and concrete improvement points. Read before touching `handler.py` or `pipeline/`. |
 | `documentacion/GUIA_DESPLIEGUE_Y_USO.md` | Full operational guide: install, deploy, update/delete catalogs, troubleshooting table, file map of what to edit vs. never touch. |
 | `documentacion/API_USO.md` | **REST API reference — keep in sync automatically, see below.** |
+| `openapi/openapi.yaml` | **OpenAPI 3.1 contract for the same REST API — keep in sync automatically alongside `API_USO.md`, see below.** View locally with `pnpm docs:api` (Scalar by default, Swagger UI at `/swagger`). |
 | `documentacion/APIS_INTEGRACION.md` | Integration-facing inventory: internal APIs this repo exposes vs. external (AWS) APIs it consumes, with exact SDK operations and file references. Update alongside `API_USO.md` when the API surface or AWS service calls change. |
 | `documentacion/AMBIENTES_Y_SEGURIDAD.md` | dev vs prod stacks, custom domain, API keys, WAF. |
 | `documentacion/TESTS.md` | Every test command, what it checks, cost, and how to read `pnpm comparar` output to diagnose a bug. |
@@ -124,6 +125,7 @@ Run everything with pnpm from the repo root.
 | `pnpm apps:register` / `apps:rotate` / `apps:reconfigure` / `apps:grant` / `apps:deny` / `apps:disable` / `apps:enable` / `apps:revoke` / `apps:adopt` / `apps:list` | Register/rotate/reconfigure/grant/deny/disable/enable/revoke a per-app API key + usage plan (`scripts/manage-apps.mjs`), or adopt an existing key (e.g. `idp-default`) into the traceability table — no redeploy needed. `reconfigure` changes only rate-limit/burst-limit/quota-per-day without touching the key; `disable`/`enable` toggle a key without deleting anything (`revoke` = `disable` + optional `--delete`). `grant`/`deny --doctype A,B` add/remove specific `AllowedDocTypes` (union/difference against what the app already has) without retyping the full list, unlike `reconfigure --allowed-doctypes` which replaces it outright. Every mutating subcommand is interactive (prompts for missing args) and always confirms `(S/n)` before touching AWS, unless `--yes`/no TTY. `-- --name <appName> --env dev\|prod [...]`. Full lifecycle, per-app document access control, backend mechanics, the enable/disable propagation-delay gotcha, and required IAM permissions: `documentacion/AMBIENTES_Y_SEGURIDAD.md`. |
 | `pnpm run destroy` / `destroy:full` | Tear down stack (full variant also removes the DynamoDB catalog table — irreversible for DynamoDB-only types). |
 | `pnpm preview-prompts` | Render the Bedrock prompts the **standard flow** will receive (legacy DSL only; doesn't reflect field-centric types). Run after catalog edits, needs `pnpm build` first. |
+| `pnpm docs:api` | Serve `openapi/openapi.yaml` locally and open it in the browser — **Scalar** at `/` (default), **Swagger UI** at `/swagger`, raw spec at `/openapi.yaml`. `-- --swagger` opens Swagger UI instead, `-- --port <n>`, `-- --no-open` to just print the URLs. |
 | `pnpm backfill:index` | Rebuild indexed type columns on documents processed before they existed (`-- --dry-run`, `-- --force`). |
 | `pnpm setup:python` | Create the `.venv` test environment. |
 | `pnpm test:unit` | Offline pytest: rule engine, normalizers, catalog/ground-truth sanity. Free. |
@@ -183,13 +185,13 @@ Avoid editing `handler.py` for feature work. It is the engine; features live in 
 
 ## API Documentation (keep in sync automatically)
 
-`documentacion/API_USO.md` is the single source of truth for how to call the app's REST API. **Whenever you change the API surface, update that doc in the same change — do not defer it.** This applies when you:
+`documentacion/API_USO.md` (narrative reference, Spanish, curl examples) and `openapi/openapi.yaml` (formal OpenAPI 3.1 contract, served locally via `pnpm docs:api` — Scalar by default, Swagger UI at `/swagger`) are **both** single sources of truth for how to call the app's REST API. **Whenever you change the API surface, update BOTH files in the same change — do not defer it, and do not update only one.** This applies when you:
 
 - add, remove, or rename a route in `src/document-validation-stack.ts` (the `DocumentUploadApi` RestApi — `addResource`/`addMethod`);
 - change a handler's request or response shape in `src/document-processing/resources/upload-lambda/` or `query-lambda/` (body fields, query params, status codes, response JSON);
 - change auth, payload limits, or the base URL/stage.
 
-For each such change: edit the matching section of `API_USO.md` (endpoint table + the per-endpoint request/response/examples), keep the curl and `pnpm` examples runnable, and match the existing Spanish tone. The doc carries a maintenance header comment repeating this rule.
+For each such change: edit the matching section of `API_USO.md` (endpoint table + the per-endpoint request/response/examples, keep curl/`pnpm` examples runnable, match the existing Spanish tone) **and** the matching path/schema in `openapi/openapi.yaml` (path parameters, request/response schemas under `components/schemas`, status codes, examples). After editing the spec, sanity-check it renders: `pnpm docs:api` (or lint it, e.g. `npx @redocly/cli lint openapi/openapi.yaml`). Both files carry a maintenance header comment repeating this rule.
 
 **API Gateway gotcha:** adding a route via CDK does not always redeploy the `prod` stage — a new route can return `403 Missing Authentication Token` even after a successful `pnpm run deploy`. If so, force a stage redeploy: `aws apigateway create-deployment --rest-api-id <id> --stage-name prod --region us-east-1`.
 

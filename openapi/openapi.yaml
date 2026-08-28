@@ -1,0 +1,460 @@
+# MANTENIMIENTO: este archivo es el contrato formal del API REST, derivado de
+# `documentacion/API_USO.md` (la referencia narrativa con ejemplos curl). Si
+# agregas, quitas o cambias un endpoint (ruta, método, params, body o
+# respuesta) en `src/document-validation-stack.ts` o en los handlers de
+# `upload-lambda`/`query-lambda`, actualiza AMBOS archivos en el mismo cambio.
+# Ver AGENTS.md → "API Documentation".
+#
+# Ver localmente con Scalar (por default) o Swagger UI: `pnpm docs:api`.
+openapi: 3.1.0
+info:
+  title: Documents Validator API
+  version: "1.0.0"
+  license:
+    name: ISC
+  description: >
+    API REST para subir documentos (pedimentos aduanales, facturas, expedientes
+    multi-documento...) al pipeline de clasificación → extracción → validación
+    (Amazon Bedrock + reglas del catálogo), y consultar sus resultados.
+
+    Este spec es el contrato formal de la API; la guía narrativa con ejemplos
+    curl completos, notas de seguridad y el apéndice de "dónde queda el
+    resultado" vive en `documentacion/API_USO.md` — léela para el contexto
+    completo, este archivo modela las formas de request/response.
+externalDocs:
+  description: Guía de uso completa (español, con ejemplos curl)
+  url: ../documentacion/API_USO.md
+servers:
+  - url: "{apiEndpoint}"
+    description: >
+      dev (default) — URL execute-api del stack `DocumentValidationStack-Dev`,
+      abierta, sin auth. Sale del output `ApiEndpoint` del stack (ver
+      documentacion/API_USO.md → "Base URL y autenticación").
+    variables:
+      apiEndpoint:
+        default: https://REPLACE-ME.execute-api.us-east-1.amazonaws.com/prod
+  - url: https://idp.alsuper.com
+    description: prod — dominio propio, requiere x-api-key en todos los endpoints.
+security:
+  - ApiKeyAuth: []
+  - {}
+tags:
+  - name: upload
+    description: Subida de documentos y disparo del pipeline.
+  - name: documents
+    description: Consulta de resultados, archivo original y búsqueda.
+paths:
+  /upload:
+    post:
+      operationId: uploadDocument
+      tags: [upload]
+      summary: Subir un documento a procesar
+      description: >
+        Dispara el pipeline de clasificación → extracción → validación. Un
+        solo endpoint, dos modos según si mandas `contentBase64`:
+
+
+        - **Inline** (archivos chicos, hasta ~4MB reales de payload): el
+        archivo va en el body como base64.
+
+        - **Prefirmado** (archivos grandes, sin tope de tamaño real): omites
+        `contentBase64` y la respuesta trae una `uploadUrl` de S3 (`PUT`
+        directo, expira en 15 min) — el pipeline arranca en cuanto S3 recibe
+        el objeto.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+            examples:
+              inline:
+                summary: Inline (archivo chico, con contentBase64)
+                value:
+                  fileName: pedimento.pdf
+                  contentBase64: "JVBERi0xLjc..."
+                  documentType: PEDIMENTO_ADUANAL
+                  metadata: { lote: "A123" }
+              presigned:
+                summary: Prefirmado (archivo grande, sin contentBase64)
+                value:
+                  fileName: expediente.pdf
+                  documentType: PEDIMENTO_ADUANAL
+      responses:
+        "200":
+          description: >
+            Documento aceptado. `uploadUrl` presente solo en modo prefirmado
+            (ver `classificationMode`/ausencia de `contentBase64` en el request).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+              examples:
+                inline:
+                  value:
+                    documentId: e18d014a-...
+                    bucket: documentvalidationstack-...
+                    key: raw/PEDIMENTO_ADUANAL/e18d014a-.../pedimento.pdf
+                    documentType: PEDIMENTO_ADUANAL
+                    classificationMode: manual
+                    uploadedAt: "2026-07-27T13:18:19.000Z"
+                presigned:
+                  value:
+                    documentId: e18d014a-...
+                    bucket: documentvalidationstack-...
+                    key: raw/PEDIMENTO_ADUANAL/e18d014a-.../expediente.pdf
+                    documentType: PEDIMENTO_ADUANAL
+                    classificationMode: manual
+                    uploadUrl: "https://...s3.amazonaws.com/..."
+                    uploadMethod: PUT
+                    uploadExpiresInSeconds: 900
+                    uploadedAt: "2026-07-27T13:18:19.000Z"
+        "400":
+          description: >
+            Body inválido. Incluye `DOCUMENT_TYPE_REQUIRED` cuando el archivo
+            es `.xml`/`.xlsx`/`.csv` y falta `documentType` (esos formatos no
+            tienen clasificación automática por visión).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "413":
+          description: >
+            Payload inline mayor a ~4MB reales — límite duro de invocación
+            síncrona de Lambda (6MB, no configurable) una vez inflado el base64.
+            Usa el modo prefirmado para archivos grandes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /documents/{id}:
+    get:
+      operationId: getDocumentById
+      tags: [documents]
+      summary: Obtener el resultado completo de un documento por id
+      description: >
+        `{id}` puede ser el id completo o un prefijo (gana el primer match).
+        `result` es el envelope completo, el mismo que se guarda en DynamoDB
+        y se publica en EventBridge — ver `documentacion/API_USO.md` §2 para
+        el shape anotado campo por campo.
+      parameters:
+        - $ref: "#/components/parameters/DocumentIdPath"
+        - name: full
+          in: query
+          description: >
+            `1`/`true` agrega `fullResult`: el detalle más profundo desde S3
+            (fields[] con extractedValue/normalizedValue/confidence/status/checks).
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Resultado del documento.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentResult" }
+        "404":
+          description: >
+            `NOT_FOUND` — no hay documento con ese id/prefijo, **o** existe
+            pero la app que llama no tiene permiso de verlo (misma respuesta
+            en ambos casos, a propósito: no confirma que un documento fuera
+            de tu alcance exista).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /documents/{id}/file:
+    get:
+      operationId: getDocumentFile
+      tags: [documents]
+      summary: Obtener una URL prefirmada de S3 para descargar el archivo original
+      description: >
+        Devuelve una URL prefirmada (no los bytes) para el archivo tal cual
+        se subió — PDF/imagen/XML/XLSX/CSV original, no el resultado de la
+        extracción. Sin tope de tamaño real: el cliente descarga directo de
+        S3, sin pasar por Lambda ni API Gateway.
+      parameters:
+        - $ref: "#/components/parameters/DocumentIdPath"
+        - name: expiresIn
+          in: query
+          description: Segundos de validez de la URL. Fuera de [60, 3600] se recorta, no da error.
+          schema: { type: integer, default: 900, minimum: 60, maximum: 3600 }
+      responses:
+        "200":
+          description: URL prefirmada emitida.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileDownloadResponse" }
+        "404":
+          description: >
+            `NOT_FOUND` (documento inexistente o sin permiso, igual que
+            `GET /documents/{id}`) o `FILE_NOT_FOUND` (el documento existe y
+            es visible, pero el objeto original no está en `processed/`/`failed/`
+            todavía — p. ej. sigue en PROCESSING).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /documents:
+    get:
+      operationId: searchDocuments
+      tags: [documents]
+      summary: Buscar/listar documentos por tipo y/o por cualquier campo extraído
+      description: >
+        Requiere al menos uno de `docType` o `field`+`value`. Con ambos,
+        `docType` acota primero en DynamoDB (Query al GSI `DocumentTypeIndex`,
+        sin Scan) y el filtro por campo solo se aplica a esos documentos.
+      parameters:
+        - name: docType
+          in: query
+          description: >
+            TYPE_ID (`PEDIMENTO_ADUANAL`) o nombre/alias normalizado. Varios
+            tipos separados por coma. Alias del param: `documentType`, `tipo`.
+          schema: { type: string }
+        - name: field
+          in: query
+          description: >
+            Dot-path del campo extraído, p. ej.
+            `extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO`. Si no resuelve
+            en la raíz, hace búsqueda profunda por la última clave del path.
+          schema: { type: string }
+        - name: value
+          in: query
+          description: Valor a comparar (case-insensitive, recorta espacios). Requiere `field`.
+          schema: { type: string }
+        - name: op
+          in: query
+          schema: { type: string, enum: [eq, contains], default: eq }
+        - name: status
+          in: query
+          description: Solo se aplica en DynamoDB junto con `docType`.
+          schema: { type: string, enum: [APROBADO, RECHAZADO, REQUIERE_REVISION] }
+        - name: since
+          in: query
+          description: "ISO-8601, p. ej. 2026-07-01. Solo con `docType`."
+          schema: { type: string, format: date }
+        - name: until
+          in: query
+          schema: { type: string, format: date }
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
+        - name: expand
+          in: query
+          description: "`0`/`false` desactiva la búsqueda dentro de expedientes multi-documento."
+          schema: { type: boolean, default: true }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+        - name: summary
+          in: query
+          description: "`1`/`true` devuelve solo un resumen ligero por match en vez del envelope completo."
+          schema: { type: boolean, default: false }
+        - name: full
+          in: query
+          description: "`1`/`true` agrega `fullResult` por match (detalle por-campo desde S3, un GET de S3 por match)."
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Resultados de la búsqueda.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentSearchResponse" }
+        "400":
+          description: "`MISSING_PARAMS` — falta `docType` y también `field`+`value`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: >
+            `FORBIDDEN` — se pidió un `docType` fuera de `AllowedDocTypes` de
+            la app, o se usó `field`/`value` sin `AllowFieldSearch`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: >
+        Requerido en **prod** (403 nativo de API Gateway sin key válida, sin
+        invocar la Lambda). No requerido en **dev** (URL execute-api abierta).
+  parameters:
+    DocumentIdPath:
+      name: id
+      in: path
+      required: true
+      description: Id completo del documento o un prefijo (gana el primer match).
+      schema: { type: string }
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Código de error, p. ej. NOT_FOUND, DOCUMENT_TYPE_REQUIRED, MISSING_PARAMS, FORBIDDEN." }
+        message: { type: string }
+    UploadRequest:
+      type: object
+      required: [fileName]
+      properties:
+        fileName:
+          type: string
+          description: "Extensión soportada: pdf|jpg|jpeg|png|xml|xlsx|csv."
+        contentBase64:
+          type: string
+          description: >
+            Archivo en base64. Presente = modo inline (~4MB reales tope,
+            no cabe como argumento de curl → usa --data-binary @archivo).
+            Ausente = modo prefirmado (la respuesta trae uploadUrl).
+        documentType:
+          type: string
+          description: >
+            TYPE_ID del catálogo. Opcional para PDF/imagen (Bedrock clasifica
+            si se omite; si se manda, se honra sin re-clasificar/segmentar).
+            Obligatorio para `.xml`/`.xlsx`/`.csv` (400 DOCUMENT_TYPE_REQUIRED
+            si falta) — esos formatos se extraen determinísticamente, sin Bedrock.
+        modelId:
+          type: string
+          description: >
+            Solo dev — procesa este documento con el modelo de Bedrock indicado,
+            sin redeploy. El stack de prod lo ignora a propósito.
+        metadata:
+          type: object
+          description: Metadata arbitraria que se conserva con el documento.
+          additionalProperties: true
+    UploadResponse:
+      type: object
+      description: >
+        `uploadUrl`/`uploadMethod`/`uploadExpiresInSeconds` presentes solo en
+        modo prefirmado (request sin `contentBase64`).
+      properties:
+        documentId: { type: string }
+        bucket: { type: string }
+        key: { type: string }
+        documentType: { type: string }
+        classificationMode: { type: string, enum: [manual, automatic] }
+        uploadedAt: { type: string, format: date-time }
+        uploadUrl: { type: string, format: uri }
+        uploadMethod: { type: string, enum: [PUT] }
+        uploadExpiresInSeconds: { type: integer }
+    Tracking:
+      type: object
+      description: >
+        Resumen de procedencia/procesamiento, presente en todo resultado
+        (flujo estándar y expediente por igual). `createdAt` siempre está;
+        `modelIds`/`appOrigin`/`modelFallbacks` solo si hay algo que reportar.
+      properties:
+        createdAt: { type: string, format: date-time }
+        modelIds:
+          type: object
+          description: Modelo que realmente corrió por fase (extractor/recovery/...).
+          additionalProperties: { type: string }
+        appOrigin:
+          type: string
+          description: App que subió el documento (x-api-key registrada con `pnpm apps:register`).
+        modelFallbacks:
+          type: object
+          description: Solo las fases donde hubo cambio automático de modelo.
+          additionalProperties:
+            type: object
+            properties:
+              expectedModel: { type: string }
+              actualModel: { type: string }
+              retries: { type: integer }
+              attempts:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    model: { type: string }
+                    error: { type: string }
+    DocumentResult:
+      type: object
+      properties:
+        documentId: { type: string }
+        workflowStatus:
+          type: string
+          description: Estado del pipeline en DynamoDB (p. ej. complete).
+        result:
+          type: object
+          description: >
+            Envelope completo. `extractedEntities`/`expediente` varían según
+            el catálogo del tipo de documento — ver
+            documentacion/API_USO.md §2 para un ejemplo anotado completo.
+          properties:
+            documentId: { type: string }
+            documentClassification: { type: string }
+            tracking: { $ref: "#/components/schemas/Tracking" }
+            extractedEntities:
+              type: object
+              description: Escalares del documento principal.
+              additionalProperties: true
+            validation:
+              type: object
+              properties:
+                status: { type: string, enum: [APROBADO, RECHAZADO, REQUIERE_REVISION] }
+                summary: { type: string }
+            expediente:
+              type: object
+              description: >
+                Presente solo para el flujo de expedientes/pedimentos
+                multi-documento (pipeline: "expediente"). Incluye
+                status/sourceFormat/pages/documents[]/crossDocumentChecks/tracking.
+              additionalProperties: true
+            fullResult:
+              type: object
+              description: Solo con `?full=1` — detalle por-campo (fields[]) desde S3.
+              additionalProperties: true
+            resultLocation:
+              type: object
+              properties:
+                bucket: { type: string }
+                key: { type: string }
+    FileDownloadResponse:
+      type: object
+      properties:
+        documentId: { type: string }
+        fileName: { type: string }
+        fileSizeBytes: { type: integer }
+        location: { type: string, enum: [processed, failed] }
+        downloadUrl: { type: string, format: uri }
+        downloadMethod: { type: string, enum: [GET] }
+        expiresInSeconds: { type: integer }
+        expiresAt: { type: string, format: date-time }
+    DocumentSearchResponse:
+      type: object
+      properties:
+        docTypes: { type: array, items: { type: string } }
+        resolvedTypes:
+          type: array
+          items:
+            type: object
+            properties:
+              typeId: { type: string }
+              input: { type: string }
+              resolvedBy: { type: string }
+        expandedContainers: { type: boolean }
+        field: { type: string }
+        value: { type: string }
+        op: { type: string }
+        order: { type: string }
+        summary: { type: boolean }
+        full: { type: boolean }
+        indexed:
+          type: boolean
+          description: "true = Query al GSI; false = Scan de la tabla."
+        restrictedToApp:
+          type: string
+          description: Solo si la app que llama tiene AccessScope=own.
+        restrictedToDocTypes:
+          type: array
+          items: { type: string }
+          description: Solo si la app tiene AllowedDocTypes configurado.
+        count: { type: integer }
+        scanned: { type: integer, description: Cuántos documentos se revisaron. }
+        matches:
+          type: array
+          items:
+            type: object
+            description: Envelope completo por match (o resumen si summary=1), + matchedValue/matchedAt.
+            additionalProperties: true
