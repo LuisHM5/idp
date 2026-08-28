@@ -465,12 +465,31 @@ páginas que sí importan para ESTE tipo, y el pipeline extrae solo ésas
   "min_score": 3,                  // marcadores DISTINTOS que debe cumplir una página
   "follow_pages": 1,               // páginas de continuación tras cada acierto
   "max_ratio": 0.6,                // arriba de esto se procesa TODO (fail-open)
+  "min_pages": 5,                  // <= esto: ni se intenta filtrar
+  "expected_pages": 6,             // tamaño de UN documento de este tipo (o [3, 6])
   "markers": [                     // regex, case-insensitive
     "NUM\\.?\\s*PEDIMENTO",
     "CVE\\.?\\s*PEDIM"
   ]
 }
 ```
+
+**Cuándo ni se molesta en filtrar.** Antes de puntuar nada, hay dos salidas
+rápidas — en ambas se procesa el documento completo:
+
+- **`min_pages`** (5 por defecto): un documento corto es **una sola llamada a
+  Bedrock de todos modos**, así que filtrarlo ahorra tokens de entrada pero
+  ni una llamada, mientras que un marcador mal calibrado sí podría tirar una
+  página que importaba. Mal negocio.
+- **`expected_pages`**: cuánto mide **un** documento de este tipo — un número
+  (`6`) o un rango (`[3, 6]`), del que solo se usa el tope. Si la subida no es
+  más grande que eso, el archivo **es** ese documento, no un expediente que lo
+  contiene: no hay nada que recortar. Un pedimento suelto trae "Página X de 5",
+  así que `PEDIMENTO_ADUANAL` declara `6` (los 5 del formato más la forma
+  simplificada).
+
+Ninguna de las dos cuenta como fail-open: no es que el selector fallara, es
+que decidió no meterse. `pnpm paginas` las muestra como `SIN FILTRAR → ...`.
 
 **Cómo puntúa.** Cada página suma **un punto por marcador DISTINTO** que
 aparece en su texto — diez repeticiones de la misma frase valen uno. Es el

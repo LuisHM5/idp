@@ -36,6 +36,8 @@
       "min_score": 3,
       "follow_pages": 1,
       "max_ratio": 0.6,
+      "min_pages": 5,
+      "expected_pages": 6,
       "markers": [
         "NUM\\.?\\s*PEDIMENTO",
         "CVE\\.?\\s*PEDIM",

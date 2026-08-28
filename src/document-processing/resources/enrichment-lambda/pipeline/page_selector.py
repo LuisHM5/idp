@@ -54,6 +54,12 @@ _DEFAULT_MAX_RATIO = 0.6
 # onto continuation pages that carry no header markers of their own (a
 # pedimento's PARTIDAS being the case that motivated it).
 _DEFAULT_FOLLOW_PAGES = 1
+# At or below this many pages, selection is skipped entirely: there is
+# essentially nothing to save (a short document is one Bedrock chunk either
+# way, so dropping pages saves input tokens but not a single call), while a
+# miscalibrated marker could still drop a page that mattered. Bad trade —
+# don't take it.
+_DEFAULT_MIN_PAGES = 5
 
 
 @dataclass
@@ -256,6 +262,26 @@ def score_pages(pages: Sequence[Any], markers: Sequence[str]) -> List[PageScore]
     return scores
 
 
+def _expected_max_pages(expected: Any) -> Optional[int]:
+    """Upper bound of a type's declared `expected_pages`, or None.
+
+    Accepts a plain count (`5`) or a range (`[3, 6]`) — a range is the honest
+    shape for a document whose length varies with its annexes, and only its
+    top matters here: an upload no bigger than a full-size instance of this
+    type is that document, not a bundle containing it.
+    """
+    if isinstance(expected, bool) or expected is None:
+        return None
+    if isinstance(expected, (int, float)):
+        return int(expected)
+    if isinstance(expected, (list, tuple)) and expected:
+        try:
+            return int(max(expected))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def select(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> Selection:
     """Pick the pages worth processing out of `pages`.
 
@@ -270,6 +296,24 @@ def select(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> Selection:
     markers = list((spec or {}).get("markers") or [])
     if not markers:
         return Selection(all_numbers, [], True, "el tipo no declara marcadores de página")
+
+    # Cheap exits BEFORE any scoring: when the upload is already just this
+    # document, filtering it can only lose pages, never save meaningful cost.
+    total = len(all_numbers)
+    min_pages = int((spec or {}).get("min_pages", _DEFAULT_MIN_PAGES))
+    if total <= min_pages:
+        return Selection(
+            all_numbers, [], False,
+            f"documento de {total} páginas (<= min_pages={min_pages}): se procesa completo",
+        )
+
+    expected_max = _expected_max_pages((spec or {}).get("expected_pages"))
+    if expected_max is not None and total <= expected_max:
+        return Selection(
+            all_numbers, [], False,
+            f"{total} páginas caben en el tamaño esperado del tipo "
+            f"(expected_pages<={expected_max}): el archivo ES este documento, se procesa completo",
+        )
 
     min_score = int((spec or {}).get("min_score", _DEFAULT_MIN_SCORE))
     max_ratio = float((spec or {}).get("max_ratio", _DEFAULT_MAX_RATIO))

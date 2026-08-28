@@ -19,12 +19,14 @@
     "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase.",
     "model_ids": {},
 
-    "__COMENTARIO_page_selection__": "Opcional. Selección de páginas de interés: manda a Bedrock SOLO las páginas cuyo texto cumple `min_score` marcadores DISTINTOS, en vez del documento completo — el ahorro grande en PDFs largos. Declararlo es lo que enciende la selección para este tipo (sin la llave, el tipo se procesa completo como siempre); `\"enabled\": false` lo apaga conservando los marcadores. Si la selección supera `max_ratio` del documento se procesan TODAS las páginas (fail-open): nunca se recorta contenido para cumplir un número. Calíbralo GRATIS con `python scripts/analizar-seleccion-paginas.py --type <TIPO> --show-pages` antes de confiar en él. Borra esta llave si tu tipo son documentos de pocas páginas: no hay nada que ahorrar. Ver catalogs/README.md -> 'Selección de páginas de interés'.",
+    "__COMENTARIO_page_selection__": "Opcional. Selección de páginas de interés: manda a Bedrock SOLO las páginas cuyo texto cumple `min_score` marcadores DISTINTOS, en vez del documento completo — el ahorro grande en PDFs largos. Declararlo es lo que enciende la selección para este tipo (sin la llave, el tipo se procesa completo como siempre); `\"enabled\": false` lo apaga conservando los marcadores. Si la selección supera `max_ratio` del documento se procesan TODAS las páginas (fail-open): nunca se recorta contenido para cumplir un número. `min_pages` y `expected_pages` son salidas rápidas: si la subida es corta, o no es más grande que UN documento de este tipo (`expected_pages` acepta un número o un rango `[3, 6]`), se procesa completa sin intentar filtrar — el archivo ES el documento, no hay nada que recortar. Calíbralo GRATIS con `python scripts/analizar-seleccion-paginas.py --type <TIPO> --show-pages` antes de confiar en él. Borra esta llave si tu tipo son documentos de pocas páginas: no hay nada que ahorrar. Ver catalogs/README.md -> 'Selección de páginas de interés'.",
     "page_selection": {
       "enabled": true,
       "min_score": 2,
       "follow_pages": 1,
       "max_ratio": 0.6,
+      "min_pages": 5,
+      "expected_pages": 6,
       "markers": [
         "REGEX QUE SOLO APARECE EN LAS PAGINAS DE ESTE TIPO",
         "OTRO REGEX DISTINTIVO"

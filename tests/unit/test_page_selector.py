@@ -290,3 +290,57 @@ def test_a_type_can_set_its_own_source_ceiling():
         assert expediente._page_cap_for("CON_TOPE") == (120, True)
     finally:
         expediente.get_type_entry = original
+
+
+# --- cheap exits: don't bother filtering ----------------------------------
+
+def test_short_documents_are_never_filtered():
+    """A short document is one Bedrock chunk either way, so filtering saves no
+    call — only input tokens — while a miscalibrated marker could still drop a
+    page that mattered. Not a trade worth taking."""
+    selection = page_selector.select(_doc({1}, 4), SPEC)
+    assert selection.skipped == []
+    assert selection.selected == [1, 2, 3, 4]
+    assert selection.fail_open is False   # deliberate skip, not a failure
+    assert "min_pages" in selection.reason
+
+
+def test_min_pages_is_inclusive_and_configurable():
+    assert page_selector.select(_doc({1}, 5), SPEC).skipped == []          # default 5
+    assert page_selector.select(_doc({1}, 6), SPEC).skipped != []
+    spec = {**SPEC, "min_pages": 10}
+    assert page_selector.select(_doc({1}, 9), spec).skipped == []
+
+
+def test_upload_the_size_of_the_document_itself_is_not_filtered():
+    """`expected_pages` says how big one instance of this type is. An upload
+    no bigger than that IS the document, not a bundle containing it — there is
+    nothing to strip out."""
+    spec = {**SPEC, "expected_pages": 8}
+    selection = page_selector.select(_doc({1, 2}, 8), spec)
+    assert selection.skipped == []
+    assert "expected_pages" in selection.reason
+    # One page over, and it might be a bundle again — filter normally.
+    assert page_selector.select(_doc({1, 2}, 9), spec).skipped != []
+
+
+def test_expected_pages_accepts_a_range():
+    spec = {**SPEC, "expected_pages": [3, 8]}
+    assert page_selector.select(_doc({1, 2}, 8), spec).skipped == []
+    assert page_selector.select(_doc({1, 2}, 9), spec).skipped != []
+
+
+def test_expected_pages_ignores_junk_instead_of_crashing():
+    for junk in (None, True, "seis", [], {}):
+        spec = {**SPEC, "expected_pages": junk}
+        page_selector.select(_doc({1, 2}, 20), spec)  # no debe lanzar
+    assert page_selector._expected_max_pages("seis") is None
+    assert page_selector._expected_max_pages(True) is None
+
+
+def test_the_real_catalog_skips_a_standalone_pedimento():
+    """Un pedimento suelto ('Página X de 5') no debe pasar por el filtro."""
+    catalog = json.loads((REPO_ROOT / "catalogs" / "PEDIMENTO_ADUANAL.json").read_text())
+    spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
+    hit = "NUM. PEDIMENTO CVE. PEDIM T.OPER REGIMEN: VALOR ADUANA"
+    assert page_selector.select(_doc({1}, 5, hit), spec).skipped == []

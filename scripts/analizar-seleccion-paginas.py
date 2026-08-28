@@ -72,6 +72,11 @@ def _analyze(pdf: Path, spec: Dict[str, Any], show_pages: bool) -> Optional[Dict
     print(f"  páginas: {len(pages)}  (nativas {len(native)}, sin texto {len(scanned)})")
     if selection.fail_open:
         print(f"  FAIL-OPEN → se procesarían las {len(pages)}: {selection.reason}")
+    elif not selection.skipped:
+        # Ni filtró ni falló: el selector decidió deliberadamente no meterse
+        # (documento corto, o del tamaño esperado del tipo). Decir por qué,
+        # o se lee como si los marcadores no hubieran servido.
+        print(f"  SIN FILTRAR → {selection.reason}")
     else:
         ahorro = len(selection.skipped) / len(pages) * 100
         print(f"  seleccionadas: {selection.selected}")
@@ -133,7 +138,10 @@ def main() -> int:
         print("=" * 60)
         print(f"TOTAL: {selected}/{total} páginas se mandarían a Bedrock "
               f"({(1 - selected / total) * 100:.0f}% menos)")
+        untouched = sum(1 for s in stats if not s["fail_open"] and s["selected"] == s["total"])
         print(f"Documentos en fail-open (ningún marcador alcanzó el umbral): {fail_open}/{len(stats)}")
+        if untouched:
+            print(f"Documentos sin filtrar a propósito (cortos o del tamaño esperado): {untouched}/{len(stats)}")
         if fail_open:
             print("  → esos documentos se procesan completos, como hoy. Si son muchos,")
             print("    los marcadores están mal calibrados: revísalos con --show-pages.")

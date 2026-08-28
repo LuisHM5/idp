@@ -43,7 +43,7 @@ from .normalize import (
     parse_amount,
     pedimento_consecutivo,
 )
-from . import page_selector
+from . import page_locator, page_selector
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import fallback_events, used_models
 from .pricing import merge_bedrock_usage
@@ -132,7 +132,18 @@ def _extract_segment(
     extract_pages = seg_pages
     selection = None
     if page_selector.enabled_for(entry):
-        selection = page_selector.select(seg_pages, page_selector.spec_for(entry))
+        spec = page_selector.spec_for(entry)
+        selection = page_selector.select(seg_pages, spec)
+        # The free path gave up (no marker cleared the bar, or the selection
+        # was too wide to trust) and the type says its size is variable, so
+        # there is no fixed range to fall back on either. Spend one cheap call
+        # on page digests rather than every page's full text on extraction.
+        if selection.fail_open and page_locator.wants_locator(spec):
+            located, locator_usage = page_locator.locate(seg_pages, entry, model_id)
+            if locator_usage:
+                doc["pageLocatorMeta"] = locator_usage
+            if located is not None:
+                selection = located
         if selection.filtered:
             extract_pages = page_selector.filter_pages(seg_pages, selection)
             logger.info(

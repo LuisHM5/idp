@@ -105,6 +105,17 @@ Medido con `test-docs/long-docs.pdf` (68 págs, 59 nativas): antes se truncaba
 a 50 y el resultado salía con `truncated` + `reviewRequired`; ahora se
 procesan las 68 y se extraen 26 — sin warning y sin perder páginas.
 
+### Cuándo el selector ni se molesta
+
+Dos salidas rápidas, antes de puntuar nada, en las que se procesa todo:
+`min_pages` (5) porque un documento corto es una sola llamada a Bedrock de
+todos modos —filtrarlo no ahorra ni una llamada, y sí arriesga perder una
+página—, y `expected_pages` (6 para el pedimento) porque una subida que no es
+más grande que UN pedimento **es** el pedimento, no un expediente que lo
+contiene. Por eso en la tabla de arriba los CFDIs de 1-2 páginas y
+`normal_pend.pdf` salen con 0 % de ahorro: es lo correcto, no una falla de
+calibración.
+
 Tres advertencias para no leer de más estos números:
 
 1. **Es ahorro de Bedrock, no de Textract.** El filtro corre *después* de
