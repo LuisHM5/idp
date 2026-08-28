@@ -164,6 +164,16 @@ class TypeRegistryEntry:
     # "slice"?}}}. None (the default) means the type has no QR to recover
     # from; nothing in the generic pipeline is coupled to which type this is.
     qr_recovery: Optional[Dict[str, Any]] = None
+    # Optional declarative page selection (pipeline/page_selector.py): when
+    # set, only the pages whose text matches this type's `markers` are sent to
+    # the expensive stages (Textract OCR / Bedrock extraction), instead of
+    # every page of the upload. Shape: {"enabled"?: bool, "markers": [regex],
+    # "min_score"?: int, "max_pages"?: int, "follow_pages"?: int, ...}.
+    # None (the default) means the type is never filtered — its pages take the
+    # exact same path they take today. Declaring the block is what opts a type
+    # in; `page_selector.enabled_for` resolves that against the global
+    # PAGE_SELECTION_ENABLED kill-switch.
+    page_selection: Optional[Dict[str, Any]] = None
     # XML namespace prefix -> URI map, used by pipeline/xml_document.py to
     # resolve each field's `xpath`/`item_xpath` (a field-centric-DSL field
     # extra, kept in FieldSpec.params like any other — see catalogs/README.md).
@@ -323,6 +333,7 @@ def _parse_entry(
             model_ids=data.get("model_ids", {}) or {},
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
             qr_recovery=data.get("qr_recovery"),
+            page_selection=data.get("page_selection"),
             namespaces=data.get("namespaces", {}) or {},
         )
 
@@ -359,6 +370,7 @@ def _parse_entry(
         model_id=data.get("model_id") or None,
         model_ids=data.get("model_ids", {}) or {},
         qr_recovery=data.get("qr_recovery"),
+        page_selection=data.get("page_selection"),
     )
 
 

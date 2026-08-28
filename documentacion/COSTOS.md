@@ -7,6 +7,122 @@
 > `usage` real de Bedrock (`extractionMeta.usage` en cada resultado) y
 > `pages.totalPages` / `pages.ocrPages` real por documento.
 
+## 0-bis. Selección de páginas de interés (2026-08-28) — medido, aún no desplegado
+
+Antes de este cambio, un PDF subido **con el tipo declarado** se extraía
+completo: las 86 páginas de un expediente iban a Bedrock aunque el pedimento
+viviera en 15 de ellas. `pipeline/page_selector.py` manda solo las páginas
+cuyo texto cumple los marcadores que el tipo declara en `page_selection`.
+
+Medido con `pnpm paginas` (offline, texto nativo de pypdf, sin llamar a AWS)
+sobre `test-docs/pedimentos docs/docs`:
+
+| Documento | Páginas | A Bedrock | Ahorro |
+| --- | ---: | ---: | ---: |
+| `26 07 3435 6041248 CG.pdf` (expediente digital) | 86 | 16 | **81 %** |
+| `pedimento-normal.pdf` / `pedimentos.pdf` (mismo expediente) | 86 | 16 | **81 %** |
+| `normal_pend.pdf` | 3 | 3 | 0 % (fail-open: nada que ahorrar) |
+| CFDIs sueltos de 1-2 páginas | 1-2 | igual | 0 % (fail-open) |
+| **Total de la carpeta** | **348** | **138** | **60 %** |
+
+### Ahorro de páginas ≠ ahorro de tokens
+
+**No los confundas.** Descartar el 81 % de las páginas de ese expediente
+recorta solo ~**67 % de los tokens**, porque las páginas que vale la pena
+conservar son justamente las densas en texto (el pedimento y sus anexos),
+mientras que las descartadas —acuses VUCEM, portadas— son ligeras.
+
+Cita la cifra de **páginas** para volumen de OCR, y la de **tokens** para
+costo. Medido sobre `26 07 3435 6041248 CG.pdf` con el tipo declarado:
+
+|                       | input | output | chunks | costo Bedrock |
+| --------------------- | ----: | -----: | -----: | ------------: |
+| Sin selección         | 57,512 |  5,400 |      6 |     $0.0930 |
+| Con selección         | 18,719 |  1,800 |      2 |     $0.0305 |
+| **Ahorro**            | **67 %** | **67 %** | 6→2 | **67 %** |
+
+El output importa más de lo que parece: cuesta **5× el input** ($5.50 vs
+$1.10 por millón) y escala con **chunks**, no con caracteres — cada chunk
+emite un JSON completo del schema. Por eso el ahorro se calcula distinto
+para cada lado.
+
+### Cómo se reporta el ahorro (y qué es dato vs. estimación)
+
+Los tokens que se cobran son **exactos**: salen del `usage` que devuelve
+Bedrock y ya reflejan solo las páginas filtradas, así que `cost_audit.py` los
+valora bien sin cambio alguno. Lo que no existe es el contrafactual — nadie
+pagó la llamada cara — así que se estima y se reporta **separado**, nunca
+mezclado con lo facturado:
+
+```jsonc
+"pageSelection": {
+  "pagesConsidered": 86, "selected": [...], "skipped": [...],
+  "savings": {
+    "charsSent": 50109, "charsSkipped": 105096,     // hechos exactos
+    "billedInputTokens": 18719,                      // lo que Bedrock cobró
+    "billedOutputTokens": 1800,
+    "chunksSent": 2, "estimatedChunksWithoutSelection": 6,
+    "estimatedInputTokensSaved": 39260,              // derivado, ver abajo
+    "estimatedInputSavingPct": 67.7,
+    "estimatedOutputTokensSaved": 3600
+  }
+}
+```
+
+- **Input** se estima con la densidad tokens/carácter *de la llamada que sí
+  corrió*, aplicada a los caracteres descartados. Es sólido porque el texto de
+  página es lo único que cambia entre filtrar y no filtrar: el prefijo de
+  schema e instrucciones es idéntico byte a byte.
+- **Output** se estima por chunks evitados (`_chunk_pages` es matemática de
+  texto, gratis y exacta).
+
+Validado contra el contrafactual real corriendo el mismo documento con
+`PAGE_SELECTION_ENABLED=false`: **la estimación de costo quedó a 0.6 % del
+valor verdadero** (0.8 % en input tokens).
+
+El agregado por documento vive en `expediente.usage.pageSelection` y se
+persiste como `PageSelection` en la tabla de costos, con
+`estimatedCostAvoidedUsd` valorado a las tarifas del modelo que corrió — así
+`pnpm costos -- --id <id>` y `pnpm reporte:costos` muestran lo ahorrado sin
+recalcular nada.
+
+### El truncado ciego y la selección son excluyentes
+
+`_MAX_PAGES` (50 por defecto) trunca el PDF **antes** que cualquier otra
+etapa. Dejar los dos guardas activos anula el selector: en una subida de 68
+páginas solo podría elegir entre las primeras 50, y un pedimento en la página
+63 se perdería igual que antes — justo lo que la selección existe para evitar.
+
+Por eso `process_pdf` elige uno de los dos (`_page_cap_for`):
+
+| Situación | Tope |
+| --- | --- |
+| Tipo declarado **con** selección activa | **No se trunca.** Solo aplica `page_selection.max_source_pages` (500 por defecto) como salvaguarda contra un archivo capaz de agotar la Lambda — no es un límite de costo, el costo lo acota el selector |
+| Tipo sin `page_selection`, o con `enabled: false`, o `PAGE_SELECTION_ENABLED=false` | `MAX_PAGES`, **idéntico a hoy** |
+| Subida **sin tipo declarado** | `MAX_PAGES` — no se sabe qué selector aplica hasta que el segmenter clasifica, y clasificar exige leer las páginas |
+
+Medido con `test-docs/long-docs.pdf` (68 págs, 59 nativas): antes se truncaba
+a 50 y el resultado salía con `truncated` + `reviewRequired`; ahora se
+procesan las 68 y se extraen 26 — sin warning y sin perder páginas.
+
+Tres advertencias para no leer de más estos números:
+
+1. **Es ahorro de Bedrock, no de Textract.** El filtro corre *después* de
+   `load_pages`, así que hoy el OCR se sigue pagando por cada página
+   escaneada. Eso es la Fase 2 (OCR bajo demanda).
+2. **El ahorro es del caso "tipo declarado"**, que es el común en producción
+   (`raw/{TIPO}/{uuid}/`): ahí el archivo entero es UN segmento y el filtro
+   descarta todo lo que no es del tipo. Con auto-clasificación el segmenter ya
+   partió el archivo por documento, así que cada segmento es casi todo
+   relevante y la selección suele salir en fail-open — correcto, pero sin
+   ahorro.
+3. **Un PDF 100 % escaneado no ahorra nada todavía**, porque el selector
+   necesita texto. Verificado contra texto de Textract real (guardado en un
+   `_prompt_input.json` de una corrida previa): los marcadores **sí** aciertan
+   sobre OCR (scores 7 y 3 sobre un umbral de 3), aun cuando el ruido de OCR
+   tumbó uno de ellos — pero un pedimento escaneado es casi todo páginas de
+   pedimento, así que la selección excede `max_ratio` y cae en fail-open.
+
 ## 0. Recálculo 2026-08-04 (vía MCP AWS — Cost Explorer + Pricing API)
 
 Datos nuevos desde el último corte: **54 resultados** en
@@ -398,6 +514,51 @@ dos llegaba a ningún lado calculable. Ambos se capturan y propagan ahora, así
 que el número que se ve por-documento debería acercarse más al de Cost
 Explorer que antes (aunque la brecha de ~31% de la sección 0 se midió antes
 de este cambio — no está re-validada contra Cost Explorer todavía).
+
+### Atributo `PageSelection` (2026-08-28)
+
+Cuando la selección de páginas filtró algo (§0-bis), el registro lleva además
+un atributo `PageSelection` con **lo que se ahorró**, para poder responder
+"cuánto nos ahorró esto" semanas después sin recalcular nada:
+
+| Campo | Qué es |
+| --- | --- |
+| `pagesConsidered` / `pagesExtracted` / `pagesSkipped` | páginas vistas, extraídas y descartadas |
+| `charsSent` / `charsSkipped` | caracteres de texto enviados vs. descartados — **exacto** |
+| `chunksSent` / `estimatedChunksWithoutSelection` | llamadas a Bedrock hechas vs. las que habría habido |
+| `billedInputTokens` / `billedOutputTokens` | **lo que Bedrock cobró de verdad** |
+| `estimatedInputTokensSaved` / `estimatedOutputTokensSaved` | tokens evitados (derivados) |
+| `estimatedInputSavingPct` | % de input tokens ahorrado |
+| `estimatedCostAvoidedUsd` | $ evitados, a las tarifas del modelo que corrió |
+
+**Vive FUERA de `Services` a propósito.** Ahí solo van montos facturados, y
+casi todo esto valora una llamada que nunca se hizo. `estimatedCostAvoidedUsd`
+**nunca** se suma a `TotalCostUsd` — si se sumara, la tabla sobrestimaría el
+gasto real. Un test lo verifica (`tests/unit/test_page_selection_cost_record.py`).
+
+Se guarda vía `_decimalize()`: el bloque trae floats
+(`estimatedInputSavingPct`, `estimatedCostAvoidedUsd`) y boto3 rechaza un
+float en cualquier parte del item, **en tiempo de escritura** — es decir, en
+producción, no en desarrollo. El mismo test serializa el item con el
+`TypeSerializer` de boto3 para que esa falla salga aquí y no en CloudWatch.
+
+Se lee con `pnpm costos`:
+
+- `pnpm costos -- --id <id>` → tabla facturado / evitado / sin selección, por
+  input tokens, output tokens, llamadas a Bedrock y caracteres.
+- `pnpm costos` (agregado) → páginas no extraídas, tokens y costo evitados del
+  corte completo, más "sin selección el corte habría costado ~$X en vez de $Y".
+
+También aparece en los reportes:
+
+| Reporte | Dónde |
+| --- | --- |
+| `pnpm costos -- --id <id>` | tabla facturado / evitado / sin selección por documento |
+| `pnpm costos` | agregado del corte + "habría costado ~$X en vez de $Y" |
+| `pnpm reporte:costos` | sección **Ahorro por selección de páginas** en el `.md` y el `.html`, hoja `SeleccionPaginas` en el `.xlsx`, y columnas `PageSel.*` por documento en la hoja `Documentos` |
+| `pnpm reporte` | tarjeta en el dashboard que **respeta los filtros** (se recalcula en el navegador con el corte activo) y se oculta sola si ningún documento del corte tuvo selección |
+
+En todos, `evitado` va en su propia columna, nunca sumado al costo total.
 
 **Qué NO se trackea por documento, deliberadamente:** KMS, S3, SQS,
 CloudWatch, API Gateway, DynamoDB. Ninguno es atribuible a una invocación

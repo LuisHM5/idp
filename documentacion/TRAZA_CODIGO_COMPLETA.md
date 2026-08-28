@@ -1348,7 +1348,8 @@ Archivo: `pipeline/expediente.py`.
 
 | Función | Entrada | Transformación/llamadas | Salida/destino |
 | --- | --- | --- | --- |
-| `_extract_segment()` (`:88`) | `Segment`, todas las páginas, modelo y reader opcional | selecciona rango, obtiene entry, llama `extract_document`, QR, regex recovery y liquidación; captura error por segmento | dict documento con datos privados temporales `_entities/_confidences/_text` → `process_pdf` |
+| `_extract_segment()` (`:88`) | `Segment`, todas las páginas, modelo y reader opcional | selecciona rango, obtiene entry, **filtra páginas con `page_selector` si el tipo lo declara** (solo lo que ve `extract_document`; `_text` y el QR siguen viendo el segmento completo), llama `extract_document`, QR, regex recovery y liquidación; captura error por segmento | dict documento con datos privados temporales `_entities/_confidences/_text`, más `pageSelection` cuando filtró → `process_pdf` |
+| `page_selector.select()` (`pipeline/page_selector.py`) | páginas del segmento + `page_selection` del catálogo | puntúa cada página por marcadores DISTINTOS que matchea, ancla las que pasan `min_score`, arrastra `follow_pages` de continuación; si nada pasa o la selección supera `max_ratio`, devuelve TODAS (fail-open) | `Selection{selected, skipped, failOpen, reason, scores}` → `_extract_segment` |
 | `_truncate_pdf()` (`:145`) | PDF bytes + `MAX_PAGES` | cuenta páginas y, si excede, escribe las primeras N a bytes nuevos | `(bytes,original_count?)` → `process_pdf`; nunca persiste el truncado |
 | `process_pdf()` (`:174`) | bytes, tipo/expected/model/nombre/formato | limita, carga texto, segmenta, extrae segmentos en pool, valida cada doc, ejecuta cross rules, agrega status/tracking/usage/warnings | `DeepResult` → `_run_expediente`; `_fail()` local crea error result uniforme |
 | `_public_entities()` (`:374`) | mapa interno | elimina valores vacíos | entidades auditables → documento profundo |

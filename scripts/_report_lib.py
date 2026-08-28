@@ -116,6 +116,32 @@ def scan_all(table: str, region: str) -> List[Dict[str, Any]]:
 # Normalización — tabla de costos
 # ---------------------------------------------------------------------------
 
+def _page_selection(ps: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Atributo `PageSelection` de la tabla de costos, con tipos de Python.
+
+    `estimated_cost_avoided` NO es dinero facturado: valora la llamada que no
+    se hizo. Se mantiene aparte de `total_cost` en todos los reportes — nunca
+    se suma a un total, o el reporte sobrestimaría el gasto real.
+    """
+    if not ps:
+        return None
+    return {
+        "pages_considered": int(ps.get("pagesConsidered", 0) or 0),
+        "pages_extracted": int(ps.get("pagesExtracted", 0) or 0),
+        "pages_skipped": int(ps.get("pagesSkipped", 0) or 0),
+        "chars_sent": int(ps.get("charsSent", 0) or 0),
+        "chars_skipped": int(ps.get("charsSkipped", 0) or 0),
+        "chunks_sent": int(ps.get("chunksSent", 0) or 0),
+        "chunks_without_selection": int(ps.get("estimatedChunksWithoutSelection", 0) or 0),
+        "billed_input_tokens": int(ps.get("billedInputTokens", 0) or 0),
+        "billed_output_tokens": int(ps.get("billedOutputTokens", 0) or 0),
+        "input_tokens_saved": int(ps.get("estimatedInputTokensSaved", 0) or 0),
+        "output_tokens_saved": int(ps.get("estimatedOutputTokensSaved", 0) or 0),
+        "input_saving_pct": float(ps["estimatedInputSavingPct"]) if ps.get("estimatedInputSavingPct") is not None else None,
+        "estimated_cost_avoided": float(ps.get("estimatedCostAvoidedUsd", 0) or 0),
+    }
+
+
 def normalize_cost_item(it: Dict[str, Any]) -> Dict[str, Any]:
     services_raw = it.get("Services") or {}
     services: Dict[str, Dict[str, Any]] = {}
@@ -146,6 +172,11 @@ def normalize_cost_item(it: Dict[str, Any]) -> Dict[str, Any]:
 
     pages = it.get("Pages") or {}
     return {
+        # Lo que la selección de páginas evitó gastar (None cuando no filtró).
+        # Todo casteado explícitamente: DynamoDB devuelve Decimal para CUALQUIER
+        # número, y reporte.py embebe esto con json.dumps, que no serializa
+        # Decimal — el mismo motivo por el que los campos de arriba se castean.
+        "page_selection": _page_selection(it.get("PageSelection")),
         "document_id": it.get("DocumentId", ""),
         "document_type": str(it.get("DocumentType") or "OTRO"),
         "document_type_name": it.get("DocumentTypeName") or "",

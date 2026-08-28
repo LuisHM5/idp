@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .normalize import digits_exact
+from .page_selector import score_pages
 
 logger = logging.getLogger(__name__)
 
@@ -110,29 +111,21 @@ def find_marker_page(pages: List[Any], marker_patterns: List[str], min_matches: 
     `min_matches` of the rest still land — a page with only an isolated,
     coincidental match to one generic-ish phrase never reaches that bar.
 
+    The scoring itself lives in `page_selector.score_pages` — the same
+    distinct-markers-per-page count now also drives which pages are worth
+    OCR/extraction cost at all, so there is one implementation, not two.
+
     The SAT pedimento's own layout always puts this box (and its QR) on the
     same page NUM. PEDIMENTO is printed on — but that isn't reliably the
     segment's first page: a cover page, a slightly-off segmentation call, or
     a multi-copy bundle can all shift it. The caller falls back to
     `seg.page_start` only when this returns None.
     """
-    compiled = []
-    for p in marker_patterns:
-        try:
-            compiled.append(re.compile(p, re.IGNORECASE))
-        except re.error as e:
-            logger.warning("qr_recovery: invalid page_marker pattern %r: %s", p, e)
-
-    best_page: Optional[int] = None
-    best_score = 0
-    for page in pages:
-        text = page.text or ""
-        score = sum(1 for pattern in compiled if pattern.search(text))
-        if score > best_score:
-            best_score = score
-            best_page = page.number
-
-    return best_page if best_score >= min_matches else None
+    scores = score_pages(pages, marker_patterns)
+    best = max(scores, key=lambda s: (s.score, -s.number), default=None)
+    if best is None or best.score < max(1, min_matches):
+        return None
+    return best.number
 
 
 def _apply_slice(value: str, slice_expr: Optional[str]) -> str:

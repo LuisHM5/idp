@@ -1,0 +1,136 @@
+"""What page selection saved must survive all the way into the cost table.
+
+The numbers are useless if they only exist in the in-memory result: the point
+of persisting them is to answer "how much did selection actually save us"
+weeks later, from `pnpm costos`. So this guards the whole chain — segment ->
+document roll-up -> cost breakdown -> DynamoDB item — and specifically the two
+ways it has silently broken before:
+
+- a field getting dropped in the per-document roll-up (chars/chunks did);
+- a float sneaking into the item, which boto3's resource API rejects at write
+  time, i.e. in production rather than here.
+"""
+
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+LAMBDA_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "src/document-processing/resources/enrichment-lambda"
+)
+sys.path.insert(0, str(LAMBDA_DIR))
+
+import cost_audit  # noqa: E402
+from pipeline.expediente import _page_selection_summary  # noqa: E402
+
+# One filtered document, shaped exactly like `Selection.to_json()` produces.
+DOC = {
+    "documentType": "PEDIMENTO_ADUANAL",
+    "pageSelection": {
+        "pagesConsidered": 86,
+        "selected": list(range(4, 20)),
+        "skipped": [n for n in range(1, 87) if not 4 <= n <= 19],
+        "failOpen": False,
+        "reason": "16/86 páginas con score>=3",
+        "scores": [],
+        "savings": {
+            "charsSent": 50109,
+            "charsSkipped": 105096,
+            "billedInputTokens": 18719,
+            "billedOutputTokens": 1800,
+            "chunksSent": 2,
+            "estimatedChunksWithoutSelection": 6,
+            "estimatedInputTokensSaved": 39260,
+            "estimatedInputTokensWithoutSelection": 57979,
+            "estimatedInputSavingPct": 67.7,
+            "estimatedOutputTokensSaved": 3600,
+            "estimatedOutputTokensWithoutSelection": 5400,
+        },
+    },
+}
+
+
+def _breakdown(documents):
+    result = {
+        "documentId": "doc-1",
+        "expediente": {
+            "usage": {
+                "extraction": {
+                    "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "usage": {"inputTokens": 18719, "outputTokens": 1800},
+                },
+                "pageSelection": _page_selection_summary(documents),
+            },
+            "pages": {"totalPages": 86, "nativePages": 67, "ocrPages": 19, "emptyPages": 0},
+        },
+    }
+    return cost_audit.build_cost_breakdown(result, {}, 12000.0)
+
+
+def test_every_savings_field_survives_the_roll_up():
+    """Nothing measured per segment may be lost on the way to the record —
+    chars and chunks especially, since they're what the token estimates are
+    DERIVED from and the only way to re-check a stored number later."""
+    summary = _page_selection_summary([DOC])
+    for name in (
+        "charsSent", "charsSkipped", "chunksSent", "estimatedChunksWithoutSelection",
+        "billedInputTokens", "billedOutputTokens",
+        "estimatedInputTokensSaved", "estimatedOutputTokensSaved",
+        "estimatedInputSavingPct",
+    ):
+        assert name in summary, f"{name} se perdió en el agregado"
+    assert summary["pagesSkipped"] == 70
+    assert summary["pagesExtracted"] == 16
+
+
+def test_two_filtered_documents_add_up():
+    summary = _page_selection_summary([DOC, DOC])
+    assert summary["documentsFiltered"] == 2
+    assert summary["charsSkipped"] == 105096 * 2
+    assert summary["estimatedInputTokensSaved"] == 39260 * 2
+
+
+def test_absent_rather_than_zeroed_when_nothing_was_filtered():
+    assert _page_selection_summary([{"documentType": "FACTURA"}]) is None
+    assert "pageSelection" not in _breakdown([{"documentType": "FACTURA"}])
+
+
+def test_cost_avoided_prices_output_too():
+    """Output is billed 5x input, so pricing only the input saving would
+    understate what selection avoided by most of its value."""
+    breakdown = _breakdown([DOC])
+    avoided = breakdown["pageSelection"]["estimatedCostAvoidedUsd"]
+    input_only = 39260 / 1_000_000 * 1.10
+    assert avoided > input_only * 1.4
+
+
+def test_savings_stay_out_of_the_billed_total():
+    """`estimatedCostAvoidedUsd` prices a call nobody made. If it ever leaked
+    into totalCostUsd the cost table would overstate real spend."""
+    breakdown = _breakdown([DOC])
+    billed = sum(s["costUsd"] for s in breakdown["services"].values())
+    assert breakdown["totalCostUsd"] == round(billed, 6)
+    assert "pageSelection" not in breakdown["services"]
+
+
+def test_the_item_is_writable_by_boto3():
+    """boto3's resource API rejects a raw float ANYWHERE in the item, and it
+    does so at write time — so catch it here instead of in CloudWatch."""
+    from boto3.dynamodb.types import TypeSerializer
+
+    breakdown = _breakdown([DOC])
+    item = cost_audit._decimalize(breakdown["pageSelection"])
+
+    def floats(node, path=""):
+        if isinstance(node, float):
+            return [path]
+        if isinstance(node, dict):
+            return [p for k, v in node.items() for p in floats(v, f"{path}.{k}")]
+        if isinstance(node, list):
+            return [p for i, v in enumerate(node) for p in floats(v, f"{path}[{i}]")]
+        return []
+
+    assert floats(item) == []
+    assert TypeSerializer().serialize(item)["M"]["charsSkipped"] == {"N": "105096"}
+    assert isinstance(item["estimatedInputSavingPct"], Decimal)

@@ -115,6 +115,25 @@ def build_cost_breakdown(
         breakdown["pages"] = pages
         if pages["Total"] > 0:
             breakdown["costPerPageUsd"] = round(total / pages["Total"], 6)
+
+    # What catalog-driven page selection avoided on this document. Kept OUT of
+    # `services` on purpose: those are billed amounts, and the only figure here
+    # that anyone was billed for is `billedInputTokens` (already counted inside
+    # BedrockExtraction). The `estimated*` fields price a call that was never
+    # made — useful to justify the feature, never to be added into a total.
+    page_selection = usage.get("pageSelection")
+    if page_selection:
+        breakdown["pageSelection"] = dict(page_selection)
+        avoided = {
+            "inputTokens": page_selection.get("estimatedInputTokensSaved") or 0,
+            # Output carries most of the money here — it is priced 5x input —
+            # so leaving it out would understate what selection avoided.
+            "outputTokens": page_selection.get("estimatedOutputTokensSaved") or 0,
+        }
+        if avoided["inputTokens"] or avoided["outputTokens"]:
+            breakdown["pageSelection"]["estimatedCostAvoidedUsd"] = bedrock_cost(
+                avoided, extraction.get("modelId")
+            )["costUsd"]
     return breakdown
 
 
@@ -154,6 +173,11 @@ def write_cost_record(
         item["AppOrigin"] = str(event["appOrigin"])
     if "pages" in breakdown:
         item["Pages"] = breakdown["pages"]
+    if "pageSelection" in breakdown:
+        # _decimalize, not the raw dict: this block carries floats
+        # (estimatedSavingPct, estimatedCostAvoidedUsd) and boto3's resource
+        # API rejects a raw float anywhere in the item.
+        item["PageSelection"] = _decimalize(breakdown["pageSelection"])
     if "costPerPageUsd" in breakdown:
         item["CostPerPageUsd"] = Decimal(str(breakdown["costPerPageUsd"]))
 

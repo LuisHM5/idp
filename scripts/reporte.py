@@ -8,11 +8,21 @@ tema); este es el que junta todo para no tener que abrir dos.
 
 El HTML es una página autocontenida (sin librerías externas, sin servidor):
 los datos van embebidos como JSON y todo el filtrado/orden/detalle corre en
-el navegador con JavaScript plano. Filtros por fecha, tipo de documento,
-modelo, estado de ejecución y estado de negocio recalculan KPIs y tablas al
-vuelo; click en un documento abre el detalle completo (costo por servicio +
-calidad/campos). Las secciones con mucho contenido van en `<details>`
-colapsables para no forzar scroll infinito.
+el navegador con JavaScript plano. Los filtros (fecha, tipo de documento,
+sistema/`AppOrigin`, modelo, estado de ejecución y estado de negocio) viven
+en un panel colapsado que se despliega con el botón "Filtros" — la barra
+pegajosa se queda como un renglón delgado con el resumen del corte, y al
+cambiar cualquier filtro se recalculan KPIs y tablas al vuelo. Click en un
+documento abre el detalle completo (costo por servicio + calidad/campos).
+Las secciones con mucho contenido van en `<details>` colapsables para no
+forzar scroll infinito.
+
+Además del costo y la calidad, analiza el **tiempo de proceso**
+(`Tracking.ProcessingSeconds`: promedio, p50, p95, por página, distribución,
+por tipo/sistema/servicio y los 10 más lentos) y contrasta el costo del corte
+contra las mediciones reales de `documentacion/COSTOS.md` (ver
+`COST_REFERENCE` abajo) — $/documento y $/página contra lo medido y contra
+el presupuesto acordado.
 
 Por default lee **dev**. Usa `--env prod` para el ambiente productivo.
 
@@ -25,6 +35,7 @@ Uso:
     pnpm reporte                              # dev, todo el historial
     pnpm reporte -- --env prod
     pnpm reporte -- --desde 2026-08-01 --hasta 2026-08-17
+    pnpm reporte -- --sistema CEDIS
     pnpm reporte -- --open
 """
 
@@ -58,6 +69,51 @@ from _report_lib import (  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_ROOT = REPO / "reportes"
+
+
+# ---------------------------------------------------------------------------
+# Referencias de costo — NO son estimaciones: son las mediciones reales de
+# `documentacion/COSTOS.md` (S3 `results/*.json` + `usage` real de Bedrock,
+# cruzados contra Cost Explorer y la Pricing API). Sirven para contrastar lo
+# que este reporte está midiendo hoy contra lo que se midió/acordó, en vez de
+# tener que abrir el .md aparte. Si se re-mide el costo, se actualiza aquí
+# **y** en COSTOS.md — el `source` de cada entrada dice de qué sección salió.
+# ---------------------------------------------------------------------------
+
+COST_REFERENCE: Dict[str, Any] = {
+    "doc": "documentacion/COSTOS.md",
+    "measuredOn": "2026-08-04",
+    "volume": {"docsPerMonth": 2430, "pagesPerMonth": 7290, "budgetPerMonth": 60.52},
+    # Líneas horizontales contra las que se compara el $/página del corte.
+    "perPage": [
+        {"label": "Colchón presupuestario ampliado", "value": 0.0131, "source": "§6", "role": "cushion"},
+        {"label": "Presupuesto recomendado (IVA + 15% contingencia)", "value": 0.0083, "source": "§6", "role": "budget"},
+        {"label": "Esperado con IVA (todo incluido, prod)", "value": 0.00743, "source": "§0.1", "role": "expected"},
+        {"label": "Subtotal técnico antes de IVA", "value": 0.00640, "source": "§0.1", "role": "expected"},
+        {"label": "Facturado real blended (Cost Explorer)", "value": 0.0049, "source": "§0", "role": "measured"},
+        {"label": "Pedimento nativo 3 pág (caso puro)", "value": 0.0041, "source": "§0", "role": "measured"},
+        {"label": "Pedimento escaneado 27 pág, 100 % OCR", "value": 0.0037, "source": "§0", "role": "measured"},
+    ],
+    # Costo real por documento medido por tipo (Bedrock + Textract atribuidos
+    # documento por documento, ventana 29-jul → 04-ago 2026).
+    "perDocByType": {
+        "PEDIMENTO_ADUANAL": {"costPerDoc": 0.0421, "costPerPage": 0.0038, "n": 46,
+                              "note": "mezcla 3 pág nativo + 27/50 pág escaneado"},
+        "PEDIMENTO_ADUANAL_V1": {"costPerDoc": 0.0714, "costPerPage": 0.0357, "n": 1},
+        "CONSTANCIA_SITUACION_FISCAL": {"costPerDoc": 0.0175, "costPerPage": 0.0087, "n": 4},
+        "FACTURA_HONORARIOS": {"costPerDoc": 0.0138, "costPerPage": 0.0138, "n": 1},
+        "INE": {"costPerDoc": 0.0080, "costPerPage": 0.0080, "n": 3, "note": "imagen, 100 % OCR"},
+        "OTRO": {"costPerDoc": 0.0, "costPerPage": 0.0, "n": 28,
+                 "note": "sin catálogo activo durante la migración del DSL — $0 temporal"},
+        "CFDI_GASTO_TERCERO": {"costPerDoc": 0.0, "costPerPage": 0.0, "n": 7, "note": "catálogo archivado — $0 temporal"},
+        "FACTURA_LOGISTICA": {"costPerDoc": 0.0, "costPerPage": 0.0, "n": 5, "note": "catálogo archivado — $0 temporal"},
+        "PERMISO_CERTIFICADO_SANITARIO": {"costPerDoc": 0.0, "costPerPage": 0.0, "n": 4, "note": "catálogo archivado — $0 temporal"},
+        "FACTURA_AGENCIA_ADUANAL": {"costPerDoc": 0.0, "costPerPage": 0.0, "n": 3, "note": "catálogo archivado — $0 temporal"},
+        "FACTURA_HONORARIOS_XML": {"costPerDoc": 0.0, "costPerPage": 0.0, "n": 1, "note": "pipeline determinístico, nunca llama a Bedrock"},
+    },
+    # El caso de referencia vigente para presupuestar por documento (§6).
+    "perDoc": {"label": "Pedimento de 3 páginas (Bedrock + Textract)", "value": 0.01365, "source": "§6"},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +177,9 @@ def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -
             "totalInputTokens": (c or {}).get("total_input_tokens"),
             "totalOutputTokens": (c or {}).get("total_output_tokens"),
             "services": (c or {}).get("services") or {},
+            # null cuando la selección de páginas no estuvo activa para ese
+            # documento; el JS filtra por eso para no contar ceros.
+            "pageSelection": (c or {}).get("page_selection"),
         })
     return unified
 
@@ -143,12 +202,58 @@ def pct(x: Optional[float]) -> str:
     return f"{x:.0%}" if x is not None else "—"
 
 
+def money5(x: Optional[float]) -> str:
+    """El costo por página vive en el quinto decimal ($0.00455) — `money`, con
+    sus 4 decimales, lo redondearía a algo que no se puede comparar contra las
+    referencias de COSTOS.md."""
+    return f"${x:,.5f}" if x is not None else "—"
+
+
+def secs(x: Optional[float]) -> str:
+    """Mismo formato que `secsFmt` del lado JS — sub-segundo en ms, minutos
+    cuando pasa del minuto, para que el .md y el HTML no se lean distinto."""
+    if x is None:
+        return "—"
+    if x < 1:
+        return f"{x * 1000:.0f}ms"
+    if x < 60:
+        return f"{x:.1f}s"
+    if x < 3600:
+        return f"{int(x // 60)}m {x % 60:.0f}s"
+    return f"{int(x // 3600)}h {int(x % 3600 // 60)}m"
+
+
+def percentile(sorted_values: List[float], q: float) -> Optional[float]:
+    """Percentil con interpolación lineal (mismo método que numpy.percentile,
+    sin la dependencia). La lista **ya viene ordenada**."""
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    pos = (len(sorted_values) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (pos - lo)
+
+
+def app_of(row: Dict[str, Any]) -> str:
+    """El sistema/app que subió el documento. Los registros viejos (o los que
+    entraron sin API key en dev) no lo traen; se agrupan explícitos en vez de
+    desaparecer del corte."""
+    return row["appOrigin"] or "(sin sistema)"
+
+
 def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     n = len(rows)
     completed = [r for r in rows if r["workflowStatus"] == "complete"]
     val_counts = Counter(r["validationStatus"] for r in completed if r["validationStatus"])
     with_cost = [r for r in rows if r["hasCost"]]
     confs = [r["avgConfidence"] for r in rows if r["avgConfidence"] is not None]
+    durs = sorted(r["processingSeconds"] for r in rows if r["processingSeconds"] is not None)
+    # segundos/página solo sobre los documentos que traen ambos datos —
+    # dividir el tiempo total entre todas las páginas mezclaría documentos
+    # sin tiempo registrado y bajaría el número artificialmente.
+    dur_page = [r for r in rows if r["processingSeconds"] is not None and r["pagesTotal"]]
     total_cost = sum(r["totalCost"] or 0 for r in with_cost)
     total_pages = sum(r["pagesTotal"] or 0 for r in rows)
     dates = sorted(r["processedAt"] for r in rows if r["processedAt"])
@@ -157,6 +262,16 @@ def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "n_completed": len(completed),
         "approval_rate": (val_counts.get("APROBADO", 0) / len(completed)) if completed else None,
         "avg_confidence": (sum(confs) / len(confs)) if confs else None,
+        "n_with_duration": len(durs),
+        "avg_seconds": (sum(durs) / len(durs)) if durs else None,
+        "p50_seconds": percentile(durs, 0.5),
+        "p95_seconds": percentile(durs, 0.95),
+        "min_seconds": durs[0] if durs else None,
+        "max_seconds": durs[-1] if durs else None,
+        "total_seconds": sum(durs),
+        "seconds_per_page": (
+            sum(r["processingSeconds"] for r in dur_page) / sum(r["pagesTotal"] for r in dur_page)
+        ) if dur_page else None,
         "total_cost": total_cost,
         "avg_cost_doc": (total_cost / len(with_cost)) if with_cost else None,
         "total_input_tokens": sum(r["totalInputTokens"] or 0 for r in with_cost),
@@ -165,20 +280,53 @@ def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "first_date": dates[0] if dates else None,
         "last_date": dates[-1] if dates else None,
         "n_with_cost": len(with_cost),
+        # Ahorro por selección de páginas. Se mantiene FUERA de total_cost:
+        # `cost_avoided` valora una llamada que nunca se hizo, así que sumarlo
+        # inflaría el gasto real del corte.
+        "page_selection": _page_sel_snapshot(rows),
     }
 
 
-def by_key_snapshot(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str, Any]]:
+def _page_sel_snapshot(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    active = [r["pageSelection"] for r in rows if r.get("pageSelection")]
+    if not active:
+        return None
+    in_saved = sum(p["input_tokens_saved"] for p in active)
+    in_billed = sum(p["billed_input_tokens"] for p in active)
+    cost_avoided = sum(p["estimated_cost_avoided"] for p in active)
+    billed_cost = sum(r["totalCost"] or 0 for r in rows if r.get("pageSelection"))
+    return {
+        "docs": len(active),
+        "pages_considered": sum(p["pages_considered"] for p in active),
+        "pages_extracted": sum(p["pages_extracted"] for p in active),
+        "pages_skipped": sum(p["pages_skipped"] for p in active),
+        "billed_input_tokens": in_billed,
+        "billed_output_tokens": sum(p["billed_output_tokens"] for p in active),
+        "input_tokens_saved": in_saved,
+        "output_tokens_saved": sum(p["output_tokens_saved"] for p in active),
+        "input_saving_pct": (in_saved / (in_billed + in_saved) * 100) if (in_billed + in_saved) else None,
+        "cost_avoided": cost_avoided,
+        "billed_cost": billed_cost,
+        "cost_without_selection": billed_cost + cost_avoided,
+    }
+
+
+def snapshot_by(rows: List[Dict[str, Any]], key_fn) -> Dict[str, Dict[str, Any]]:
     buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in rows:
-        buckets[r[key]].append(r)
+        buckets[key_fn(r)].append(r)
     return {k: overall_snapshot(rs) for k, rs in buckets.items()}
+
+
+def by_key_snapshot(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str, Any]]:
+    return snapshot_by(rows, lambda r: r[key])
 
 
 def render_markdown(rows: List[Dict[str, Any]], env: str) -> str:
     overall = overall_snapshot(rows)
     by_type = by_key_snapshot(rows, "type")
     by_model = by_key_snapshot(rows, "model")
+    by_app = snapshot_by(rows, app_of)
 
     lines = [
         f"# Reporte — {env}",
@@ -186,8 +334,8 @@ def render_markdown(rows: List[Dict[str, Any]], env: str) -> str:
         f"Generado {datetime.now():%Y-%m-%d %H:%M} · {overall['n']} documento(s)"
         + (f" · {overall['first_date'][:10]} a {overall['last_date'][:10]}" if overall["first_date"] else ""),
         "",
-        "Este resumen es una foto fija sin filtrar. Para filtrar por fecha/tipo/modelo/estado "
-        "y ver el detalle de un documento, abre `reporte.html`.",
+        "Este resumen es una foto fija sin filtrar. Para filtrar por fecha/tipo/sistema/modelo/"
+        "estado y ver el detalle de un documento, abre `reporte.html`.",
         "",
         "## Totales",
         "",
@@ -204,17 +352,101 @@ def render_markdown(rows: List[Dict[str, Any]], env: str) -> str:
         f"| Tokens de entrada (total) | {num(overall['total_input_tokens'])} |",
         f"| Tokens de salida (total) | {num(overall['total_output_tokens'])} |",
         "",
+    ]
+
+    ps = overall.get("page_selection")
+    if ps:
+        lines += [
+            "## Ahorro por selección de páginas",
+            "",
+            f"Activa en {ps['docs']} de {overall['n']} documento(s): se extrajeron "
+            f"{num(ps['pages_extracted'])} de {num(ps['pages_considered'])} páginas "
+            f"({num(ps['pages_skipped'])} nunca llegaron al modelo).",
+            "",
+            "| | Facturado | Evitado (est.) | Sin selección |",
+            "| --- | --- | --- | --- |",
+            f"| Tokens de entrada | {num(ps['billed_input_tokens'])} | {num(ps['input_tokens_saved'])} | "
+            f"{num(ps['billed_input_tokens'] + ps['input_tokens_saved'])} |",
+            f"| Tokens de salida | {num(ps['billed_output_tokens'])} | {num(ps['output_tokens_saved'])} | "
+            f"{num(ps['billed_output_tokens'] + ps['output_tokens_saved'])} |",
+            f"| Costo | {money(ps['billed_cost'])} | {money(ps['cost_avoided'])} | "
+            f"{money(ps['cost_without_selection'])} |",
+            "",
+            "> **Evitado** es una estimación de la llamada que nunca se hizo — no está sumado "
+            "al costo total de arriba.",
+            "",
+        ]
+
+    lines += [
+        "## Tiempo de proceso",
+        "",
+        f"Medido de punta a punta (`Tracking.ProcessingSeconds`): del inicio del enriquecimiento "
+        f"al resultado guardado. {overall['n_with_duration']} de {overall['n']} documento(s) lo traen registrado.",
+        "",
+        "| Métrica | Valor |",
+        "| --- | --- |",
+        f"| Promedio | {secs(overall['avg_seconds'])} |",
+        f"| Mediana (p50) | {secs(overall['p50_seconds'])} |",
+        f"| p95 | {secs(overall['p95_seconds'])} |",
+        f"| Mínimo | {secs(overall['min_seconds'])} |",
+        f"| Máximo | {secs(overall['max_seconds'])} |",
+        f"| Por página | {secs(overall['seconds_per_page'])} |",
+        f"| Tiempo acumulado | {secs(overall['total_seconds'])} |",
+        "",
         "## Por tipo de documento",
         "",
-        "| Tipo | Docs | Aprobación | Confianza | Costo total | $/doc |",
+        "| Tipo | Docs | Aprobación | Confianza | Tiempo prom. | p95 | Costo total | $/doc |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for t, m in sorted(by_type.items(), key=lambda kv: kv[1]["n"], reverse=True):
+        lines.append(f"| {t} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {secs(m['avg_seconds'])} | {secs(m['p95_seconds'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
+
+    lines += ["", "## Por sistema", "",
+              "Sistema/app que subió el documento (`AppOrigin`, resuelto de la API key del request).",
+              "",
+              "| Sistema | Docs | Aprobación | Confianza | Tiempo prom. | p95 | Costo total | $/doc |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for app, m in sorted(by_app.items(), key=lambda kv: kv[1]["n"], reverse=True):
+        lines.append(f"| {app} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {secs(m['avg_seconds'])} | {secs(m['p95_seconds'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
+
+    lines += ["", "## Por modelo", "", "| Modelo | Docs | Aprobación | Confianza | Tiempo prom. | p95 | Costo total | $/doc |", "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for mdl, m in sorted(by_model.items(), key=lambda kv: kv[1]["n"], reverse=True):
+        lines.append(f"| {mdl} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {secs(m['avg_seconds'])} | {secs(m['p95_seconds'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
+
+    budget = next(x for x in COST_REFERENCE["perPage"] if x["role"] == "budget")
+    cost_page_now = (overall["total_cost"] / overall["total_pages"]) if overall["total_pages"] else None
+    lines += [
+        "", "## Costo contra las referencias medidas", "",
+        f"Referencias de `{COST_REFERENCE['doc']}` (medición real de {COST_REFERENCE['measuredOn']}: "
+        "`usage` de Bedrock y páginas reales, cruzados contra Cost Explorer).",
+        "",
+        "| Concepto | $/página |",
+        "| --- | --- |",
+        f"| **Este corte** | {money5(cost_page_now)} |",
+    ]
+    for ref in COST_REFERENCE["perPage"]:
+        lines.append(f"| {ref['label']} ({COST_REFERENCE['doc']} {ref['source']}) | {money5(ref['value'])} |")
+    projected = (cost_page_now * COST_REFERENCE["volume"]["pagesPerMonth"]) if cost_page_now is not None else None
+    lines += [
+        "",
+        f"Costo por documento de este corte: {money(overall['avg_cost_doc'])} "
+        f"(referencia {money(COST_REFERENCE['perDoc']['value'])} — {COST_REFERENCE['perDoc']['label']}).",
+        "",
+        f"A {COST_REFERENCE['volume']['pagesPerMonth']:,} páginas/mes el corte actual proyecta "
+        + (f"**${projected:,.2f}/mes**" if projected is not None else "—")
+        + f" contra el presupuesto acordado de ${COST_REFERENCE['volume']['budgetPerMonth']:,.2f}/mes "
+        f"(${budget['value']:.4f}/página).",
+        "",
+        "| Tipo | Docs | $/doc hoy | $/doc ref. | $/pág hoy | $/pág ref. |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for t, m in sorted(by_type.items(), key=lambda kv: kv[1]["n"], reverse=True):
-        lines.append(f"| {t} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
-
-    lines += ["", "## Por modelo", "", "| Modelo | Docs | Aprobación | Confianza | Costo total | $/doc |", "| --- | --- | --- | --- | --- | --- |"]
-    for mdl, m in sorted(by_model.items(), key=lambda kv: kv[1]["n"], reverse=True):
-        lines.append(f"| {mdl} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
+        ref = COST_REFERENCE["perDocByType"].get(t)
+        page_now = (m["total_cost"] / m["total_pages"]) if m["total_pages"] else None
+        lines.append(
+            f"| {t} | {m['n']} | {money(m['avg_cost_doc'])} | {money(ref['costPerDoc']) if ref else '—'} | "
+            f"{money5(page_now)} | {money5(ref['costPerPage']) if ref else '—'} |"
+        )
 
     lines += ["", "_Generado por `pnpm reporte` (scripts/reporte.py) — dashboard interactivo: `reporte.html` · datos crudos: `datos_raw.xlsx`._"]
     return "\n".join(lines)
@@ -267,21 +499,51 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]]) -> None:
         data_rows.append(row)
     write_sheet(ws_docs, headers, data_rows)
 
+    agg_headers = [
+        "Documentos", "TasaAprobacion", "ConfianzaPromedio",
+        "DocsConTiempo", "SegundosPromedio", "SegundosP50", "SegundosP95", "SegundosMax", "SegundosPorPagina",
+        "CostoTotalUsd", "CostoPorDocUsd", "CostoPorPaginaUsd",
+    ]
+
+    def agg_values(m: Dict[str, Any]) -> List[Any]:
+        return [
+            m["n"], m["approval_rate"], m["avg_confidence"],
+            m["n_with_duration"], m["avg_seconds"], m["p50_seconds"], m["p95_seconds"], m["max_seconds"], m["seconds_per_page"],
+            m["total_cost"], m["avg_cost_doc"], (m["total_cost"] / m["total_pages"]) if m["total_pages"] else None,
+        ]
+
     ws_type = wb.create_sheet("PorTipo")
     by_type = by_key_snapshot(rows, "type")
-    write_sheet(
-        ws_type,
-        ["DocumentType", "Documentos", "TasaAprobacion", "ConfianzaPromedio", "CostoTotalUsd", "CostoPorDocUsd"],
-        [[t, m["n"], m["approval_rate"], m["avg_confidence"], m["total_cost"], m["avg_cost_doc"]] for t, m in by_type.items()],
-    )
+    write_sheet(ws_type, ["DocumentType"] + agg_headers, [[t] + agg_values(m) for t, m in by_type.items()])
+
+    ws_app = wb.create_sheet("PorSistema")
+    by_app = snapshot_by(rows, app_of)
+    write_sheet(ws_app, ["AppOrigin"] + agg_headers, [[a] + agg_values(m) for a, m in by_app.items()])
 
     ws_model = wb.create_sheet("PorModelo")
     by_model = by_key_snapshot(rows, "model")
-    write_sheet(
-        ws_model,
-        ["Model", "Documentos", "TasaAprobacion", "ConfianzaPromedio", "CostoTotalUsd", "CostoPorDocUsd"],
-        [[m_, s["n"], s["approval_rate"], s["avg_confidence"], s["total_cost"], s["avg_cost_doc"]] for m_, s in by_model.items()],
-    )
+    write_sheet(ws_model, ["Model"] + agg_headers, [[m_] + agg_values(s) for m_, s in by_model.items()])
+
+    # Referencias medidas de COSTOS.md contra lo que trae este corte, para
+    # poder comparar en Excel sin volver a teclear los números del documento.
+    ws_ref = wb.create_sheet("Referencias")
+    ref_rows: List[List[Any]] = [
+        [f"{r['label']} ({COST_REFERENCE['doc']} {r['source']})", "$/pagina", r["value"], None, None]
+        for r in COST_REFERENCE["perPage"]
+    ]
+    overall_ref = overall_snapshot(rows)
+    ref_rows.append([
+        "Este corte", "$/pagina",
+        (overall_ref["total_cost"] / overall_ref["total_pages"]) if overall_ref["total_pages"] else None,
+        None, None,
+    ])
+    for t, m in by_type.items():
+        ref = COST_REFERENCE["perDocByType"].get(t)
+        ref_rows.append([
+            t, "$/doc", ref["costPerDoc"] if ref else None, m["avg_cost_doc"],
+            (m["avg_cost_doc"] - ref["costPerDoc"]) if (ref and m["avg_cost_doc"] is not None) else None,
+        ])
+    write_sheet(ws_ref, ["Concepto", "Unidad", "Referencia", "Medido", "Diferencia"], ref_rows)
 
     ws_svc = wb.create_sheet("PorServicio")
     svc_agg: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "docs": 0})
@@ -330,9 +592,19 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]]) -> None:
             ["Ejecuciones completas", overall["n_completed"]],
             ["Tasa de aprobacion", overall["approval_rate"]],
             ["Confianza promedio", overall["avg_confidence"]],
+            ["Documentos con tiempo registrado", overall["n_with_duration"]],
+            ["Segundos promedio por documento", overall["avg_seconds"]],
+            ["Segundos p50", overall["p50_seconds"]],
+            ["Segundos p95", overall["p95_seconds"]],
+            ["Segundos maximo", overall["max_seconds"]],
+            ["Segundos por pagina", overall["seconds_per_page"]],
+            ["Segundos acumulados", overall["total_seconds"]],
             ["Documentos con datos de costo", overall["n_with_cost"]],
             ["Costo total USD", overall["total_cost"]],
             ["Costo promedio por documento USD", overall["avg_cost_doc"]],
+            ["Costo por pagina USD", (overall["total_cost"] / overall["total_pages"]) if overall["total_pages"] else None],
+            ["Costo por documento de referencia USD (COSTOS.md)", COST_REFERENCE["perDoc"]["value"]],
+            ["Presupuesto por pagina USD (COSTOS.md)", next(r["value"] for r in COST_REFERENCE["perPage"] if r["role"] == "budget")],
             ["Paginas procesadas", overall["total_pages"]],
             ["Tokens de entrada totales", overall["total_input_tokens"]],
             ["Tokens de salida totales", overall["total_output_tokens"]],
@@ -349,8 +621,18 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 EXTRA_CSS = '''
-.filters-card { position: sticky; top: 12px; z-index: 5; }
-.filters { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; margin-top: 4px; }
+.filters-card { position: sticky; top: 12px; z-index: 5; padding: 16px 22px; }
+.filters-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.filters-toggle { display: inline-flex; align-items: center; gap: 8px; background: var(--plane); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: 999px; padding: 7px 16px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.filters-toggle:hover { border-color: var(--accent); }
+.ft-caret { color: var(--text-muted); font-size: 11px; }
+.ft-badge { background: var(--accent); color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 11.5px; font-weight: 600; }
+.filters { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start;
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--gridline); max-height: 52vh; overflow-y: auto; }
+/* `display: flex` de arriba le gana a la regla `[hidden]` del user-agent, así
+   que el panel colapsado hay que apagarlo explícitamente. */
+.filters[hidden] { display: none; }
 .filter-group { display: flex; flex-direction: column; gap: 6px; }
 .filter-group .fg-label { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
 .date-inputs { display: flex; gap: 8px; align-items: center; }
@@ -358,10 +640,9 @@ EXTRA_CSS = '''
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; max-width: 480px; }
 .chip { border: 1px solid var(--border); background: var(--plane); color: var(--text-secondary); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none; white-space: nowrap; }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.filters-actions { display: flex; align-items: flex-end; }
-#f-reset { background: var(--plane); border: 1px solid var(--border); color: var(--text-secondary); border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+#f-reset { background: var(--plane); border: 1px solid var(--border); color: var(--text-secondary); border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
 #f-reset:hover { color: var(--text-primary); }
-.filters-summary { margin-top: 14px; color: var(--text-secondary); font-size: 12.5px; }
+.filters-summary { color: var(--text-secondary); font-size: 12.5px; margin-left: auto; text-align: right; }
 details.card > summary { cursor: pointer; font-size: 19px; font-weight: 600; margin: 0 0 4px; list-style: none; }
 details.card > summary::-webkit-details-marker { display: none; }
 details.card > summary::before { content: "▸ "; color: var(--text-muted); font-size: 15px; }
@@ -383,11 +664,26 @@ dialog#detail-dialog::backdrop { background: rgba(0,0,0,0.5); }
 .warn-list { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary); }
 .more-btn { margin-top: 12px; background: var(--plane); border: 1px solid var(--border); color: var(--text-secondary); border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
 .empty-hint { color: var(--text-muted); font-size: 13px; }
+.kpi-row.dense { grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.kpi-row.dense .kpi-tile { padding: 12px 14px; }
+.kpi-row.dense .kpi-value { font-size: 19px; }
+.sub-head { font-size: 14px; font-weight: 600; margin: 22px 0 10px; }
+.sub-head:first-of-type { margin-top: 8px; }
+td.delta-good { color: #0ca30c; }
+td.delta-warn { color: #b07d00; }
+td.delta-bad { color: #d03b3b; }
+.ref-line { display: grid; grid-template-columns: 300px 1fr 96px; align-items: center; gap: 10px; font-size: 13px; }
+.ref-line .ref-label { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ref-line .ref-track { position: relative; background: var(--gridline); border-radius: 6px; height: 14px; }
+.ref-line .ref-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; }
+.ref-line .ref-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-primary); }
+.ref-value { text-align: right; font-variant-numeric: tabular-nums; }
 '''
 
 JS_TEMPLATE = r'''
 const DATA = JSON.parse(document.getElementById('report-data').textContent);
 const ROWS = DATA.rows;
+const COST_REF = DATA.costRef;
 const ROWS_BY_ID = new Map(ROWS.map(r => [r.id, r]));
 const CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
 const STATUS_ROLE_COLOR = {good: "#0ca30c", warning: "#fab219", critical: "#d03b3b", neutral: "#898781"};
@@ -401,22 +697,46 @@ const SERVICE_LABEL = {
   TextractOcr: "Textract · OCR",
   LambdaCompute: "Lambda · Cómputo (aprox.)",
 };
+// Cubetas del histograma de tiempo. El corte a 5 min es deliberado: arriba de
+// eso ya no importa el detalle, importa que se salió del rango normal.
+const DURATION_BUCKETS = [
+  ["< 5s", 0, 5], ["5–10s", 5, 10], ["10–20s", 10, 20], ["20–30s", 20, 30],
+  ["30–60s", 30, 60], ["1–2 min", 60, 120], ["2–5 min", 120, 300], ["> 5 min", 300, Infinity],
+];
 
 function esc(s){ const d=document.createElement('div'); d.textContent = (s===null||s===undefined) ? '' : String(s); return d.innerHTML; }
 function money(x){ return (x===null||x===undefined) ? '—' : '$'+Number(x).toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4}); }
 function num(x){ return (x===null||x===undefined) ? '—' : Number(x).toLocaleString('en-US',{maximumFractionDigits:0}); }
 function pctFmt(x){ return (x===null||x===undefined) ? '—' : (x*100).toFixed(0)+'%'; }
-function secsFmt(x){ if (x===null||x===undefined) return '—'; return x<1 ? Math.round(x*1000)+'ms' : x.toFixed(1)+'s'; }
+function secsFmt(x){
+  if (x===null||x===undefined) return '—';
+  if (x < 1) return Math.round(x*1000)+'ms';
+  if (x < 60) return x.toFixed(1)+'s';
+  if (x < 3600) return Math.floor(x/60)+'m '+Math.round(x%60)+'s';
+  return Math.floor(x/3600)+'h '+Math.floor((x%3600)/60)+'m';
+}
+function money5(x){ return (x===null||x===undefined) ? '—' : '$'+Number(x).toFixed(5); }
+function pctl(sorted, q){
+  if (!sorted.length) return null;
+  if (sorted.length === 1) return sorted[0];
+  const pos = (sorted.length-1)*q, lo = Math.floor(pos), hi = Math.min(lo+1, sorted.length-1);
+  return sorted[lo] + (sorted[hi]-sorted[lo])*(pos-lo);
+}
+// El sistema/app que subió el documento. Los registros viejos (o los que
+// entraron sin API key en dev) no lo traen: se agrupan explícitos en vez de
+// desaparecer del corte.
+function appOf(r){ return r.appOrigin || '(sin sistema)'; }
 
 // ---------------------------------------------------------------------
 // Estado de filtros
 // ---------------------------------------------------------------------
 const state = {
   desde: '', hasta: '',
-  types: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
+  types: new Set(), apps: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
   hiddenServices: new Set(),
   sortKey: 'processedAt', sortDir: -1,
   docLimit: 200,
+  filtersOpen: false,   // el panel arranca cerrado — ver setFiltersOpen()
 };
 
 function distinct(key) { return [...new Set(ROWS.map(r => r[key]).filter(Boolean))].sort(); }
@@ -426,6 +746,7 @@ function filteredRows() {
     if (state.desde && (r.processedAt||'').slice(0,10) < state.desde) return false;
     if (state.hasta && (r.processedAt||'').slice(0,10) > state.hasta) return false;
     if (state.types.size && !state.types.has(r.type)) return false;
+    if (state.apps.size && !state.apps.has(appOf(r))) return false;
     if (state.models.size && !state.models.has(r.model)) return false;
     if (state.workflow.size && !state.workflow.has(r.workflowStatus)) return false;
     if (state.validation.size && !state.validation.has(r.validationStatus)) return false;
@@ -445,7 +766,12 @@ function aggOverall(rows) {
   completed.forEach(r => { if (r.validationStatus) valCounts[r.validationStatus] = (valCounts[r.validationStatus]||0)+1; });
   const approved = valCounts['APROBADO'] || 0;
   const confs = rows.filter(r => r.avgConfidence !== null && r.avgConfidence !== undefined).map(r => r.avgConfidence);
-  const durs = rows.filter(r => r.processingSeconds !== null && r.processingSeconds !== undefined).map(r => r.processingSeconds);
+  const durs = rows.filter(r => r.processingSeconds !== null && r.processingSeconds !== undefined)
+                   .map(r => r.processingSeconds).sort((a,b) => a-b);
+  // segundos/página solo sobre documentos que traen ambos datos — repartir el
+  // tiempo total entre TODAS las páginas metería documentos sin tiempo
+  // registrado en el denominador y bajaría el número artificialmente.
+  const durPage = rows.filter(r => r.processingSeconds !== null && r.processingSeconds !== undefined && r.pagesTotal);
   const withCost = rows.filter(r => r.hasCost);
   const totalCost = withCost.reduce((a,r) => a + (r.totalCost||0), 0);
   const totalPages = rows.reduce((a,r) => a + (r.pagesTotal||0), 0);
@@ -456,12 +782,68 @@ function aggOverall(rows) {
     n, wfCounts, nCompleted: completed.length, valCounts,
     approvalRate: completed.length ? approved/completed.length : null,
     avgConfidence: confs.length ? confs.reduce((a,b)=>a+b,0)/confs.length : null,
+    nWithDuration: durs.length,
     avgDuration: durs.length ? durs.reduce((a,b)=>a+b,0)/durs.length : null,
+    p50Duration: pctl(durs, 0.5), p95Duration: pctl(durs, 0.95),
+    minDuration: durs.length ? durs[0] : null,
+    maxDuration: durs.length ? durs[durs.length-1] : null,
+    totalDuration: durs.reduce((a,b)=>a+b,0),
+    secondsPerPage: durPage.length
+      ? durPage.reduce((a,r)=>a+r.processingSeconds,0) / durPage.reduce((a,r)=>a+r.pagesTotal,0) : null,
     totalCost, nWithCost: withCost.length,
     avgCostDoc: withCost.length ? totalCost/withCost.length : null,
     avgCostPage: totalPages ? totalCost/totalPages : null,
     totalPages, totalInputTokens: totalIn, totalOutputTokens: totalOut,
     firstDate: dates[0]||null, lastDate: dates[dates.length-1]||null,
+    pageSel: pageSelAgg(rows),
+  };
+}
+
+// Ahorro por selección de páginas, recalculado con el corte filtrado igual que
+// todo lo demás. Devuelve null si ningún documento del corte la tuvo activa,
+// para no pintar una sección de ceros. `costAvoided` NUNCA entra en totalCost:
+// valora una llamada que no se hizo, y sumarla inflaría el gasto real.
+// La tarjeta se esconde entera cuando el corte filtrado no tiene ningún
+// documento con selección activa — mejor ausente que llena de ceros.
+function renderPageSel(ps, nDocs) {
+  const card = document.getElementById('page-sel-card');
+  if (!ps) { card.hidden = true; return; }
+  card.hidden = false;
+  document.getElementById('page-sel-kpis').innerHTML = [
+    kpiTile(money(ps.costAvoided), 'Costo evitado (est.)', `de ~${money(ps.costWithoutSelection)} a ${money(ps.billedCost)}`),
+    kpiTile(ps.inputSavingPct === null ? '—' : pctFmt(ps.inputSavingPct/100), 'Input tokens ahorrados'),
+    kpiTile(num(ps.pagesSkipped), 'Páginas no extraídas', `de ${num(ps.pagesConsidered)}`),
+    kpiTile(`${ps.docs} de ${nDocs}`, 'Documentos con selección'),
+  ].join('');
+  const row = (label, billed, saved, fmt) =>
+    `<tr><td>${label}</td><td class="num">${fmt(billed)}</td><td class="num">${fmt(saved)}</td><td class="num">${fmt(billed+saved)}</td></tr>`;
+  document.getElementById('page-sel-table').innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th></th><th class="num">Facturado</th><th class="num">Evitado (est.)</th><th class="num">Sin selección</th></tr></thead>
+      <tbody>
+        ${row('Tokens de entrada', ps.billedInputTokens, ps.inputTokensSaved, num)}
+        ${row('Tokens de salida', ps.billedOutputTokens, ps.outputTokensSaved, num)}
+        ${row('Páginas extraídas', ps.pagesExtracted, ps.pagesSkipped, num)}
+        ${row('Costo', ps.billedCost, ps.costAvoided, money)}
+      </tbody>
+    </table></div>`;
+}
+
+function pageSelAgg(rows) {
+  const act = rows.filter(r => r.pageSelection);
+  if (!act.length) return null;
+  const s = (f) => act.reduce((a,r) => a + (r.pageSelection[f]||0), 0);
+  const inBilled = s('billed_input_tokens'), inSaved = s('input_tokens_saved');
+  const billedCost = act.reduce((a,r) => a + (r.totalCost||0), 0);
+  const costAvoided = s('estimated_cost_avoided');
+  return {
+    docs: act.length,
+    pagesConsidered: s('pages_considered'), pagesExtracted: s('pages_extracted'),
+    pagesSkipped: s('pages_skipped'),
+    billedInputTokens: inBilled, inputTokensSaved: inSaved,
+    billedOutputTokens: s('billed_output_tokens'), outputTokensSaved: s('output_tokens_saved'),
+    inputSavingPct: (inBilled+inSaved) ? inSaved/(inBilled+inSaved)*100 : null,
+    billedCost, costAvoided, costWithoutSelection: billedCost + costAvoided,
   };
 }
 
@@ -485,6 +867,30 @@ function aggByService(rows) {
       svc[name].docs += 1;
     });
   });
+  return svc;
+}
+
+function durationHistogram(rows) {
+  const counts = DURATION_BUCKETS.map(() => 0);
+  rows.forEach(r => {
+    const s = r.processingSeconds;
+    if (s === null || s === undefined) return;
+    const i = DURATION_BUCKETS.findIndex(([, lo, hi]) => s >= lo && s < hi);
+    if (i >= 0) counts[i] += 1;
+  });
+  return counts;
+}
+
+// Duración por servicio: `durationMs` lo escribe cost_audit.py por servicio,
+// así que solo existe para los documentos que sí tienen registro de costo.
+function aggServiceDurations(rows) {
+  const svc = {};
+  rows.forEach(r => Object.entries(r.services || {}).forEach(([name, s]) => {
+    if (s.duration_ms === null || s.duration_ms === undefined) return;
+    if (!svc[name]) svc[name] = {ms: 0, docs: 0};
+    svc[name].ms += s.duration_ms;
+    svc[name].docs += 1;
+  }));
   return svc;
 }
 
@@ -543,15 +949,34 @@ function renderFilters() {
     el.innerHTML = values.map(v => `<span class="chip${activeSet.has(v)?' active':''}" data-value="${esc(v)}">${esc(v)}</span>`).join('');
   };
   mk('f-types', distinct('type'), state.types);
+  mk('f-apps', [...new Set(ROWS.map(appOf))].sort(), state.apps);
   mk('f-models', distinct('model'), state.models);
   mk('f-workflow', distinct('workflowStatus'), state.workflow);
   mk('f-validation', distinct('validationStatus'), state.validation);
-  mk('f-services', distinct === null ? [] : Object.keys(SERVICE_LABEL).filter(s => ROWS.some(r => r.services[s])), state.hiddenServices);
+  mk('f-services', Object.keys(SERVICE_LABEL).filter(s => ROWS.some(r => r.services[s])), state.hiddenServices);
   // hiddenServices marca "oculto", no "activo" — invertimos la clase abajo en el listener.
+}
+
+function activeFilterCount() {
+  return (state.desde ? 1 : 0) + (state.hasta ? 1 : 0)
+    + state.types.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size;
+}
+
+// Los filtros viven en un panel colapsado: la barra pegajosa de arriba se
+// queda como un renglón delgado (botón + resumen) y solo se despliega cuando
+// se pide, para no comerse la pantalla en cada scroll.
+function setFiltersOpen(open) {
+  state.filtersOpen = open;
+  const body = document.getElementById('filters-body');
+  const btn = document.getElementById('f-toggle');
+  body.hidden = !open;
+  btn.setAttribute('aria-expanded', String(open));
+  btn.querySelector('.ft-caret').textContent = open ? '▾' : '▸';
 }
 
 function attachChipHandlers() {
   document.querySelectorAll('#f-types .chip').forEach(el => el.addEventListener('click', () => { toggle(state.types, el.dataset.value); render(); }));
+  document.querySelectorAll('#f-apps .chip').forEach(el => el.addEventListener('click', () => { toggle(state.apps, el.dataset.value); render(); }));
   document.querySelectorAll('#f-models .chip').forEach(el => el.addEventListener('click', () => { toggle(state.models, el.dataset.value); render(); }));
   document.querySelectorAll('#f-workflow .chip').forEach(el => el.addEventListener('click', () => { toggle(state.workflow, el.dataset.value); render(); }));
   document.querySelectorAll('#f-validation .chip').forEach(el => el.addEventListener('click', () => { toggle(state.validation, el.dataset.value); render(); }));
@@ -578,6 +1003,106 @@ function renderServiceSection(rows) {
   document.getElementById('by-service-bars').innerHTML = bars || '<p class="empty-hint">Sin datos de costo con los filtros actuales.</p>';
 }
 
+function renderDurationSection(rows) {
+  const a = aggOverall(rows);
+  document.getElementById('duration-kpis').innerHTML = [
+    kpiTile(secsFmt(a.avgDuration), 'Promedio', `${a.nWithDuration} de ${a.n} con dato`),
+    kpiTile(secsFmt(a.p50Duration), 'Mediana (p50)'),
+    kpiTile(secsFmt(a.p95Duration), 'p95'),
+    kpiTile(secsFmt(a.minDuration), 'Mínimo'),
+    kpiTile(secsFmt(a.maxDuration), 'Máximo'),
+    kpiTile(secsFmt(a.secondsPerPage), 'Por página'),
+  ].join('');
+
+  const counts = durationHistogram(rows);
+  const maxC = Math.max(0, ...counts);
+  document.getElementById('duration-hist').innerHTML = a.nWithDuration
+    ? counts.map((c, i) => hBar(c, maxC, CATEGORICAL[0], DURATION_BUCKETS[i][0], `${c} doc${c === 1 ? '' : 's'}`)).join('')
+    : '<p class="empty-hint">Ningún documento filtrado trae tiempo de proceso registrado (<code>Tracking.ProcessingSeconds</code>).</p>';
+
+  const byType = aggBy(rows, r => r.type).filter(([, m]) => m.nWithDuration).sort((x, y) => y[1].avgDuration - x[1].avgDuration);
+  document.getElementById('duration-by-type').innerHTML = byType.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>Tipo</th><th class="num">Docs con dato</th><th class="num">Promedio</th><th class="num">p50</th><th class="num">p95</th><th class="num">Máximo</th><th class="num">Por página</th></tr></thead>
+    <tbody>${byType.map(([t, m]) => `<tr><td>${esc(t)}</td><td class="num">${m.nWithDuration}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${secsFmt(m.p50Duration)}</td><td class="num">${secsFmt(m.p95Duration)}</td><td class="num">${secsFmt(m.maxDuration)}</td><td class="num">${secsFmt(m.secondsPerPage)}</td></tr>`).join('')}</tbody>
+  </table></div>` : '';
+
+  const byApp = aggBy(rows, appOf).filter(([, m]) => m.nWithDuration).sort((x, y) => y[1].avgDuration - x[1].avgDuration);
+  document.getElementById('duration-by-app').innerHTML = byApp.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>Sistema</th><th class="num">Docs con dato</th><th class="num">Promedio</th><th class="num">p50</th><th class="num">p95</th><th class="num">Máximo</th></tr></thead>
+    <tbody>${byApp.map(([t, m]) => `<tr><td>${esc(t)}</td><td class="num">${m.nWithDuration}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${secsFmt(m.p50Duration)}</td><td class="num">${secsFmt(m.p95Duration)}</td><td class="num">${secsFmt(m.maxDuration)}</td></tr>`).join('')}</tbody>
+  </table></div>` : '';
+
+  const svcDur = Object.entries(aggServiceDurations(rows)).map(([n, s]) => [n, s.ms / s.docs / 1000, s.docs])
+    .sort((x, y) => y[1] - x[1]);
+  const maxSvc = Math.max(0, ...svcDur.map(e => e[1]));
+  document.getElementById('duration-by-service').innerHTML = svcDur.length
+    ? svcDur.map(([n, v, docs], i) => hBar(v, maxSvc, CATEGORICAL[i % CATEGORICAL.length], `${SERVICE_LABEL[n] || n} (${docs} docs)`, secsFmt(v))).join('')
+    : '<p class="empty-hint">Los registros de costo filtrados no traen duración por servicio.</p>';
+
+  const slow = rows.filter(r => r.processingSeconds !== null && r.processingSeconds !== undefined)
+    .sort((x, y) => y.processingSeconds - x.processingSeconds).slice(0, 10);
+  document.getElementById('duration-slowest').innerHTML = slow.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>Documento</th><th>Tipo</th><th>Sistema</th><th class="num">Páginas</th><th class="num">Costo</th><th class="num">Tiempo</th></tr></thead>
+    <tbody>${slow.map(r => `<tr class="doc-row" data-id="${esc(r.id)}"><td class="mono">${esc(r.id)}</td><td>${esc(r.typeName || r.type)}</td><td class="muted">${esc(appOf(r))}</td><td class="num">${r.pagesTotal || '—'}</td><td class="num">${r.hasCost ? money(r.totalCost) : '—'}</td><td class="num">${secsFmt(r.processingSeconds)}</td></tr>`).join('')}</tbody>
+  </table></div>` : '';
+  document.querySelectorAll('#duration-slowest tr.doc-row').forEach(tr => tr.addEventListener('click', () => openDetail(tr.dataset.id)));
+}
+
+// Contraste contra las mediciones reales de documentacion/COSTOS.md: el corte
+// filtrado vs lo que se midió/presupuestó, para ver de un vistazo si el
+// sistema sigue costando lo que dice el documento.
+function deltaCell(actual, ref) {
+  if (actual === null || actual === undefined || ref === null || ref === undefined) return '<td class="num">—</td>';
+  if (!ref) return `<td class="num">${actual > 0 ? 'ref. $0' : '='}</td>`;
+  const d = (actual - ref) / ref;
+  const cls = d <= 0.05 ? 'delta-good' : (d <= 0.30 ? 'delta-warn' : 'delta-bad');
+  return `<td class="num ${cls}">${d >= 0 ? '+' : ''}${(d * 100).toFixed(0)}%</td>`;
+}
+
+function renderReferenceSection(rows) {
+  const a = aggOverall(rows);
+  const budget = COST_REF.perPage.find(x => x.role === 'budget');
+  const projected = a.avgCostPage === null ? null : a.avgCostPage * COST_REF.volume.pagesPerMonth;
+  document.getElementById('ref-kpis').innerHTML = [
+    kpiTile(a.avgCostPage === null ? '—' : money5(a.avgCostPage), 'Costo / página (corte actual)', `${a.nWithCost} doc(s) con costo · ${num(a.totalPages)} pág`),
+    kpiTile(money(a.avgCostDoc), 'Costo / documento (corte actual)', `referencia ${money(COST_REF.perDoc.value)} — ${COST_REF.perDoc.label}`),
+    kpiTile(money5(budget.value), 'Presupuesto / página', `${COST_REF.doc} ${budget.source}`),
+    kpiTile(projected === null ? '—' : '$' + projected.toFixed(2), `Proyección / mes`, `a ${num(COST_REF.volume.pagesPerMonth)} pág/mes · presupuesto $${COST_REF.volume.budgetPerMonth.toFixed(2)}`),
+  ].join('');
+
+  const maxRef = Math.max(a.avgCostPage || 0, ...COST_REF.perPage.map(x => x.value));
+  const line = (label, value, color, sub) => {
+    const w = maxRef <= 0 ? 0 : Math.max(1, value / maxRef * 100);
+    return `<div class="ref-line"><div class="ref-label" title="${esc(label)}">${esc(label)}${sub ? ` <span class="muted">${esc(sub)}</span>` : ''}</div>
+      <div class="ref-track"><div class="ref-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div>
+      <div class="ref-value">${money5(value)}</div></div>`;
+  };
+  const rolesColor = {budget: STATUS_ROLE_COLOR.warning, cushion: STATUS_ROLE_COLOR.neutral, expected: '#4a3aa7', measured: STATUS_ROLE_COLOR.good};
+  document.getElementById('ref-bars').innerHTML = [
+    a.avgCostPage === null ? '' : line('Este corte', a.avgCostPage, CATEGORICAL[0]),
+    ...COST_REF.perPage.map(x => line(x.label, x.value, rolesColor[x.role], x.source)),
+  ].join('');
+
+  const byType = aggBy(rows, r => r.type).sort((x, y) => y[1].n - x[1].n);
+  const refRows = byType.map(([t, m]) => {
+    const ref = COST_REF.perDocByType[t];
+    const actualPage = m.totalPages ? m.totalCost / m.totalPages : null;
+    return `<tr>
+      <td>${esc(t)}</td>
+      <td class="num">${m.n}</td>
+      <td class="num">${money(m.avgCostDoc)}</td>
+      <td class="num muted">${ref ? money(ref.costPerDoc) : '—'}</td>
+      ${deltaCell(m.avgCostDoc, ref ? ref.costPerDoc : null)}
+      <td class="num">${actualPage === null ? '—' : money5(actualPage)}</td>
+      <td class="num muted">${ref ? money5(ref.costPerPage) : '—'}</td>
+      ${deltaCell(actualPage, ref ? ref.costPerPage : null)}
+    </tr>`;
+  }).join('');
+  document.getElementById('ref-by-type').innerHTML = byType.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>Tipo</th><th class="num">Docs</th><th class="num">$/doc hoy</th><th class="num">$/doc ref.</th><th class="num">Δ</th><th class="num">$/pág hoy</th><th class="num">$/pág ref.</th><th class="num">Δ</th></tr></thead>
+    <tbody>${refRows}</tbody></table></div>` : '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
+}
+
 function renderDocumentsTable(rows) {
   const sorted = [...rows].sort((a,b) => {
     const ka = a[state.sortKey], kb = b[state.sortKey];
@@ -590,8 +1115,8 @@ function renderDocumentsTable(rows) {
   const shown = sorted.slice(0, state.docLimit);
   document.getElementById('doc-count').textContent = rows.length;
   const cols = [
-    ['id','Documento'], ['typeName','Tipo'], ['workflowStatus','Ejecución'], ['validationStatus','Negocio'],
-    ['model','Modelo'], ['avgConfidence','Confianza'], ['totalCost','Costo'], ['processedAt','Procesado'],
+    ['id','Documento'], ['typeName','Tipo'], ['appOrigin','Sistema'], ['workflowStatus','Ejecución'], ['validationStatus','Negocio'],
+    ['model','Modelo'], ['avgConfidence','Confianza'], ['processingSeconds','Tiempo'], ['totalCost','Costo'], ['processedAt','Procesado'],
   ];
   const head = cols.map(([key,label]) => {
     const arrow = state.sortKey === key ? (state.sortDir === 1 ? '↑' : '↓') : '';
@@ -600,10 +1125,12 @@ function renderDocumentsTable(rows) {
   const body = shown.map(r => `<tr class="doc-row" data-id="${esc(r.id)}">
       <td class="mono">${esc(r.id)}</td>
       <td>${esc(r.typeName || r.type)}</td>
+      <td class="muted">${esc(r.appOrigin || '—')}</td>
       <td>${esc(r.workflowStatus || '—')}</td>
       <td>${esc(r.validationStatus || '—')}</td>
       <td class="muted">${esc(r.model)}</td>
       <td class="num">${pctFmt(r.avgConfidence)}</td>
+      <td class="num">${secsFmt(r.processingSeconds)}</td>
       <td class="num">${r.hasCost ? money(r.totalCost) : '—'}</td>
       <td class="muted">${esc((r.processedAt||'').slice(0,19))}</td>
     </tr>`).join('');
@@ -630,7 +1157,8 @@ function openDetail(id) {
   const fieldRows = Object.entries(r.fieldStats||{}).map(([name,s]) =>
     `<tr><td>${esc(name)}</td><td class="num">${s.ok}/${s.total}</td></tr>`).join('');
   const svcRows = Object.entries(r.services||{}).filter(([,s]) => s.cost || s.input_tokens || s.output_tokens || s.pages || s.duration_ms).map(([name,s]) =>
-    `<tr><td>${esc(SERVICE_LABEL[name]||name)}</td><td class="num">${money(s.cost)}</td><td class="num">${num(s.input_tokens)}</td><td class="num">${num(s.output_tokens)}</td><td class="muted">${esc(s.model_id||'—')}</td></tr>`).join('');
+    `<tr><td>${esc(SERVICE_LABEL[name]||name)}</td><td class="num">${money(s.cost)}</td><td class="num">${num(s.input_tokens)}</td><td class="num">${num(s.output_tokens)}</td><td class="num">${s.duration_ms===null||s.duration_ms===undefined?'—':secsFmt(s.duration_ms/1000)}</td><td class="muted">${esc(s.model_id||'—')}</td></tr>`).join('');
+  const ref = COST_REF.perDocByType[r.type];
   const warnings = (r.warnings||[]).length ? `<ul class="warn-list">${r.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>` : '<p class="empty-hint">Sin advertencias.</p>';
 
   document.getElementById('detail-content').innerHTML = `
@@ -642,12 +1170,12 @@ function openDetail(id) {
     ${r.hasQuality ? `<div class="kv-grid">
       <div class="k">Estado de ejecución</div><div>${esc(r.workflowStatus||'—')}</div>
       <div class="k">Estado de negocio</div><div>${esc(r.validationStatus||'—')}</div>
+      <div class="k">Sistema (app de origen)</div><div>${esc(appOf(r))}</div>
       <div class="k">Modelo</div><div>${esc(r.model)}</div>
       <div class="k">Confianza promedio</div><div>${pctFmt(r.avgConfidence)}</div>
       <div class="k">Tiempo de proceso</div><div>${secsFmt(r.processingSeconds)}</div>
       <div class="k">Documentos en el expediente</div><div>${r.subDocCount}</div>
       <div class="k">Procesado</div><div>${esc((r.processedAt||'').slice(0,19))}</div>
-      <div class="k">App de origen</div><div>${esc(r.appOrigin||'—')}</div>
     </div>
     <h3>Advertencias</h3>${warnings}
     ${fieldRows ? `<h3>Campos (cobertura parcial en expedientes multi-documento)</h3>
@@ -662,8 +1190,9 @@ function openDetail(id) {
       <div class="k">Tokens de entrada</div><div>${num(r.totalInputTokens)}</div>
       <div class="k">Tokens de salida</div><div>${num(r.totalOutputTokens)}</div>
       <div class="k">Versión de tarifa</div><div>${esc(r.pricingVersion||'—')}</div>
+      <div class="k">Referencia medida (${esc(COST_REF.doc)})</div><div>${ref ? `${money(ref.costPerDoc)}/doc · ${money5(ref.costPerPage)}/pág${ref.note ? ` <span class="muted">(${esc(ref.note)})</span>` : ''}` : '<span class="muted">sin referencia para este tipo</span>'}</div>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Servicio</th><th class="num">Costo</th><th class="num">Tokens in</th><th class="num">Tokens out</th><th>Modelo</th></tr></thead><tbody>${svcRows}</tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Servicio</th><th class="num">Costo</th><th class="num">Tokens in</th><th class="num">Tokens out</th><th class="num">Duración</th><th>Modelo</th></tr></thead><tbody>${svcRows}</tbody></table></div>
     ` : '<p class="empty-hint">Sin datos de costo para este documento (tabla de costos vacía, o el registro no se llegó a escribir).</p>'}
   `;
   document.getElementById('detail-close-btn').addEventListener('click', () => document.getElementById('detail-dialog').close());
@@ -675,8 +1204,13 @@ function render() {
   renderFilters();
   attachChipHandlers();
 
-  document.getElementById('f-summary').textContent =
-    `Mostrando ${rows.length} de ${ROWS.length} documento(s) con los filtros actuales.`;
+  const nActive = activeFilterCount();
+  const badge = document.getElementById('f-badge');
+  badge.hidden = nActive === 0;
+  badge.textContent = nActive;
+  document.getElementById('f-summary').textContent = nActive
+    ? `Mostrando ${rows.length} de ${ROWS.length} documento(s) · ${nActive} filtro(s) activo(s)`
+    : `Mostrando los ${ROWS.length} documento(s) — sin filtros`;
 
   const overall = aggOverall(rows);
   document.getElementById('kpis').innerHTML = [
@@ -684,11 +1218,15 @@ function render() {
     kpiTile(num(overall.nCompleted), 'Ejecuciones completas'),
     kpiTile(pctFmt(overall.approvalRate), 'Tasa de aprobación'),
     kpiTile(pctFmt(overall.avgConfidence), 'Confianza promedio'),
+    kpiTile(secsFmt(overall.avgDuration), 'Tiempo promedio', overall.nWithDuration ? `p95 ${secsFmt(overall.p95Duration)}` : 'sin dato de tiempo'),
     kpiTile(money(overall.totalCost), 'Costo total', overall.nWithCost < overall.n ? `${overall.nWithCost} de ${overall.n} con dato de costo` : ''),
-    kpiTile(money(overall.avgCostDoc), 'Costo promedio / doc'),
+    kpiTile(money(overall.avgCostDoc), 'Costo promedio / doc', `referencia ${money(COST_REF.perDoc.value)}`),
+    kpiTile(overall.avgCostPage === null ? '—' : money5(overall.avgCostPage), 'Costo / página', `presupuesto ${money5(0.0083)}`),
     kpiTile(num(overall.totalInputTokens), 'Tokens de entrada'),
     kpiTile(num(overall.totalOutputTokens), 'Tokens de salida'),
   ].join('');
+
+  renderPageSel(overall.pageSel, overall.n);
 
   document.getElementById('wf-stack').innerHTML = stackBar(overall.wfCounts, overall.n, WORKFLOW_ROLE);
   document.getElementById('validation-stack').innerHTML = stackBar(overall.valCounts, overall.nCompleted, VALIDATION_ROLE);
@@ -705,8 +1243,17 @@ function render() {
 
   const byType = aggBy(rows, r => r.type).sort((a,b) => b[1].n - a[1].n);
   document.getElementById('by-type-table').innerHTML = byType.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Tipo</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Costo total</th><th class="num">$/doc</th></tr></thead>
-    <tbody>${byType.map(([t,m]) => `<tr><td>${esc(t)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${money(m.totalCost)}</td><td class="num">${money(m.avgCostDoc)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th>Tipo</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Tiempo prom.</th><th class="num">p95</th><th class="num">Costo total</th><th class="num">$/doc</th></tr></thead>
+    <tbody>${byType.map(([t,m]) => `<tr><td>${esc(t)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${secsFmt(m.p95Duration)}</td><td class="num">${money(m.totalCost)}</td><td class="num">${money(m.avgCostDoc)}</td></tr>`).join('')}</tbody>
+  </table></div>` : '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
+
+  const byApp = aggBy(rows, appOf).sort((a,b) => b[1].n - a[1].n);
+  const maxAppN = Math.max(0, ...byApp.map(([,m]) => m.n));
+  document.getElementById('by-app-bars').innerHTML = byApp.map(([name,m],i) =>
+    hBar(m.n, maxAppN, CATEGORICAL[i % CATEGORICAL.length], `${name} (${m.n} docs)`, money(m.totalCost))).join('');
+  document.getElementById('by-app-table').innerHTML = byApp.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>Sistema</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Tiempo prom.</th><th class="num">p95</th><th class="num">Costo total</th><th class="num">$/doc</th></tr></thead>
+    <tbody>${byApp.map(([t,m]) => `<tr><td>${esc(t)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${secsFmt(m.p95Duration)}</td><td class="num">${money(m.totalCost)}</td><td class="num">${money(m.avgCostDoc)}</td></tr>`).join('')}</tbody>
   </table></div>` : '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
 
   const byModel = aggBy(rows, r => r.model).sort((a,b) => b[1].n - a[1].n);
@@ -714,10 +1261,12 @@ function render() {
   document.getElementById('by-model-bars').innerHTML = byModel.map(([name,m],i) =>
     hBar(m.n, maxModelN, CATEGORICAL[i % CATEGORICAL.length], `${name} (${m.n} docs)`, pctFmt(m.approvalRate))).join('');
   document.getElementById('by-model-table').innerHTML = byModel.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Modelo</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Costo total</th></tr></thead>
-    <tbody>${byModel.map(([name,m]) => `<tr><td>${esc(name)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${money(m.totalCost)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th>Modelo</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Tiempo prom.</th><th class="num">Costo total</th></tr></thead>
+    <tbody>${byModel.map(([name,m]) => `<tr><td>${esc(name)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${money(m.totalCost)}</td></tr>`).join('')}</tbody>
   </table></div>` : '';
 
+  renderDurationSection(rows);
+  renderReferenceSection(rows);
   renderServiceSection(rows);
   attachServiceChipHandlers();
 
@@ -732,12 +1281,15 @@ function render() {
 
 document.getElementById('f-desde').addEventListener('change', e => { state.desde = e.target.value; render(); });
 document.getElementById('f-hasta').addEventListener('change', e => { state.hasta = e.target.value; render(); });
+document.getElementById('f-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));
 document.getElementById('f-reset').addEventListener('click', () => {
-  state.desde = ''; state.hasta = ''; state.types.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear();
+  state.desde = ''; state.hasta = '';
+  state.types.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear();
   document.getElementById('f-desde').value = ''; document.getElementById('f-hasta').value = '';
   render();
 });
 
+setFiltersOpen(state.filtersOpen);
 render();
 '''
 
@@ -766,8 +1318,14 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
       </header>
 
       <section class="card filters-card">
-        <h2>Filtros</h2>
-        <div class="filters">
+        <div class="filters-head">
+          <button class="filters-toggle" id="f-toggle" aria-expanded="false" aria-controls="filters-body">
+            <span class="ft-caret">▸</span> Filtros <span class="ft-badge" id="f-badge" hidden>0</span>
+          </button>
+          <span class="filters-summary" id="f-summary"></span>
+          <button id="f-reset">Limpiar filtros</button>
+        </div>
+        <div class="filters" id="filters-body" hidden>
           <div class="filter-group">
             <span class="fg-label">Fecha</span>
             <div class="date-inputs">
@@ -775,12 +1333,11 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
             </div>
           </div>
           <div class="filter-group"><span class="fg-label">Tipo de documento</span><div class="chip-row" id="f-types"></div></div>
+          <div class="filter-group"><span class="fg-label">Sistema</span><div class="chip-row" id="f-apps"></div></div>
           <div class="filter-group"><span class="fg-label">Modelo</span><div class="chip-row" id="f-models"></div></div>
           <div class="filter-group"><span class="fg-label">Estado de ejecución</span><div class="chip-row" id="f-workflow"></div></div>
           <div class="filter-group"><span class="fg-label">Estado de negocio</span><div class="chip-row" id="f-validation"></div></div>
-          <div class="filters-actions"><button id="f-reset">Limpiar filtros</button></div>
         </div>
-        <div class="filters-summary" id="f-summary"></div>
       </section>
 
       <div class="kpi-row" id="kpis"></div>
@@ -798,6 +1355,40 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
       </section>
 
       <details class="card" open>
+        <summary>Tiempo de proceso</summary>
+        <p class="section-sub">De punta a punta (<code>Tracking.ProcessingSeconds</code>): del arranque del enriquecimiento al resultado guardado. Solo los documentos que lo traen registrado entran en estos números.</p>
+        <div class="kpi-row dense" id="duration-kpis"></div>
+        <div class="sub-head">Distribución</div>
+        <div class="bars" id="duration-hist"></div>
+        <div class="sub-head">Por tipo de documento</div>
+        <div id="duration-by-type"></div>
+        <div class="sub-head">Por sistema</div>
+        <div id="duration-by-app"></div>
+        <div class="sub-head">Promedio por servicio</div>
+        <p class="section-sub"><code>durationMs</code> del registro de costo — solo existe para documentos con auditoría de costo (2026-08-05 en adelante).</p>
+        <div class="bars" id="duration-by-service"></div>
+        <div class="sub-head">Los 10 más lentos</div>
+        <div id="duration-slowest"></div>
+      </details>
+
+      <details class="card" open>
+        <summary>Costo contra las referencias medidas</summary>
+        <p class="section-sub">Contraste del corte filtrado contra las mediciones reales de <code>documentacion/COSTOS.md</code> (Bedrock <code>usage</code> real + páginas reales, cruzados contra Cost Explorer). Δ verde ≤ 5 %, ámbar ≤ 30 %, rojo por encima.</p>
+        <div class="kpi-row dense" id="ref-kpis"></div>
+        <div class="sub-head">Costo por página vs referencias</div>
+        <div class="bars" id="ref-bars"></div>
+        <div class="sub-head">Costo por documento y por página, por tipo</div>
+        <div id="ref-by-type"></div>
+      </details>
+
+      <details class="card" id="page-sel-card" hidden open>
+        <summary>Ahorro por selección de páginas</summary>
+        <p class="section-sub">Solo se mandan al modelo las páginas que traen los campos del tipo (<code>page_selection</code> del catálogo). <strong>Facturado</strong> lo reportó Bedrock; <strong>evitado</strong> estima la llamada que nunca se hizo, así que <em>no</em> está sumado al costo total del corte.</p>
+        <div class="kpi-row dense" id="page-sel-kpis"></div>
+        <div id="page-sel-table"></div>
+      </details>
+
+      <details class="card" open>
         <summary>Volumen diario</summary>
         <div id="volume-chart"></div>
       </details>
@@ -805,6 +1396,13 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
       <details class="card" open>
         <summary>Por tipo de documento</summary>
         <div id="by-type-table"></div>
+      </details>
+
+      <details class="card" open>
+        <summary>Por sistema</summary>
+        <p class="section-sub">Sistema/app que subió el documento (<code>AppOrigin</code>, resuelto de la API key del request).</p>
+        <div class="bars" id="by-app-bars"></div>
+        <div id="by-app-table"></div>
       </details>
 
       <details class="card" open>
@@ -837,7 +1435,7 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
 
       <footer>Generado por <code>pnpm reporte</code> (scripts/reporte.py) · une la tabla de costos y la de tracking de documentos por <code>DocumentId</code> · datos crudos en <code>datos_raw.xlsx</code> · reportes individuales: <code>pnpm reporte:costos</code> / <code>pnpm reporte:documentos</code>.</footer>
     </div>
-    <script id="report-data" type="application/json">{json.dumps({"rows": rows}, ensure_ascii=False, default=_json_default)}</script>
+    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "costRef": COST_REFERENCE}, ensure_ascii=False, default=_json_default)}</script>
     <script>{JS_TEMPLATE}</script>'''
 
     return f'''<!doctype html>
@@ -865,6 +1463,7 @@ def main() -> int:
     parser.add_argument("--cost-table", help="tabla de costos (default: resuelta de --env)")
     parser.add_argument("--desde", help="filtra ProcessedAt >= YYYY-MM-DD (también filtrable interactivo en el HTML)")
     parser.add_argument("--hasta", help="filtra ProcessedAt <= YYYY-MM-DD")
+    parser.add_argument("--sistema", help="filtra por AppOrigin (uno o varios separados por coma; también filtrable interactivo en el HTML)")
     parser.add_argument("--out", help="carpeta de salida (default: reportes/<env>/<timestamp>/)")
     parser.add_argument("--open", action="store_true", help="abrir el HTML en el navegador al terminar")
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
@@ -903,6 +1502,13 @@ def main() -> int:
         rows = [r for r in rows if (not args.desde or r["processedAt"][:10] >= args.desde) and (not args.hasta or r["processedAt"][:10] <= args.hasta)]
         if not rows:
             print(f"{YELLOW}Ningún documento cae en el rango de fechas pedido.{RESET}")
+            return 0
+
+    if args.sistema:
+        wanted = {s.strip().lower() for s in args.sistema.split(",") if s.strip()}
+        rows = [r for r in rows if app_of(r).lower() in wanted]
+        if not rows:
+            print(f"{YELLOW}Ningún documento del sistema pedido ({args.sistema}).{RESET}")
             return 0
 
     out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / args.env / datetime.now().strftime("%Y%m%d-%H%M%S")

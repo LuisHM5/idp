@@ -117,6 +117,7 @@ como en el DSL viejo.
 | `business_destination` | sí | Metadato de ruteo de negocio; aparece como `businessDestination` en cada documento del expediente. Puramente informativo para el consumidor. |
 | `cross_field_validation` | sí | Reglas que cruzan **varios campos del mismo documento** (fórmulas, sumas de arrays) — no pueden vivir dentro de un solo campo. Mismo shape de regla que dentro de `fields[].validation`, pero con `"field"` explícito. |
 | `qr_recovery` | sí | Recuperación determinística de campos desde un QR embebido. Declara cómo localizar la página, filtrar la URL, mapear parámetros y publicar el payload/estado; ver la sección siguiente. |
+| `page_selection` | sí | Selección de páginas de interés: manda a Bedrock **solo** las páginas cuyo texto cumple los marcadores del tipo, en vez del documento completo. Opt-in por tipo; ver la sección siguiente. |
 | `form_mapping` | sí, pero heredado | Mecanismo viejo para campos computados (ver más abajo) — hoy solo tiene sentido si no usas la convención `concept_aliases`/`source`/`filters` directo en `fields`. Para tipos nuevos, prefiere esa convención. |
 | `prompt_profile` | **no, reservado** | Se lee en `_shared.json._model_profiles` pero ningún código lo consume todavía. No lo confundas con algo funcional. |
 | `field_sets` | **no, ignorado en este DSL** | Solo aplica al DSL legado (tipos sin `fields`). En un tipo field-centric no hace nada — no lo agregues. |
@@ -450,6 +451,91 @@ Cuando además se quieren mapear parámetros y validar el QR:
   soportado para compatibilidad; los catálogos nuevos deben preferir
   `qr_source` junto al campo.
 - `QR_RECOVERY_ENABLED=false` desactiva globalmente este mecanismo.
+
+### Selección de páginas de interés (`page_selection`)
+
+Un PDF de 100 páginas cuyos campos viven en 3 sale caro: hoy se manda el
+texto de **todas** a Bedrock. `page_selection` declara cómo reconocer las
+páginas que sí importan para ESTE tipo, y el pipeline extrae solo ésas
+(`pipeline/page_selector.py`).
+
+```jsonc
+"page_selection": {
+  "enabled": true,                 // opcional; ver "Encendido y apagado"
+  "min_score": 3,                  // marcadores DISTINTOS que debe cumplir una página
+  "follow_pages": 1,               // páginas de continuación tras cada acierto
+  "max_ratio": 0.6,                // arriba de esto se procesa TODO (fail-open)
+  "markers": [                     // regex, case-insensitive
+    "NUM\\.?\\s*PEDIMENTO",
+    "CVE\\.?\\s*PEDIM"
+  ]
+}
+```
+
+**Cómo puntúa.** Cada página suma **un punto por marcador DISTINTO** que
+aparece en su texto — diez repeticiones de la misma frase valen uno. Es el
+mismo scoring que ya usaba `qr_recovery.page_markers` (de hecho comparten
+implementación), y por la misma razón: si un escaneo malo destroza una frase,
+la página pierde un punto, no la partida entera.
+
+**`follow_pages`** arrastra las N páginas siguientes a cada acierto. Los
+campos suelen desbordarse a páginas de continuación que no repiten el
+encabezado (las PARTIDAS de un pedimento); una página de más cuesta
+centavos, una fila perdida cuesta un dato.
+
+**Nunca recorta: o filtra, o procesa todo.** Si la selección supera
+`max_ratio` del documento, se **descarta entera** y se procesan todas las
+páginas. Recortar una selección para que quepa en un número tiene el mismo
+defecto que truncar el PDF a ciegas: tira contenido real. Medido sobre un
+expediente real de 139 páginas con 51 páginas de pedimento (tres copias, cada
+una con sus anexos), un tope duro de 8 habría cortado dos tercios de las
+partidas; con `max_ratio` se conserva el ahorro del 63 %. `max_pages` existe
+como tope absoluto opcional y se comporta igual: dispara fail-open, no tijera.
+
+**Fail-open siempre.** Se procesan todas las páginas cuando el tipo no
+declara `page_selection`, cuando no declara `markers`, cuando ninguna página
+alcanza `min_score`, o cuando la selección excede el tope. Un selector que no
+encontró nada **nunca** significa "nada es relevante".
+
+**Encendido y apagado (por tipo, no global).** Gana lo más específico, salvo
+el kill-switch, que solo apaga:
+
+| Situación | Efecto |
+| --- | --- |
+| El tipo no declara `page_selection` | Apagado. Camino idéntico al de hoy. **Default.** |
+| Declara `page_selection` sin `enabled` | Encendido para ese tipo |
+| `"enabled": false` | Apagado para ese tipo, **conservando** sus marcadores calibrados |
+| `PAGE_SELECTION_ENABLED=false` | Apaga TODOS los tipos. Nunca enciende uno que su catálogo dejó apagado |
+
+Como vive en el catálogo, `pnpm sync:one -- --type <TIPO>` lo prende o apaga
+**sin redeploy**.
+
+**Calibra antes de confiar — es gratis.**
+
+```bash
+python scripts/analizar-seleccion-paginas.py --type PEDIMENTO_ADUANAL --show-pages
+```
+
+Lee solo el texto nativo con pypdf (sin Textract, sin Bedrock, sin
+credenciales AWS) y reporta qué páginas elegiría y cuántas ahorrarías.
+`--min-score`/`--max-ratio` prueban umbrales sin editar el catálogo. Si
+muchos documentos salen en fail-open, los marcadores están mal calibrados.
+**Las páginas escaneadas (sin capa de texto) siempre salen en fail-open**:
+el selector de texto no puede opinar sobre ellas.
+
+Cada documento filtrado lleva un bloque `pageSelection` en el resultado
+(`pagesConsidered`, `selected`, `skipped`, `failOpen`, `reason`, `scores`)
+para auditar qué se descartó y por qué. Nada se descarta en silencio.
+
+Dentro va `savings`, que separa lo facturado de lo estimado:
+`billedInputTokens`/`billedOutputTokens` son **exactos** (los reportó
+Bedrock), y todo lo que empieza con `estimated` valora la llamada cara que
+nunca se hizo — input por densidad tokens/carácter de la llamada que sí
+corrió, output por chunks evitados. **Ojo:** el ahorro de páginas y el de
+tokens no son el mismo número — descartar el 81 % de las páginas de un
+expediente real recortó solo el 67 % de los tokens, porque las páginas que se
+conservan son las densas en texto. Detalle y validación en
+`documentacion/COSTOS.md` §0-bis.
 
 ### Reglas de validación soportadas (`rule_type`)
 

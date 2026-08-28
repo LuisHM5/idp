@@ -30,6 +30,25 @@
         "ADUANA_DESPACHO": { "param": "pad", "digits": 2, "slice": ":2" }
       }
     },
+    "page_selection": {
+      "__COMENTARIO__": "Selección de páginas de interés (pipeline/page_selector.py). Solo las páginas cuyo texto cumple min_score marcadores DISTINTOS se mandan a Bedrock; el resto no se extrae. Calibrado con `python scripts/analizar-seleccion-paginas.py` sobre test-docs/: con min_score=3 ninguna página que NO sea del pedimento alcanza el umbral (las de VUCEM/manifestación de valor llegan a 2 como máximo). Si la selección supera max_ratio del documento se procesan TODAS (fail-open): nunca se recorta contenido para cumplir un número.",
+      "enabled": true,
+      "min_score": 3,
+      "follow_pages": 1,
+      "max_ratio": 0.6,
+      "markers": [
+        "NUM\\.?\\s*PEDIMENTO",
+        "CVE\\.?\\s*PEDIM",
+        "T\\.?\\s*OPER|TIPO\\s+OPER",
+        "ANEXO\\s+DEL\\s+PEDIMENTO",
+        "FORMA\\s+SIMPLIFICADA\\s+DEL\\s+PEDIMENTO",
+        "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
+        "DEP[OÓ]SITO\\s+REFERENCIADO",
+        "L[IÍ]NEA\\s+DE\\s+CAPTURA",
+        "VALOR\\s+ADUANA",
+        "\\bREGIMEN\\s*:"
+      ]
+    },
     "fields": {
       "NUMERO_PEDIMENTO": {
         "type": "string",

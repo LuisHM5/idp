@@ -43,12 +43,13 @@ from .normalize import (
     parse_amount,
     pedimento_consecutivo,
 )
+from . import page_selector
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import fallback_events, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import Segment, segment_pages
-from .text_extractor import extract_document
+from .text_extractor import _chunk_pages as chunk_pages, extract_document
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,14 @@ _EXTRACT_WORKERS = int(os.environ.get("EXTRACT_WORKERS", "4"))
 # lost — just flagged for a human to reprocess in full if the extra pages
 # matter.
 _MAX_PAGES = int(os.environ.get("MAX_PAGES", "50"))
+
+# Ceiling that applies INSTEAD of `_MAX_PAGES` when a type selects its own
+# pages (see `_page_cap_for`). Deliberately far higher: this one is not a cost
+# guard — the selector already bounds cost by only extracting relevant pages —
+# it only stops a pathological upload (a mis-scanned 2,000-page bundle) from
+# burning the whole 15-minute Lambda budget on page loading. A type can raise
+# or lower it with `page_selection.max_source_pages`.
+_MAX_PAGES_WITH_SELECTION = int(os.environ.get("MAX_PAGES_WITH_SELECTION", "500"))
 
 
 # Fields (by doc type) that carry the pedimento reference for same_pedimento
@@ -114,12 +123,44 @@ def _extract_segment(
         doc["_entities"] = {}
         doc["_text"] = "\n".join(p.text for p in seg_pages)
         return doc
+    # Cost gate: send only the pages that carry this type's fields to Bedrock.
+    # Deliberately narrow — ONLY the extraction call sees the filtered pages:
+    # `_text` (cross-document rules, reference recovery) and the QR search
+    # keep the segment's full page set, because those are free and restricting
+    # them could only lose information. Opt-in per type, fail-open when
+    # nothing matches; see pipeline/page_selector.py.
+    extract_pages = seg_pages
+    selection = None
+    if page_selector.enabled_for(entry):
+        selection = page_selector.select(seg_pages, page_selector.spec_for(entry))
+        if selection.filtered:
+            extract_pages = page_selector.filter_pages(seg_pages, selection)
+            logger.info(
+                "page_selector: %s páginas %d-%d → extrayendo %s (%s)",
+                seg.doc_type, seg.page_start, seg.page_end,
+                selection.selected, selection.reason,
+            )
+        else:
+            selection = None
+
     try:
-        extracted = extract_document(seg_pages, entry, model_id=model_id)
+        extracted = extract_document(extract_pages, entry, model_id=model_id)
         doc["_entities"] = extracted.entity_map
         doc["_confidences"] = extracted.confidences
         doc["_text"] = "\n".join(p.text for p in seg_pages)
         doc["extractionMeta"] = extracted.meta
+        if selection is not None:
+            # Priced with the REAL usage Bedrock billed for the pages that
+            # were sent, so `savings` reports what filtering actually avoided
+            # instead of a guess made before the call. The counterfactual
+            # chunk count is exact and free — `_chunk_pages` is pure text
+            # math over page lengths, no model call — and it is what prices
+            # the OUTPUT side, since every chunk emits one full schema JSON.
+            doc["pageSelection"] = selection.to_json(
+                extracted.meta.get("usage"),
+                chunks_sent=int(extracted.meta.get("chunks") or 0),
+                chunks_without_selection=len(chunk_pages(seg_pages)),
+            )
         _recover_from_qr(doc, entry, seg, reader, seg_pages)
         _recover_references(doc, entry)
         # Deterministic customs liquidation normalization (config-driven):
@@ -135,6 +176,10 @@ def _extract_segment(
         # exception type alongside the truncated message for the same
         # "what actually broke" triage without needing to reproduce.
         logger.exception("extraction failed for %s pages %d-%d", seg.doc_type, seg.page_start, seg.page_end)
+        if selection is not None:
+            # No usage to price against, but WHICH pages were dropped is
+            # exactly what you need to tell a bad selection from a bad model.
+            doc["pageSelection"] = selection.to_json()
         doc["status"] = engine.DOC_ERROR
         doc["error"] = str(e)[:300]
         doc["errorType"] = type(e).__name__
@@ -171,6 +216,39 @@ def _truncate_pdf(pdf_bytes: bytes, max_pages: int) -> Tuple[bytes, Optional[int
     return buf.getvalue(), total
 
 
+def _page_cap_for(declared_type: Optional[str]) -> Tuple[int, bool]:
+    """How many pages of the upload to keep, and whether selection is driving it.
+
+    Truncation and page selection are the two cost guards, and they are
+    MUTUALLY EXCLUSIVE — running both would defeat the point. `_truncate_pdf`
+    runs before anything else, so with `MAX_PAGES=50` a selector would only
+    ever get to choose among the first 50 pages of a 68-page upload: a
+    pedimento sitting on page 63 would be dropped before the selector could
+    even see it, which is exactly the outcome selection exists to prevent.
+
+    So a type that selects its own pages does NOT get blind truncation. Its
+    cost is bounded by how many pages actually carry its fields, and the only
+    remaining cap is the much higher `_MAX_PAGES_WITH_SELECTION` guard against
+    an upload big enough to exhaust the Lambda.
+
+    Everything else keeps today's behaviour exactly: a type without
+    `page_selection`, a type with `enabled: false`, `PAGE_SELECTION_ENABLED=false`,
+    and — importantly — an upload with NO declared type, since which selector
+    applies isn't known until the segmenter has classified the pages, and
+    classifying them requires reading them first.
+    """
+    if not declared_type:
+        return _MAX_PAGES, False
+    try:
+        entry = get_type_entry(declared_type)
+    except Exception:  # unknown/unloadable type: behave exactly as before
+        return _MAX_PAGES, False
+    if not page_selector.enabled_for(entry):
+        return _MAX_PAGES, False
+    spec = page_selector.spec_for(entry) or {}
+    return int(spec.get("max_source_pages", _MAX_PAGES_WITH_SELECTION)), True
+
+
 def process_pdf(
     pdf_bytes: bytes,
     declared_type: Optional[str] = None,
@@ -199,6 +277,8 @@ def process_pdf(
         )
 
     original_page_count: Optional[int] = None
+    page_cap = _MAX_PAGES
+    selection_drives_cap = False
     qr_reader = None
 
     if is_image:
@@ -212,7 +292,8 @@ def process_pdf(
             logger.exception("failed to read %s image for OCR", source_format)
             return _fail(f"unreadable {source_format} image: {e}", stage="page_load", exception=e)
     else:
-        pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, _MAX_PAGES)
+        page_cap, selection_drives_cap = _page_cap_for(declared_type)
+        pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, page_cap)
         try:
             pages = load_pages(pdf_bytes)
         except Exception as e:
@@ -327,11 +408,18 @@ def process_pdf(
     warnings = [c["message"] for c in cross_checks if not c["valid"]]
     truncated = original_page_count is not None
     if truncated:
+        # Con selección activa este tope es la salvaguarda contra un archivo
+        # capaz de agotar la Lambda, no un límite de costo — el costo ya lo
+        # acota el selector — así que el mensaje dice otra cosa.
         warnings.append(
-            f"Documento truncado a {_MAX_PAGES} de {original_page_count} páginas "
-            "para acotar costo de procesamiento; el PDF original completo "
-            "permanece sin modificar en S3 — reprocesar manualmente si se "
-            "necesitan las páginas restantes."
+            f"Documento truncado a {page_cap} de {original_page_count} páginas "
+            + (
+                "por el tope de procesamiento del tipo (`page_selection.max_source_pages`); "
+                if selection_drives_cap
+                else "para acotar costo de procesamiento; "
+            )
+            + "el PDF original completo permanece sin modificar en S3 — "
+            "reprocesar manualmente si se necesitan las páginas restantes."
         )
     # Bedrock usage for cost tracking (documentacion/COSTOS.md /
     # cost_audit.py): segmentation comes back from segment_pages() itself;
@@ -345,6 +433,7 @@ def process_pdf(
     usage_summary = {
         "segmentation": segmentation_usage or None,
         "extraction": {"modelId": used_models().get("extractor"), "usage": extraction_usage},
+        "pageSelection": _page_selection_summary(documents),
     }
     return {
         "processingId": processing_id,
@@ -367,8 +456,53 @@ def process_pdf(
         "documents": documents,
         "crossDocumentChecks": cross_checks,
         "warnings": warnings,
-        **({"truncated": {"originalPages": original_page_count, "processedPages": _MAX_PAGES}} if truncated else {}),
+        **({"truncated": {"originalPages": original_page_count, "processedPages": page_cap}} if truncated else {}),
     }
+
+
+def _page_selection_summary(documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Whole-document roll-up of what page selection avoided, or None when it
+    never filtered anything (no key rather than a row of zeroes).
+
+    `billedInputTokens` is exact — Bedrock reported it. Everything prefixed
+    `estimated` is derived from those billed tokens and the character counts
+    of the pages that were dropped, because the cheaper call is the only one
+    that was ever made; see `page_selector.Selection.savings`.
+    """
+    blocks = [d["pageSelection"] for d in documents if d.get("pageSelection")]
+    if not blocks:
+        return None
+
+    savings = [b.get("savings") or {} for b in blocks]
+    total = {
+        "documentsFiltered": len(blocks),
+        "pagesConsidered": sum(b.get("pagesConsidered", 0) for b in blocks),
+        "pagesExtracted": sum(len(b.get("selected") or []) for b in blocks),
+        "pagesSkipped": sum(len(b.get("skipped") or []) for b in blocks),
+        # Characters and chunks are the two things the token estimates are
+        # derived FROM, so they roll up alongside them: without them a stored
+        # record can't be re-checked later, only trusted.
+        "charsSent": sum(s.get("charsSent", 0) for s in savings),
+        "charsSkipped": sum(s.get("charsSkipped", 0) for s in savings),
+        "chunksSent": sum(s.get("chunksSent", 0) for s in savings),
+        "estimatedChunksWithoutSelection": sum(
+            s.get("estimatedChunksWithoutSelection", 0) for s in savings
+        ),
+    }
+    billed_in = sum(s.get("billedInputTokens", 0) for s in savings)
+    billed_out = sum(s.get("billedOutputTokens", 0) for s in savings)
+    saved_in = sum(s.get("estimatedInputTokensSaved", 0) for s in savings)
+    saved_out = sum(s.get("estimatedOutputTokensSaved", 0) for s in savings)
+    total["billedInputTokens"] = billed_in
+    total["billedOutputTokens"] = billed_out
+    if saved_in:
+        total["estimatedInputTokensSaved"] = saved_in
+        total["estimatedInputTokensWithoutSelection"] = billed_in + saved_in
+        total["estimatedInputSavingPct"] = round(saved_in / (billed_in + saved_in) * 100, 1)
+    if saved_out:
+        total["estimatedOutputTokensSaved"] = saved_out
+        total["estimatedOutputTokensWithoutSelection"] = billed_out + saved_out
+    return total
 
 
 def _public_entities(entity_map: Dict[str, Any]) -> Dict[str, Any]:

@@ -103,7 +103,50 @@ def print_detail(item: Dict[str, Any]) -> None:
         )
     if item.get("CostPerPageUsd") is not None:
         print(f"{DIM}Costo por página: {money(item['CostPerPageUsd'])}  (pricingVersion {item.get('PricingVersion', '?')}){RESET}")
+    _print_page_selection(item.get("PageSelection"))
     print()
+
+
+def _print_page_selection(ps: Optional[Dict[str, Any]]) -> None:
+    """Lo que la selección de páginas evitó gastar en este documento.
+
+    Se imprime aparte del bloque de servicios a propósito: ahí van montos
+    FACTURADOS, y casi todo esto valora una llamada que nunca se hizo. Por eso
+    la tabla separa las dos columnas en vez de dar un solo número.
+    """
+    if not ps:
+        return
+    considered = int(ps.get("pagesConsidered", 0) or 0)
+    extracted = int(ps.get("pagesExtracted", 0) or 0)
+    print(f"\n{CYAN}Selección de páginas{RESET} — se extrajeron {extracted} de {considered} páginas")
+
+    in_billed = int(ps.get("billedInputTokens", 0) or 0)
+    out_billed = int(ps.get("billedOutputTokens", 0) or 0)
+    in_saved = int(ps.get("estimatedInputTokensSaved", 0) or 0)
+    out_saved = int(ps.get("estimatedOutputTokensSaved", 0) or 0)
+    if not (in_saved or out_saved):
+        print(f"{DIM}  (sin ahorro estimado registrado){RESET}")
+        return
+
+    print(f"  {'':<22}{'facturado':>14}{'evitado (est.)':>18}{'sin selección':>16}")
+    print(f"  {'-' * 68}")
+    print(f"  {'input tokens':<22}{in_billed:>14,}{in_saved:>18,}{in_billed + in_saved:>16,}")
+    print(f"  {'output tokens':<22}{out_billed:>14,}{out_saved:>18,}{out_billed + out_saved:>16,}")
+    chunks = int(ps.get("chunksSent", 0) or 0)
+    chunks_without = int(ps.get("estimatedChunksWithoutSelection", 0) or 0)
+    if chunks and chunks_without:
+        print(f"  {'llamadas a Bedrock':<22}{chunks:>14}{chunks_without - chunks:>18}{chunks_without:>16}")
+    chars_sent = int(ps.get("charsSent", 0) or 0)
+    chars_skipped = int(ps.get("charsSkipped", 0) or 0)
+    if chars_sent or chars_skipped:
+        print(f"  {'caracteres de texto':<22}{chars_sent:>14,}{chars_skipped:>18,}{chars_sent + chars_skipped:>16,}")
+
+    avoided = ps.get("estimatedCostAvoidedUsd")
+    if avoided is not None:
+        pct = ps.get("estimatedInputSavingPct")
+        extra = f"  ({pct}% de los input tokens)" if pct is not None else ""
+        print(f"{DIM}  Costo evitado (estimado): {money(avoided)}{extra}{RESET}")
+    print(f"{DIM}  `facturado` lo reportó Bedrock; `evitado` estima la llamada que no se hizo.{RESET}")
 
 
 def print_summary(items: List[Dict[str, Any]], limit: int) -> None:
@@ -132,6 +175,23 @@ def print_summary(items: List[Dict[str, Any]], limit: int) -> None:
     overall_per_doc = money(grand_total / len(items)) if items else "-"
     overall_per_page = money(grand_total / grand_pages) if grand_pages else "-"
     print(f"{'TOTAL':<36}{len(items):>6}{grand_pages:>10}{money(grand_total):>14}{overall_per_doc:>10}{overall_per_page:>12}")
+
+    # Lo que la selección de páginas evitó en TODO el corte. Va después del
+    # total y separado de él: el total son dólares facturados, esto es una
+    # estimación de lo que no se gastó — sumarlos daría un número falso.
+    filtered = [it for it in items if it.get("PageSelection")]
+    if filtered:
+        avoided = sum(Decimal(str((it["PageSelection"]).get("estimatedCostAvoidedUsd", 0))) for it in filtered)
+        in_saved = sum(int((it["PageSelection"]).get("estimatedInputTokensSaved", 0) or 0) for it in filtered)
+        out_saved = sum(int((it["PageSelection"]).get("estimatedOutputTokensSaved", 0) or 0) for it in filtered)
+        pages_skipped = sum(int((it["PageSelection"]).get("pagesSkipped", 0) or 0) for it in filtered)
+        pages_seen = sum(int((it["PageSelection"]).get("pagesConsidered", 0) or 0) for it in filtered)
+        print(f"\n{CYAN}Selección de páginas{RESET} — activa en {len(filtered)} de {len(items)} documento(s)")
+        print(f"  páginas no extraídas: {pages_skipped} de {pages_seen}")
+        print(f"  tokens evitados (est.): in={in_saved:,}  out={out_saved:,}")
+        print(f"  costo evitado (est.): {money(avoided)}  {DIM}— estimación, no un monto facturado{RESET}")
+        if grand_total:
+            print(f"{DIM}  sin selección, el corte habría costado ~{money(grand_total + avoided)} en vez de {money(grand_total)}{RESET}")
 
     recent = sorted(items, key=lambda i: str(i.get("ProcessedAt", "")), reverse=True)[:limit]
     print(f"\n{DIM}Últimos {len(recent)} documento(s):{RESET}")

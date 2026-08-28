@@ -91,6 +91,42 @@ def aggregate_overall(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def aggregate_page_selection(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Lo que la selección de páginas evitó gastar en el corte completo.
+
+    Devuelve None si ningún documento la tuvo activa, para no renderizar una
+    sección de ceros. `cost_avoided` es una ESTIMACIÓN de la llamada que no se
+    hizo — se reporta junto al costo real pero nunca sumado a él.
+    """
+    active = [r["page_selection"] for r in rows if r.get("page_selection")]
+    if not active:
+        return None
+    cost_avoided = sum(p["estimated_cost_avoided"] for p in active)
+    billed_cost = sum(r["total_cost"] for r in rows if r.get("page_selection"))
+    in_saved = sum(p["input_tokens_saved"] for p in active)
+    out_saved = sum(p["output_tokens_saved"] for p in active)
+    in_billed = sum(p["billed_input_tokens"] for p in active)
+    out_billed = sum(p["billed_output_tokens"] for p in active)
+    return {
+        "docs": len(active),
+        "docs_total": len(rows),
+        "pages_considered": sum(p["pages_considered"] for p in active),
+        "pages_extracted": sum(p["pages_extracted"] for p in active),
+        "pages_skipped": sum(p["pages_skipped"] for p in active),
+        "chunks_sent": sum(p["chunks_sent"] for p in active),
+        "chunks_without_selection": sum(p["chunks_without_selection"] for p in active),
+        "billed_input_tokens": in_billed,
+        "billed_output_tokens": out_billed,
+        "input_tokens_saved": in_saved,
+        "output_tokens_saved": out_saved,
+        "input_saving_pct": (in_saved / (in_billed + in_saved) * 100) if (in_billed + in_saved) else None,
+        "cost_avoided": cost_avoided,
+        "billed_cost": billed_cost,
+        # Lo que habría costado el corte SIN selección, para el titular.
+        "cost_without_selection": billed_cost + cost_avoided,
+    }
+
+
 def aggregate_by_type(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     by_type: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"n": 0, "pages": 0, "cost": 0.0, "input_tokens": 0, "output_tokens": 0, "name": ""}
@@ -159,6 +195,7 @@ def render_markdown(
     by_service: Dict[str, Dict[str, Any]],
     top: List[Dict[str, Any]],
     env: str,
+    page_sel: Optional[Dict[str, Any]] = None,
 ) -> str:
     lines = [
         f"# Reporte de costos — {env}",
@@ -180,6 +217,34 @@ def render_markdown(
         f"| Versión(es) de tarifa | {', '.join(overall['pricing_versions']) or '—'} |",
         "",
     ]
+
+    if page_sel:
+        lines += [
+            "## Ahorro por selección de páginas",
+            "",
+            f"Activa en {page_sel['docs']} de {page_sel['docs_total']} documento(s): se extrajeron "
+            f"{num(page_sel['pages_extracted'])} de {num(page_sel['pages_considered'])} páginas.",
+            "",
+            "| | Facturado | Evitado (est.) | Sin selección |",
+            "| --- | --- | --- | --- |",
+            f"| Tokens de entrada | {num(page_sel['billed_input_tokens'])} | {num(page_sel['input_tokens_saved'])} | "
+            f"{num(page_sel['billed_input_tokens'] + page_sel['input_tokens_saved'])} |",
+            f"| Tokens de salida | {num(page_sel['billed_output_tokens'])} | {num(page_sel['output_tokens_saved'])} | "
+            f"{num(page_sel['billed_output_tokens'] + page_sel['output_tokens_saved'])} |",
+            f"| Llamadas a Bedrock | {num(page_sel['chunks_sent'])} | "
+            f"{num(page_sel['chunks_without_selection'] - page_sel['chunks_sent'])} | {num(page_sel['chunks_without_selection'])} |",
+            f"| Costo | {money(page_sel['billed_cost'])} | {money(page_sel['cost_avoided'])} | "
+            f"{money(page_sel['cost_without_selection'])} |",
+            "",
+            f"Esos documentos costaron {money(page_sel['billed_cost'])} en vez de "
+            f"~{money(page_sel['cost_without_selection'])}.",
+            "",
+            "> **Facturado** lo reportó Bedrock. **Evitado** estima la llamada que nunca se hizo "
+            "(entrada por densidad tokens/carácter de la llamada que sí corrió, salida por chunks "
+            "evitados), así que no está incluido en el costo total de arriba — sumarlos daría un "
+            "gasto que nadie pagó.",
+            "",
+        ]
 
     lines += ["## Por modelo", "", "| Modelo | Docs | Llamadas | Tokens in | Tokens out | Costo | $/doc |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for model, agg in sorted(by_model.items(), key=lambda kv: kv[1]["cost"], reverse=True):
@@ -238,6 +303,7 @@ def render_html(
     by_service: Dict[str, Dict[str, Any]],
     top: List[Dict[str, Any]],
     env: str,
+    page_sel: Optional[Dict[str, Any]] = None,
 ) -> str:
     models_ranked = sorted(by_model.items(), key=lambda kv: kv[1]["cost"], reverse=True)
     model_color = {m: CATEGORICAL[i % len(CATEGORICAL)] for i, (m, _) in enumerate(models_ranked)}
@@ -313,13 +379,45 @@ def render_html(
         f"{overall['first_date'][:10]} a {overall['last_date'][:10]}" if overall["first_date"] else "sin datos"
     )
 
+    page_sel_section = ""
+    if page_sel:
+        chunks_saved = page_sel["chunks_without_selection"] - page_sel["chunks_sent"]
+        page_sel_section = f'''
+      <section class="card">
+        <h2>Ahorro por selección de páginas</h2>
+        <p class="section-sub">
+          Activa en {page_sel['docs']} de {page_sel['docs_total']} documento(s): se extrajeron
+          {num(page_sel['pages_extracted'])} de {num(page_sel['pages_considered'])} páginas
+          ({num(page_sel['pages_skipped'])} descartadas sin mandarlas al modelo).
+          Esos documentos costaron <strong>{money(page_sel['billed_cost'])}</strong> en vez de
+          ~<strong>{money(page_sel['cost_without_selection'])}</strong>.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th class="num">Facturado</th><th class="num">Evitado (est.)</th><th class="num">Sin selección</th></tr></thead>
+            <tbody>
+              <tr><td>Tokens de entrada</td><td class="num">{num(page_sel['billed_input_tokens'])}</td><td class="num">{num(page_sel['input_tokens_saved'])}</td><td class="num">{num(page_sel['billed_input_tokens'] + page_sel['input_tokens_saved'])}</td></tr>
+              <tr><td>Tokens de salida</td><td class="num">{num(page_sel['billed_output_tokens'])}</td><td class="num">{num(page_sel['output_tokens_saved'])}</td><td class="num">{num(page_sel['billed_output_tokens'] + page_sel['output_tokens_saved'])}</td></tr>
+              <tr><td>Llamadas a Bedrock</td><td class="num">{num(page_sel['chunks_sent'])}</td><td class="num">{num(chunks_saved)}</td><td class="num">{num(page_sel['chunks_without_selection'])}</td></tr>
+              <tr><td><strong>Costo</strong></td><td class="num"><strong>{money(page_sel['billed_cost'])}</strong></td><td class="num"><strong>{money(page_sel['cost_avoided'])}</strong></td><td class="num"><strong>{money(page_sel['cost_without_selection'])}</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="section-sub"><strong>Facturado</strong> lo reportó Bedrock.
+          <strong>Evitado</strong> estima la llamada que nunca se hizo (entrada por densidad
+          tokens/carácter de la llamada que sí corrió, salida por chunks evitados), así que
+          <em>no</em> está incluido en el costo total de arriba — sumarlos daría un gasto que
+          nadie pagó.</p>
+      </section>
+'''
+
     body = f'''<div class="wrap">
       <header class="page-head">
         <h1>Reporte de costos de procesamiento — {esc(env)}</h1>
         <div class="meta">Generado {datetime.now():%Y-%m-%d %H:%M} · rango de documentos: {esc(date_range)} · tarifa(s): {esc(", ".join(overall["pricing_versions"]) or "—")}</div>
       </header>
       <div class="kpi-row">{kpis}</div>
-
+{page_sel_section}
       <section class="card">
         <h2>Costo por modelo</h2>
         <p class="section-sub">Compara qué modelo procesó más documentos y a qué costo — útil para decidir si vale la pena cambiar de modelo.</p>
@@ -388,6 +486,7 @@ def write_excel(
     by_type: Dict[str, Dict[str, Any]],
     by_model: Dict[str, Dict[str, Any]],
     by_service: Dict[str, Dict[str, Any]],
+    page_sel: Optional[Dict[str, Any]] = None,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font
@@ -413,6 +512,10 @@ def write_excel(
         "DocumentId", "DocumentType", "DocumentTypeName", "SourceFile", "AppOrigin", "ProcessedAt",
         "PagesTotal", "PagesNative", "PagesOcr", "PagesEmpty",
         "TotalInputTokens", "TotalOutputTokens", "TotalCostUsd", "CostPerPageUsd", "PricingVersion",
+        # Selección de páginas: vacío en documentos donde no estuvo activa.
+        # CostAvoided es ESTIMADO — no sumarlo a TotalCostUsd.
+        "PageSel.PagesExtracted", "PageSel.PagesSkipped",
+        "PageSel.InputTokensSaved", "PageSel.OutputTokensSaved", "PageSel.CostAvoidedUsd",
     ]
     for svc in service_names:
         headers += [f"{svc}.CostUsd", f"{svc}.InputTokens", f"{svc}.OutputTokens", f"{svc}.ModelId"]
@@ -423,6 +526,11 @@ def write_excel(
             r["processed_at"], r["pages_total"], r["pages_native"], r["pages_ocr"], r["pages_empty"],
             r["total_input_tokens"], r["total_output_tokens"], r["total_cost"], r["cost_per_page"], r["pricing_version"],
         ]
+        ps = r.get("page_selection")
+        row += [
+            ps["pages_extracted"], ps["pages_skipped"],
+            ps["input_tokens_saved"], ps["output_tokens_saved"], ps["estimated_cost_avoided"],
+        ] if ps else [None, None, None, None, None]
         for svc in service_names:
             s = r["services"].get(svc)
             row += [s["cost"], s["input_tokens"], s["output_tokens"], s["model_id"]] if s else [None, None, None, None]
@@ -480,6 +588,29 @@ def write_excel(
         ],
     )
 
+    if page_sel:
+        ws_sel = wb.create_sheet("SeleccionPaginas")
+        write_sheet(
+            ws_sel,
+            ["Metrica", "Facturado", "EvitadoEstimado", "SinSeleccion"],
+            [
+                ["Tokens de entrada", page_sel["billed_input_tokens"], page_sel["input_tokens_saved"],
+                 page_sel["billed_input_tokens"] + page_sel["input_tokens_saved"]],
+                ["Tokens de salida", page_sel["billed_output_tokens"], page_sel["output_tokens_saved"],
+                 page_sel["billed_output_tokens"] + page_sel["output_tokens_saved"]],
+                ["Llamadas a Bedrock", page_sel["chunks_sent"],
+                 page_sel["chunks_without_selection"] - page_sel["chunks_sent"],
+                 page_sel["chunks_without_selection"]],
+                ["Paginas", page_sel["pages_extracted"], page_sel["pages_skipped"],
+                 page_sel["pages_considered"]],
+                ["Costo USD", page_sel["billed_cost"], page_sel["cost_avoided"],
+                 page_sel["cost_without_selection"]],
+                [],
+                ["Documentos con seleccion activa", page_sel["docs"], "de", page_sel["docs_total"]],
+                ["NOTA", "EvitadoEstimado valora una llamada que nunca se hizo: NO sumarlo al costo real."],
+            ],
+        )
+
     wb.save(out_path)
 
 
@@ -520,19 +651,20 @@ def main() -> int:
     by_type = aggregate_by_type(rows)
     by_model = aggregate_by_model(rows)
     by_service = aggregate_by_service(rows)
+    page_sel = aggregate_page_selection(rows)
     top = top_expensive(rows, args.limit)
 
     out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / args.env / datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     md_path = out_dir / "reporte.md"
-    md_path.write_text(render_markdown(rows, overall, by_type, by_model, by_service, top, args.env), encoding="utf-8")
+    md_path.write_text(render_markdown(rows, overall, by_type, by_model, by_service, top, args.env, page_sel), encoding="utf-8")
 
     html_path = out_dir / "reporte.html"
-    html_path.write_text(render_html(rows, overall, by_type, by_model, by_service, top, args.env), encoding="utf-8")
+    html_path.write_text(render_html(rows, overall, by_type, by_model, by_service, top, args.env, page_sel), encoding="utf-8")
 
     xlsx_path = out_dir / "costos_raw.xlsx"
-    write_excel(xlsx_path, rows, overall, by_type, by_model, by_service)
+    write_excel(xlsx_path, rows, overall, by_type, by_model, by_service, page_sel)
 
     print(f"\n{CYAN}{overall['n']} documento(s) · {len(by_model)} modelo(s) · {len(by_type)} tipo(s) · costo total {money(overall['total_cost'])}{RESET}")
     print(f"Reporte → {out_dir}/")

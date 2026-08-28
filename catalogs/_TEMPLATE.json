@@ -19,6 +19,18 @@
     "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase.",
     "model_ids": {},
 
+    "__COMENTARIO_page_selection__": "Opcional. Selección de páginas de interés: manda a Bedrock SOLO las páginas cuyo texto cumple `min_score` marcadores DISTINTOS, en vez del documento completo — el ahorro grande en PDFs largos. Declararlo es lo que enciende la selección para este tipo (sin la llave, el tipo se procesa completo como siempre); `\"enabled\": false` lo apaga conservando los marcadores. Si la selección supera `max_ratio` del documento se procesan TODAS las páginas (fail-open): nunca se recorta contenido para cumplir un número. Calíbralo GRATIS con `python scripts/analizar-seleccion-paginas.py --type <TIPO> --show-pages` antes de confiar en él. Borra esta llave si tu tipo son documentos de pocas páginas: no hay nada que ahorrar. Ver catalogs/README.md -> 'Selección de páginas de interés'.",
+    "page_selection": {
+      "enabled": true,
+      "min_score": 2,
+      "follow_pages": 1,
+      "max_ratio": 0.6,
+      "markers": [
+        "REGEX QUE SOLO APARECE EN LAS PAGINAS DE ESTE TIPO",
+        "OTRO REGEX DISTINTIVO"
+      ]
+    },
+
     "__COMENTARIO_fields__": "Un campo escalar. `type` decide qué shape de salida arma el pipeline: string/number/boolean/date -> {value, confidence, valid, reason}. `hint` es texto libre en español: dónde vive el dato o cómo derivarlo (antes vivía en extraction_hints, ahora junto al campo). `required` reemplaza a la lista required_fields. `validation` reemplaza las entradas de validation_rules que tenían `\"field\": \"NOMBRE\"` — ya no hace falta repetir el nombre, es implícito por estar anidado aquí.",
     "fields": {
       "FOLIO": {
