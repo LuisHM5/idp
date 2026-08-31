@@ -56,7 +56,8 @@
     "test-local": "node scripts/test-local.mjs",
     "test-e2e": "node scripts/test-e2e.mjs",
     "track": "node scripts/track-execution.mjs",
-    "test:node": "node --test \"tests/unit/node/*.test.mjs\""
+    "test:node": "node --test \"tests/unit/node/*.test.mjs\"",
+    "doc:pdf": "bash scripts/doc-a-pdf.sh"
   },
   "keywords": [],
   "author": "Luis Hern\u00e1ndez Mac\u00edas",

@@ -102,6 +102,10 @@ Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 
 Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 
+### Paso 1 — `POST /upload`
+
+Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
+
 <details open>
 <summary><b>curl</b></summary>
 
@@ -207,8 +211,13 @@ La única petición **sin `x-api-key`**: va firmada en la URL y no pasa por el A
 <summary><b>curl</b></summary>
 
 ```bash
-# UPLOAD_URL viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
-# ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
+# UPLOAD_URL viene del paso 1. Si la pegas a mano, usa comillas SIMPLES: una
+# URL prefirmada real lleva ~12 `&` y sin comillas el shell la parte en el
+# primero, mandando el resto a segundo plano.
+UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ADUANAL/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
+
+# NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL (mira los
+# `x-amz-meta-*` de arriba). Sin x-api-key: esto no pasa por el API.
 curl -sS --fail -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
 # 200 con cuerpo vacío = subido. El pipeline arranca solo.
 ```
@@ -549,6 +558,7 @@ curl -X PUT --upload-file pedimento.pdf \
 | **Método** | `PUT` (viene en `uploadMethod`). No `POST`, no multipart, no form-data |
 | **Cuerpo** | Los bytes crudos del archivo, sin envolver ni codificar |
 | **Cabeceras** | **Ninguna.** La firma y la metadata ya van en la URL (ver aviso abajo) |
+| **La URL** | Úsala **completa y tal cual**. No separes parámetros. Al pegarla en shell, comillas **simples**: trae ~12 `&` en unos 1,900 caracteres |
 | **Auth** | Ninguna. La firma va en la URL; **no** mandes `x-api-key` aquí |
 | **Respuesta OK** | `200` con cuerpo vacío — S3 no devuelve JSON |
 | **Vencimiento** | 15 min (`uploadExpiresAt`). Si expira, repite el paso 1: no se renuevan |

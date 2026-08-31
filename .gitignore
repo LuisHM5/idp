@@ -69,3 +69,6 @@ reportes/
 /data
 # Dumps de respuestas crudas del modelo (MODEL_RESPONSE_DUMP_DIR)
 data/responses*/
+
+# PDFs generados desde los .md (pnpm doc:pdf) — el .md es la fuente
+documentacion/*.pdf

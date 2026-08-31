@@ -84,27 +84,73 @@ info:
     `GET /documents/{id}` responde `404`: es "todavía no", no "no existe".
     Consulta cada pocos segundos hasta que traiga `validation.status`.
 
+    ## Errores: qué significan de verdad
+
+    Los mensajes de API Gateway engañan. Esta tabla es la que resuelve el 90 %
+    de los tropiezos de una integración nueva:
+
+    | Respuesta | Qué significa REALMENTE | Arreglo |
+    | --- | --- | --- |
+    | `{"message":"Missing Authentication Token"}` | **No existe ninguna ruta con ese método + ese path.** Pese al nombre, **nunca** es un problema de API key | Revisa la URL: ¿pusiste `/prod` con el dominio propio? ¿el método es el correcto? ¿hay un typo en `/documents`? |
+    | `{"message":"Forbidden"}` | La ruta existe, pero falta la `x-api-key` o es inválida | Manda la key. En prod es obligatoria siempre |
+    | `403 AccessDenied` con `<HeadersNotSigned>` (XML) | En el `PUT` del paso 2 mandaste cabeceras `x-amz-*` | Quítalas: esa metadata ya viaja dentro de la URL |
+    | `403 SignatureDoesNotMatch` (XML) | La `uploadUrl` se alteró, o ya expiró | Repite el paso 1; las URLs no se renuevan |
+    | `400 INLINE_UPLOAD_REMOVED` | Mandaste el archivo en `contentBase64` | El modo inline ya no existe: usa los dos pasos |
+    | `400 DOCUMENT_TYPE_REQUIRED` | Subiste `.xml`/`.xlsx`/`.csv` sin `documentType` | Esos formatos lo exigen: no hay clasificación automática sobre datos ya estructurados |
+    | `404` al consultar el resultado | **Todavía se está procesando** | Reintenta cada pocos segundos; no es "no existe" |
+
+    Dos reglas que se deducen de la tabla y conviene tener presentes:
+
+    - **`Missing Authentication Token` ≠ problema de credenciales.** Una key
+      ausente o mala siempre da `Forbidden`. Si ves el primero, el fallo está
+      en la URL o en el método.
+    - **Los errores de S3 vienen en XML, no en JSON.** Los del paso 2 no llevan
+      el shape `{error, message}` del resto de la API: son respuestas de S3.
+
+    ## Trampas conocidas
+
+    - **El `/prod` de más.** Con `https://idp.alsuper.com` la ruta es
+      `/documents`. El stage solo va en la URL cruda `execute-api`.
+    - **Comillas en la `uploadUrl`.** Una URL real trae ~12 `&` en unos 1,900
+      caracteres. Al pegarla en shell van comillas **simples** (`'...'`); al
+      usarla desde una variable, **dobles** (`"$UPLOAD_URL"`). Sin comillas, el
+      shell corta en el primer `&` y el `PUT` va a una URL truncada.
+    - **El paso 2 responde `200` con cuerpo vacío.** S3 no devuelve JSON; un
+      cliente que intente parsearlo falla sobre una petición que salió bien.
+    - **No mandes `x-api-key` en el paso 2.** Va a S3, no a esta API.
+
     ---
 
     Este spec es el contrato formal de la API; la guía narrativa con ejemplos
     curl completos, notas de seguridad y el apéndice de "dónde queda el
-    resultado" vive en `documentacion/API_USO.md`.
+    resultado" vive en `documentacion/API_USO.md`. Para un runbook de copiar y
+    pegar paso a paso: `documentacion/SUBIR_DOC_CURL.md`.
 externalDocs:
   description: Guía de uso completa (español, con ejemplos curl)
   url: ../documentacion/API_USO.md
 servers:
+  - url: https://idp.alsuper.com
+    description: >
+      **prod (default)** — dominio propio. Exige `x-api-key` en todos los
+      endpoints.
+
+
+      **La ruta NO lleva el stage.** El dominio ya está mapeado al stage `prod`
+      (base path vacío), así que es `https://idp.alsuper.com/documents`, no
+      `.../prod/documents`. Poner `/prod` de más es el error más común contra
+      este dominio y produce un `Missing Authentication Token` que parece de
+      credenciales y no lo es.
   - url: "{apiEndpoint}"
     description: >
-      dev (default) — URL execute-api del stack `DocumentValidationStack-Dev`.
-      Exige `x-api-key` si se desplegó con `DEV_API_KEY_REQUIRED=true`; sin esa
-      variable queda abierta, pero igual acepta la key, así que mándala siempre.
-      Sale del output `ApiEndpoint` del stack (ver documentacion/API_USO.md →
-      "Base URL y autenticación").
+      dev — URL execute-api cruda del stack `DocumentValidationStack-Dev`. Aquí
+      el stage **sí** va en la ruta (`.../prod/documents`), porque no hay
+      dominio mapeado. Exige `x-api-key` si se desplegó con
+      `DEV_API_KEY_REQUIRED=true`; sin esa variable queda abierta, pero igual
+      acepta la key, así que mándala siempre y tu cliente sirve en los dos
+      ambientes. Sale del output `ApiEndpoint` del stack.
     variables:
       apiEndpoint:
         default: https://REPLACE-ME.execute-api.us-east-1.amazonaws.com/prod
-  - url: https://idp.alsuper.com
-    description: prod — dominio propio; exige `x-api-key` en todos los endpoints.
 # `x-api-key` es el default del contrato: prod siempre la exige y dev la exige
 # en cuanto se despliega con DEV_API_KEY_REQUIRED=true. Se documenta como
 # REQUERIDA a propósito — un dev abierto es una comodidad de pruebas, no el
@@ -128,8 +174,13 @@ paths:
         - lang: Shell
           label: curl
           source: |
-            # UPLOAD_URL viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
-            # ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
+            # UPLOAD_URL viene del paso 1. Si la pegas a mano, usa comillas SIMPLES: una
+            # URL prefirmada real lleva ~12 `&` y sin comillas el shell la parte en el
+            # primero, mandando el resto a segundo plano.
+            UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ADUANAL/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
+
+            # NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL (mira los
+            # `x-amz-meta-*` de arriba). Sin x-api-key: esto no pasa por el API.
             curl -sS --fail -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
             # 200 con cuerpo vacío = subido. El pipeline arranca solo.
         - lang: JavaScript
@@ -204,6 +255,12 @@ paths:
 
         - **El cuerpo son los bytes crudos.** No multipart, no form-data, no
         base64.
+
+        - **Usa la `uploadUrl` COMPLETA, tal cual.** No hay que separar ni
+        reconstruir parámetros: la firma, el objeto de destino y la metadata del
+        documento ya viajan dentro. En shell, pégala entre comillas **simples**
+        — una URL real ronda los 1,900 caracteres con ~12 `&`, y sin comillas se
+        parte en el primero.
 
         - **Caduca a los 15 min** (`uploadExpiresAt`). Si expira, repite el paso
         1: las URLs no se renuevan.
@@ -609,6 +666,32 @@ paths:
                     uploadExpiresInSeconds: 900
                     uploadExpiresAt: "2026-07-27T13:33:19.000Z"
                     uploadedAt: "2026-07-27T13:18:19.000Z"
+          links:
+            # Encadenado formal de los pasos: los valores de ESTA respuesta
+            # alimentan las operaciones siguientes, para no copiarlos a mano.
+            subirElArchivo:
+              operationId: putFileToPresignedUrl
+              description: >
+                **Paso 2.** Toma la `uploadUrl` de esta respuesta y sube ahí el
+                archivo. Es la petición que dispara el pipeline: sin ella el
+                documento nunca llega a S3. Caduca en 15 min.
+              parameters:
+                uploadUrl: $response.body#/uploadUrl
+            consultarElResultado:
+              operationId: getDocumentById
+              description: >
+                **Paso 3.** Consulta el resultado con el `documentId` de esta
+                respuesta. Responde `404` hasta que el paso 2 se completó y el
+                pipeline terminó — reintenta cada pocos segundos.
+              parameters:
+                id: $response.body#/documentId
+            descargarElOriginal:
+              operationId: getDocumentFile
+              description: >
+                **Paso 4** (opcional). Recupera el archivo tal como se subió,
+                con el mismo `documentId`.
+              parameters:
+                id: $response.body#/documentId
         "400":
           description: >
             Body inválido. Códigos posibles:

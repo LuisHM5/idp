@@ -24,15 +24,15 @@ dominio propio de prod **no lleva `/prod` en la ruta** y la URL cruda de dev
 **sí**.
 
 ```bash
-# --- dev (URL execute-api: el stage VA en la ruta)
-API="https://ls9rcym4d3.execute-api.us-east-1.amazonaws.com/prod"
-KEY=$(grep -E '^API_KEY_APP=' .env.dev | cut -d= -f2- | tr -d '"'"'"' ')
+# --- prod (default) — dominio propio: el stage NO va en la ruta
+API="https://idp.alsuper.com"
+KEY=$(grep -E '^API_KEY_APP=' .env.production | cut -d= -f2- | tr -d '"'"'"' ')
 ```
 
 ```bash
-# --- prod (dominio propio: el stage NO va en la ruta)
-API="https://idp.alsuper.com"
-KEY=$(grep -E '^API_KEY_APP=' .env.production | cut -d= -f2- | tr -d '"'"'"' ')
+# --- dev — URL execute-api cruda: el stage SÍ va en la ruta
+API="https://ls9rcym4d3.execute-api.us-east-1.amazonaws.com/prod"
+KEY=$(grep -E '^API_KEY_APP=' .env.dev | cut -d= -f2- | tr -d '"'"'"' ')
 ```
 
 ```bash
@@ -81,12 +81,39 @@ echo "DOC_ID=$DOC_ID"
 
 ## 2. Subir el archivo a S3
 
+### Opción A — encadenado desde el paso 1
+
+Si vienes del paso 1, `$UPLOAD_URL` ya está puesta:
+
 ```bash
 curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
 ```
 
-**Las comillas alrededor de `$UPLOAD_URL` son obligatorias**: la URL lleva `&`
-en el query string y sin comillas el shell la parte.
+### Opción B — pegar la URL completa
+
+Si ya tienes la URL (de otra terminal, de un log, de Postman), **pégala entera
+en una sola variable y no toques nada más**. No hay que separar parámetros ni
+reconstruir la firma: la URL ya lo trae todo.
+
+```bash
+UPLOAD_URL='https://documentvalidationstack-....s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ADUANAL/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=20260831T202053Z&X-Amz-Expires=900&X-Amz-Security-Token=...&X-Amz-Signature=...&X-Amz-SignedHeaders=host&x-amz-meta-app-origin=TEST&x-amz-meta-lote=A123&x-id=PutObject'
+
+curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
+```
+
+> ⚠️ **Comillas SIMPLES (`'...'`) al pegar la URL.** Una URL prefirmada real
+> lleva ~12 `&` y ronda los 1,900 caracteres. Sin comillas, el shell corta en el
+> primer `&` y manda el resto a segundo plano — el `PUT` va a una URL truncada y
+> S3 responde `403`. Las comillas simples también evitan que `$` o backticks
+> dentro del token se expandan.
+>
+> Con `$UPLOAD_URL` en el `curl` van comillas **dobles**, para que la variable sí
+> se expanda. Es la única diferencia entre las dos.
+
+**Todo va dentro de la URL.** Fíjate en los últimos parámetros del ejemplo:
+`x-amz-meta-app-origin=TEST` y `x-amz-meta-lote=A123` — la metadata del
+documento (incluida la que mandaste en `metadata` en el paso 1) viaja en el
+query string, ya firmada. Por eso el `PUT` no lleva ninguna cabecera.
 
 Qué NO lleva esta petición:
 
