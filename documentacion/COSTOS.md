@@ -116,6 +116,21 @@ contiene. Por eso en la tabla de arriba los CFDIs de 1-2 páginas y
 `normal_pend.pdf` salen con 0 % de ahorro: es lo correcto, no una falla de
 calibración.
 
+### Los límites del documento corrigen dos errores, no solo el costo
+
+Declarar dónde empieza y acaba el documento (`start_markers`, `end_markers`,
+`page_of_pattern`) resultó más una corrección que un ahorro. Medido contra el
+scoring con `follow_pages`:
+
+| Documento | Antes | Ahora | Qué pasaba |
+| --- | --- | --- | --- |
+| `long-docs.pdf` | 3–28 | 3–27 | se arrastraba el DODA de la página 28 |
+| expediente 86 págs | 4–19 | 3–18 | **se perdía la página 3**, portada escaneada del pedimento sin texto que puntuar |
+
+La segunda es la importante: esa página se estaba descartando y su contenido
+nunca llegaba al modelo. `page_of_pattern` la recupera deduciendo el rango
+desde el "Página 2 de 5" de la página siguiente.
+
 ### Cuando el tamaño es variable: `expected_pages: "auto"`
 
 Para un tipo cuyo largo es impredecible, cualquier rango declarado sería

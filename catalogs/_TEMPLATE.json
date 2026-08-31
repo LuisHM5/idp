@@ -27,6 +27,10 @@
       "max_ratio": 0.6,
       "min_pages": 5,
       "expected_pages": 6,
+      "__COMENTARIO_limites__": "Opcionales, pero mejores que puntuar: dicen donde EMPIEZA y donde ACABA el documento. `page_of_pattern` es el mas potente — con sus dos grupos (pagina actual, total) cualquier pagina revela el rango entero, asi que una portada escaneada sin texto se recupera desde cualquier otra pagina. Solo se aplican sobre paginas ya confirmadas por `markers`, para que el 'Pagina 1 de N' de un documento vecino no abra un rango propio. Si los declaras, sustituyen a follow_pages.",
+      "start_markers": ["REGEX DEL ENCABEZADO DE LA PRIMERA PAGINA"],
+      "end_markers": ["REGEX DE LA ULTIMA LINEA DEL DOCUMENTO"],
+      "page_of_pattern": "P[áa]gina\\s+(\\d+)\\s+de\\s+(\\d+)",
       "__COMENTARIO_expected_pages__": "Numero (6), rango ([3, 6]) o \"auto\". Con \"auto\" el tipo declara que su tamano es VARIABLE: no hay atajo por tamano, y si los marcadores no alcanzan, en vez de procesar todo se gasta UNA llamada barata a Bedrock sobre el digest de cada pagina para que el modelo ubique el rango (pipeline/page_locator.py). Usalo solo si de verdad no puedes dar un rango: el camino de marcadores es gratis y este no.",
       "markers": [
         "REGEX QUE SOLO APARECE EN LAS PAGINAS DE ESTE TIPO",

@@ -38,6 +38,16 @@
       "max_ratio": 0.6,
       "min_pages": 5,
       "expected_pages": 6,
+      "__COMENTARIO_limites__": "Límites del documento. `page_of_pattern` es el más potente: con sus dos grupos (página actual, total) CUALQUIER página revela el rango completo, así que un pedimento cuya portada 'Página 1 de 5' quedó escaneada sin texto se recupera desde su última página. `end_markers` cierra el documento y evita arrastrar el DODA que va justo después. Solo se aplican sobre páginas ya confirmadas por `markers`, así que el 'Página 1 de 6' de un CFDI vecino nunca abre un rango.",
+      "start_markers": [
+        "PEDIMENTO\\s+P[áa]gina\\s+1\\s+de",
+        "FORMA\\s+SIMPLIFICADA\\s+DEL\\s+PEDIMENTO"
+      ],
+      "end_markers": [
+        "FIN\\s+DE\\s+PEDIMENTO",
+        "NUM\\.?\\s*TOTAL\\s+DE\\s+PARTIDAS"
+      ],
+      "page_of_pattern": "P[áa]gina\\s+(\\d+)\\s+de\\s*:?\\s*(\\d+)",
       "markers": [
         "NUM\\.?\\s*PEDIMENTO",
         "CVE\\.?\\s*PEDIM",

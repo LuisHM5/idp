@@ -344,3 +344,101 @@ def test_the_real_catalog_skips_a_standalone_pedimento():
     spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
     hit = "NUM. PEDIMENTO CVE. PEDIM T.OPER REGIMEN: VALOR ADUANA"
     assert page_selector.select(_doc({1}, 5, hit), spec).skipped == []
+
+
+# --- document boundaries ---------------------------------------------------
+
+BOUNDS = {
+    **SPEC,
+    "min_pages": 0,
+    "start_markers": [r"PEDIMENTO\s+Página\s+1\s+de"],
+    "end_markers": [r"FIN\s+DE\s+PEDIMENTO"],
+    "page_of_pattern": r"Página\s+(\d+)\s+de\s+(\d+)",
+}
+HIT = "NUM. PEDIMENTO CVE. PEDIM T.OPER"
+
+
+def test_page_label_reveals_the_whole_document_from_any_page():
+    """"Página 3 de 5" on page 12 means the document runs 10-14. This is what
+    makes a scanned cover page recoverable: it never had to be scored."""
+    pages = [_page(n, "otro documento") for n in range(1, 21)]
+    pages[11] = _page(12, f"{HIT} Página 3 de 5")
+    selection = page_selector.select(pages, BOUNDS)
+    assert selection.selected == [10, 11, 12, 13, 14]
+
+
+def test_recovers_a_first_page_that_could_never_be_scored():
+    """Page 1 is a blank scan (no text, score 0). Page 2 says "Página 2 de 3",
+    so the document is 1-3 — including the page scoring had to skip. Measured
+    on a real expediente, where page 3 was being silently dropped."""
+    pages = [_page(1, ""), _page(2, f"{HIT} Página 2 de 3"), _page(3, f"{HIT} Página 3 de 3")]
+    pages += [_page(n, "otros documentos del expediente") for n in range(4, 13)]
+    selection = page_selector.select(pages, BOUNDS)
+    assert selection.selected == [1, 2, 3]
+
+
+def test_boundaries_replace_follow_pages_and_stop_at_the_end():
+    """`follow_pages` blindly grabbed the page after the last one — on a real
+    expediente that was the DODA, a different document entirely."""
+    pages = [_page(n, "relleno") for n in range(1, 11)]
+    pages[2] = _page(3, f"{HIT} PEDIMENTO Página 1 de 2")
+    pages[3] = _page(4, f"{HIT} Página 2 de 2 FIN DE PEDIMENTO")
+    selection = page_selector.select(pages, BOUNDS)
+    assert selection.selected == [3, 4]          # 5 (el siguiente documento) queda fuera
+    assert "límites declarados" in selection.reason
+
+
+def test_several_copies_each_get_their_own_span():
+    pages = [_page(n, "relleno") for n in range(1, 16)]
+    for start in (2, 7):
+        pages[start - 1] = _page(start, f"{HIT} PEDIMENTO Página 1 de 3")
+        pages[start] = _page(start + 1, f"{HIT} Página 2 de 3")
+        pages[start + 1] = _page(start + 2, f"{HIT} Página 3 de 3 FIN DE PEDIMENTO")
+    selection = page_selector.select(pages, BOUNDS)
+    assert selection.selected == [2, 3, 4, 7, 8, 9]
+
+
+def test_a_neighbours_page_label_cannot_open_a_span():
+    """A CFDI right after the pedimento also prints "Página 1 de 6". Only
+    pages already confirmed by `markers` may anchor a span, or the selector
+    would swallow the neighbouring document."""
+    pages = [_page(n, "relleno") for n in range(1, 21)]
+    pages[1] = _page(2, f"{HIT} Página 1 de 2")
+    pages[2] = _page(3, f"{HIT} Página 2 de 2")
+    pages[9] = _page(10, "CFDI Comprobante Fiscal Página 1 de 6")   # sin marcadores del tipo
+    selection = page_selector.select(pages, BOUNDS)
+    assert selection.selected == [2, 3]
+
+
+def test_spans_are_clamped_to_the_document():
+    """"Página 1 de 500" in a 6-page file must not invent pages."""
+    pages = [_page(n, "relleno") for n in range(1, 7)]
+    pages[4] = _page(5, f"{HIT} Página 1 de 500")
+    selection = page_selector.select(pages, BOUNDS)
+    assert max(selection.selected) <= 6
+
+
+def test_nonsense_page_labels_are_ignored():
+    """"Página 9 de 3" describes nothing real — fall back to the plain anchor
+    rather than computing a negative start."""
+    pages = [_page(n, "relleno") for n in range(1, 11)]
+    pages[4] = _page(5, f"{HIT} Página 9 de 3")
+    selection = page_selector.select(pages, BOUNDS)
+    assert selection.selected == [5]
+    assert page_selector._page_of("Página 9 de 3", __import__("re").compile(r"Página (\d+) de (\d+)")) is None
+
+
+def test_types_without_boundaries_keep_follow_pages():
+    selection = page_selector.select(_doc({4}, 20), {**SPEC, "follow_pages": 2})
+    assert selection.selected == [4, 5, 6]
+    assert "continuación" in selection.reason
+
+
+def test_the_real_catalog_declares_usable_boundaries():
+    catalog = json.loads((REPO_ROOT / "catalogs" / "PEDIMENTO_ADUANAL.json").read_text())
+    spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
+    bounds = page_selector._boundaries(spec)
+    assert bounds["page_of"] and bounds["end"]
+    import re
+    assert re.search(spec["page_of_pattern"], "26-1248  ANEXO DEL PEDIMENTO    Página 2 de 5")
+    assert re.search(spec["end_markers"][0], "FIN DE PEDIMENTO", re.I)

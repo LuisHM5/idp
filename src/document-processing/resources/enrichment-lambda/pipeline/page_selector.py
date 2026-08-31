@@ -262,6 +262,95 @@ def score_pages(pages: Sequence[Any], markers: Sequence[str]) -> List[PageScore]
     return scores
 
 
+# --- document boundaries ---------------------------------------------------
+#
+# Scoring says "this page looks like the type". Boundaries say "this document
+# runs from HERE to HERE", which is strictly better information: it recovers a
+# page the scoring missed (a scanned first page with no text to score) and
+# drops a page the scoring wrongly kept (the unrelated document right after
+# the last one, pulled in by `follow_pages`). Both were measured on real
+# expedientes — see `docs` note in catalogs/README.md.
+#
+# `page_of_pattern` is the strongest of the three: with two capture groups
+# (current, total) ANY page of a document reveals the whole span, so a
+# pedimento whose "Página 1 de 5" cover page was scanned into an empty text
+# layer is still recovered from its "Página 5 de 5" last page.
+
+
+def _boundaries(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """The declared boundary config, or {} when the type declares none."""
+    declared = {
+        "start": list(spec.get("start_markers") or []),
+        "end": list(spec.get("end_markers") or []),
+        "page_of": spec.get("page_of_pattern") or "",
+    }
+    return declared if any(declared.values()) else {}
+
+
+def _page_of(text: str, pattern: Pattern[str]) -> Optional[Tuple[int, int]]:
+    """(current, total) from a "Página 3 de 8" style label, if present."""
+    m = pattern.search(text or "")
+    if not m or len(m.groups()) < 2:
+        return None
+    try:
+        current, total = int(m.group(1)), int(m.group(2))
+    except (TypeError, ValueError):
+        return None
+    # A label that doesn't describe a sane position is worse than no label.
+    if current < 1 or total < 1 or current > total:
+        return None
+    return current, total
+
+
+def _spans_from_boundaries(
+    anchors: List[PageScore],
+    texts: Dict[int, str],
+    bounds: Dict[str, Any],
+    total_pages: int,
+) -> Set[int]:
+    """Grow each confirmed page into the full document it belongs to.
+
+    Anchors come from marker scoring, so every span starts from a page already
+    confirmed as this type — that is what stops an unrelated document's own
+    "Página 1 de 6" (a CFDI, say) from opening a span of its own.
+    """
+    page_of_re = _compile((bounds["page_of"],))[0][1] if bounds["page_of"] else None
+    start_res = [r for _, r in _compile(tuple(bounds["start"]))]
+    end_res = [r for _, r in _compile(tuple(bounds["end"]))]
+
+    keep: Set[int] = set()
+    for anchor in anchors:
+        n = anchor.number
+        keep.add(n)
+        span = _page_of(texts.get(n, ""), page_of_re) if page_of_re else None
+        if span:
+            current, count = span
+            start = max(1, n - current + 1)
+            keep |= set(range(start, min(total_pages, start + count - 1) + 1))
+
+    if not keep:
+        return keep
+
+    # An explicit start/end marker inside the neighbourhood corrects a span the
+    # page label got wrong (or supplies one when there is no label at all): a
+    # document runs from its start marker to its end marker inclusive.
+    if start_res or end_res:
+        anchor_numbers = {a.number for a in anchors}
+        starts = sorted(n for n in anchor_numbers if any(r.search(texts.get(n, "")) for r in start_res))
+        ends = sorted(n for n in anchor_numbers if any(r.search(texts.get(n, "")) for r in end_res))
+        for start in starts:
+            closing = next((e for e in ends if e >= start), None)
+            if closing is not None:
+                keep |= set(range(start, closing + 1))
+        # An end marker with no start marker before it still closes something:
+        # keep everything from the previous end (exclusive) that was already
+        # selected, so a document whose opening page never scored isn't cut.
+        for end in ends:
+            if not any(s <= end for s in starts):
+                keep.add(end)
+    return keep
+
+
 def _expected_max_pages(expected: Any) -> Optional[int]:
     """Upper bound of a type's declared `expected_pages`, or None.
 
@@ -329,17 +418,27 @@ def select(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> Selection:
             scores,
         )
 
-    # Carry along each anchor's continuation pages: a document's fields spill
-    # onto pages whose own header markers may be absent (a clean layout) or
-    # garbled (a bad scan), and one extra page costs far less than a missing
-    # PARTIDAS row.
-    by_number = {s.number for s in scores}
-    keep: Set[int] = set()
-    for anchor in anchors:
-        keep.add(anchor.number)
-        for offset in range(1, follow + 1):
-            if anchor.number + offset in by_number:
-                keep.add(anchor.number + offset)
+    bounds = _boundaries(spec or {})
+    if bounds:
+        # The type tells us where its documents begin and end, so grow each
+        # confirmed page into its whole document instead of guessing with a
+        # fixed `follow_pages` window — exact where the window was approximate.
+        texts = {getattr(pg, "number", 0): (getattr(pg, "text", "") or "") for pg in pages}
+        keep = _spans_from_boundaries(anchors, texts, bounds, len(all_numbers))
+        strategy = "límites declarados (inicio/fin/página X de N)"
+    else:
+        # Carry along each anchor's continuation pages: a document's fields
+        # spill onto pages whose own header markers may be absent (a clean
+        # layout) or garbled (a bad scan), and one extra page costs far less
+        # than a missing PARTIDAS row.
+        by_number = {s.number for s in scores}
+        keep = set()
+        for anchor in anchors:
+            keep.add(anchor.number)
+            for offset in range(1, follow + 1):
+                if anchor.number + offset in by_number:
+                    keep.add(anchor.number + offset)
+        strategy = f"+{follow} de continuación"
 
     selected = sorted(keep)
     ratio = len(selected) / len(all_numbers)
@@ -360,8 +459,7 @@ def select(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> Selection:
 
     return Selection(
         selected, skipped, False,
-        f"{len(selected)}/{len(all_numbers)} páginas con score>={min_score} "
-        f"(+{follow} de continuación)",
+        f"{len(selected)}/{len(all_numbers)} páginas con score>={min_score} ({strategy})",
         scores,
     )
 

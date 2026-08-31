@@ -614,6 +614,43 @@ escondido dentro de la extracción.
 Úsalo solo si de verdad no puedes dar un rango: el camino de marcadores es
 gratis y éste no.
 
+**Límites del documento: dónde empieza y dónde acaba.** Puntuar dice "esta
+página *parece* del tipo". Declarar límites dice "este documento va de AQUÍ a
+AQUÍ", que es mejor información:
+
+```jsonc
+"page_selection": {
+  "markers": ["NUM\\.?\\s*PEDIMENTO", "CVE\\.?\\s*PEDIM"],   // confirma el TIPO
+  "start_markers": ["PEDIMENTO\\s+P[áa]gina\\s+1\\s+de"],      // opcional
+  "end_markers": ["FIN\\s+DE\\s+PEDIMENTO"],                    // opcional
+  "page_of_pattern": "P[áa]gina\\s+(\\d+)\\s+de\\s*:?\\s*(\\d+)"  // opcional
+}
+```
+
+**`page_of_pattern` es el más potente de los tres.** Con sus dos grupos
+(página actual, total) **cualquier** página revela el documento entero: si la
+página 12 dice "Página 3 de 5", el documento va de la 10 a la 14. Eso importa
+porque ya no hace falta que la portada sea legible.
+
+Los tres se aplican **solo sobre páginas ya confirmadas** por `markers`. Es lo
+que impide que el "Página 1 de 6" de un CFDI vecino abra un rango propio y se
+trague el documento de al lado.
+
+Medido en expedientes reales, contra el scoring con `follow_pages`:
+
+| | Antes | Ahora | Por qué |
+| --- | --- | --- | --- |
+| `long-docs.pdf` | 3–28 | 3–**27** | `follow_pages` arrastraba el DODA de la 28 |
+| expediente 86 págs | **4**–19 | **3**–18 | La portada del pedimento (pág 3) estaba escaneada, sin texto que puntuar: se recupera desde el "Página 2 de 5" de la 4. **Antes se perdía.** |
+
+O sea, no es solo ahorro: se estaba descartando una página buena y quedándose
+con una ajena. Cuando el tipo declara límites, éstos **sustituyen** a
+`follow_pages` (que sigue siendo el camino para tipos sin límites declarados).
+
+Un rango imposible se ignora en vez de romper nada: "Página 9 de 3" no
+describe nada real, y un "Página 1 de 500" en un archivo de 6 páginas se
+recorta a los límites del documento.
+
 **Cómo puntúa.** Cada página suma **un punto por marcador DISTINTO** que
 aparece en su texto — diez repeticiones de la misma frase valen uno. Es el
 mismo scoring que ya usaba `qr_recovery.page_markers` (de hecho comparten
