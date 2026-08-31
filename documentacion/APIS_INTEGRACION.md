@@ -44,18 +44,19 @@ nunca pasa por API Gateway ni por la Lambda:
 
 | Paso | Qué | Cómo |
 |---|---|---|
-| 1 | `POST /upload` con solo metadata | La Lambda valida, acuña `documentId`/key y firma una URL de S3 (`getSignedUrl` + `PutObjectCommand`, expira en 15 min). Devuelve `uploadUrl` + `uploadHeaders`. |
-| 2 | `PUT {uploadUrl}` con el archivo | Va directo a S3, sin Lambda y sin credenciales AWS. El pipeline arranca al recibirse el objeto. |
+| 1 | `POST /upload` con solo metadata | La Lambda valida, acuña `documentId`/key y firma una URL de S3 (`getSignedUrl` + `PutObjectCommand`, expira en 15 min). Devuelve `uploadUrl` (con la metadata ya dentro del query string, firmada). |
+| 2 | `PUT {uploadUrl}` con el archivo | Va directo a S3, sin Lambda, sin credenciales AWS y **sin cabeceras extra**. El pipeline arranca al recibirse el objeto. |
 
-El `PUT` **debe reenviar cada cabecera de `uploadHeaders`**: están dentro de la
-firma, así que omitir una da `403 SignatureDoesNotMatch`.
+SigV4 mueve las cabeceras `x-amz-*` al query string al prefirmar, así que la
+metadata ya viaja dentro de la URL y firmada. Mandarla también como header da
+`403 AccessDenied: There were headers present in the request which were not signed`.
 
 El modo inline (`contentBase64`) fue eliminado — devuelve
 `400 INLINE_UPLOAD_REMOVED`. Existía solo para archivos chicos y hacía que el
 **tamaño** decidiera qué código corría: base64 infla ~33 %, y arriba de ~4 MB
 reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
-**Body** (`fileName` requerido; `documentType`, `contentType`, `metadata`, `modelId` opcionales). Acepta `application/json` o `application/x-www-form-urlencoded`:
+**Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). Acepta `application/json` o `application/x-www-form-urlencoded`:
 ```jsonc
 { "fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL", "metadata": {} }
 ```

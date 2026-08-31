@@ -741,22 +741,25 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const requireApiKey = isProd || (props?.devApiKeyRequired ?? false);
     const methodOptions: apigateway.MethodOptions = { apiKeyRequired: requireApiKey };
 
-    const uploadResource = api.root.addResource("upload");
-    uploadResource.addMethod(
-      "POST",
-      new apigateway.LambdaIntegration(uploadFn),
-      methodOptions
-    );
-
-    // GET /documents?field=<dot.path>&value=<v>  → search by any extracted field
-    // GET /documents/{id}                        → full result for one document
-    // GET /documents/{id}/file                    → presigned S3 URL to the original uploaded file
+    // POST /documents                            → create a document; returns the presigned upload URL
+    // GET  /documents?field=<dot.path>&value=<v>  → search by any extracted field
+    // GET  /documents/{id}                        → full result for one document
+    // GET  /documents/{id}/file                   → presigned S3 URL to the original uploaded file
+    const uploadIntegration = new apigateway.LambdaIntegration(uploadFn);
     const queryIntegration = new apigateway.LambdaIntegration(queryFn);
     const documentsResource = api.root.addResource("documents");
+    documentsResource.addMethod("POST", uploadIntegration, methodOptions);
     documentsResource.addMethod("GET", queryIntegration, methodOptions);
     const documentByIdResource = documentsResource.addResource("{id}");
     documentByIdResource.addMethod("GET", queryIntegration, methodOptions);
     documentByIdResource.addResource("file").addMethod("GET", queryIntegration, methodOptions);
+
+    // Alias en desuso de `POST /documents`. El nombre `/upload` dejó de ser
+    // cierto cuando el endpoint dejó de recibir el archivo: hoy solo registra
+    // el documento y devuelve una URL prefirmada. Se conserva para no romper
+    // integraciones existentes; misma Lambda, misma respuesta. Retirarlo es
+    // borrar estas dos líneas (cambio incompatible: avisar antes).
+    api.root.addResource("upload").addMethod("POST", uploadIntegration, methodOptions);
 
     // ---- Prod hardening: API keys + usage plan, WAF, custom domain ----------
     if (isProd) {

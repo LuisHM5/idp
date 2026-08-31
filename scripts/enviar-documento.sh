@@ -33,7 +33,7 @@
 #     ver documentacion/AMBIENTES_Y_SEGURIDAD.md. API_KEY explícito siempre gana.
 #
 # Dos pasos, siempre, sin importar el tamaño:
-#   1. POST /upload (solo metadata) -> devuelve uploadUrl + uploadHeaders
+#   1. POST /upload (solo metadata) -> devuelve uploadUrl
 #   2. PUT del archivo directo a S3 con esa URL
 # El archivo nunca pasa por API Gateway ni por el Lambda, que tienen topes
 # duros de AWS (~10MB/6MB) no configurables. Cualquier cliente HTTP sin
@@ -235,35 +235,18 @@ if [[ -z "$UPLOAD_URL" || -z "$DOCID" ]]; then
   exit 1
 fi
 
-# Cuando el upload lleva metadata, S3 la firmó dentro de la URL: el PUT
-# debe reenviar EXACTAMENTE los mismos headers o S3 responde 403
-# SignatureDoesNotMatch. Por eso se leen de `uploadHeaders` de la respuesta
-# en vez de reconstruirlos aquí: el API firma `model-id` y también
-# `app-origin` (el nombre de la app resuelto desde la x-api-key), así que
-# cualquier lista escrita a mano en este script se queda corta en cuanto el
-# API agrega un metadato — que es justo como este PUT empezó a dar 403.
-PUT_HEADERS=()
-HEADERS_JSON=$(echo "$PRESIGN_RESPONSE" | sed -n 's/.*"uploadHeaders"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p')
-if [[ -n "$HEADERS_JSON" ]]; then
-  while IFS= read -r PAIR; do
-    [[ -z "$PAIR" ]] && continue
-    # sed y no expansión de bash: `${var##*:}` cortaría un valor que
-    # contenga dos puntos (un ARN de inference-profile, por ejemplo).
-    H_NAME=$(printf '%s' "$PAIR" | sed 's/^"\([^"]*\)".*/\1/')
-    H_VALUE=$(printf '%s' "$PAIR" | sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/')
-    PUT_HEADERS+=(-H "$H_NAME: $H_VALUE")
-  done < <(echo "$HEADERS_JSON" | grep -o '"[^"]*"[[:space:]]*:[[:space:]]*"[^"]*"')
-fi
-if [[ ${#PUT_HEADERS[@]} -gt 0 ]]; then
-  echo "Cabeceras firmadas a reenviar: ${#PUT_HEADERS[@]}"
-fi
+# El PUT no lleva NINGUNA cabecera extra. Al prefirmar, SigV4 **hoistea** los
+# `x-amz-*` al query string, así que la metadata (model-id, app-origin) ya
+# viaja dentro de la URL y queda cubierta por la firma
+# (`X-Amz-SignedHeaders=host`). Mandarla ADEMÁS como header hace que S3
+# conteste `403 AccessDenied: There were headers present in the request which
+# were not signed`. Este script llegó a hacerlo, y ése era el bug.
 
 echo "Subiendo directo a S3 vía URL prefirmada..."
-# Sin --fail: S3 explica el 403 en el cuerpo (SignatureDoesNotMatch y qué
-# cabecera falta). --fail lo descartaba y dejaba solo "error: 403", que no
-# dice nada de por qué.
+# Sin --fail: S3 explica el motivo en el cuerpo del error. --fail lo descarta
+# y deja solo "error: 403", que no dice nada de por qué.
 PUT_BODY=$(mktemp); trap 'rm -f "$REQ_BODY_FILE" "$PUT_BODY"' EXIT
-HTTP_CODE=$(curl -sS -X PUT --upload-file "$FILE" "${PUT_HEADERS[@]}" \
+HTTP_CODE=$(curl -sS -X PUT --upload-file "$FILE" \
   -o "$PUT_BODY" -w '%{http_code}' "$UPLOAD_URL")
 if [[ "$HTTP_CODE" != "200" ]]; then
   echo "S3 rechazó el PUT (HTTP $HTTP_CODE):" >&2

@@ -147,7 +147,7 @@ export async function handler(event) {
   if (parsed.error) return errorResponse(400, parsed.error.code, parsed.error.message);
   const body = parsed.body;
 
-  const { fileName, contentBase64, metadata, documentType, modelId, contentType } = body;
+  const { fileName, contentBase64, metadata, documentType, modelId } = body;
 
   if (!fileName) {
     return errorResponse(400, "MISSING_FIELD", "Field 'fileName' is required");
@@ -187,34 +187,30 @@ export async function handler(event) {
       400,
       "INLINE_UPLOAD_REMOVED",
       "Inline uploads are no longer supported. Omit 'contentBase64': this endpoint " +
-        "returns an 'uploadUrl' plus 'uploadHeaders', and you PUT the file straight to " +
-        "S3. Same two steps for every file size."
+        "returns an 'uploadUrl' and you PUT the file straight to it. Same two steps " +
+        "for every file size."
     );
   }
-  return handlePresigned(documentId, key, manualType, objectMetadata, contentType);
+  return handlePresigned(documentId, key, manualType, objectMetadata);
 }
 
 /**
  * Presigned mode: no bytes touch this Lambda. Returns a short-lived S3 PUT
  * URL for the caller to upload directly to.
  *
- * Deliberately does NOT bind Content-Type into the signature: doing so
- * would require every caller to send back the exact same header value or
- * get a SignatureDoesNotMatch error. The enrichment pipeline never trusts
- * S3's stored Content-Type anyway — it infers the file type from the key's
- * extension (see `_fetch_document` in the enrichment Lambda) — so leaving
- * it unset costs nothing and keeps the presigned PUT usable from any client
- * (`curl -T`, a browser `fetch`, etc.) without extra header bookkeeping.
+ * The caller sends NO extra headers on the PUT. SigV4 presigning hoists
+ * `x-amz-*` headers into the query string, so the object metadata already
+ * travels inside the URL and is covered by the signature
+ * (`X-Amz-SignedHeaders=host`). Sending it as headers too makes S3 reject the
+ * upload with `403 AccessDenied: There were headers present in the request
+ * which were not signed` — verified against the real bucket.
+ *
+ * Content-Type is deliberately not bound either: the enrichment pipeline
+ * infers the file type from the key's extension and never reads S3's stored
+ * Content-Type, so leaving it unset keeps the PUT usable from any client with
+ * zero header bookkeeping.
  */
-async function handlePresigned(documentId, key, manualType, objectMetadata = {}, contentType) {
-  // Binding Content-Type is OPT-IN, by sending `contentType` on the request.
-  // Bound, S3 rejects a PUT whose Content-Type differs — useful when you want
-  // the stored object typed correctly and control both ends. Unbound (the
-  // default), any client can PUT with whatever header it likes, which is why
-  // it stays off unless asked for: the pipeline infers the real type from the
-  // key's extension anyway and never trusts S3's stored Content-Type.
-  const boundContentType =
-    typeof contentType === "string" && contentType.trim() ? contentType.trim() : undefined;
+async function handlePresigned(documentId, key, manualType, objectMetadata = {}) {
   let uploadUrl;
   try {
     uploadUrl = await getSignedUrl(
@@ -226,7 +222,6 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {},
         // binding it unconditionally would force every caller to echo the
         // matching headers, which is exactly what this path avoids.
         ...(Object.keys(objectMetadata).length ? { Metadata: objectMetadata } : {}),
-        ...(boundContentType ? { ContentType: boundContentType } : {}),
       }),
       { expiresIn: PRESIGN_EXPIRY_SECONDS }
     );
@@ -246,20 +241,14 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {},
       classificationMode: manualType ? "manual" : "auto",
       uploadUrl,
       uploadMethod: "PUT",
-      // Headers the caller must echo on the PUT for the signature to match.
-      // ALWAYS send exactly these — S3 answers 403 SignatureDoesNotMatch if
-      // one is missing, and this list grows as the API signs more metadata,
-      // so a client that hardcodes its own list breaks silently later.
-      ...(Object.keys(objectMetadata).length || boundContentType
-        ? {
-            uploadHeaders: {
-              ...Object.fromEntries(
-                Object.entries(objectMetadata).map(([k, v]) => [`x-amz-meta-${k}`, v])
-              ),
-              ...(boundContentType ? { "Content-Type": boundContentType } : {}),
-            },
-          }
-        : {}),
+      // NOTA: deliberadamente NO se devuelve una lista de cabeceras que el
+      // cliente deba reenviar. SigV4 **hoistea** los `x-amz-*` al query string
+      // al prefirmar, así que la metadata ya viaja DENTRO de la URL y queda
+      // cubierta por la firma (`X-Amz-SignedHeaders=host`). Mandarlos además
+      // como headers hace que S3 rechace el PUT con
+      // `403 AccessDenied: There were headers present in the request which
+      // were not signed` — verificado contra el bucket real. El PUT correcto
+      // no lleva ninguna cabecera extra.
       uploadExpiresInSeconds: PRESIGN_EXPIRY_SECONDS,
       // Absolute deadline alongside the relative one: a client that queues the
       // upload can tell whether the URL is still good without having to know

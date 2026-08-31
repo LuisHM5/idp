@@ -104,10 +104,11 @@ UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
 curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
 ```
 
-- **Si el `POST` llevó `x-api-key`**, la respuesta trae `uploadHeaders` y el
-  `PUT` **debe reenviar esas cabeceras tal cual** — van dentro de la firma, y
-  omitir una da `403 SignatureDoesNotMatch` (un 403 que parece de permisos y no
-  lo es). Con `jq`: `jq -r '.uploadHeaders // {} | to_entries[]'`.
+- **El `PUT` no lleva ninguna cabecera extra.** Al prefirmar, SigV4 mueve las
+  cabeceras `x-amz-*` al query string, así que la metadata ya viaja dentro de la
+  URL y firmada. Si además la mandas como header, S3 responde
+  `403 AccessDenied: There were headers present in the request which were not
+  signed` — un 403 que parece de permisos y es de firma.
 - `documentType` es **opcional**: si lo omites, Bedrock clasifica solo (más
   lento y caro); si lo mandas, se salta ese paso.
 - Formatos: `pdf`, `jpg`, `jpeg`, `png`, `xml`, `xlsx`, `csv`.

@@ -215,8 +215,8 @@ RESP=$(curl -sS -X POST "$API_ENDPOINT/upload" \
   -H "Content-Type: application/json" \
   -d '{"fileName":"expediente.pdf","documentType":"EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"}')
 
-# 2. Subir el archivo, reenviando las cabeceras de `uploadHeaders` (van dentro
-#    de la firma: si falta una, S3 responde 403 SignatureDoesNotMatch)
+# 2. Subir el archivo. SIN cabeceras extra: la firma y la metadata ya viajan
+#    en el query string de la URL.
 curl -sS --fail -X PUT --upload-file expediente.pdf "$(echo "$RESP" | jq -r .uploadUrl)"
 ```
 

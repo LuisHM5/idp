@@ -66,7 +66,7 @@ sequenceDiagram
     C->>A: POST /upload
     A->>U: evento proxy
     U->>U: valida request y genera documentId
-    U-->>C: documentId + URL PUT prefirmada + uploadHeaders
+    U-->>C: documentId + URL PUT prefirmada
     C->>S: PUT raw/... (directo, sin API Gateway ni Lambda)
     S-->>Q: ObjectCreated en raw/
     Q->>SC: registro SQS
@@ -216,21 +216,22 @@ Ruta: `POST /upload` → `upload-lambda/index.mjs:handler` (`:141`).
 ### 5.2 Modo prefirmado (el único)
 
 `handlePresigned()` firma un `PutObjectCommand` con `getSignedUrl` (15 min) y
-devuelve `uploadUrl`, `uploadMethod`, `uploadHeaders`, `uploadExpiresInSeconds`
-y `uploadExpiresAt`. Los bytes nunca tocan esta Lambda.
+devuelve `uploadUrl`, `uploadMethod`, `uploadExpiresInSeconds` y
+`uploadExpiresAt`. Los bytes nunca tocan esta Lambda.
 
-`uploadHeaders` lista **toda** cabecera que quedó dentro de la firma —
-`x-amz-meta-model-id`, `x-amz-meta-app-origin` (solo si el request llevó
-`x-api-key`) y `Content-Type` si el request mandó `contentType`. El cliente debe
-reenviarlas tal cual o S3 responde `403 SignatureDoesNotMatch`; por eso la
-respuesta las enumera en vez de dejar que cada cliente las reconstruya.
+**El cliente no reenvía ninguna cabecera.** `getSignedUrl` pasa la `Metadata`
+del `PutObjectCommand` por el hoisting de SigV4: las `x-amz-*` acaban en el
+query string de la URL, dentro de la firma, y `X-Amz-SignedHeaders` queda en
+`host` a secas. Si el cliente las manda además como header, S3 rechaza el PUT
+con `403 AccessDenied: There were headers present in the request which were not
+signed`. Verificado contra el bucket real.
 
 ### 5.3 Modo prefirmado
 
-`handlePresigned()` (`:203`) firma un `PutObject` por 15 minutos. Si existen
-metadatos, también devuelve `uploadHeaders`; el cliente debe repetir exactamente
-esos encabezados `x-amz-meta-*` en el PUT. El archivo no atraviesa API Gateway ni
-la Lambda.
+`handlePresigned()` (`:203`) firma un `PutObject` por 15 minutos. Los
+metadatos (`model-id`, `app-origin`) van en la `Metadata` del comando y SigV4
+los *hoistea* al query string de la URL, ya firmados — el cliente **no** repite
+ningún encabezado en el PUT. El archivo no atraviesa API Gateway ni la Lambda.
 
 La API solo reserva el `documentId`; el procesamiento empieza cuando el cliente
 hace el PUT real y S3 emite `ObjectCreated`.
@@ -903,7 +904,7 @@ PROCESSING_ERROR   → REQUIERE_REVISION
 | Orden | Función | Archivo:línea | Qué observar |
 | --- | --- | --- | --- |
 | 1 | `handler` upload | `upload-lambda/index.mjs:141` | body, key y modo |
-| 2 | `handlePresigned` | `upload-lambda/index.mjs:200` | URL prefirmada + uploadHeaders |
+| 2 | `handlePresigned` | `upload-lambda/index.mjs:200` | URL prefirmada (metadata incluida en el query string) |
 | 3 | `handler` SQS consumer | `patches/default-sqs-consumer-index.py:31` | documentId y execution name |
 | 4 | `handler` model invoke | `model-invoke-lambda/index.py:256` | bypass vs Converse |
 | 5 | `handler` enrichment | `enrichment-lambda/handler.py:715` | escrituras auxiliares |

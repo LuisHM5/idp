@@ -44,7 +44,7 @@ Puntos clave:
   si el usuario declaró `documentType`, o `raw/{uuid}/file` si no. El **prefijo
   con tipo** es cómo el usuario "fuerza" la clasificación.
 - **Un solo flujo, dos pasos, para cualquier tamaño:** `POST /upload` lleva solo
-  metadata y devuelve una URL prefirmada de S3 (`uploadUrl` + `uploadHeaders`);
+  metadata y devuelve una URL prefirmada de S3 (`uploadUrl`);
   el cliente sube con `PUT` directo a esa URL. El archivo nunca pasa por API
   Gateway ni por la Lambda, así que no hay tope de tamaño real ni una rama por
   tamaño que se pueda equivocar. El modo inline (`contentBase64`) fue eliminado.

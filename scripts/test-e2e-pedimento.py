@@ -135,14 +135,14 @@ def resolve_api_key(env: str) -> str | None:
 def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = None) -> dict:
     """Sube el documento con el flujo real de la API: dos pasos, siempre.
 
-    1. `POST /upload` con solo metadata → devuelve `uploadUrl` + `uploadHeaders`.
-    2. `PUT` del archivo directo a S3.
+    1. `POST /upload` con solo metadata → devuelve `uploadUrl`.
+    2. `PUT` del archivo directo a S3, **sin ninguna cabecera extra**.
 
-    El paso 2 DEBE reenviar cada cabecera de `uploadHeaders` tal cual: van
-    dentro de la firma, así que omitir una da un `403 SignatureDoesNotMatch`
-    que parece un problema de permisos y no lo es. Se leen de la respuesta en
-    vez de fijarlas aquí, porque la lista crece conforme la API firma más
-    metadatos (`app-origin` solo aparece cuando el request llevó `x-api-key`).
+    Al prefirmar, SigV4 hoistea los `x-amz-*` al query string, así que la
+    metadata del documento ya viaja dentro de la URL y cubierta por la firma
+    (`X-Amz-SignedHeaders=host`). Mandarla ADEMÁS como header hace que S3
+    responda `403 AccessDenied: There were headers present in the request
+    which were not signed`.
     """
     body = json.dumps({"fileName": pdf_path.name, "documentType": doc_type}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -158,7 +158,6 @@ def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = N
     put = urllib.request.Request(
         presign["uploadUrl"],
         data=pdf_path.read_bytes(),
-        headers=presign.get("uploadHeaders") or {},
         method="PUT",
     )
     try:

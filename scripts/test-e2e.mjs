@@ -203,15 +203,12 @@ async function main() {
 
     const uploadResult = JSON.parse(responseBody);
 
-    // Paso 2 de 2: PUT directo a S3. Hay que reenviar CADA cabecera de
-    // `uploadHeaders` tal cual — van dentro de la firma, y omitir una da un
-    // 403 SignatureDoesNotMatch que parece de permisos y no lo es.
+    // Paso 2 de 2: PUT directo a S3, SIN ninguna cabecera extra. Al prefirmar,
+    // SigV4 hoistea los x-amz-* al query string: la metadata ya va dentro de la
+    // URL y firmada. Añadirla como header da 403 AccessDenied (headers not signed).
     console.log(`⏳ Paso 2/2: subiendo el archivo a S3...`);
-    const putHeaders = Object.entries(uploadResult.uploadHeaders || {})
-      .map(([k, v]) => `-H "${k}: ${v}" `)
-      .join("");
     const putCode = execSync(
-      `curl -s -o /dev/null -w "%{http_code}" -X PUT ${putHeaders}--upload-file "${args.file}" "${uploadResult.uploadUrl}"`,
+      `curl -s -o /dev/null -w "%{http_code}" -X PUT --upload-file "${args.file}" "${uploadResult.uploadUrl}"`,
       { encoding: "utf8", timeout: 300000 }
     ).trim();
     if (putCode !== "200") {

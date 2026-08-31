@@ -31,7 +31,7 @@ info:
 
     | # | Operación | Auth | Cuerpo | Respuesta |
     |---|---|---|---|---|
-    | 1 | `POST /upload` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadHeaders`, `uploadExpiresAt` |
+    | 1 | `POST /upload` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
     | 2 | `PUT {uploadUrl}` **(a S3)** | **ninguna** — firmada en la URL | los bytes crudos del archivo | `200` con **cuerpo vacío**; S3 no devuelve JSON |
     | 3 | `GET /documents/{documentId}` | `x-api-key` | — | `200` con el resultado, o `404` mientras procesa |
     | 4 | `GET /documents/{documentId}/file` | `x-api-key` | — | `200` · URL prefirmada para bajar el original |
@@ -65,12 +65,12 @@ info:
 
     - **Método:** `PUT` (viene en `uploadMethod`). No `POST`, no multipart, no
       form-data: el cuerpo son los bytes crudos del archivo.
-    - **Cabeceras:** reenvía **todas** las de `uploadHeaders`, exactamente como
-      vienen. Están dentro de la firma, así que omitir una da
-      `403 SignatureDoesNotMatch` — un 403 que parece de permisos y no lo es.
-      Constrúyelas recorriendo el objeto, no a mano: la lista cambia según el
-      request (`x-amz-meta-app-origin` solo aparece si mandaste `x-api-key`).
-      Si `uploadHeaders` no viene, el `PUT` va sin cabeceras extra.
+    - **Cabeceras: ninguna.** No mandes nada extra. Al prefirmar, SigV4
+      *hoistea* los `x-amz-*` al query string, así que la metadata del
+      documento ya viaja dentro de la URL y está cubierta por la firma
+      (`X-Amz-SignedHeaders=host`). Mandarla además como header hace que S3
+      rechace el PUT con `403 AccessDenied: There were headers present in the
+      request which were not signed`.
     - **Respuesta esperada:** `200` con cuerpo vacío. S3 no devuelve JSON.
     - **Vencimiento:** 15 min (`uploadExpiresAt` trae el instante exacto). Si
       expira, repite el paso 1 — las URLs no se renuevan.
@@ -123,222 +123,77 @@ tags:
 paths:
   /upload:
     post:
-      operationId: createUpload
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
-            KEY="tu-api-key"
-
-            RESP=$(curl -sS -X POST "$API/upload" \
-              -H "Content-Type: application/json" \
-              -H "x-api-key: $KEY" \
-              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
-
-            # Guarda los tres: los necesitas en el paso 2 y en el 3.
-            DOC_ID=$(echo "$RESP"     | jq -r .documentId)
-            UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
-            echo "$RESP" | jq '.uploadHeaders'
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            const API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
-            const KEY = "tu-api-key";
-
-            const res = await fetch(`${API}/upload`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-api-key": KEY },
-              body: JSON.stringify({
-                fileName: "pedimento.pdf",
-                documentType: "PEDIMENTO_ADUANAL",
-              }),
-            });
-            if (!res.ok) throw new Error(`POST /upload → ${res.status}: ${await res.text()}`);
-
-            // Guarda los tres: los necesitas en el paso 2 y en el 3.
-            const { documentId, uploadUrl, uploadHeaders = {} } = await res.json();
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            import requests
-
-            API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
-            KEY = "tu-api-key"
-
-            res = requests.post(
-                f"{API}/upload",
-                headers={"x-api-key": KEY},
-                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
-                timeout=30,
-            )
-            res.raise_for_status()
-
-            # Guarda los tres: los necesitas en el paso 2 y en el 3.
-            up = res.json()
-            document_id = up["documentId"]
-            upload_url = up["uploadUrl"]
-            upload_headers = up.get("uploadHeaders", {})
-        - lang: C#
-          label: .NET 6+
-          source: |
-            using System.Net.Http.Json;
-            using System.Text.Json;
-
-            const string api = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
-            const string key = "tu-api-key";
-
-            // Cliente del API: siempre con x-api-key.
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Add("x-api-key", key);
-
-            var res = await http.PostAsJsonAsync($"{api}/upload", new
-            {
-                fileName = "pedimento.pdf",
-                documentType = "PEDIMENTO_ADUANAL",
-            });
-            res.EnsureSuccessStatusCode();
-
-            // Guarda los tres: los necesitas en el paso 2 y en el 3.
-            var up = await res.Content.ReadFromJsonAsync<JsonElement>();
-            var documentId = up.GetProperty("documentId").GetString()!;
-            var uploadUrl = up.GetProperty("uploadUrl").GetString()!;
+      operationId: createDocumentLegacy
+      deprecated: true
       tags: [upload]
-      summary: "Paso 1 de 4: registrar el documento y obtener la URL de subida"
+      summary: "(En desuso) Alias de POST /documents"
       description: >
-        **Este endpoint no recibe el archivo.** Registra el documento, acuña su
-        `documentId` y devuelve una URL prefirmada de S3 para subirlo. El
-        pipeline arranca en el paso 2, cuando S3 recibe los bytes.
+        Alias exacto de `POST /documents` — misma Lambda, mismo request, misma
+        respuesta. Se conserva solo para no romper integraciones existentes.
 
 
-        **Son dos pasos, siempre, sin importar el tamaño del archivo:**
-
-
-        1. `POST /upload` con solo metadata → devuelve `uploadUrl` +
-        `uploadHeaders`.
-
-        2. `PUT {uploadUrl}` con el archivo → va directo a S3, y el pipeline
-        arranca en cuanto S3 recibe el objeto.
-
-
-        El archivo nunca pasa por API Gateway ni por el Lambda: API Gateway topa
-        un request en 10MB y Lambda una invocación síncrona en 6MB (límites duros
-        de AWS, no configurables), mientras que un `PUT` a S3 acepta hasta 5GB.
-        Así no hay rama por tamaño que se pueda equivocar.
-
-
-        **Migración:** el modo inline (`contentBase64` en el body) fue eliminado.
-        Un request que lo mande recibe `400 INLINE_UPLOAD_REMOVED` con el flujo
-        nuevo, en vez de fallar en silencio.
-
-
-        El body puede ir como `application/json` o como
-        `application/x-www-form-urlencoded`; ambos aceptan los mismos campos.
-        Como todo valor de un formulario es texto, ahí `metadata` va como un
-        objeto JSON codificado en string (`metadata={"lote":"A123"}`); si no es
-        JSON válido, la respuesta es `400 INVALID_METADATA`.
-
-
-        **Reenvía en el `PUT` todas las cabeceras de `uploadHeaders`, tal cual.**
-        Van dentro de la firma, así que si falta una S3 responde
-        `403 SignatureDoesNotMatch`. Léelas de la respuesta en vez de fijarlas en
-        tu cliente: la lista crece conforme la API firma más metadatos, y
-        `x-amz-meta-app-origin` solo aparece cuando el request llevó `x-api-key`.
+        El nombre `/upload` dejó de ser cierto cuando el endpoint dejó de
+        recibir el archivo: hoy únicamente registra el documento y devuelve una
+        URL prefirmada. **Para integraciones nuevas usa `POST /documents`.**
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/UploadRequest"
-            examples:
-              pedimento:
-                summary: Pedimento con tipo declarado
-                value:
-                  fileName: pedimento.pdf
-                  documentType: PEDIMENTO_ADUANAL
-                  metadata: { lote: "A123" }
-              autoClassify:
-                summary: Sin tipo — Bedrock clasifica y segmenta solo
-                value:
-                  fileName: expediente.pdf
-              withContentType:
-                summary: Fijando el Content-Type del objeto en S3
-                value:
-                  fileName: pedimento.pdf
-                  documentType: PEDIMENTO_ADUANAL
-                  contentType: application/pdf
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: "#/components/schemas/UploadRequest"
-            examples:
-              presigned:
-                summary: Prefirmado desde un cliente que solo manda formularios
-                value:
-                  fileName: expediente.pdf
-                  documentType: PEDIMENTO_ADUANAL
       responses:
         "200":
-          description: >
-            Solicitud aceptada y URL de subida emitida. El documento todavía NO
-            existe: el pipeline arranca hasta que el `PUT` del paso 2 deposite
-            el archivo en S3.
+          description: Idéntica a la de `POST /documents`.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/UploadResponse"
-              examples:
-                pedimento:
-                  value:
-                    documentId: e18d014a-...
-                    bucket: documentvalidationstack-...
-                    key: raw/PEDIMENTO_ADUANAL/e18d014a-.../pedimento.pdf
-                    documentType: PEDIMENTO_ADUANAL
-                    classificationMode: manual
-                    uploadUrl: "https://...s3.amazonaws.com/..."
-                    uploadMethod: PUT
-                    uploadHeaders:
-                      x-amz-meta-app-origin: CEDIS
-                    uploadExpiresInSeconds: 900
-                    uploadExpiresAt: "2026-07-27T13:33:19.000Z"
-                    uploadedAt: "2026-07-27T13:18:19.000Z"
-        "400":
-          description: >
-            Body inválido. Códigos posibles:
-
-
-            - `MISSING_FIELD` — falta `fileName`.
-
-            - `INVALID_FORMAT` — extensión fuera de
-            pdf/jpg/jpeg/png/xml/xlsx/csv.
-
-            - `DOCUMENT_TYPE_REQUIRED` — el archivo es `.xml`/`.xlsx`/`.csv` y
-            falta `documentType` (esos formatos no tienen clasificación
-            automática por visión).
-
-            - `INVALID_DOCUMENT_TYPE` — `documentType` no es UPPER_SNAKE_CASE.
-
-            - `INVALID_JSON` — el body no es JSON válido.
-
-            - `INVALID_METADATA` — body de formulario cuyo `metadata` no es un
-            objeto JSON válido codificado en string.
-
-            - `INLINE_UPLOAD_REMOVED` — el body trae `contentBase64`. El modo
-            inline se eliminó; usa el flujo de dos pasos.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorResponse" }
-        "500":
-          description: >
-            `PRESIGN_FAILED` — no se pudo firmar la URL de subida. Es
-            reintentable: no se creó ningún objeto ni se consumió el
-            `documentId`, así que basta con repetir el `POST`.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /{uploadUrl}:
     put:
       operationId: putFileToPresignedUrl
+      x-codeSamples:
+        - lang: Shell
+          label: curl
+          source: |
+            # UPLOAD_URL viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
+            # ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
+            curl -sS --fail -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
+            # 200 con cuerpo vacío = subido. El pipeline arranca solo.
+        - lang: JavaScript
+          label: Node.js 18+
+          source: |
+            import { readFile } from "node:fs/promises";
+
+            // uploadUrl viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
+            // ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
+            const put = await fetch(uploadUrl, {
+              method: "PUT",
+              body: await readFile("pedimento.pdf"),
+            });
+            if (!put.ok) throw new Error(`PUT S3 → ${put.status}: ${await put.text()}`);
+            // 200 con cuerpo vacío = subido. El pipeline arranca solo.
+        - lang: Python
+          label: Python 3 (requests)
+          source: |
+            # upload_url viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
+            # ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
+            with open("pedimento.pdf", "rb") as fh:
+                put = requests.put(upload_url, data=fh, timeout=300)  # data=fh → streaming
+            put.raise_for_status()
+            # 200 con cuerpo vacío = subido. El pipeline arranca solo.
+        - lang: C#
+          label: .NET 6+
+          source: |
+            // uploadUrl viene del paso 1. Cliente SEPARADO: el del API lleva x-api-key en
+            // DefaultRequestHeaders y esta petición no debe llevarla.
+            // NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL.
+            using var s3 = new HttpClient();
+            using var content = new StreamContent(File.OpenRead("pedimento.pdf"));
+
+            var put = await s3.PutAsync(uploadUrl, content);
+            put.EnsureSuccessStatusCode();
+            // 200 con cuerpo vacío = subido. El pipeline arranca solo.
       tags: [upload]
       summary: "Paso 2 de 4: subir el archivo a la uploadUrl (host S3)"
       servers:
@@ -368,11 +223,12 @@ paths:
         - **Sin autenticación.** La autorización va firmada en la URL. **No
         mandes `x-api-key`**: esta petición no pasa por API Gateway.
 
-        - **Reenvía todas las cabeceras de `uploadHeaders`**, exactamente como
-        vinieron. Están dentro de la firma, así que omitir una da
-        `403 SignatureDoesNotMatch` — un 403 que parece de permisos y no lo es.
-        Constrúyelas recorriendo el objeto, no a mano: la lista cambia según el
-        request (`x-amz-meta-app-origin` solo aparece si mandaste `x-api-key`).
+        - **No mandes ninguna cabecera extra.** Al prefirmar, SigV4 *hoistea*
+        los `x-amz-*` al query string: la metadata del documento ya va dentro de
+        la URL y firmada. Añadirla como header hace que S3 responda
+        `403 AccessDenied: There were headers present in the request which were
+        not signed`. Si necesitas fijar el `Content-Type` del objeto guardado,
+        ése sí puedes mandarlo (no es `x-amz-*`, S3 no exige que esté firmado).
 
         - **El cuerpo son los bytes crudos.** No multipart, no form-data, no
         base64.
@@ -381,66 +237,6 @@ paths:
         1: las URLs no se renuevan.
 
         - Hasta **5 GB**. No pasa por API Gateway (tope 10 MB) ni Lambda (6 MB).
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            # UPLOAD_URL y RESP vienen del paso 1.
-            # Reenvía CADA cabecera de uploadHeaders: van dentro de la firma.
-            HDRS=()
-            while IFS=$'\t' read -r k v; do HDRS+=(-H "$k: $v"); done \
-              < <(echo "$RESP" | jq -r '(.uploadHeaders // {}) | to_entries[] | "\(.key)\t\(.value)"')
-
-            # Sin x-api-key: esta petición NO pasa por el API.
-            curl -sS --fail -X PUT "${HDRS[@]}" \
-              --upload-file pedimento.pdf \
-              "$UPLOAD_URL"
-            # 200 con cuerpo vacío = subido. El pipeline arranca solo.
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            import { readFile } from "node:fs/promises";
-
-            // uploadUrl y uploadHeaders vienen del paso 1.
-            // Sin x-api-key: esta petición NO pasa por el API.
-            const put = await fetch(uploadUrl, {
-              method: "PUT",
-              headers: uploadHeaders,          // tal cual: van dentro de la firma
-              body: await readFile("pedimento.pdf"),
-            });
-            if (!put.ok) throw new Error(`PUT S3 → ${put.status}: ${await put.text()}`);
-            // 200 con cuerpo vacío = subido. El pipeline arranca solo.
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            # upload_url y upload_headers vienen del paso 1.
-            # Sin x-api-key: esta petición NO pasa por el API.
-            with open("pedimento.pdf", "rb") as fh:
-                put = requests.put(
-                    upload_url,
-                    data=fh,                    # streaming: no carga el archivo en memoria
-                    headers=upload_headers,     # tal cual: van dentro de la firma
-                    timeout=300,
-                )
-            put.raise_for_status()
-            # 200 con cuerpo vacío = subido. El pipeline arranca solo.
-        - lang: C#
-          label: .NET 6+
-          source: |
-            // uploadUrl y `up` vienen del paso 1.
-            // Cliente SEPARADO: el del API lleva x-api-key en DefaultRequestHeaders y
-            // esta petición no debe llevarla.
-            using var s3 = new HttpClient();
-            using var content = new StreamContent(File.OpenRead("pedimento.pdf"));
-
-            // Reenvía cada cabecera firmada tal cual.
-            if (up.TryGetProperty("uploadHeaders", out var headers))
-                foreach (var h in headers.EnumerateObject())
-                    content.Headers.TryAddWithoutValidation(h.Name, h.Value.GetString());
-
-            var put = await s3.PutAsync(uploadUrl, content);
-            put.EnsureSuccessStatusCode();
-            // 200 con cuerpo vacío = subido. El pipeline arranca solo.
       requestBody:
         required: true
         description: Los bytes del archivo, sin envolver.
@@ -457,9 +253,10 @@ paths:
             salió bien.
         "403":
           description: >
-            `SignatureDoesNotMatch` (XML, no JSON). Casi siempre falta alguna
-            cabecera de `uploadHeaders`, o se alteró la URL. También aparece si
-            la URL ya expiró.
+            `AccessDenied` o `SignatureDoesNotMatch`, en XML (no JSON). Las dos
+            causas habituales: mandaste cabeceras `x-amz-*` de más —el mensaje
+            las lista en `<HeadersNotSigned>`— o la URL ya expiró. Si expiró,
+            repite el paso 1.
       parameters:
         - name: uploadUrl
           in: path
@@ -673,6 +470,208 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /documents:
+    post:
+      operationId: createDocument
+      x-codeSamples:
+        - lang: Shell
+          label: curl
+          source: |
+            API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
+            KEY="tu-api-key"
+
+            RESP=$(curl -sS -X POST "$API/upload" \
+              -H "Content-Type: application/json" \
+              -H "x-api-key: $KEY" \
+              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
+
+            # Guarda los dos: el uploadUrl para el paso 2, el documentId para el 3.
+            DOC_ID=$(echo "$RESP"     | jq -r .documentId)
+            UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
+        - lang: JavaScript
+          label: Node.js 18+
+          source: |
+            const API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
+            const KEY = "tu-api-key";
+
+            const res = await fetch(`${API}/upload`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": KEY },
+              body: JSON.stringify({
+                fileName: "pedimento.pdf",
+                documentType: "PEDIMENTO_ADUANAL",
+              }),
+            });
+            if (!res.ok) throw new Error(`POST /upload → ${res.status}: ${await res.text()}`);
+
+            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
+            const { documentId, uploadUrl } = await res.json();
+        - lang: Python
+          label: Python 3 (requests)
+          source: |
+            import requests
+
+            API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
+            KEY = "tu-api-key"
+
+            res = requests.post(
+                f"{API}/upload",
+                headers={"x-api-key": KEY},
+                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
+                timeout=30,
+            )
+            res.raise_for_status()
+
+            # Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
+            up = res.json()
+            document_id = up["documentId"]
+            upload_url = up["uploadUrl"]
+        - lang: C#
+          label: .NET 6+
+          source: |
+            using System.Net.Http.Json;
+            using System.Text.Json;
+
+            const string api = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
+            const string key = "tu-api-key";
+
+            // Cliente del API: siempre con x-api-key.
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Add("x-api-key", key);
+
+            var res = await http.PostAsJsonAsync($"{api}/upload", new
+            {
+                fileName = "pedimento.pdf",
+                documentType = "PEDIMENTO_ADUANAL",
+            });
+            res.EnsureSuccessStatusCode();
+
+            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
+            var up = await res.Content.ReadFromJsonAsync<JsonElement>();
+            var documentId = up.GetProperty("documentId").GetString()!;
+            var uploadUrl  = up.GetProperty("uploadUrl").GetString()!;
+      tags: [upload]
+      summary: "Paso 1 de 4: registrar el documento y obtener la URL de subida"
+      description: >
+        **Este endpoint no recibe el archivo.** Registra el documento, acuña su
+        `documentId` y devuelve una URL prefirmada de S3 para subirlo. El
+        pipeline arranca en el paso 2, cuando S3 recibe los bytes.
+
+
+        **Son dos pasos, siempre, sin importar el tamaño del archivo:**
+
+
+        1. `POST /upload` con solo metadata → devuelve `uploadUrl` +
+        la URL de subida.
+
+        2. `PUT {uploadUrl}` con el archivo → va directo a S3, y el pipeline
+        arranca en cuanto S3 recibe el objeto.
+
+
+        El archivo nunca pasa por API Gateway ni por el Lambda: API Gateway topa
+        un request en 10MB y Lambda una invocación síncrona en 6MB (límites duros
+        de AWS, no configurables), mientras que un `PUT` a S3 acepta hasta 5GB.
+        Así no hay rama por tamaño que se pueda equivocar.
+
+
+        **Migración:** el modo inline (`contentBase64` en el body) fue eliminado.
+        Un request que lo mande recibe `400 INLINE_UPLOAD_REMOVED` con el flujo
+        nuevo, en vez de fallar en silencio.
+
+
+        El body puede ir como `application/json` o como
+        `application/x-www-form-urlencoded`; ambos aceptan los mismos campos.
+        Como todo valor de un formulario es texto, ahí `metadata` va como un
+        objeto JSON codificado en string (`metadata={"lote":"A123"}`); si no es
+        JSON válido, la respuesta es `400 INVALID_METADATA`.
+
+
+        **El `PUT` del paso 2 no lleva ninguna cabecera extra.** La firma y la
+        metadata del documento viajan en el query string de `uploadUrl`; añadir
+        cabeceras `x-amz-*` hace que S3 rechace la subida.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+            examples:
+              pedimento:
+                summary: Pedimento con tipo declarado
+                value:
+                  fileName: pedimento.pdf
+                  documentType: PEDIMENTO_ADUANAL
+                  metadata: { lote: "A123" }
+              autoClassify:
+                summary: Sin tipo — Bedrock clasifica y segmenta solo
+                value:
+                  fileName: expediente.pdf
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+            examples:
+              presigned:
+                summary: Prefirmado desde un cliente que solo manda formularios
+                value:
+                  fileName: expediente.pdf
+                  documentType: PEDIMENTO_ADUANAL
+      responses:
+        "200":
+          description: >
+            Solicitud aceptada y URL de subida emitida. El documento todavía NO
+            existe: el pipeline arranca hasta que el `PUT` del paso 2 deposite
+            el archivo en S3.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+              examples:
+                pedimento:
+                  value:
+                    documentId: e18d014a-...
+                    bucket: documentvalidationstack-...
+                    key: raw/PEDIMENTO_ADUANAL/e18d014a-.../pedimento.pdf
+                    documentType: PEDIMENTO_ADUANAL
+                    classificationMode: manual
+                    uploadUrl: "https://...s3.amazonaws.com/..."
+                    uploadMethod: PUT
+                    uploadExpiresInSeconds: 900
+                    uploadExpiresAt: "2026-07-27T13:33:19.000Z"
+                    uploadedAt: "2026-07-27T13:18:19.000Z"
+        "400":
+          description: >
+            Body inválido. Códigos posibles:
+
+
+            - `MISSING_FIELD` — falta `fileName`.
+
+            - `INVALID_FORMAT` — extensión fuera de
+            pdf/jpg/jpeg/png/xml/xlsx/csv.
+
+            - `DOCUMENT_TYPE_REQUIRED` — el archivo es `.xml`/`.xlsx`/`.csv` y
+            falta `documentType` (esos formatos no tienen clasificación
+            automática por visión).
+
+            - `INVALID_DOCUMENT_TYPE` — `documentType` no es UPPER_SNAKE_CASE.
+
+            - `INVALID_JSON` — el body no es JSON válido.
+
+            - `INVALID_METADATA` — body de formulario cuyo `metadata` no es un
+            objeto JSON válido codificado en string.
+
+            - `INLINE_UPLOAD_REMOVED` — el body trae `contentBase64`. El modo
+            inline se eliminó; usa el flujo de dos pasos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >
+            `PRESIGN_FAILED` — no se pudo firmar la URL de subida. Es
+            reintentable: no se creó ningún objeto ni se consumió el
+            `documentId`, así que basta con repetir el `POST`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
     get:
       operationId: searchDocuments
       tags: [documents]
@@ -839,15 +838,6 @@ components:
           description: >
             Solo dev — procesa este documento con el modelo de Bedrock indicado,
             sin redeploy. El stack de prod lo ignora a propósito.
-        contentType:
-          type: string
-          description: >
-            Solo modo prefirmado, opcional. Fija el Content-Type del objeto en
-            S3 y lo mete DENTRO de la firma: el `PUT` deberá mandar exactamente
-            ese header (viene en `uploadHeaders`) o S3 responde 403. Omítelo si
-            no controlas el cliente — el pipeline deduce el formato real de la
-            extensión del archivo y nunca lee el Content-Type guardado.
-          example: application/pdf
         metadata:
           type: object
           description: >
@@ -870,16 +860,6 @@ components:
         uploadedAt: { type: string, format: date-time }
         uploadUrl: { type: string, format: uri }
         uploadMethod: { type: string, enum: [PUT] }
-        uploadHeaders:
-          type: object
-          additionalProperties: { type: string }
-          description: >
-            Cabeceras que el `PUT` DEBE reenviar tal cual — van dentro de la
-            firma, así que si falta una S3 responde 403 SignatureDoesNotMatch.
-            Léelas de aquí en lugar de fijarlas en tu cliente: la lista crece
-            conforme la API firma más metadatos (hoy `x-amz-meta-model-id`,
-            `x-amz-meta-app-origin`, y `Content-Type` si mandaste `contentType`).
-            Ausente cuando no hay nada firmado que reenviar.
         uploadExpiresInSeconds: { type: integer }
         uploadExpiresAt:
           type: string
