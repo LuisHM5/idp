@@ -66,13 +66,8 @@ sequenceDiagram
     C->>A: POST /upload
     A->>U: evento proxy
     U->>U: valida request y genera documentId
-    alt contentBase64 presente
-        U->>S: PutObject raw/...
-        U-->>C: documentId + key
-    else contentBase64 ausente
-        U-->>C: documentId + URL PUT prefirmada
-        C->>S: PUT raw/...
-    end
+    U-->>C: documentId + URL PUT prefirmada + uploadHeaders
+    C->>S: PUT raw/... (directo, sin API Gateway ni Lambda)
     S-->>Q: ObjectCreated en raw/
     Q->>SC: registro SQS
     SC->>S: HeadObject para app-origin
@@ -214,16 +209,21 @@ Ruta: `POST /upload` → `upload-lambda/index.mjs:handler` (`:141`).
    llave válida no está registrada o la consulta falla.
 7. Copia `metadata`; añade `model-id` si el request lo pidió y `app-origin` si
    pudo resolverlo.
-8. Decide el modo por presencia, no por tamaño calculado, de `contentBase64`.
+8. Si el body trae `contentBase64`, responde `400 INLINE_UPLOAD_REMOVED`: el
+   modo inline se eliminó para que el tamaño del archivo no decida qué código
+   corre. Si no, sigue siempre al modo prefirmado.
 
-### 5.2 Modo inline
+### 5.2 Modo prefirmado (el único)
 
-`handleInline()` (`:252`) valida que la cadena no esté vacía, decodifica base64,
-calcula el MIME mediante `getMimeType()` y ejecuta `S3 PutObject` con bytes y
-metadatos. Devuelve `documentId`, bucket, key, tipo y modo de clasificación.
+`handlePresigned()` firma un `PutObjectCommand` con `getSignedUrl` (15 min) y
+devuelve `uploadUrl`, `uploadMethod`, `uploadHeaders`, `uploadExpiresInSeconds`
+y `uploadExpiresAt`. Los bytes nunca tocan esta Lambda.
 
-Los límites reales provienen de API Gateway/Lambda; por el overhead de base64,
-este modo está pensado para pocos MB.
+`uploadHeaders` lista **toda** cabecera que quedó dentro de la firma —
+`x-amz-meta-model-id`, `x-amz-meta-app-origin` (solo si el request llevó
+`x-api-key`) y `Content-Type` si el request mandó `contentType`. El cliente debe
+reenviarlas tal cual o S3 responde `403 SignatureDoesNotMatch`; por eso la
+respuesta las enumera en vez de dejar que cada cliente las reconstruya.
 
 ### 5.3 Modo prefirmado
 
@@ -903,7 +903,7 @@ PROCESSING_ERROR   → REQUIERE_REVISION
 | Orden | Función | Archivo:línea | Qué observar |
 | --- | --- | --- | --- |
 | 1 | `handler` upload | `upload-lambda/index.mjs:141` | body, key y modo |
-| 2 | `handleInline` / `handlePresigned` | `upload-lambda/index.mjs:252/203` | PutObject o URL |
+| 2 | `handlePresigned` | `upload-lambda/index.mjs:200` | URL prefirmada + uploadHeaders |
 | 3 | `handler` SQS consumer | `patches/default-sqs-consumer-index.py:31` | documentId y execution name |
 | 4 | `handler` model invoke | `model-invoke-lambda/index.py:256` | bypass vs Converse |
 | 5 | `handler` enrichment | `enrichment-lambda/handler.py:715` | escrituras auxiliares |
@@ -1060,7 +1060,7 @@ función dueña porque no son invocables desde fuera de ella.
 
 | Objeto lógico | Productor principal | Consumidores | Campos importantes |
 | --- | --- | --- | --- |
-| `UploadRequest` | API Gateway | `upload.handler` | `fileName`, `documentType?`, `contentBase64?`, `modelId?` |
+| `UploadRequest` | API Gateway | `upload.handler` | `fileName`, `documentType?`, `contentType?`, `modelId?` |
 | `S3Pointer` | upload/consumidor | model invoke, enrichment | `bucket`, `key`, `filename`, `fileType` |
 | `WorkflowEvent` | consumidor + Step Functions | model invoke, enrichment | `documentId`, `content`, `classificationResult`, `processingResult`, `appOrigin` |
 | `PageText` | `pdf_pages` | segmenter, extractor, QR/recovery | `number`, `text`, `source`, `confidence` |
@@ -1099,10 +1099,8 @@ Archivo: `src/document-processing/resources/upload-lambda/index.mjs`.
 | `errorResponse()` (`:58`) | validaciones y catches | status, código y mensaje | construye respuesta proxy JSON con CORS | HTTP error → API Gateway | `JSON.stringify` |
 | `validateCommon()` (`:72`) | `handler` | nombre y tipo opcional | valida presencia, extensión admitida, tipo obligatorio para XML/XLSX/CSV y patrón del tipo | `{ext}` o respuesta de error → `handler` | `ALLOWED_EXTENSIONS`, `REQUIRES_DECLARED_TYPE`, regex |
 | `resolveAppOrigin()` (`:122`) | `handler` | `apiKeyId` | consulta `AppsTable`; obtiene nombre humano | string para metadata S3 → `handler`; fallback best-effort | DynamoDB `GetItem` |
-| `handler()` (`:141`) | API Gateway | evento proxy | parsea body, valida, genera UUID/key, arma metadata y elige modo por presencia de `contentBase64` | respuesta HTTP; delega bytes a `handleInline` o URL a `handlePresigned` | `randomUUID`, `validateCommon`, `resolveAppOrigin` |
+| `handler()` (`:141`) | API Gateway | evento proxy | parsea body, valida, genera UUID/key, arma metadata y siempre responde con URL prefirmada (rechaza `contentBase64` con 400) | respuesta HTTP; delega a `handlePresigned` | `randomUUID`, `validateCommon`, `resolveAppOrigin` |
 | `handlePresigned()` (`:203`) | `handler` | id, key, tipo y metadata | firma exactamente el futuro `PutObject` | `{documentId,key,uploadUrl,headers}` → cliente; después cliente → S3 raw | S3 presigner, `PutObjectCommand` |
-| `handleInline()` (`:252`) | `handler` | id, key, tipo, extensión, base64, metadata | decodifica base64, comprueba bytes, calcula MIME y sube | objeto en S3 raw + HTTP 200 → cliente | `Buffer`, `getMimeType`, S3 `PutObject` |
-| `getMimeType()` (`:300`) | `handleInline` | extensión | mapea formato a MIME | MIME → `PutObject.ContentType` | tabla local; sin I/O |
 
 Flujo de datos exacto del módulo:
 
@@ -1112,8 +1110,8 @@ API body
   → validateCommon → ext
   → randomUUID → documentId
   → resolveAppOrigin → Metadata.app-origin
-  ├─ contentBase64 → handleInline → S3 raw/...
-  └─ sin bytes      → handlePresigned → URL → cliente → S3 raw/...
+  ├─ contentBase64 presente → 400 INLINE_UPLOAD_REMOVED
+  └─ siempre                → handlePresigned → URL → cliente → PUT → S3 raw/...
 ```
 
 ### 27.5 Consumidor S3/SQS

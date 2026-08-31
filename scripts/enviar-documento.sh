@@ -32,14 +32,12 @@
 #     API_KEY_APP (de .env.dev o ya exportado) sin que tengas que pasar nada —
 #     ver documentacion/AMBIENTES_Y_SEGURIDAD.md. API_KEY explícito siempre gana.
 #
-# El API es público (sin auth). Archivos chicos (<=~4MB) van inline como
-# base64 en el POST /upload. Archivos más grandes: POST /upload SIN
-# `contentBase64` devuelve una URL prefirmada de S3 (`uploadUrl`), y el
-# script hace un PUT directo a esa URL — el archivo nunca pasa por API
-# Gateway ni por el Lambda (esos tienen topes duros de AWS de ~10MB/6MB no
-# configurables), así que no hay límite práctico de tamaño. Cualquier
-# cliente HTTP sin credenciales AWS puede hacer lo mismo: solo necesita la
-# `uploadUrl` que regresa el POST inicial.
+# Dos pasos, siempre, sin importar el tamaño:
+#   1. POST /upload (solo metadata) -> devuelve uploadUrl + uploadHeaders
+#   2. PUT del archivo directo a S3 con esa URL
+# El archivo nunca pasa por API Gateway ni por el Lambda, que tienen topes
+# duros de AWS (~10MB/6MB) no configurables. Cualquier cliente HTTP sin
+# credenciales AWS puede hacer exactamente lo mismo.
 
 set -euo pipefail
 
@@ -71,7 +69,6 @@ if [[ -n "$STACK_NAME" ]]; then
 fi
 ENV="dev"
 REGION="${AWS_REGION:-us-east-1}"
-API_MAX_BYTES=4000000   # ~4 MB reales; por encima el API responde HTTP 413
 
 FILE=""
 DOC_TYPE=""
@@ -208,81 +205,71 @@ if [[ -n "${API_KEY:-}" ]]; then
   API_KEY_HEADER=(-H "x-api-key: ${API_KEY}")
 fi
 
-if (( SIZE > API_MAX_BYTES )); then
-  # --- 2a. Archivo grande → POST /upload sin contentBase64 pide una URL
-  # prefirmada de S3, y el PUT real del archivo va directo a S3 (nunca pasa
-  # por API Gateway/Lambda) — así no hay tope de tamaño real. Cualquier
-  # cliente HTTP puede hacer esto mismo sin credenciales AWS, con solo la
-  # `uploadUrl` que regresa este POST.
-  echo "Archivo de $SIZE bytes (> ~4 MB): pidiendo URL prefirmada de S3..."
+# --- 2. Un solo flujo, para cualquier tamaño: POST /upload NO lleva el
+# archivo; devuelve una URL prefirmada de S3 y el PUT va directo a S3 (nunca
+# pasa por API Gateway/Lambda). Antes esto dependía del tamaño, y ese salto
+# era justo donde aparecían los casos raros: base64 infla ~33%, así que un
+# archivo de ~4.5 MB reventaba el límite de payload de Lambda. Ahora un CFDI
+# de 200 KB y un expediente de 300 MB hacen exactamente los mismos dos pasos.
+echo "Archivo de $SIZE bytes: pidiendo URL prefirmada de S3..."
 
-  REQ_BODY_FILE=$(mktemp)
-  trap 'rm -f "$REQ_BODY_FILE"' EXIT
-  {
-    printf '{"fileName":"%s"' "$FILE_NAME"
-    [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
-    [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
-    printf '}'
-  } > "$REQ_BODY_FILE"
-
-  PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
-    -H "Content-Type: application/json" \
-    "${API_KEY_HEADER[@]}" \
-    --data-binary @"$REQ_BODY_FILE")
-
-  UPLOAD_URL=$(echo "$PRESIGN_RESPONSE" | grep -o '"uploadUrl"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
-  DOCID=$(echo "$PRESIGN_RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
-  if [[ -z "$UPLOAD_URL" || -z "$DOCID" ]]; then
-    echo "No obtuve uploadUrl/documentId del API. Respuesta:" >&2
-    echo "$PRESIGN_RESPONSE" >&2
-    exit 1
-  fi
-
-  # Cuando el upload lleva metadata, S3 la firmó dentro de la URL: el PUT
-  # debe reenviar los mismos headers o falla con SignatureDoesNotMatch.
-  PUT_HEADERS=()
-  if [[ -n "$MODEL_ID" ]]; then
-    PUT_HEADERS=(-H "x-amz-meta-model-id: $MODEL_ID")
-  fi
-
-  echo "Subiendo directo a S3 vía URL prefirmada..."
-  curl -sS --fail -X PUT --upload-file "$FILE" "${PUT_HEADERS[@]}" "$UPLOAD_URL"
-
-  echo "documentId: $DOCID"
-  printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"
-  exit 0
-fi
-
-# --- 2b. Archivo chico → POST al API (base64 en JSON) -----------------------
-echo "Enviando $FILE_NAME ($SIZE bytes) por el API..."
-
-# El body (base64) puede pesar cientos de KB → NO cabe como argumento de curl
-# ("Argument list too long"). Se escribe a un archivo temporal y se envía con
-# --data-binary @archivo.
-BODY_FILE=$(mktemp)
-trap 'rm -f "$BODY_FILE"' EXIT
-
+REQ_BODY_FILE=$(mktemp)
+trap 'rm -f "$REQ_BODY_FILE"' EXIT
 {
-  printf '{"fileName":"%s","contentBase64":"' "$FILE_NAME"
-  base64 -w0 "$FILE"
-  printf '"'
+  printf '{"fileName":"%s"' "$FILE_NAME"
   [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
   [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
   printf '}'
-} > "$BODY_FILE"
+} > "$REQ_BODY_FILE"
 
-RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
+PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
   -H "Content-Type: application/json" \
   "${API_KEY_HEADER[@]}" \
-  --data-binary @"$BODY_FILE")
+  --data-binary @"$REQ_BODY_FILE")
 
-echo "Respuesta del API:"
-echo "$RESPONSE"
-
-# Extraer el documentId (sin depender de jq)
-DOCID=$(echo "$RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
-if [[ -n "$DOCID" ]]; then
-  echo
-  echo "documentId: $DOCID"
-  printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"
+UPLOAD_URL=$(echo "$PRESIGN_RESPONSE" | grep -o '"uploadUrl"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+DOCID=$(echo "$PRESIGN_RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+if [[ -z "$UPLOAD_URL" || -z "$DOCID" ]]; then
+  echo "No obtuve uploadUrl/documentId del API. Respuesta:" >&2
+  echo "$PRESIGN_RESPONSE" >&2
+  exit 1
 fi
+
+# Cuando el upload lleva metadata, S3 la firmó dentro de la URL: el PUT
+# debe reenviar EXACTAMENTE los mismos headers o S3 responde 403
+# SignatureDoesNotMatch. Por eso se leen de `uploadHeaders` de la respuesta
+# en vez de reconstruirlos aquí: el API firma `model-id` y también
+# `app-origin` (el nombre de la app resuelto desde la x-api-key), así que
+# cualquier lista escrita a mano en este script se queda corta en cuanto el
+# API agrega un metadato — que es justo como este PUT empezó a dar 403.
+PUT_HEADERS=()
+HEADERS_JSON=$(echo "$PRESIGN_RESPONSE" | sed -n 's/.*"uploadHeaders"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p')
+if [[ -n "$HEADERS_JSON" ]]; then
+  while IFS= read -r PAIR; do
+    [[ -z "$PAIR" ]] && continue
+    # sed y no expansión de bash: `${var##*:}` cortaría un valor que
+    # contenga dos puntos (un ARN de inference-profile, por ejemplo).
+    H_NAME=$(printf '%s' "$PAIR" | sed 's/^"\([^"]*\)".*/\1/')
+    H_VALUE=$(printf '%s' "$PAIR" | sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/')
+    PUT_HEADERS+=(-H "$H_NAME: $H_VALUE")
+  done < <(echo "$HEADERS_JSON" | grep -o '"[^"]*"[[:space:]]*:[[:space:]]*"[^"]*"')
+fi
+if [[ ${#PUT_HEADERS[@]} -gt 0 ]]; then
+  echo "Cabeceras firmadas a reenviar: ${#PUT_HEADERS[@]}"
+fi
+
+echo "Subiendo directo a S3 vía URL prefirmada..."
+# Sin --fail: S3 explica el 403 en el cuerpo (SignatureDoesNotMatch y qué
+# cabecera falta). --fail lo descartaba y dejaba solo "error: 403", que no
+# dice nada de por qué.
+PUT_BODY=$(mktemp); trap 'rm -f "$REQ_BODY_FILE" "$PUT_BODY"' EXIT
+HTTP_CODE=$(curl -sS -X PUT --upload-file "$FILE" "${PUT_HEADERS[@]}" \
+  -o "$PUT_BODY" -w '%{http_code}' "$UPLOAD_URL")
+if [[ "$HTTP_CODE" != "200" ]]; then
+  echo "S3 rechazó el PUT (HTTP $HTTP_CODE):" >&2
+  cat "$PUT_BODY" >&2; echo >&2
+  exit 1
+fi
+
+echo "documentId: $DOCID"
+printf 'Consulta el resultado con: '"$RESULT_COMMAND"'\n' "$DOCID"

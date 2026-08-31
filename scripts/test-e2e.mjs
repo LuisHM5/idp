@@ -165,17 +165,16 @@ async function main() {
   }
 
   const fileBuffer = readFileSync(args.file);
-  const contentBase64 = fileBuffer.toString("base64");
 
   console.log(`\n📄 Archivo:   ${fileName} (${(fileBuffer.length / 1024).toFixed(1)} KB)`);
   console.log(`🌐 Endpoint:  ${uploadUrl}`);
 
-  // Upload
-  console.log(`\n⏳ Subiendo documento...`);
+  // Paso 1 de 2: pedir la URL prefirmada. El POST solo lleva metadata — el
+  // archivo nunca pasa por API Gateway ni por el Lambda, sin importar su tamaño.
+  console.log(`\n⏳ Paso 1/2: pidiendo URL prefirmada...`);
 
   const body = JSON.stringify({
     fileName,
-    contentBase64,
     metadata: { source: "test-e2e", uploadedAt: new Date().toISOString() },
   });
 
@@ -203,6 +202,23 @@ async function main() {
     }
 
     const uploadResult = JSON.parse(responseBody);
+
+    // Paso 2 de 2: PUT directo a S3. Hay que reenviar CADA cabecera de
+    // `uploadHeaders` tal cual — van dentro de la firma, y omitir una da un
+    // 403 SignatureDoesNotMatch que parece de permisos y no lo es.
+    console.log(`⏳ Paso 2/2: subiendo el archivo a S3...`);
+    const putHeaders = Object.entries(uploadResult.uploadHeaders || {})
+      .map(([k, v]) => `-H "${k}: ${v}" `)
+      .join("");
+    const putCode = execSync(
+      `curl -s -o /dev/null -w "%{http_code}" -X PUT ${putHeaders}--upload-file "${args.file}" "${uploadResult.uploadUrl}"`,
+      { encoding: "utf8", timeout: 300000 }
+    ).trim();
+    if (putCode !== "200") {
+      console.error(`\n❌ S3 rechazó el PUT (HTTP ${putCode})`);
+      process.exit(1);
+    }
+
     console.log(`\n✅ Upload exitoso:`);
     console.log(`   Document ID: ${uploadResult.documentId}`);
     console.log(`   S3 Key:      ${uploadResult.key}`);

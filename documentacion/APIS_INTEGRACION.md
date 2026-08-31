@@ -39,16 +39,25 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 
 ### 1.2 `POST /upload` — Iniciar el proceso de subida
 
-Un solo endpoint, dos modos según el tamaño del archivo (la decisión la toma el cliente, no un parámetro):
+Un solo flujo, para cualquier tamaño — la subida son **dos pasos** y el archivo
+nunca pasa por API Gateway ni por la Lambda:
 
-| Modo | Cuándo | Cómo |
+| Paso | Qué | Cómo |
 |---|---|---|
-| **Inline** | Archivo ≲ 4 MB reales | Enviar `contentBase64` en el body; la Lambda decodifica y escribe a S3 ella misma (`PutObjectCommand` directo). |
-| **Prefirmado** | Archivo grande, sin límite de tamaño real | Omitir `contentBase64`; la respuesta trae `uploadUrl` (URL S3 presignada, `getSignedUrl` + `PutObjectCommand`, expira en 15 min) — el cliente hace `PUT` directo a S3, sin pasar por Lambda ni por credenciales AWS. |
+| 1 | `POST /upload` con solo metadata | La Lambda valida, acuña `documentId`/key y firma una URL de S3 (`getSignedUrl` + `PutObjectCommand`, expira en 15 min). Devuelve `uploadUrl` + `uploadHeaders`. |
+| 2 | `PUT {uploadUrl}` con el archivo | Va directo a S3, sin Lambda y sin credenciales AWS. El pipeline arranca al recibirse el objeto. |
 
-**Body** (`fileName` requerido; `contentBase64`, `documentType`, `metadata` opcionales):
+El `PUT` **debe reenviar cada cabecera de `uploadHeaders`**: están dentro de la
+firma, así que omitir una da `403 SignatureDoesNotMatch`.
+
+El modo inline (`contentBase64`) fue eliminado — devuelve
+`400 INLINE_UPLOAD_REMOVED`. Existía solo para archivos chicos y hacía que el
+**tamaño** decidiera qué código corría: base64 infla ~33 %, y arriba de ~4 MB
+reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
+
+**Body** (`fileName` requerido; `documentType`, `contentType`, `metadata`, `modelId` opcionales). Acepta `application/json` o `application/x-www-form-urlencoded`:
 ```jsonc
-{ "fileName": "pedimento.pdf", "contentBase64": "...", "documentType": "PEDIMENTO_ADUANAL", "metadata": {} }
+{ "fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL", "metadata": {} }
 ```
 
 **Respuesta 200**: `{ "documentId", "bucket", "key", "documentType", "classificationMode", "uploadUrl"? }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3).
@@ -65,7 +74,7 @@ Un solo endpoint, dos modos según el tamaño del archivo (la decisión la toma 
 
 Devuelve, en JSON, una **URL prefirmada de S3** (`downloadUrl`, no los bytes) para el archivo tal cual se subió — el PDF/imagen/XML/XLSX/CSV original, no el resultado de la extracción. `{id}` acepta id completo o prefijo, igual que 1.3.
 
-No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que el modo prefirmado de `POST /upload` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
+No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que `POST /upload` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
 
 `404 NOT_FOUND` si el id no existe; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las **implicaciones de seguridad de exponer archivos originales bajo el mismo modelo de API key** (ver 1.5): [`API_USO.md`](API_USO.md) §3.
 

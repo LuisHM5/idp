@@ -84,56 +84,42 @@ echo "$API_ENDPOINT"
 > `set API_ENDPOINT (string trim --right --chars=/ $API_ENDPOINT)`, o corre los
 > comandos dentro de `bash -c '...'`.
 
-### 2. Hacer el POST (archivos < ~4 MB)
+### 2. Subir el documento (dos pasos, cualquier tamaño)
 
-El base64 pesa cientos de KB y **no cabe como argumento** de `curl`
-(`Argument list too long`). Escribe el body a un archivo y envíalo con
-`--data-binary @archivo`:
+El `POST` **no lleva el archivo**: solo metadata. Devuelve una URL prefirmada y
+el archivo se sube con un `PUT` directo a S3.
 
 ```bash
 FILE="2607-0823-6001630_P.pdf"
-{
-  printf '{"fileName":"%s","contentBase64":"' "$(basename "$FILE")"
-  base64 -w0 "$FILE"
-  printf '","documentType":"PEDIMENTO_ADUANAL"}'
-} > /tmp/body.json
 
-curl -sS -X POST "$API_ENDPOINT/upload" \
+# --- Paso 1: pedir la URL
+RESP=$(curl -sS -X POST "$API_ENDPOINT/upload" \
   -H "Content-Type: application/json" \
-  --data-binary @/tmp/body.json
+  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"PEDIMENTO_ADUANAL\"}")
+
+DOC_ID=$(echo "$RESP" | jq -r .documentId)      # guárdalo
+UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
+
+# --- Paso 2: subir el archivo
+curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
 ```
 
-- `documentType` es **opcional**: si lo omites (quita esa línea del `printf`),
-  Bedrock clasifica solo (más lento y caro); si lo mandas, se salta ese paso.
-- Formatos: `pdf`, `jpg`, `jpeg`, `png`.
-- Respuesta: `{ "documentId": "..." }` — **guárdalo**.
+- **Si el `POST` llevó `x-api-key`**, la respuesta trae `uploadHeaders` y el
+  `PUT` **debe reenviar esas cabeceras tal cual** — van dentro de la firma, y
+  omitir una da `403 SignatureDoesNotMatch` (un 403 que parece de permisos y no
+  lo es). Con `jq`: `jq -r '.uploadHeaders // {} | to_entries[]'`.
+- `documentType` es **opcional**: si lo omites, Bedrock clasifica solo (más
+  lento y caro); si lo mandas, se salta ese paso.
+- Formatos: `pdf`, `jpg`, `jpeg`, `png`, `xml`, `xlsx`, `csv`.
+- **No hay tope de tamaño**: el archivo no pasa por API Gateway ni por la
+  Lambda. El modo inline (`contentBase64`) fue eliminado — devuelve
+  `400 INLINE_UPLOAD_REMOVED`.
 
-> **fish shell:** el bloque `{ ...; } > file` es de bash. En fish, envuélvelo en
-> `bash -c '...'` o usa directamente `pnpm enviar` (que ya corre en bash).
+> **fish shell:** estos bloques son de bash. En fish, envuélvelos en
+> `bash -c '...'` o usa directamente `pnpm enviar` (que ya corre en bash y hace
+> los dos pasos por ti).
 
-### 3. Archivos grandes (≥ ~4 MB) → URL prefirmada de S3
-
-El API tope inline es ~4 MB reales (base64 infla ~33% → topa el límite duro
-de invocación síncrona de Lambda, 6 MB, no configurable); por encima
-devuelve `HTTP 413`. Para esos, el mismo `POST /upload` **sin
-`contentBase64`** devuelve una URL prefirmada de S3 — el archivo se sube con
-un `PUT` directo a esa URL, sin pasar por API Gateway/Lambda, así que no hay
-tope de tamaño real:
-
-```bash
-curl -sS -X POST "$API_ENDPOINT/upload" \
-  -H "Content-Type: application/json" \
-  -d '{"fileName":"expediente.pdf","documentType":"PEDIMENTO_ADUANAL"}'
-# → { "documentId": "...", "uploadUrl": "https://...", "uploadExpiresInSeconds": 900, ... }
-
-curl -X PUT --upload-file expediente.pdf "$UPLOAD_URL"
-```
-
-No necesitas credenciales AWS para este flujo — solo la `uploadUrl` que te
-regresa el POST (expira en 15 minutos). `documentType` sigue siendo opcional
-para clasificación manual, igual que en el modo inline.
-
-### 4. Leer el resultado
+### 3. Leer el resultado
 
 ```bash
 pnpm resultado -- --id <documentId> --wait     # espera si sigue procesando

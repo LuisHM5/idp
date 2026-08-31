@@ -1,25 +1,29 @@
 /**
  * UploadLambda - Document upload handler.
  *
- * Two modes, same endpoint (POST /upload):
- * - Inline (small files): body carries `contentBase64` — the Lambda decodes
- *   and PUTs to S3 itself, same as before. Bounded by API Gateway's 10MB
- *   request cap and Lambda's 6MB synchronous-invoke payload cap (hard AWS
- *   limits, not configurable) — base64's ~33% overhead means this is only
- *   safe up to a few MB of original file size.
- * - Presigned (large files): body OMITS `contentBase64`. The Lambda
- *   generates the documentId/S3 key and returns a short-lived presigned S3
- *   PUT URL instead of touching the bytes at all. The caller then PUTs the
- *   raw file directly to that URL — this bypasses API Gateway and Lambda
- *   entirely for the file content, so there is no practical size ceiling
- *   (S3 PUT supports up to 5GB), and it works for any HTTP client, not just
- *   ones with AWS credentials.
+ * ONE flow, always: `POST /upload` never carries the file. It validates the
+ * request, mints the documentId and S3 key, and returns a short-lived
+ * presigned S3 `PUT` URL. The caller then uploads the bytes straight to S3,
+ * and the pipeline starts when S3 receives the object.
+ *
+ * Why the bytes never come through here: API Gateway caps a request at 10MB
+ * and Lambda caps a synchronous invoke payload at 6MB — both hard AWS limits,
+ * neither configurable — and base64 inflates a file by ~33%, so an inline
+ * upload silently died somewhere above ~4MB of real file. That made request
+ * SIZE decide which code path ran, which is the kind of split that passes
+ * every test and then fails on the first document that happens to be too big.
+ * Going through S3 always removes the cliff: a 200KB CFDI and a 300MB
+ * expediente take the identical two steps.
+ *
+ * `contentBase64` (the old inline mode) is rejected with a 400 that says what
+ * to do instead, rather than ignored — a caller that believes it uploaded a
+ * file when it did not is worse off than one that gets a clear error.
  */
-
 import { randomUUID } from "node:crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { parseBody } from "./body-parser.mjs";
 
 const s3 = new S3Client({});
 const ddb = new DynamoDBClient({});
@@ -139,15 +143,11 @@ async function resolveAppOrigin(apiKeyId) {
  * Lambda handler.
  */
 export async function handler(event) {
-  let body;
-  try {
-    body =
-      typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
-  } catch {
-    return errorResponse(400, "INVALID_JSON", "Request body is not valid JSON");
-  }
+  const parsed = parseBody(event);
+  if (parsed.error) return errorResponse(400, parsed.error.code, parsed.error.message);
+  const body = parsed.body;
 
-  const { fileName, contentBase64, metadata, documentType, modelId } = body;
+  const { fileName, contentBase64, metadata, documentType, modelId, contentType } = body;
 
   if (!fileName) {
     return errorResponse(400, "MISSING_FIELD", "Field 'fileName' is required");
@@ -155,7 +155,7 @@ export async function handler(event) {
 
   const validated = validateCommon(fileName, documentType);
   if (validated.error) return validated.error;
-  const { manualType, ext } = validated;
+  const { manualType } = validated;   // `ext` ya lo validó validateCommon
 
   // Optional manual classification via documentType.
   // If provided, the document is placed under raw/{TYPE}/{uuid}/ and the
@@ -182,10 +182,16 @@ export async function handler(event) {
     objectMetadata["app-origin"] = appOrigin;
   }
 
-  if (contentBase64 === undefined || contentBase64 === null) {
-    return handlePresigned(documentId, key, manualType, objectMetadata);
+  if (contentBase64 !== undefined && contentBase64 !== null) {
+    return errorResponse(
+      400,
+      "INLINE_UPLOAD_REMOVED",
+      "Inline uploads are no longer supported. Omit 'contentBase64': this endpoint " +
+        "returns an 'uploadUrl' plus 'uploadHeaders', and you PUT the file straight to " +
+        "S3. Same two steps for every file size."
+    );
   }
-  return handleInline(documentId, key, manualType, ext, contentBase64, objectMetadata);
+  return handlePresigned(documentId, key, manualType, objectMetadata, contentType);
 }
 
 /**
@@ -200,7 +206,15 @@ export async function handler(event) {
  * it unset costs nothing and keeps the presigned PUT usable from any client
  * (`curl -T`, a browser `fetch`, etc.) without extra header bookkeeping.
  */
-async function handlePresigned(documentId, key, manualType, objectMetadata = {}) {
+async function handlePresigned(documentId, key, manualType, objectMetadata = {}, contentType) {
+  // Binding Content-Type is OPT-IN, by sending `contentType` on the request.
+  // Bound, S3 rejects a PUT whose Content-Type differs — useful when you want
+  // the stored object typed correctly and control both ends. Unbound (the
+  // default), any client can PUT with whatever header it likes, which is why
+  // it stays off unless asked for: the pipeline infers the real type from the
+  // key's extension anyway and never trusts S3's stored Content-Type.
+  const boundContentType =
+    typeof contentType === "string" && contentType.trim() ? contentType.trim() : undefined;
   let uploadUrl;
   try {
     uploadUrl = await getSignedUrl(
@@ -212,6 +226,7 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {})
         // binding it unconditionally would force every caller to echo the
         // matching headers, which is exactly what this path avoids.
         ...(Object.keys(objectMetadata).length ? { Metadata: objectMetadata } : {}),
+        ...(boundContentType ? { ContentType: boundContentType } : {}),
       }),
       { expiresIn: PRESIGN_EXPIRY_SECONDS }
     );
@@ -232,80 +247,25 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {})
       uploadUrl,
       uploadMethod: "PUT",
       // Headers the caller must echo on the PUT for the signature to match.
-      ...(Object.keys(objectMetadata).length
+      // ALWAYS send exactly these — S3 answers 403 SignatureDoesNotMatch if
+      // one is missing, and this list grows as the API signs more metadata,
+      // so a client that hardcodes its own list breaks silently later.
+      ...(Object.keys(objectMetadata).length || boundContentType
         ? {
-            uploadHeaders: Object.fromEntries(
-              Object.entries(objectMetadata).map(([k, v]) => [`x-amz-meta-${k}`, v])
-            ),
+            uploadHeaders: {
+              ...Object.fromEntries(
+                Object.entries(objectMetadata).map(([k, v]) => [`x-amz-meta-${k}`, v])
+              ),
+              ...(boundContentType ? { "Content-Type": boundContentType } : {}),
+            },
           }
         : {}),
       uploadExpiresInSeconds: PRESIGN_EXPIRY_SECONDS,
+      // Absolute deadline alongside the relative one: a client that queues the
+      // upload can tell whether the URL is still good without having to know
+      // when it asked for it.
+      uploadExpiresAt: new Date(Date.now() + PRESIGN_EXPIRY_SECONDS * 1000).toISOString(),
       uploadedAt: new Date().toISOString(),
     }),
   };
-}
-
-/**
- * Inline mode: decode contentBase64 here and PUT to S3 directly, same
- * behavior as before this endpoint also supported presigned uploads.
- */
-async function handleInline(documentId, key, manualType, ext, contentBase64, metadata) {
-  if (contentBase64.trim().length === 0) {
-    return errorResponse(400, "EMPTY_CONTENT", "File content cannot be empty");
-  }
-
-  let fileBuffer;
-  try {
-    fileBuffer = Buffer.from(contentBase64, "base64");
-    if (fileBuffer.length === 0) {
-      return errorResponse(400, "EMPTY_CONTENT", "Decoded file content is empty");
-    }
-  } catch {
-    return errorResponse(
-      400,
-      "INVALID_BASE64",
-      "Field 'contentBase64' is not valid base64"
-    );
-  }
-
-  try {
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: BUCKET,
-        Key: key,
-        Body: fileBuffer,
-        ContentType: getMimeType(ext),
-        Metadata: metadata || {},
-      })
-    );
-  } catch (err) {
-    console.error("S3 PutObject failed:", err);
-    return errorResponse(500, "UPLOAD_FAILED", "Failed to store document in S3");
-  }
-
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      documentId,
-      bucket: BUCKET,
-      key,
-      documentType: manualType,
-      classificationMode: manualType ? "manual" : "auto",
-      uploadedAt: new Date().toISOString(),
-    }),
-  };
-}
-
-function getMimeType(ext) {
-  const mimeMap = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    pdf: "application/pdf",
-    xml: "application/xml",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    csv: "text/csv",
-  };
-  return mimeMap[ext] || "application/octet-stream";
 }

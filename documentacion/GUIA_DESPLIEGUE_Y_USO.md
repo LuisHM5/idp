@@ -121,7 +121,7 @@ aws s3 cp "test-docs/pedimentos docs/docs/pedimentos.pdf" \
 echo "Tu documentId: $DOCID"     # guárdalo para consultar el resultado
 ```
 
-> El límite inline del API es ~4 MB reales (base64 + límite de payload de Lambda = 6 MB); por encima devuelve `HTTP 413`. Para archivos más grandes, `POST /upload` sin `contentBase64` devuelve una URL prefirmada de S3 (`uploadUrl`) para subir con `PUT` directo, sin tope de tamaño real y sin necesitar credenciales AWS — ver `ENVIAR_DOCUMENTO_API.md`.
+> **No hay tope de tamaño.** El archivo nunca pasa por API Gateway ni por la Lambda (que topan en 10 MB y 6 MB, límites duros de AWS): `POST /upload` devuelve una `uploadUrl` prefirmada y el archivo va con un `PUT` directo a S3, que acepta hasta 5 GB, sin credenciales AWS. Mismos dos pasos para cualquier tamaño — ver `ENVIAR_DOCUMENTO_API.md`.
 >
 > **Clasificación manual (opcional, más rápido/barato):** sube a `raw/{TIPO}/{uuid}/archivo.pdf` (p. ej. `raw/EXPEDIENTE_ADUANAL_MULTIDOCUMENTO/$DOCID/pedimentos.pdf`) y el paso de clasificación Bedrock se salta. Con el API: campo `documentType` en el body.
 
@@ -206,15 +206,21 @@ No es obligatorio: la Lambda ya trae el catálogo empaquetado (`config/catalogs.
 
 ### Enviar un documento (API REST)
 
+Son **dos pasos, siempre**: el `POST` solo lleva metadata y devuelve una URL
+prefirmada; el archivo va con un `PUT` directo a S3.
+
 ```bash
-curl -X POST "$API_ENDPOINT/upload" \
+# 1. Pedir la URL de subida
+RESP=$(curl -sS -X POST "$API_ENDPOINT/upload" \
   -H "Content-Type: application/json" \
-  -d '{
-    "fileName": "expediente.pdf",
-    "contentBase64": "'"$(base64 -w0 expediente.pdf)"'",
-    "documentType": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
-  }'
+  -d '{"fileName":"expediente.pdf","documentType":"EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"}')
+
+# 2. Subir el archivo, reenviando las cabeceras de `uploadHeaders` (van dentro
+#    de la firma: si falta una, S3 responde 403 SignatureDoesNotMatch)
+curl -sS --fail -X PUT --upload-file expediente.pdf "$(echo "$RESP" | jq -r .uploadUrl)"
 ```
+
+O con el atajo del repo, que hace los dos pasos: `pnpm enviar expediente.pdf EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`
 
 - `documentType` es **opcional**: si se omite, Bedrock clasifica automáticamente; si se envía, la clasificación se salta (más rápido y barato).
 - Formatos: `pdf`, `jpg`, `jpeg`, `png`.

@@ -26,7 +26,6 @@ Uso:
 from __future__ import annotations
 
 import argparse
-import base64
 import importlib.util
 import json
 import os
@@ -134,23 +133,39 @@ def resolve_api_key(env: str) -> str | None:
 
 
 def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = None) -> dict:
-    body = json.dumps({
-        "fileName": pdf_path.name,
-        "contentBase64": base64.b64encode(pdf_path.read_bytes()).decode(),
-        "documentType": doc_type,
-    }).encode("utf-8")
+    """Sube el documento con el flujo real de la API: dos pasos, siempre.
+
+    1. `POST /upload` con solo metadata → devuelve `uploadUrl` + `uploadHeaders`.
+    2. `PUT` del archivo directo a S3.
+
+    El paso 2 DEBE reenviar cada cabecera de `uploadHeaders` tal cual: van
+    dentro de la firma, así que omitir una da un `403 SignatureDoesNotMatch`
+    que parece un problema de permisos y no lo es. Se leen de la respuesta en
+    vez de fijarlas aquí, porque la lista crece conforme la API firma más
+    metadatos (`app-origin` solo aparece cuando el request llevó `x-api-key`).
+    """
+    body = json.dumps({"fileName": pdf_path.name, "documentType": doc_type}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["x-api-key"] = api_key
-    req = urllib.request.Request(
-        f"{endpoint}/upload", data=body,
-        headers=headers, method="POST",
-    )
+    req = urllib.request.Request(f"{endpoint}/upload", data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+            presign = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"POST /upload → HTTP {e.code}: {e.read().decode()[:500]}")
+
+    put = urllib.request.Request(
+        presign["uploadUrl"],
+        data=pdf_path.read_bytes(),
+        headers=presign.get("uploadHeaders") or {},
+        method="PUT",
+    )
+    try:
+        urllib.request.urlopen(put, timeout=300)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"PUT a S3 → HTTP {e.code}: {e.read().decode()[:500]}")
+    return presign
 
 
 def main() -> int:
