@@ -48,6 +48,7 @@ __pycache__/
 *.pem
 *.crt
 *.pfx
+/certs
 
 # Test docs
 test-docs/**
