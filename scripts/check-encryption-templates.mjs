@@ -31,6 +31,82 @@ function resourcesOfType(tpl, type) {
   return Object.entries(tpl.Resources).filter(([, resource]) => resource.Type === type);
 }
 
+function collectResourceReferences(value, logicalIds, references) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectResourceReferences(item, logicalIds, references));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  if (typeof value.Ref === "string" && logicalIds.has(value.Ref)) {
+    references.add(value.Ref);
+  }
+
+  const getAtt = value["Fn::GetAtt"];
+  const getAttResource = Array.isArray(getAtt)
+    ? getAtt[0]
+    : typeof getAtt === "string"
+      ? getAtt.split(".", 1)[0]
+      : undefined;
+  if (getAttResource && logicalIds.has(getAttResource)) {
+    references.add(getAttResource);
+  }
+
+  const sub = value["Fn::Sub"];
+  if (typeof sub === "string") {
+    for (const match of sub.matchAll(/\$\{([A-Za-z0-9]+)(?:\.[^}]*)?\}/g)) {
+      if (logicalIds.has(match[1])) references.add(match[1]);
+    }
+  }
+
+  Object.values(value).forEach((child) =>
+    collectResourceReferences(child, logicalIds, references)
+  );
+}
+
+function assertNoCircularResourceDependencies(tpl, environment) {
+  const logicalIds = new Set(Object.keys(tpl.Resources));
+  const dependencies = new Map();
+
+  for (const [logicalId, resource] of Object.entries(tpl.Resources)) {
+    const references = new Set();
+    collectResourceReferences(resource.Properties, logicalIds, references);
+    const explicit = Array.isArray(resource.DependsOn)
+      ? resource.DependsOn
+      : resource.DependsOn
+        ? [resource.DependsOn]
+        : [];
+    explicit.forEach((dependency) => {
+      if (logicalIds.has(dependency)) references.add(dependency);
+    });
+    dependencies.set(logicalId, references);
+  }
+
+  const visited = new Set();
+  const visiting = new Set();
+  const path = [];
+
+  function visit(logicalId) {
+    if (visited.has(logicalId)) return;
+    if (visiting.has(logicalId)) {
+      const cycleStart = path.indexOf(logicalId);
+      const cycle = [...path.slice(cycleStart), logicalId].join(" -> ");
+      fail(`${environment} contains a circular resource dependency: ${cycle}`);
+    }
+
+    visiting.add(logicalId);
+    path.push(logicalId);
+    for (const dependency of dependencies.get(logicalId) || []) {
+      visit(dependency);
+    }
+    path.pop();
+    visiting.delete(logicalId);
+    visited.add(logicalId);
+  }
+
+  logicalIds.forEach(visit);
+}
+
 function assertAllExplicitKmsReferencesUse(value, keyLogicalId, path = "template") {
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
@@ -56,6 +132,7 @@ function assertAllExplicitKmsReferencesUse(value, keyLogicalId, path = "template
 }
 
 function assertDev(tpl) {
+  assertNoCircularResourceDependencies(tpl, "dev");
   if (resourcesOfType(tpl, "AWS::KMS::Key").length !== 0) {
     fail("dev must synthesize zero AWS::KMS::Key resources");
   }
@@ -84,6 +161,7 @@ function assertDev(tpl) {
 }
 
 function assertProd(tpl) {
+  assertNoCircularResourceDependencies(tpl, "prod");
   const keys = resourcesOfType(tpl, "AWS::KMS::Key");
   if (keys.length !== 1) fail(`prod must synthesize one KMS key, found ${keys.length}`);
   const [keyLogicalId, key] = keys[0];

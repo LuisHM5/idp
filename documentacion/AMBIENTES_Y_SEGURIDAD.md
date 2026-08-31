@@ -53,6 +53,13 @@ por los recursos que requieren control de llave, incluido S3. El mismo test
 exige exactamente **1** llave en el template de prod. El nombre del EventBus sí
 es único por cuenta, por lo que dev usa `idp-broker-dev` y prod `idp-broker`.
 
+La notificación `S3 raw/ → SQS` mantiene su queue policy restringida al ARN del
+bucket. El permiso KMS para el principal de servicio S3 se declara sin volver a
+referenciar ese ARN: como bucket y cola comparten el mismo CMK, copiar el
+`SourceArn` a la key policy crearía el ciclo CloudFormation `bucket → key →
+bucket`. `pnpm test:encryption` valida también que los templates de ambos
+ambientes no contengan ciclos de dependencias entre recursos.
+
 ## Dominio propio `idp.alsuper.com` (solo prod)
 
 ### 1. Importar tu certificado a ACM (una vez)

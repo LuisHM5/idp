@@ -1,0 +1,183 @@
+# Subir un documento por curl — paso a paso
+
+Guía práctica para copiar y pegar. Ejemplo con `./test-docs/pages.pdf` como
+`PEDIMENTO_ADUANAL`.
+
+> Referencia completa de la API (todos los endpoints, params y respuestas):
+> `API_USO.md`. Este archivo es solo el camino corto para subir un documento.
+
+**Subir son SIEMPRE dos peticiones**, sin importar el tamaño del archivo. La
+segunda no va a la API: va directo a S3.
+
+```
+1. POST $API/documents   → documentId + uploadUrl     (no lleva el archivo)
+2. PUT  $UPLOAD_URL      → el archivo, directo a S3   (arranca el pipeline)
+3. GET  $API/documents/$DOC_ID  → el resultado
+```
+
+---
+
+## 0. Variables
+
+Elige **un** bloque según el ambiente. La diferencia importante es que el
+dominio propio de prod **no lleva `/prod` en la ruta** y la URL cruda de dev
+**sí**.
+
+```bash
+# --- dev (URL execute-api: el stage VA en la ruta)
+API="https://ls9rcym4d3.execute-api.us-east-1.amazonaws.com/prod"
+KEY=$(grep -E '^API_KEY_APP=' .env.dev | cut -d= -f2- | tr -d '"'"'"' ')
+```
+
+```bash
+# --- prod (dominio propio: el stage NO va en la ruta)
+API="https://idp.alsuper.com"
+KEY=$(grep -E '^API_KEY_APP=' .env.production | cut -d= -f2- | tr -d '"'"'"' ')
+```
+
+```bash
+# --- comunes
+FILE="./test-docs/pages.pdf"
+TYPE="PEDIMENTO_ADUANAL"
+```
+
+Comprueba que quedaron bien antes de seguir:
+
+```bash
+echo "API=$API"
+echo "KEY tiene ${#KEY} caracteres"    # 0 = no la leyó; revisa el .env
+ls -la "$FILE"
+```
+
+---
+
+## 1. Registrar el documento
+
+Este POST **no lleva el archivo**: solo la metadata. Devuelve el `documentId`
+con el que consultarás después, y la URL a la que subirás el archivo.
+
+```bash
+RESP=$(curl -sS -X POST "$API/documents" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $KEY" \
+  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"$TYPE\"}")
+
+echo "$RESP" | jq .
+```
+
+Guarda los dos valores que necesitas:
+
+```bash
+DOC_ID=$(echo "$RESP"     | jq -r .documentId)
+UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
+
+echo "DOC_ID=$DOC_ID"
+```
+
+`documentType` es opcional. Si lo omites, el modelo clasifica y segmenta solo
+(más lento y más caro). Si lo mandas, se honra sin re-clasificar.
+
+---
+
+## 2. Subir el archivo a S3
+
+```bash
+curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
+```
+
+**Las comillas alrededor de `$UPLOAD_URL` son obligatorias**: la URL lleva `&`
+en el query string y sin comillas el shell la parte.
+
+Qué NO lleva esta petición:
+
+| | |
+|---|---|
+| `x-api-key` | **No.** Va a S3, no a la API. La autorización va firmada en la URL |
+| Cabeceras `x-amz-*` | **No.** La metadata ya viaja dentro de la URL (ver "Errores" abajo) |
+| `Content-Type` | Opcional. No es obligatorio ni se valida |
+| Cuerpo | Los **bytes crudos**. No multipart, no form-data, no base64 |
+
+**Éxito = `200` con cuerpo vacío.** S3 no devuelve JSON: si tu cliente intenta
+parsear la respuesta, falla sobre algo que en realidad salió bien. Con
+`--fail`, `curl` no imprime nada y sale con código 0.
+
+La URL **caduca a los 15 minutos**. Si expira, repite el paso 1 — no se renueva.
+
+En cuanto S3 recibe el archivo, el pipeline arranca solo
+(`S3 → SQS → Step Functions → Textract/Bedrock → DynamoDB`).
+
+---
+
+## 3. Consultar el resultado
+
+El procesamiento **no es instantáneo**: tarda segundos, y un expediente grande
+más. Mientras corre, la consulta responde `404` — es *"todavía no"*, no *"no
+existe"*.
+
+```bash
+until curl -sS -f "$API/documents/$DOC_ID" -H "x-api-key: $KEY" -o result.json; do
+  echo "procesando..."; sleep 5
+done
+
+jq '.validation.status' result.json
+jq '.expediente.documents[] | {documentType, pageStart, pageEnd}' result.json
+```
+
+Los campos extraídos:
+
+```bash
+jq '.expediente.documents[].extractedEntities' result.json
+```
+
+Qué hacer con cada estado:
+
+| `validation.status` | Significa | Qué hacer |
+|---|---|---|
+| `APROBADO` | Todas las reglas pasaron | Consumir los campos |
+| `REQUIERE_REVISION` | Confianza baja, campo no encontrado o documento truncado | Revisión humana: mira `warnings` y los campos con `valid: false` |
+| `RECHAZADO` | Falló una regla dura | No consumir; revisar `crossDocumentChecks` |
+
+---
+
+## 4. (Opcional) Recuperar el archivo original
+
+Devuelve una **URL prefirmada**, no los bytes:
+
+```bash
+DL=$(curl -sS "$API/documents/$DOC_ID/file" -H "x-api-key: $KEY" | jq -r .downloadUrl)
+curl -sS -o original.pdf "$DL"     # la descarga va a S3: sin x-api-key
+```
+
+---
+
+## Errores y qué significan de verdad
+
+Los mensajes de API Gateway engañan. Esta tabla los traduce:
+
+| Respuesta | Qué significa REALMENTE | Arreglo |
+|---|---|---|
+| `{"message":"Missing Authentication Token"}` | **No hay ninguna ruta con ese método + ese path.** Nunca es la API key | Revisa la URL: ¿pusiste `/prod` con el dominio propio? ¿método correcto? ¿typo en `/documents`? |
+| `{"message":"Forbidden"}` | La ruta existe, pero falta la API key o es inválida | Manda `x-api-key`. En prod es obligatoria siempre |
+| `403 AccessDenied` + `<HeadersNotSigned>` (XML) | Mandaste cabeceras `x-amz-*` en el `PUT` | Quítalas: la metadata ya va dentro de la URL |
+| `403 SignatureDoesNotMatch` (XML) | La URL se alteró, o ya expiró | Repite el paso 1 |
+| `400 INLINE_UPLOAD_REMOVED` | Mandaste `contentBase64` | El modo inline ya no existe: usa los dos pasos |
+| `400 DOCUMENT_TYPE_REQUIRED` | Subiste `.xml`/`.xlsx`/`.csv` sin `documentType` | Esos formatos lo exigen: no hay clasificación automática |
+| `404` en el paso 3 | Todavía procesando | Reintenta cada pocos segundos |
+
+**El `/prod` de más es el error más común.** Con el dominio propio la ruta es
+`https://idp.alsuper.com/documents`; el `/prod` solo va en la URL cruda
+`execute-api`.
+
+---
+
+## El atajo
+
+Si no necesitas el detalle, el repo ya trae un script que hace los tres pasos:
+
+```bash
+pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL              # dev
+API_KEY=<key-de-prod> pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL --env prod
+```
+
+En dev toma `API_KEY_APP` de `.env.dev` automáticamente; en prod hay que
+exportar `API_KEY` a mano.

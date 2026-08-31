@@ -151,6 +151,48 @@ export function patchBlueprintEncryption(packageRoot) {
       `        encryptionKey?.grantEncryptDecrypt(sqsConsumerRole);`,
       "optional SQS consumer KMS grant",
     ],
+    [
+      `        bucket.addEventNotification(aws_s3_1.EventType.OBJECT_CREATED, new aws_s3_notifications_1.SqsDestination(queue), {
+            prefix: this.prefixes.raw,
+        });`,
+      `        // SqsDestination.bind() calls queue.grantSendMessages() with a
+        // SourceArn condition containing this bucket. For an encrypted queue,
+        // that condition is copied into the KMS key policy. When the bucket and
+        // queue share the same key, CloudFormation then sees Key -> Bucket while
+        // the bucket's default encryption already requires Bucket -> Key.
+        //
+        // Bind the equivalent destination explicitly. The queue policy remains
+        // scoped to this bucket, and the KMS service grant is the same
+        // unconditional grant SqsDestination adds immediately afterwards, but
+        // the redundant bucket reference never enters the key policy.
+        const queueDestination = {
+            bind: (_scope, sourceBucket) => {
+                queue.addToResourcePolicy(new aws_iam_1.PolicyStatement({
+                    effect: aws_iam_1.Effect.ALLOW,
+                    principals: [new aws_iam_1.ServicePrincipal('s3.amazonaws.com')],
+                    actions: ['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'],
+                    resources: [queue.queueArn],
+                    conditions: { ArnLike: { 'aws:SourceArn': sourceBucket.bucketArn } },
+                }));
+                if (queue.encryptionMasterKey) {
+                    queue.encryptionMasterKey.addToResourcePolicy(new aws_iam_1.PolicyStatement({
+                        principals: [new aws_iam_1.ServicePrincipal('s3.amazonaws.com')],
+                        actions: ['kms:GenerateDataKey*', 'kms:Decrypt'],
+                        resources: ['*'],
+                    }), true);
+                }
+                return {
+                    arn: queue.queueArn,
+                    type: aws_s3_1.BucketNotificationDestinationType.QUEUE,
+                    dependencies: [queue],
+                };
+            },
+        };
+        bucket.addEventNotification(aws_s3_1.EventType.OBJECT_CREATED, queueDestination, {
+            prefix: this.prefixes.raw,
+        });`,
+      "cycle-free encrypted S3 to SQS notification",
+    ],
   ]);
 
   patchFile(packageRoot, "lib/document-processing/bedrock-document-processing.js", [

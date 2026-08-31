@@ -29,6 +29,7 @@ This repo documents itself extensively in Spanish — **read the relevant doc in
 | `documentacion/TESTS.md` | Every test command, what it checks, cost, and how to read `pnpm comparar` output to diagnose a bug. |
 | `documentacion/COSTOS.md` | Measured (not estimated) Bedrock/Textract/infra costs, per page/doc/month. |
 | `documentacion/ENVIAR_DOCUMENTO_API.md` | How to send a document and read back a result via the CLI scripts or curl. |
+| `documentacion/SUBIR_DOC_CURL.md` | Copy-paste runbook for the two-step curl upload (variables → POST → PUT → poll), with a table translating API Gateway's misleading errors (`Missing Authentication Token` = no such route, not a key problem). |
 | `catalogs/tipos-docs.md` | Informal notes mapping business document names to `TYPE_ID`s (customs domain). |
 | `custom_validators/README.md` (inside enrichment-lambda) | How to write a Node.js custom validator. |
 
