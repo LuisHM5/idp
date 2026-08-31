@@ -109,7 +109,7 @@ esta misma etapa del proyecto, o una ejecución que muere en
 `ExecutionTimedOut` en vez de fallar limpio).
 
 `scripts/test-e2e-pedimento.py` sí pasa por el flujo real: sube el PDF por
-`POST /upload` al stack desplegado, espera la ejecución real de Step
+`POST /documents` al stack desplegado, espera la ejecución real de Step
 Functions, y valida:
 
 1. **Infra**: que la ejecución termine en `SUCCEEDED` (no timeout/error), y

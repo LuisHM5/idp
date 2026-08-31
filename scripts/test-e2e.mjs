@@ -2,7 +2,7 @@
 /**
  * Test E2E: Sube un documento real al endpoint desplegado y muestra el resultado.
  *
- * Flujo completo: archivo local → base64 → POST /upload → espera procesamiento → consulta resultado
+ * Flujo completo: archivo local → base64 → POST /documents → espera procesamiento → consulta resultado
  *
  * Uso:
  *   pnpm test-e2e --file ./samples/ine_frente.pdf
@@ -152,7 +152,7 @@ async function main() {
   // Ensure endpoint ends properly
   const uploadUrl = endpoint.endsWith("/")
     ? `${endpoint}upload`
-    : `${endpoint}/upload`;
+    : `${endpoint}/documents`;
 
   // Read and encode file
   const fileName = basename(args.file);

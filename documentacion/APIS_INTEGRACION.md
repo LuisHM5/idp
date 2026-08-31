@@ -30,21 +30,21 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 
 | # | Método | Ruta | Para qué (negocio) | Quién la implementa |
 |---|---|---|---|---|
-| 1 | `POST` | `/upload` | **Iniciar el proceso**: sube un documento (o pide una URL para subir uno grande) y arranca la validación | `upload-lambda/index.mjs` |
+| 1 | `POST` | `/documents` | **Iniciar el proceso**: sube un documento (o pide una URL para subir uno grande) y arranca la validación | `upload-lambda/index.mjs` |
 | 2 | `GET` | `/documents/{id}` | **Consultar** el resultado completo de un documento ya procesado, por su id | `query-lambda/index.mjs` |
 | 3 | `GET` | `/documents/{id}/file` | **Descargar** el archivo original (el PDF/imagen/XML/XLSX/CSV que se subió, no el resultado) vía URL prefirmada de S3 | `query-lambda/index.mjs` |
 | 4 | `GET` | `/documents?docType=&field=&value=` | **Buscar/listar** documentos por tipo o por cualquier campo extraído | `query-lambda/index.mjs` |
 
 **Descarga del archivo original (endpoint 3):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que el modo prefirmado de subida, `getSignedUrl`), no los bytes — ver el porqué (límite de 10 MB de API Gateway) y las implicaciones de seguridad de una key compartida en la sección 1.5 y en `API_USO.md` §3.
 
-### 1.2 `POST /upload` — Iniciar el proceso de subida
+### 1.2 `POST /documents` — Iniciar el proceso de subida
 
 Un solo flujo, para cualquier tamaño — la subida son **dos pasos** y el archivo
 nunca pasa por API Gateway ni por la Lambda:
 
 | Paso | Qué | Cómo |
 |---|---|---|
-| 1 | `POST /upload` con solo metadata | La Lambda valida, acuña `documentId`/key y firma una URL de S3 (`getSignedUrl` + `PutObjectCommand`, expira en 15 min). Devuelve `uploadUrl` (con la metadata ya dentro del query string, firmada). |
+| 1 | `POST /documents` con solo metadata | La Lambda valida, acuña `documentId`/key y firma una URL de S3 (`getSignedUrl` + `PutObjectCommand`, expira en 15 min). Devuelve `uploadUrl` (con la metadata ya dentro del query string, firmada). |
 | 2 | `PUT {uploadUrl}` con el archivo | Va directo a S3, sin Lambda, sin credenciales AWS y **sin cabeceras extra**. El pipeline arranca al recibirse el objeto. |
 
 SigV4 mueve las cabeceras `x-amz-*` al query string al prefirmar, así que la
@@ -75,7 +75,7 @@ reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
 Devuelve, en JSON, una **URL prefirmada de S3** (`downloadUrl`, no los bytes) para el archivo tal cual se subió — el PDF/imagen/XML/XLSX/CSV original, no el resultado de la extracción. `{id}` acepta id completo o prefijo, igual que 1.3.
 
-No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que `POST /upload` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
+No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que `POST /documents` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
 
 `404 NOT_FOUND` si el id no existe; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las **implicaciones de seguridad de exponer archivos originales bajo el mismo modelo de API key** (ver 1.5): [`API_USO.md`](API_USO.md) §3.
 
@@ -190,7 +190,7 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 
 | API | Tipo | Dirección | Dependencia de proveedor | Documentación técnica |
 |---|---|---|---|---|
-| `POST /upload` | Interna | Entrante (terceros → nosotros) | — | `API_USO.md` §1 |
+| `POST /documents` | Interna | Entrante (terceros → nosotros) | — | `API_USO.md` §1 |
 | `GET /documents/{id}` | Interna | Entrante | — | `API_USO.md` §2 |
 | `GET /documents/{id}/file` | Interna | Entrante | — | `API_USO.md` §3 |
 | `GET /documents` | Interna | Entrante | — | `API_USO.md` §4 |

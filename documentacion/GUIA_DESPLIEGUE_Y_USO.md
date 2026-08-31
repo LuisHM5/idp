@@ -121,7 +121,7 @@ aws s3 cp "test-docs/pedimentos docs/docs/pedimentos.pdf" \
 echo "Tu documentId: $DOCID"     # guárdalo para consultar el resultado
 ```
 
-> **No hay tope de tamaño.** El archivo nunca pasa por API Gateway ni por la Lambda (que topan en 10 MB y 6 MB, límites duros de AWS): `POST /upload` devuelve una `uploadUrl` prefirmada y el archivo va con un `PUT` directo a S3, que acepta hasta 5 GB, sin credenciales AWS. Mismos dos pasos para cualquier tamaño — ver `ENVIAR_DOCUMENTO_API.md`.
+> **No hay tope de tamaño.** El archivo nunca pasa por API Gateway ni por la Lambda (que topan en 10 MB y 6 MB, límites duros de AWS): `POST /documents` devuelve una `uploadUrl` prefirmada y el archivo va con un `PUT` directo a S3, que acepta hasta 5 GB, sin credenciales AWS. Mismos dos pasos para cualquier tamaño — ver `ENVIAR_DOCUMENTO_API.md`.
 >
 > **Clasificación manual (opcional, más rápido/barato):** sube a `raw/{TIPO}/{uuid}/archivo.pdf` (p. ej. `raw/EXPEDIENTE_ADUANAL_MULTIDOCUMENTO/$DOCID/pedimentos.pdf`) y el paso de clasificación Bedrock se salta. Con el API: campo `documentType` en el body.
 
@@ -211,7 +211,7 @@ prefirmada; el archivo va con un `PUT` directo a S3.
 
 ```bash
 # 1. Pedir la URL de subida
-RESP=$(curl -sS -X POST "$API_ENDPOINT/upload" \
+RESP=$(curl -sS -X POST "$API_ENDPOINT/documents" \
   -H "Content-Type: application/json" \
   -d '{"fileName":"expediente.pdf","documentType":"EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"}')
 

@@ -58,7 +58,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
 
 | Método | Ruta | Para qué |
 |---|---|---|
-| `POST` | `/upload` | **Paso 1 de 2:** registrar el documento y obtener la URL de subida (no recibe el archivo) |
+| `POST` | `/documents` | **Paso 1 de 2:** registrar el documento y obtener la URL de subida (no recibe el archivo) |
 | `GET`  | `/documents/{id}` | Obtener el resultado completo de un documento por su id |
 | `GET`  | `/documents/{id}/file` | Obtener una URL prefirmada de S3 para descargar el **archivo original** subido |
 | `GET`  | `/documents?docType=...` | Listar/filtrar documentos por tipo (indexado, sin Scan) |
@@ -90,11 +90,15 @@ que usan el 2, el 3 y el 4.
 > En Scalar (`pnpm docs:api`) los cuatro pasos aparecen como operaciones
 > numeradas, cada una con su selector de lenguaje.
 
-### Paso 1 — `POST /upload`
+### Paso 1 — `POST /documents`
 
 Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 
-### Paso 1 — `POST /upload`
+### Paso 1 — `POST /documents`
+
+Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
+
+### Paso 1 — `POST /documents`
 
 Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 
@@ -105,7 +109,7 @@ Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
 KEY="tu-api-key"
 
-RESP=$(curl -sS -X POST "$API/upload" \
+RESP=$(curl -sS -X POST "$API/documents" \
   -H "Content-Type: application/json" \
   -H "x-api-key: $KEY" \
   -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
@@ -124,7 +128,7 @@ UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
 const API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
 const KEY = "tu-api-key";
 
-const res = await fetch(`${API}/upload`, {
+const res = await fetch(`${API}/documents`, {
   method: "POST",
   headers: { "Content-Type": "application/json", "x-api-key": KEY },
   body: JSON.stringify({
@@ -132,7 +136,7 @@ const res = await fetch(`${API}/upload`, {
     documentType: "PEDIMENTO_ADUANAL",
   }),
 });
-if (!res.ok) throw new Error(`POST /upload → ${res.status}: ${await res.text()}`);
+if (!res.ok) throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
 
 // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
 const { documentId, uploadUrl } = await res.json();
@@ -150,7 +154,7 @@ API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
 KEY = "tu-api-key"
 
 res = requests.post(
-    f"{API}/upload",
+    f"{API}/documents",
     headers={"x-api-key": KEY},
     json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
     timeout=30,
@@ -179,7 +183,7 @@ const string key = "tu-api-key";
 using var http = new HttpClient();
 http.DefaultRequestHeaders.Add("x-api-key", key);
 
-var res = await http.PostAsJsonAsync($"{api}/upload", new
+var res = await http.PostAsJsonAsync($"{api}/documents", new
 {
     fileName = "pedimento.pdf",
     documentType = "PEDIMENTO_ADUANAL",
@@ -197,7 +201,7 @@ var uploadUrl  = up.GetProperty("uploadUrl").GetString()!;
 
 ### Paso 2 — `PUT` del archivo a S3
 
-La única petición **sin `x-api-key`**: va firmada en la URL y no pasa por el API. **No lleva ninguna cabecera extra** — la metadata ya viaja dentro de la URL.
+La única petición **sin `x-api-key`**: va firmada en la URL y no pasa por el API. **No lleva ninguna cabecera extra** — la firma y la metadata ya viajan dentro de la URL.
 
 <details open>
 <summary><b>curl</b></summary>
@@ -476,14 +480,14 @@ documento detectado dentro del PDF. Para un pedimento declarado será uno solo:
 
 ---
 
-## 1. `POST /upload` — Registrar el documento y obtener la URL de subida
+## 1. `POST /documents` — Registrar el documento y obtener la URL de subida
 
 Sube un documento y dispara el pipeline de clasificación → extracción → validación.
 
 **Son dos pasos, siempre, sin importar el tamaño del archivo:**
 
 ```
-1. POST /upload          (solo metadata)   →  documentId + uploadUrl
+1. POST /documents          (solo metadata)   →  documentId + uploadUrl
 2. PUT  {uploadUrl}      (el archivo)      →  directo a S3, arranca el pipeline
 ```
 
@@ -499,7 +503,7 @@ hacen exactamente lo mismo. No hay rama por tamaño que se pueda equivocar.
 > archivo ~33 %, así que reventaba alrededor de los ~4 MB reales y hacía que el
 > **tamaño** decidiera qué camino corría.
 
-### Paso 1 — `POST /upload` (no lleva el archivo)
+### Paso 1 — `POST /documents` (no lleva el archivo)
 
 El body va como `application/json` **o** `application/x-www-form-urlencoded`.
 
@@ -581,7 +585,7 @@ Mismos campos, para clientes (SAP, stacks viejos de .NET/Java, un `curl -d` a
 secas) que mandan formularios más fácil que JSON:
 
 ```bash
-curl -X POST "$API/upload" \
+curl -X POST "$API/documents" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -H "x-api-key: $KEY" \
   -d "fileName=pedimento.pdf" \
@@ -716,7 +720,7 @@ Atajo del repo (equivalente, formateado): `pnpm resultado -- --id 4ff224be`.
 
 Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo tal cual se subió (el PDF/imagen/XML/XLSX/CSV original, no el resultado de la extracción). `{id}` acepta id completo o prefijo, igual que `GET /documents/{id}`.
 
-**Por qué una URL prefirmada y no los bytes directamente:** los expedientes de este sistema llegan a decenas de MB (un expediente digital real de referencia tiene 86 páginas) y **API Gateway topa cualquier respuesta a 10 MB** — límite duro de AWS, no configurable — sin contar el límite de invocación síncrona de Lambda (6 MB). Proxyear el archivo por la Lambda simplemente no es viable para el rango de tamaños real de este sistema. En vez de eso, el endpoint firma una URL de `GetObjectCommand` (mismo mecanismo `@aws-sdk/s3-request-presigner` que ya usa `POST /upload` en modo prefirmado — ver §1b) y el cliente descarga **directo de S3**, sin pasar por Lambda ni por API Gateway. Sin tope de tamaño real.
+**Por qué una URL prefirmada y no los bytes directamente:** los expedientes de este sistema llegan a decenas de MB (un expediente digital real de referencia tiene 86 páginas) y **API Gateway topa cualquier respuesta a 10 MB** — límite duro de AWS, no configurable — sin contar el límite de invocación síncrona de Lambda (6 MB). Proxyear el archivo por la Lambda simplemente no es viable para el rango de tamaños real de este sistema. En vez de eso, el endpoint firma una URL de `GetObjectCommand` (mismo mecanismo `@aws-sdk/s3-request-presigner` que ya usa `POST /documents` en modo prefirmado — ver §1b) y el cliente descarga **directo de S3**, sin pasar por Lambda ni por API Gateway. Sin tope de tamaño real.
 
 **Cómo se localiza el archivo:** el key de S3 del original **no es estático** — mientras se procesa vive en `raw/{TIPO?}/{documentId}/{archivo}`, pero al terminar la ejecución el blueprint lo mueve a `processed/{documentId}/{archivo}` (caso normal, incluida una validación RECHAZADA) o a `failed/{documentId}/{archivo}` (solo si la propia ejecución de Step Functions revienta). Como este endpoint solo responde para documentos que `GET /documents/{id}` ya puede resolver (es decir, ya salieron de `raw/`), el handler busca primero en `processed/{documentId}/` y si no hay nada, en `failed/{documentId}/` — un `ListObjectsV2` de una sola key por prefijo, no una reconstrucción a ciegas del nombre de archivo.
 
@@ -779,6 +783,144 @@ curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=
 ```
 
 Condiciones: hace falta `docType` (la clave siempre lleva el tipo como prefijo — es lo que la hace única) y `op=eq`. Si no se cumplen, o si el valor todavía no está indexado, la búsqueda **cae al camino normal y encuentra el documento igual** — más lenta, nunca equivocada. El campo `lookup` de la respuesta dice cuál contestó.
+
+#### Ejemplos en cuatro lenguajes
+
+Todos asumen `$API`/`$KEY` (y en C#/Node el cliente `http` del paso 1).
+
+<details open>
+<summary><b>curl</b></summary>
+
+```bash
+# --- Camino rápido: campo declarado `unique_key` (una sola Query).
+#     Da igual con espacios o sin ellos: la normalización es la misma al
+#     escribir y al buscar (`digits` en este tipo).
+curl -sS -H "x-api-key: $KEY" \
+  "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=26%2007%200823%206001630" \
+  | jq '{lookup, count, ids: [.matches[].documentId]}'
+
+# --- Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+#     Si el path no resuelve en la raíz, busca en profundidad por esa clave.
+curl -sS -H "x-api-key: $KEY" \
+  "$API/documents?docType=PEDIMENTO_ADUANAL&field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0&summary=1" \
+  | jq '.matches[] | {documentId, matchedValue, matchedAt}'
+
+# --- Subcadena, y acotando por fecha y estado.
+curl -sS -H "x-api-key: $KEY" \
+  "$API/documents?docType=PEDIMENTO_ADUANAL&field=AGENTE_ADUANAL_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
+```
+
+</details>
+
+<details>
+<summary><b>Node.js 18+</b> · `fetch` nativo</summary>
+
+```javascript
+// Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
+// consulta cae a un Scan de toda la tabla.
+async function buscar(params) {
+  const qs = new URLSearchParams(params);          // encodea espacios y acentos
+  const r = await fetch(`${API}/documents?${qs}`, {
+    headers: { "x-api-key": KEY },
+  });
+  if (!r.ok) throw new Error(`GET /documents → ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// Camino rápido: campo declarado `unique_key` → una sola Query.
+// El valor se normaliza igual al escribir y al buscar, así que da lo mismo
+// mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
+const porNumero = await buscar({
+  docType: "PEDIMENTO_ADUANAL",
+  field: "NUMERO_PEDIMENTO",
+  value: "26 07 0823 6001630",
+});
+console.log(porNumero.lookup, porNumero.count);   // "uniqueKey" 1
+
+// Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+const porRfc = await buscar({
+  docType: "PEDIMENTO_ADUANAL",
+  field: "RFC_IMPORTADOR_EXPORTADOR",
+  value: "OFU910626UQ0",
+  summary: "1",
+});
+for (const m of porRfc.matches)
+  console.log(m.documentId, m.matchedValue, "←", m.matchedAt);
+```
+
+</details>
+
+<details>
+<summary><b>Python 3</b> · requiere `requests`</summary>
+
+```python
+# Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
+# consulta cae a un Scan de toda la tabla.
+def buscar(**params):
+    r = requests.get(f"{API}/documents", params=params,   # requests encodea solo
+                     headers={"x-api-key": KEY}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+# Camino rápido: campo declarado `unique_key` → una sola Query.
+# El valor se normaliza igual al escribir y al buscar, así que da lo mismo
+# mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
+por_numero = buscar(docType="PEDIMENTO_ADUANAL",
+                    field="NUMERO_PEDIMENTO",
+                    value="26 07 0823 6001630")
+print(por_numero["lookup"], por_numero["count"])   # "uniqueKey" 1
+
+# Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+por_rfc = buscar(docType="PEDIMENTO_ADUANAL",
+                 field="RFC_IMPORTADOR_EXPORTADOR",
+                 value="OFU910626UQ0",
+                 summary="1")
+for m in por_rfc["matches"]:
+    print(m["documentId"], m["matchedValue"], "←", m["matchedAt"])
+```
+
+</details>
+
+<details>
+<summary><b>C# (.NET 6+)</b> · `HttpUtility` de `System.Web`</summary>
+
+```csharp
+using System.Web;
+
+// Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
+// consulta cae a un Scan de toda la tabla.
+async Task<JsonElement> BuscarAsync(params (string k, string v)[] parametros)
+{
+    var qs = HttpUtility.ParseQueryString(string.Empty);
+    foreach (var (k, v) in parametros) qs[k] = v;
+    return await http.GetFromJsonAsync<JsonElement>($"{api}/documents?{qs}");
+}
+
+// Camino rápido: campo declarado `unique_key` → una sola Query.
+// El valor se normaliza igual al escribir y al buscar, así que da lo mismo
+// mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
+var porNumero = await BuscarAsync(
+    ("docType", "PEDIMENTO_ADUANAL"),
+    ("field", "NUMERO_PEDIMENTO"),
+    ("value", "26 07 0823 6001630"));
+Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("count")}");
+
+// Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+var porRfc = await BuscarAsync(
+    ("docType", "PEDIMENTO_ADUANAL"),
+    ("field", "RFC_IMPORTADOR_EXPORTADOR"),
+    ("value", "OFU910626UQ0"),
+    ("summary", "1"));
+foreach (var m in porRfc.GetProperty("matches").EnumerateArray())
+{
+    var id    = m.GetProperty("documentId");
+    var valor = m.GetProperty("matchedValue");
+    var donde = m.GetProperty("matchedAt");
+    Console.WriteLine($"{id} {valor} <- {donde}");
+}
+```
+
+</details>
 
 **Query params:**
 | Param | Requerido | Default | Descripción |

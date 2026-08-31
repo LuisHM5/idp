@@ -128,7 +128,7 @@ documents-validator/
 │       │   │                               #   extracción, normalización, liquidación, QR
 │       │   ├── extractors/                 # wrappers de Textract
 │       │   └── custom_validators/          # validadores Node.js (solo flujo estándar)
-│       ├── upload-lambda/index.mjs         # POST /upload
+│       ├── upload-lambda/index.mjs         # POST /documents
 │       └── query-lambda/index.mjs          # GET /documents...
 ├── catalogs/
 │   ├── _shared.json                        # field_sets, reglas cross-documento, campos comunes

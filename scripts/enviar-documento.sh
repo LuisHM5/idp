@@ -33,7 +33,7 @@
 #     ver documentacion/AMBIENTES_Y_SEGURIDAD.md. API_KEY explícito siempre gana.
 #
 # Dos pasos, siempre, sin importar el tamaño:
-#   1. POST /upload (solo metadata) -> devuelve uploadUrl
+#   1. POST /documents (solo metadata) -> devuelve uploadUrl
 #   2. PUT del archivo directo a S3 con esa URL
 # El archivo nunca pasa por API Gateway ni por el Lambda, que tienen topes
 # duros de AWS (~10MB/6MB) no configurables. Cualquier cliente HTTP sin
@@ -205,7 +205,7 @@ if [[ -n "${API_KEY:-}" ]]; then
   API_KEY_HEADER=(-H "x-api-key: ${API_KEY}")
 fi
 
-# --- 2. Un solo flujo, para cualquier tamaño: POST /upload NO lleva el
+# --- 2. Un solo flujo, para cualquier tamaño: POST /documents NO lleva el
 # archivo; devuelve una URL prefirmada de S3 y el PUT va directo a S3 (nunca
 # pasa por API Gateway/Lambda). Antes esto dependía del tamaño, y ese salto
 # era justo donde aparecían los casos raros: base64 infla ~33%, así que un
@@ -222,7 +222,7 @@ trap 'rm -f "$REQ_BODY_FILE"' EXIT
   printf '}'
 } > "$REQ_BODY_FILE"
 
-PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/upload" \
+PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/documents" \
   -H "Content-Type: application/json" \
   "${API_KEY_HEADER[@]}" \
   --data-binary @"$REQ_BODY_FILE")

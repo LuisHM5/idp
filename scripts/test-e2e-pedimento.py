@@ -135,7 +135,7 @@ def resolve_api_key(env: str) -> str | None:
 def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = None) -> dict:
     """Sube el documento con el flujo real de la API: dos pasos, siempre.
 
-    1. `POST /upload` con solo metadata → devuelve `uploadUrl`.
+    1. `POST /documents` con solo metadata → devuelve `uploadUrl`.
     2. `PUT` del archivo directo a S3, **sin ninguna cabecera extra**.
 
     Al prefirmar, SigV4 hoistea los `x-amz-*` al query string, así que la
@@ -148,12 +148,12 @@ def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = N
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["x-api-key"] = api_key
-    req = urllib.request.Request(f"{endpoint}/upload", data=body, headers=headers, method="POST")
+    req = urllib.request.Request(f"{endpoint}/documents", data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             presign = json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"POST /upload → HTTP {e.code}: {e.read().decode()[:500]}")
+        raise RuntimeError(f"POST /documents → HTTP {e.code}: {e.read().decode()[:500]}")
 
     put = urllib.request.Request(
         presign["uploadUrl"],
@@ -191,7 +191,7 @@ def main() -> int:
         return 2
 
     print(f"{CYAN}=== E2E real: {args.file} contra '{stack}' ({args.env}) ==={RESET}")
-    print(f"{DIM}Flujo: API /upload → S3 raw/ → SQS → Step Functions → Lambdas → DynamoDB/S3{RESET}\n")
+    print(f"{DIM}Flujo: API POST /documents → S3 raw/ → SQS → Step Functions → Lambdas → DynamoDB/S3{RESET}\n")
 
     endpoint = api_endpoint(stack, args.region)
     bucket = bucket_name(stack, args.region)

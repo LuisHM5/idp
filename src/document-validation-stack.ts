@@ -754,11 +754,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     documentByIdResource.addMethod("GET", queryIntegration, methodOptions);
     documentByIdResource.addResource("file").addMethod("GET", queryIntegration, methodOptions);
 
-    // Alias en desuso de `POST /documents`. El nombre `/upload` dejó de ser
-    // cierto cuando el endpoint dejó de recibir el archivo: hoy solo registra
-    // el documento y devuelve una URL prefirmada. Se conserva para no romper
-    // integraciones existentes; misma Lambda, misma respuesta. Retirarlo es
-    // borrar estas dos líneas (cambio incompatible: avisar antes).
+    // Alias NO DOCUMENTADO de `POST /documents`, a propósito: la documentación
+    // (openapi.yaml, API_USO.md) describe únicamente `/documents`, y esta ruta
+    // existe solo para que las integraciones que ya usaban `/upload` sigan
+    // funcionando. El nombre dejó de ser cierto cuando el endpoint dejó de
+    // recibir el archivo. Misma Lambda, misma respuesta. Retirarlo es borrar
+    // estas dos líneas — cambio incompatible, avisar antes.
     api.root.addResource("upload").addMethod("POST", uploadIntegration, methodOptions);
 
     // ---- Prod hardening: API keys + usage plan, WAF, custom domain ----------

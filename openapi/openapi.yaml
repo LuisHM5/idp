@@ -31,7 +31,7 @@ info:
 
     | # | Operación | Auth | Cuerpo | Respuesta |
     |---|---|---|---|---|
-    | 1 | `POST /upload` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
+    | 1 | `POST /documents` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
     | 2 | `PUT {uploadUrl}` **(a S3)** | **ninguna** — firmada en la URL | los bytes crudos del archivo | `200` con **cuerpo vacío**; S3 no devuelve JSON |
     | 3 | `GET /documents/{documentId}` | `x-api-key` | — | `200` con el resultado, o `404` mientras procesa |
     | 4 | `GET /documents/{documentId}/file` | `x-api-key` | — | `200` · URL prefirmada para bajar el original |
@@ -113,42 +113,14 @@ servers:
 security:
   - ApiKeyAuth: []
 tags:
-  - name: upload
+  - name: Subir un documento
     description: >
-      Alta de un documento. El endpoint NO recibe el archivo: devuelve una URL
-      prefirmada y el archivo se sube con un `PUT` a S3 (paso 2, descrito en la
-      introducción de este documento).
-  - name: documents
-    description: Consulta de resultados, archivo original y búsqueda.
+      Los dos pasos de una subida: `POST /documents` registra el documento y
+      devuelve una URL prefirmada, y el `PUT` lleva el archivo a S3. El endpoint
+      NO recibe el archivo en ningún momento.
+  - name: Consultar documentos
+    description: Resultados, archivo original y búsqueda por campo.
 paths:
-  /upload:
-    post:
-      operationId: createDocumentLegacy
-      deprecated: true
-      tags: [upload]
-      summary: "(En desuso) Alias de POST /documents"
-      description: >
-        Alias exacto de `POST /documents` — misma Lambda, mismo request, misma
-        respuesta. Se conserva solo para no romper integraciones existentes.
-
-
-        El nombre `/upload` dejó de ser cierto cuando el endpoint dejó de
-        recibir el archivo: hoy únicamente registra el documento y devuelve una
-        URL prefirmada. **Para integraciones nuevas usa `POST /documents`.**
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UploadRequest"
-      responses:
-        "200":
-          description: Idéntica a la de `POST /documents`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UploadResponse"
-
   /{uploadUrl}:
     put:
       operationId: putFileToPresignedUrl
@@ -194,7 +166,7 @@ paths:
             var put = await s3.PutAsync(uploadUrl, content);
             put.EnsureSuccessStatusCode();
             // 200 con cuerpo vacío = subido. El pipeline arranca solo.
-      tags: [upload]
+      tags: [Subir un documento]
       summary: "Paso 2 de 4: subir el archivo a la uploadUrl (host S3)"
       servers:
         - url: "https://{bucket}.s3.{region}.amazonaws.com"
@@ -350,7 +322,7 @@ paths:
                 var hasta = d.GetProperty("pageEnd");
                 Console.WriteLine($"{tipo} págs {desde}-{hasta}");
             }
-      tags: [documents]
+      tags: [Consultar documentos]
       summary: "Paso 3 de 4: consultar el resultado del documento"
       description: >
         `{id}` puede ser el id completo o un prefijo (gana el primer match).
@@ -440,7 +412,7 @@ paths:
             var url = meta.GetProperty("downloadUrl").GetString();
             await File.WriteAllBytesAsync("pedimento-original.pdf",
                 await s3.GetByteArrayAsync(url));
-      tags: [documents]
+      tags: [Consultar documentos]
       summary: "Paso 4 de 4: obtener el archivo original (URL de descarga)"
       description: >
         Devuelve una URL prefirmada (no los bytes) para el archivo tal cual
@@ -472,84 +444,7 @@ paths:
   /documents:
     post:
       operationId: createDocument
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
-            KEY="tu-api-key"
-
-            RESP=$(curl -sS -X POST "$API/upload" \
-              -H "Content-Type: application/json" \
-              -H "x-api-key: $KEY" \
-              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
-
-            # Guarda los dos: el uploadUrl para el paso 2, el documentId para el 3.
-            DOC_ID=$(echo "$RESP"     | jq -r .documentId)
-            UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            const API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
-            const KEY = "tu-api-key";
-
-            const res = await fetch(`${API}/upload`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-api-key": KEY },
-              body: JSON.stringify({
-                fileName: "pedimento.pdf",
-                documentType: "PEDIMENTO_ADUANAL",
-              }),
-            });
-            if (!res.ok) throw new Error(`POST /upload → ${res.status}: ${await res.text()}`);
-
-            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
-            const { documentId, uploadUrl } = await res.json();
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            import requests
-
-            API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
-            KEY = "tu-api-key"
-
-            res = requests.post(
-                f"{API}/upload",
-                headers={"x-api-key": KEY},
-                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
-                timeout=30,
-            )
-            res.raise_for_status()
-
-            # Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
-            up = res.json()
-            document_id = up["documentId"]
-            upload_url = up["uploadUrl"]
-        - lang: C#
-          label: .NET 6+
-          source: |
-            using System.Net.Http.Json;
-            using System.Text.Json;
-
-            const string api = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
-            const string key = "tu-api-key";
-
-            // Cliente del API: siempre con x-api-key.
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Add("x-api-key", key);
-
-            var res = await http.PostAsJsonAsync($"{api}/upload", new
-            {
-                fileName = "pedimento.pdf",
-                documentType = "PEDIMENTO_ADUANAL",
-            });
-            res.EnsureSuccessStatusCode();
-
-            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
-            var up = await res.Content.ReadFromJsonAsync<JsonElement>();
-            var documentId = up.GetProperty("documentId").GetString()!;
-            var uploadUrl  = up.GetProperty("uploadUrl").GetString()!;
-      tags: [upload]
+      tags: [Subir un documento]
       summary: "Paso 1 de 4: registrar el documento y obtener la URL de subida"
       description: >
         **Este endpoint no recibe el archivo.** Registra el documento, acuña su
@@ -560,8 +455,7 @@ paths:
         **Son dos pasos, siempre, sin importar el tamaño del archivo:**
 
 
-        1. `POST /upload` con solo metadata → devuelve `uploadUrl` +
-        la URL de subida.
+        1. `POST /documents` con solo metadata → devuelve `uploadUrl`.
 
         2. `PUT {uploadUrl}` con el archivo → va directo a S3, y el pipeline
         arranca en cuanto S3 recibe el objeto.
@@ -588,6 +482,84 @@ paths:
         **El `PUT` del paso 2 no lleva ninguna cabecera extra.** La firma y la
         metadata del documento viajan en el query string de `uploadUrl`; añadir
         cabeceras `x-amz-*` hace que S3 rechace la subida.
+
+      x-codeSamples:
+        - lang: Shell
+          label: curl
+          source: |
+            API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
+            KEY="tu-api-key"
+
+            RESP=$(curl -sS -X POST "$API/documents" \
+              -H "Content-Type: application/json" \
+              -H "x-api-key: $KEY" \
+              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
+
+            # Guarda los dos: el uploadUrl para el paso 2, el documentId para el 3.
+            DOC_ID=$(echo "$RESP"     | jq -r .documentId)
+            UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
+        - lang: JavaScript
+          label: Node.js 18+
+          source: |
+            const API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
+            const KEY = "tu-api-key";
+
+            const res = await fetch(`${API}/documents`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": KEY },
+              body: JSON.stringify({
+                fileName: "pedimento.pdf",
+                documentType: "PEDIMENTO_ADUANAL",
+              }),
+            });
+            if (!res.ok) throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
+
+            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
+            const { documentId, uploadUrl } = await res.json();
+        - lang: Python
+          label: Python 3 (requests)
+          source: |
+            import requests
+
+            API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
+            KEY = "tu-api-key"
+
+            res = requests.post(
+                f"{API}/documents",
+                headers={"x-api-key": KEY},
+                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
+                timeout=30,
+            )
+            res.raise_for_status()
+
+            # Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
+            up = res.json()
+            document_id = up["documentId"]
+            upload_url = up["uploadUrl"]
+        - lang: C#
+          label: .NET 6+
+          source: |
+            using System.Net.Http.Json;
+            using System.Text.Json;
+
+            const string api = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
+            const string key = "tu-api-key";
+
+            // Cliente del API: siempre con x-api-key.
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Add("x-api-key", key);
+
+            var res = await http.PostAsJsonAsync($"{api}/documents", new
+            {
+                fileName = "pedimento.pdf",
+                documentType = "PEDIMENTO_ADUANAL",
+            });
+            res.EnsureSuccessStatusCode();
+
+            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
+            var up = await res.Content.ReadFromJsonAsync<JsonElement>();
+            var documentId = up.GetProperty("documentId").GetString()!;
+            var uploadUrl  = up.GetProperty("uploadUrl").GetString()!;
       requestBody:
         required: true
         content:
@@ -674,7 +646,122 @@ paths:
 
     get:
       operationId: searchDocuments
-      tags: [documents]
+      x-codeSamples:
+        - lang: Shell
+          label: curl
+          source: |
+            # --- Camino rápido: campo declarado `unique_key` (una sola Query).
+            #     Da igual con espacios o sin ellos: la normalización es la misma al
+            #     escribir y al buscar (`digits` en este tipo).
+            curl -sS -H "x-api-key: $KEY" \
+              "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=26%2007%200823%206001630" \
+              | jq '{lookup, count, ids: [.matches[].documentId]}'
+
+            # --- Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+            #     Si el path no resuelve en la raíz, busca en profundidad por esa clave.
+            curl -sS -H "x-api-key: $KEY" \
+              "$API/documents?docType=PEDIMENTO_ADUANAL&field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0&summary=1" \
+              | jq '.matches[] | {documentId, matchedValue, matchedAt}'
+
+            # --- Subcadena, y acotando por fecha y estado.
+            curl -sS -H "x-api-key: $KEY" \
+              "$API/documents?docType=PEDIMENTO_ADUANAL&field=AGENTE_ADUANAL_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
+        - lang: JavaScript
+          label: Node.js 18+
+          source: |
+            // Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
+            // consulta cae a un Scan de toda la tabla.
+            async function buscar(params) {
+              const qs = new URLSearchParams(params);          // encodea espacios y acentos
+              const r = await fetch(`${API}/documents?${qs}`, {
+                headers: { "x-api-key": KEY },
+              });
+              if (!r.ok) throw new Error(`GET /documents → ${r.status}: ${await r.text()}`);
+              return r.json();
+            }
+
+            // Camino rápido: campo declarado `unique_key` → una sola Query.
+            // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
+            // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
+            const porNumero = await buscar({
+              docType: "PEDIMENTO_ADUANAL",
+              field: "NUMERO_PEDIMENTO",
+              value: "26 07 0823 6001630",
+            });
+            console.log(porNumero.lookup, porNumero.count);   // "uniqueKey" 1
+
+            // Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+            const porRfc = await buscar({
+              docType: "PEDIMENTO_ADUANAL",
+              field: "RFC_IMPORTADOR_EXPORTADOR",
+              value: "OFU910626UQ0",
+              summary: "1",
+            });
+            for (const m of porRfc.matches)
+              console.log(m.documentId, m.matchedValue, "←", m.matchedAt);
+        - lang: Python
+          label: Python 3 (requests)
+          source: |
+            # Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
+            # consulta cae a un Scan de toda la tabla.
+            def buscar(**params):
+                r = requests.get(f"{API}/documents", params=params,   # requests encodea solo
+                                 headers={"x-api-key": KEY}, timeout=30)
+                r.raise_for_status()
+                return r.json()
+
+            # Camino rápido: campo declarado `unique_key` → una sola Query.
+            # El valor se normaliza igual al escribir y al buscar, así que da lo mismo
+            # mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
+            por_numero = buscar(docType="PEDIMENTO_ADUANAL",
+                                field="NUMERO_PEDIMENTO",
+                                value="26 07 0823 6001630")
+            print(por_numero["lookup"], por_numero["count"])   # "uniqueKey" 1
+
+            # Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+            por_rfc = buscar(docType="PEDIMENTO_ADUANAL",
+                             field="RFC_IMPORTADOR_EXPORTADOR",
+                             value="OFU910626UQ0",
+                             summary="1")
+            for m in por_rfc["matches"]:
+                print(m["documentId"], m["matchedValue"], "←", m["matchedAt"])
+        - lang: C#
+          label: .NET 6+
+          source: |
+            using System.Web;
+
+            // Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
+            // consulta cae a un Scan de toda la tabla.
+            async Task<JsonElement> BuscarAsync(params (string k, string v)[] parametros)
+            {
+                var qs = HttpUtility.ParseQueryString(string.Empty);
+                foreach (var (k, v) in parametros) qs[k] = v;
+                return await http.GetFromJsonAsync<JsonElement>($"{api}/documents?{qs}");
+            }
+
+            // Camino rápido: campo declarado `unique_key` → una sola Query.
+            // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
+            // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
+            var porNumero = await BuscarAsync(
+                ("docType", "PEDIMENTO_ADUANAL"),
+                ("field", "NUMERO_PEDIMENTO"),
+                ("value", "26 07 0823 6001630"));
+            Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("count")}");
+
+            // Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
+            var porRfc = await BuscarAsync(
+                ("docType", "PEDIMENTO_ADUANAL"),
+                ("field", "RFC_IMPORTADOR_EXPORTADOR"),
+                ("value", "OFU910626UQ0"),
+                ("summary", "1"));
+            foreach (var m in porRfc.GetProperty("matches").EnumerateArray())
+            {
+                var id    = m.GetProperty("documentId");
+                var valor = m.GetProperty("matchedValue");
+                var donde = m.GetProperty("matchedAt");
+                Console.WriteLine($"{id} {valor} <- {donde}");
+            }
+      tags: [Consultar documentos]
       summary: Buscar/listar documentos por tipo y/o por cualquier campo extraído
       description: >
         Requiere al menos uno de `docType` o `field`+`value`. Con ambos,
@@ -682,10 +769,41 @@ paths:
         sin Scan) y el filtro por campo solo se aplica a esos documentos.
 
 
-        Camino rápido: si el tipo declara ese campo como `unique_key` en el
-        catálogo, la búsqueda se resuelve con UNA Query sobre
-        `TIPODOC#<valor normalizado>` en vez de recorrer el tipo — ver el
-        campo `lookup` de la respuesta y `catalogs/README.md` → "Unique keys".
+        **No necesitas el dot-path completo: basta el NOMBRE del campo.** Si el
+        path no resuelve en la raíz del envelope, se hace una búsqueda profunda
+        por su última clave, así que `field=NUMERO_PEDIMENTO` lo encuentra esté
+        donde esté anidado. `matchedAt` en cada match dice dónde coincidió: el
+        path exacto, o `*.CLAVE` si fue por búsqueda profunda.
+
+
+        La comparación es sobre texto, sin distinguir mayúsculas y recortando
+        espacios. `op=contains` busca subcadena; el default `eq` exige igualdad.
+
+
+        **Tres caminos de acceso; `lookup` en la respuesta dice cuál contestó:**
+
+
+        | `lookup` | Cuándo | Costo |
+        | --- | --- | --- |
+        | `uniqueKey` | El campo está declarado `unique_key` en el catálogo del tipo, con `docType` y `op=eq` | **Una** Query, sin importar cuántos documentos existan |
+        | `typeIndex` | Hay `docType`, pero el campo no es unique key | Query al GSI del tipo + filtrado en la Lambda |
+        | `scan` | **No mandaste `docType`** | Scan de toda la tabla — evítalo |
+
+
+        Hoy `PEDIMENTO_ADUANAL` declara `unique_key` en `NUMERO_PEDIMENTO` y
+        `NUMERO_PEDIMENTO_NORMALIZADO`, ambos normalizados a solo dígitos: la
+        misma normalización se aplica al escribir y al buscar, así que
+        `26 07 0823 6001630` y `260708236001630` encuentran lo mismo.
+
+
+        Si no se cumplen las condiciones del camino rápido, la búsqueda **cae al
+        camino normal y encuentra el documento igual** — más lenta, nunca
+        equivocada. Ver `catalogs/README.md` → "Unique keys".
+
+
+        **Permiso aparte:** usar `field`/`value` requiere que la app tenga
+        `AllowFieldSearch` (default **false**, por ser la ruta más cara). Sin él
+        la respuesta es `403`, aunque el `docType` sí esté permitido.
       parameters:
         - name: docType
           in: query

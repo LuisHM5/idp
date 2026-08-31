@@ -11,7 +11,7 @@ mejora del dataflow**.
 
 ```mermaid
 flowchart TD
-    U[Cliente] -->|"POST /upload (base64)"| UL[upload-lambda/index.mjs]
+    U[Cliente] -->|"POST /documents (base64)"| UL[upload-lambda/index.mjs]
     U -->|"o aws s3 cp directo"| S3RAW
     UL -->|"escribe"| S3RAW[("S3 raw/{TIPO?}/{uuid}/file")]
     S3RAW -->|"trigger prefijo raw/"| SFN
@@ -43,7 +43,7 @@ Puntos clave:
 - `upload-lambda/index.mjs:handler` — valida, y escribe a `raw/{TIPO}/{uuid}/file`
   si el usuario declaró `documentType`, o `raw/{uuid}/file` si no. El **prefijo
   con tipo** es cómo el usuario "fuerza" la clasificación.
-- **Un solo flujo, dos pasos, para cualquier tamaño:** `POST /upload` lleva solo
+- **Un solo flujo, dos pasos, para cualquier tamaño:** `POST /documents` lleva solo
   metadata y devuelve una URL prefirmada de S3 (`uploadUrl`);
   el cliente sube con `PUT` directo a esa URL. El archivo nunca pasa por API
   Gateway ni por la Lambda, así que no hay tope de tamaño real ni una rama por

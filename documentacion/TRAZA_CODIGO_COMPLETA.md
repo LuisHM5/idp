@@ -27,7 +27,7 @@ momento de escribir esta guía. Para el contrato REST público, usar
 Una carga exitosa produce el mismo `documentId` durante todo el recorrido:
 
 ```text
-POST /upload
+POST /documents
   → S3 raw/{TIPO?}/{documentId}/{archivo}
   → S3 event → SQS → consumidor
   → Step Functions
@@ -63,7 +63,7 @@ sequenceDiagram
     participant K as DynamoDB costos
     participant EB as EventBridge
 
-    C->>A: POST /upload
+    C->>A: POST /documents
     A->>U: evento proxy
     U->>U: valida request y genera documentId
     U-->>C: documentId + URL PUT prefirmada
@@ -186,7 +186,7 @@ sintetizado confirma los nombres y transiciones descritos en la sección 7.
 
 ## 5. Entrada REST y escritura inicial en S3
 
-Ruta: `POST /upload` → `upload-lambda/index.mjs:handler` (`:141`).
+Ruta: `POST /documents` → `upload-lambda/index.mjs:handler` (`:141`).
 
 ### 5.1 Funciones, en orden
 
@@ -1088,7 +1088,7 @@ Archivo: `src/document-validation-stack.ts`.
 | Bloque | Datos/configuración que conecta | Destino runtime |
 | --- | --- | --- |
 | `BedrockDocumentProcessingStack.constructor()` (`:107`) | env, modelos, tablas importadas, bucket/cola/State Machine del blueprint, Lambdas y permisos | crea las rutas y recursos que usarán todas las funciones siguientes |
-| rutas (`:702-717`) | `POST /upload`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file` | API Gateway → Upload/Query Lambda |
+| rutas (`:702-717`) | `POST /documents`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file` | API Gateway → Upload/Query Lambda |
 
 ### 27.4 Upload Lambda
 
@@ -1752,7 +1752,7 @@ GET /documents?field=... sin docType
 
 | Dato/contrato cambiado | Productor que debe revisarse | Consumidores directos que también deben revisarse |
 | --- | --- | --- |
-| forma de `POST /upload` | `upload.handler/validateCommon` | API docs, scripts de envío, key parser del consumidor si cambia S3 key |
+| forma de `POST /documents` | `upload.handler/validateCommon` | API docs, scripts de envío, key parser del consumidor si cambia S3 key |
 | forma de key `raw/...` | upload/cliente directo | consumidor `handler`, `extract_manual_classification`, `_declared_type_from_key`, movimiento Step Functions, Query file lookup |
 | `WorkflowEvent.content` | consumidor SQS | model invoke `handler`, enrichment `_extract_s3_pointer/_declared_file_type`, indexing `_document_name` |
 | `classificationResult` | classification task/resultSelector | processing handler, enrichment `_process/_model_ids`, cost audit upstream |

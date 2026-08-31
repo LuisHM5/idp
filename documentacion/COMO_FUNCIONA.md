@@ -21,7 +21,7 @@ flowchart LR
     end
 
     subgraph AWS["AWS (stack DocumentValidationStack)"]
-        B["API Gateway<br/>POST /upload"]
+        B["API Gateway<br/>POST /documents"]
         C[("S3<br/>raw/")]
         D["SQS"]
         E["Step Functions<br/>(orquestador)"]
@@ -245,7 +245,7 @@ documents-validator/
 
 | Tema | Situación |
 |---|---|
-| Archivos por API | Sin tope de tamaño real: `POST /upload` devuelve una URL prefirmada y el archivo va con un `PUT` directo a S3, nunca por API Gateway/Lambda. Mismos dos pasos para cualquier tamaño |
+| Archivos por API | Sin tope de tamaño real: `POST /documents` devuelve una URL prefirmada y el archivo va con un `PUT` directo a S3, nunca por API Gateway/Lambda. Mismos dos pasos para cualquier tamaño |
 | Páginas por documento (expedientes/pedimentos) | **Si el tipo declarado selecciona sus páginas** (`page_selection`): no se trunca — el costo lo acota el selector, con un tope de salvaguarda muy superior (`max_source_pages`, 500). **Si no** (tipo sin selección, apagada, o subida sin tipo declarado): máximo 50 (`MAX_PAGES`, configurable); el excedente se trunca antes de correr Textract/Bedrock para acotar costo — el original completo queda intacto en S3, resultado marcado `reviewRequired` + `truncated` |
 | Tiempo | 1 página ≈ 30 s · 27 págs escaneadas ≈ 4 min · 86 págs ≈ 6-8 min (límite Lambda: 15 min) |
 | Páginas `OTRO` | COVE, DODA, SPEI internos no tienen tipo en el catálogo → `REVIEW_REQUIRED` (agregables vía JSON) |

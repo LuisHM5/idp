@@ -45,7 +45,7 @@ concreto con `--stack <NOMBRE>`; esta opción gana sobre `--env`.
 
 ## ¿Necesito autenticación?
 
-- **El API es PÚBLICO** (sin API key ni auth): el método `POST /upload` se creó
+- **El API es PÚBLICO** (sin API key ni auth): el método `POST /documents` se creó
   con `AuthorizationType.NONE` (`src/document-validation-stack.ts`). El `curl` no
   lleva ningún header de autorización — ni para archivos chicos (inline) ni
   para grandes (URL prefirmada): la URL prefirmada por sí sola autoriza el
@@ -93,7 +93,7 @@ el archivo se sube con un `PUT` directo a S3.
 FILE="2607-0823-6001630_P.pdf"
 
 # --- Paso 1: pedir la URL
-RESP=$(curl -sS -X POST "$API_ENDPOINT/upload" \
+RESP=$(curl -sS -X POST "$API_ENDPOINT/documents" \
   -H "Content-Type: application/json" \
   -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"PEDIMENTO_ADUANAL\"}")
 

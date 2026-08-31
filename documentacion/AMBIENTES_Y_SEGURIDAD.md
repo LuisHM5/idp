@@ -508,7 +508,7 @@ un toggle en caliente — cambiarlo siempre requiere `pnpm run deploy:dev`.
 
 **Los scripts de envío detectan esto solos.** `pnpm enviar` (`enviar-documento.sh`),
 `pnpm test:e2e:pedimento` (`test-e2e-pedimento.py`) y `pnpm test-e2e`
-(`test-e2e.mjs`) — los tres únicos que le pegan a `POST /upload` real — leen
+(`test-e2e.mjs`) — los tres únicos que le pegan a `POST /documents` real — leen
 `.env.dev` por su cuenta: si `DEV_API_KEY_REQUIRED=true` y no exportaste
 `API_KEY` a mano, usan automáticamente **`API_KEY_APP`** (también de
 `.env.dev`, o ya exportado) como `x-api-key`, sin que tengas que repetir
