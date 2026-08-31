@@ -27,6 +27,7 @@
       "max_ratio": 0.6,
       "min_pages": 5,
       "expected_pages": 6,
+      "__COMENTARIO_expected_pages__": "Numero (6), rango ([3, 6]) o \"auto\". Con \"auto\" el tipo declara que su tamano es VARIABLE: no hay atajo por tamano, y si los marcadores no alcanzan, en vez de procesar todo se gasta UNA llamada barata a Bedrock sobre el digest de cada pagina para que el modelo ubique el rango (pipeline/page_locator.py). Usalo solo si de verdad no puedes dar un rango: el camino de marcadores es gratis y este no.",
       "markers": [
         "REGEX QUE SOLO APARECE EN LAS PAGINAS DE ESTE TIPO",
         "OTRO REGEX DISTINTIVO"
@@ -35,9 +36,11 @@
 
     "__COMENTARIO_fields__": "Un campo escalar. `type` decide qué shape de salida arma el pipeline: string/number/boolean/date -> {value, confidence, valid, reason}. `hint` es texto libre en español: dónde vive el dato o cómo derivarlo (antes vivía en extraction_hints, ahora junto al campo). `required` reemplaza a la lista required_fields. `validation` reemplaza las entradas de validation_rules que tenían `\"field\": \"NOMBRE\"` — ya no hace falta repetir el nombre, es implícito por estar anidado aquí.",
     "fields": {
+      "__COMENTARIO_unique_key__": "Opcional, en el campo que identifica UN documento de este tipo por sí solo (folio, UUID, número de pedimento). Escribe una fila en la tabla de lookup con clave TIPODOC#valor, así `GET /documents?docType=X&field=FOLIO&value=...` se resuelve con UNA Query en vez de recorrer todos los documentos del tipo. Acepta `true` (normalización por defecto: trim + espacios colapsados + MAYÚSCULAS) o {\"normalize\": \"alnum\"|\"digits\"|\"raw\"}. Usa `alnum`/`digits` cuando el mismo identificador se imprime con separadores distintos según el documento ('26 07 0823 6001630' vs '260708236001630'): así ambos caen en la misma clave. Se puede marcar más de un campo. Después de agregarla corre `pnpm build && pnpm sync:one -- --type NUEVO_TIPO` y `pnpm backfill:keys` para los documentos ya procesados. Ver catalogs/README.md -> 'Unique keys'.",
       "FOLIO": {
         "type": "string",
         "required": true,
+        "unique_key": true,
         "hint": "Número de folio impreso en el encabezado, junto a la etiqueta FOLIO o NO.",
         "validation": [
           {

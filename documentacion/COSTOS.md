@@ -116,6 +116,24 @@ contiene. Por eso en la tabla de arriba los CFDIs de 1-2 páginas y
 `normal_pend.pdf` salen con 0 % de ahorro: es lo correcto, no una falla de
 calibración.
 
+### Cuando el tamaño es variable: `expected_pages: "auto"`
+
+Para un tipo cuyo largo es impredecible, cualquier rango declarado sería
+mentira. `"auto"` quita el atajo por tamaño y, **cuando los marcadores fallan**,
+cambia "procesar todo" por una llamada barata a Bedrock que ubica el rango
+(`pipeline/page_locator.py`, servicio `BedrockPageLocator` en la tabla de
+costos).
+
+La economía: la llamada manda el digest de ~450 caracteres por página que ya
+usa el segmenter, no el texto completo. Sobre el expediente de 86 páginas eso
+es ~$0.012 contra los ~$0.09 de extraerlo entero. Solo se paga cuando el
+camino gratis ya se rindió, y **su costo aparece como servicio propio** — no
+escondido dentro de `BedrockExtraction`, para que se pueda ver si se está
+pagando solo.
+
+`PEDIMENTO_ADUANAL` **no** lo usa: declara `expected_pages: 6`, así que su
+camino es 100 % determinístico y nunca gasta esta llamada.
+
 Tres advertencias para no leer de más estos números:
 
 1. **Es ahorro de Bedrock, no de Textract.** El filtro corre *después* de

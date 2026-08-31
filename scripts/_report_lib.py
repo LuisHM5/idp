@@ -39,6 +39,7 @@ SERVICE_LABEL_ES = {
     "BedrockProcessingUpstream": "Bedrock · Procesamiento (upstream)",
     "BedrockSegmentation": "Bedrock · Segmentación",
     "BedrockExtraction": "Bedrock · Extracción",
+    "BedrockPageLocator": "Bedrock · Localizador de páginas",
     "TextractOcr": "Textract · OCR",
     "LambdaCompute": "Lambda · Cómputo (aprox.)",
 }

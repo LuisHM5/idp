@@ -117,6 +117,7 @@ como en el DSL viejo.
 | `business_destination` | sí | Metadato de ruteo de negocio; aparece como `businessDestination` en cada documento del expediente. Puramente informativo para el consumidor. |
 | `cross_field_validation` | sí | Reglas que cruzan **varios campos del mismo documento** (fórmulas, sumas de arrays) — no pueden vivir dentro de un solo campo. Mismo shape de regla que dentro de `fields[].validation`, pero con `"field"` explícito. |
 | `qr_recovery` | sí | Recuperación determinística de campos desde un QR embebido. Declara cómo localizar la página, filtrar la URL, mapear parámetros y publicar el payload/estado; ver la sección siguiente. |
+| `unique_key` / `unique_keys` | sí | Campo(s) cuyo valor identifica UN documento de este tipo por sí solo, indexados como `TIPODOC#valor` para que buscar por ellos sea una sola Query. Normalmente se declara sobre el campo (`fields[X].unique_key`); aquí, a nivel de tipo, es la única forma para un tipo del DSL legado. Ver [Unique keys](#unique-keys-unique_key-buscar-por-un-campo-sin-recorrer-el-tipo). |
 | `page_selection` | sí | Selección de páginas de interés: manda a Bedrock **solo** las páginas cuyo texto cumple los marcadores del tipo, en vez del documento completo. Opt-in por tipo; ver la sección siguiente. |
 | `form_mapping` | sí, pero heredado | Mecanismo viejo para campos computados (ver más abajo) — hoy solo tiene sentido si no usas la convención `concept_aliases`/`source`/`filters` directo en `fields`. Para tipos nuevos, prefiere esa convención. |
 | `prompt_profile` | **no, reservado** | Se lee en `_shared.json._model_profiles` pero ningún código lo consume todavía. No lo confundas con algo funcional. |
@@ -168,6 +169,101 @@ como en el DSL viejo.
   hoy es `LIQUIDACION_NORMALIZADA` (ver próxima sección) — si marcas otro
   campo como `computed` sin que algo en `pipeline/` lo llene explícitamente,
   simplemente sale vacío/null, nadie lo calcula solo.
+- **`unique_key`** marca el campo por el que se busca este tipo — ver la
+  sección siguiente.
+
+### Unique keys (`unique_key`): buscar por un campo sin recorrer el tipo
+
+Un tipo puede declarar el campo cuyo valor identifica **UN** documento de ese
+tipo por sí solo: el número de pedimento, el UUID de un CFDI, el folio de una
+póliza. Se declara sobre el campo:
+
+```jsonc
+"NUMERO_PEDIMENTO_NORMALIZADO": {
+  "type": "string",
+  "required": true,
+  "unique_key": { "normalize": "digits" },   // o simplemente `true`
+  "hint": "..."
+}
+```
+
+**Qué gana.** Sin esto, `GET /documents?docType=PEDIMENTO_ADUANAL&field=
+NUMERO_PEDIMENTO&value=...` hace Query al `DocumentTypeIndex` para traer
+*todos* los pedimentos, BatchGet de sus envelopes y compara el campo dentro
+del Lambda: el costo crece con el número de documentos del tipo. Con la
+unique key declarada, es **una sola Query** a la tabla de lookup
+(`document-validation-keys[-dev]`) sobre la clave exacta, sin importar cuántos
+documentos haya. El resto de la respuesta es idéntica; el campo `lookup` dice
+qué camino contestó (`"uniqueKey"` | `"typeIndex"` | `"scan"`).
+
+**La clave es SIEMPRE `TIPODOC#<valor normalizado>`:**
+
+```
+PEDIMENTO_ADUANAL#260708236001630
+FACTURA_HONORARIOS_XML#A1B2C3D4-...-9F
+```
+
+El prefijo de tipo es lo que hace segura la palabra "unique": dos tipos
+distintos pueden usar legítimamente el mismo espacio de números, y el prefijo
+los mantiene separados. Por eso la búsqueda por unique key **requiere
+`docType`** — sin tipo no hay clave.
+
+| `normalize` | Qué hace | Cuándo |
+|---|---|---|
+| `"upper"` (default, o `true`) | trim + espacios internos colapsados + MAYÚSCULAS | folios, claves alfanuméricas |
+| `"alnum"` | `upper` y además tira todo lo que no sea `A-Z0-9` | el mismo identificador impreso con separadores distintos según el documento |
+| `"digits"` | solo `0-9` | números que se imprimen con espacios (`26 07 0823 6001630` ↔ `260708236001630`) |
+| `"raw"` | trim + espacios colapsados, respeta mayúsculas/minúsculas | valores donde el case significa algo |
+
+La normalización se aplica **igual al escribir y al buscar**, así que quien
+consulta puede mandar el valor en cualquiera de las dos formas y cae en la
+misma clave. Un `normalize` desconocido no rompe nada: se registra un warning
+y se usa el default.
+
+**Se puede marcar más de un campo.** `PEDIMENTO_ADUANAL` marca
+`NUMERO_PEDIMENTO` (el impreso, con espacios) y `NUMERO_PEDIMENTO_NORMALIZADO`
+(los 15 dígitos): con `digits` los dos producen la MISMA clave, así que se
+escribe una sola fila y el usuario puede buscar por cualquiera de los dos
+nombres de campo. Cuando dos campos normalizan distinto, se escribe una fila
+por cada uno.
+
+**Nivel de tipo.** También se acepta fuera de `fields`, que es la única forma
+para un tipo del DSL legado (sin `fields`):
+
+```jsonc
+"unique_key": "FOLIO"
+"unique_key": ["FOLIO", { "field": "RFC", "normalize": "alnum" }]
+```
+
+**Gotchas:**
+
+- Solo campos **escalares de primer nivel**. Un subcampo de un `object` o una
+  columna de un `array` no se indexa hoy (`unique_keys.py::_values` lee el mapa
+  plano de escalares que el envelope ya publica por documento).
+- **En un expediente cada documento se indexa con SU propio tipo**, no con el
+  del contenedor: buscar `docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO`
+  encuentra el expediente que lo contiene, y la fila guarda
+  `ContainerType: EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` como procedencia.
+- **"Unique" es una declaración de intención, no una restricción.** Nada
+  rechaza un segundo documento con el mismo valor: `DocumentId` es sort key,
+  así que una Query devuelve todas las subidas que lo traen (reenvío,
+  expediente corregido) y el consumidor decide. Colapsarlas en una sola fila
+  perdería todas menos la última.
+- **Nunca da un falso negativo.** Si la tabla de lookup no tiene la fila
+  (documento procesado antes de declarar la key, o antes de que existiera la
+  tabla), la búsqueda cae al camino de siempre y lo encuentra igual — más
+  lento, no equivocado. Por eso agregar una `unique_key` a un tipo con
+  historial pide `pnpm backfill:keys`.
+- Se aplica solo con `op=eq`. `op=contains` no puede usar una hash key y
+  sigue por el camino normal.
+
+**Después de declararla:**
+
+```bash
+pnpm build                                   # empaqueta la declaración
+pnpm sync:one -- --type PEDIMENTO_ADUANAL    # hot-reload, sin redeploy
+pnpm backfill:keys                           # reconstruye las filas históricas
+```
 
 ### Tipos con fuente XML (`xpath`, `item_xpath`, `namespaces`)
 
@@ -490,6 +586,33 @@ rápidas — en ambas se procesa el documento completo:
 
 Ninguna de las dos cuenta como fail-open: no es que el selector fallara, es
 que decidió no meterse. `pnpm paginas` las muestra como `SIN FILTRAR → ...`.
+
+**Si el tamaño es demasiado variable: `expected_pages: "auto"`.** Hay tipos
+para los que cualquier rango sería mentira. Declarar `"auto"` (o `"variable"`)
+dice dos cosas: no hay atajo por tamaño, y **si los marcadores no alcanzan, en
+vez de procesar todo se le pregunta al modelo** dónde está el documento
+(`pipeline/page_locator.py`).
+
+```jsonc
+"page_selection": {
+  "expected_pages": "auto",
+  "markers": ["..."]
+}
+```
+
+Esa llamada manda el mismo digest por página que usa el segmenter (~450
+caracteres), no el texto completo: sobre un expediente real de 86 páginas
+cuesta ~$0.012 contra los ~$0.09 de extraerlo entero. Y **solo corre cuando el
+camino gratis ya se rindió** — si los marcadores aciertan, nunca se llama.
+
+El localizador jamás es la razón por la que se pierde una página: ante una
+salida impredecible, sin rangos, o un rango que cubre todo el documento,
+devuelve "no sé" y se procesan todas. Su costo es real y se registra aparte,
+en el servicio **`BedrockPageLocator`** de la tabla de costos — no está
+escondido dentro de la extracción.
+
+Úsalo solo si de verdad no puedes dar un rango: el camino de marcadores es
+gratis y éste no.
 
 **Cómo puntúa.** Cada página suma **un punto por marcador DISTINTO** que
 aparece en su texto — diez repeticiones de la misma frase valen uno. Es el

@@ -42,6 +42,7 @@ from document_catalog import (
 from cost_audit import write_cost_record
 from extractors import get_extractor
 from indexing import write_index_attributes
+from unique_keys import write_unique_keys
 from pipeline.bedrock import fallback_events, reset_used_models, set_model_override, used_models
 from pipeline.model_fallback import reload_fallback_models
 
@@ -731,12 +732,14 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
 
     Runs the validation flow (`_process`) and then promotes the document type
     and friends to indexed DynamoDB columns (see `indexing.py`) so the query
-    API can filter by type with a GSI Query instead of a table Scan. Also
-    writes a per-document AWS cost audit record (see `cost_audit.py`) to a
-    separate table, so `pnpm costos` can answer "how much did processing this
-    document actually cost, broken down by service" without touching Cost
-    Explorer. Both writes are best-effort and never change the returned
-    result.
+    API can filter by type with a GSI Query instead of a table Scan. Writes
+    one lookup row per unique key the catalog declares (see `unique_keys.py`),
+    keyed `TIPODOC#valor`, so a search by that field is a single Query instead
+    of a walk over every document of the type. Also writes a per-document AWS
+    cost audit record (see `cost_audit.py`) to a separate table, so
+    `pnpm costos` can answer "how much did processing this document actually
+    cost, broken down by service" without touching Cost Explorer. All three
+    writes are best-effort and never change the returned result.
     """
     # Lambda containers are reused, so the per-phase model registry must start
     # empty or a warm invocation inherits the previous document's phases.
@@ -750,6 +753,7 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     pointer = _extract_s3_pointer(event)
     source_key = pointer[1] if pointer else None
     write_index_attributes(result, source_key=source_key)
+    write_unique_keys(result, source_key=source_key)
     write_cost_record(result, event=event, duration_ms=duration_ms, source_key=source_key)
     return result
 

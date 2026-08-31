@@ -424,6 +424,43 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
     documentTable.grantWriteData(enrichmentFn);
 
+    // Tabla de UNIQUE KEYS: TIPODOC#valor -> documento.
+    //
+    // Un tipo puede declarar en su schema (`catalogs/*.json`) el campo cuyo
+    // valor identifica UN documento de ese tipo por sí solo — el número de
+    // pedimento, el UUID de un CFDI. El enrichment Lambda escribe una fila por
+    // cada valor encontrado (`enrichment-lambda/unique_keys.py`) con clave de
+    // partición `TIPODOC#<valor normalizado>`, así `GET /documents?docType=
+    // &field=&value=` se resuelve con UNA Query en vez de recorrer todos los
+    // documentos del tipo y comparar dentro del Lambda.
+    //
+    // Tabla aparte —y no otro atributo del item de documento— porque un
+    // expediente es UN item con N documentos dentro, cada uno con su propio
+    // tipo y su propia unique key: una PK de GSI solo puede llevar un valor
+    // por item. `DocumentId` es SORT key, no parte de la partición: el mismo
+    // identificador de negocio aparece legítimamente en más de una subida
+    // (reenvío, expediente corregido) y colapsarlas en una sola fila perdería
+    // todas menos la última.
+    //
+    // DESTROY (a diferencia de costTable, que es RETAIN): esto es un índice
+    // derivado, no historia — se reconstruye entero desde los
+    // `EnrichmentResult` ya guardados con `pnpm backfill:keys`.
+    const uniqueKeyTable = new dynamodb.Table(this, "UniqueKeyTable", {
+      tableName: `document-validation-keys${envSuffix}`,
+      partitionKey: { name: "UniqueKey", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "DocumentId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      ...(encryptionKey
+        ? {
+            encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryptionKey,
+          }
+        : { encryption: dynamodb.TableEncryption.DEFAULT }),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    enrichmentFn.addEnvironment("UNIQUE_KEY_TABLE", uniqueKeyTable.tableName);
+    uniqueKeyTable.grantWriteData(enrichmentFn);
+
     // Cost audit table: one item per processed document, written by
     // `enrichment-lambda/cost_audit.py`, with a $ breakdown per AWS service
     // actually used (Bedrock segmentation/extraction/upstream classification,
@@ -656,6 +693,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // the full results/ objects in S3.
     documentTable.grantReadData(queryFn);
     documentBucket.grantRead(queryFn);
+    // Camino rápido de búsqueda: si el campo consultado es la unique key
+    // declarada por el tipo, una sola Query aquí sustituye al recorrido
+    // completo del tipo (ver `unique_keys.py` y el bloque UniqueKeyTable).
+    queryFn.addEnvironment("UNIQUE_KEY_TABLE", uniqueKeyTable.tableName);
+    uniqueKeyTable.grantReadData(queryFn);
     if (catalogTable) {
       catalogTable.grantReadData(queryFn);
     }

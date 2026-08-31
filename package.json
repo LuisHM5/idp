@@ -52,6 +52,7 @@
     "preview-prompts": "node scripts/preview-prompts.mjs",
     "docs:api": "node scripts/serve-api-docs.mjs",
     "backfill:index": "node scripts/backfill-index.mjs",
+    "backfill:keys": "node scripts/backfill-keys.mjs",
     "test-local": "node scripts/test-local.mjs",
     "test-e2e": "node scripts/test-e2e.mjs",
     "track": "node scripts/track-execution.mjs"

@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync } from
 import { resolve, dirname, join, basename } from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
+import { uniqueKeysOf } from "./_unique_keys.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATALOGS_DIR = resolve(__dirname, "../catalogs");
@@ -121,6 +122,15 @@ function putType(typeId, config, table, region, dryRun) {
     if (k === "type_id" || k === "enabled") continue;
     item[k] = toAttr(v);
   }
+  // Atributo DERIVADO (no viene del JSON tal cual): las unique keys del tipo,
+  // ya resueltas a [{field, normalize}] desde `unique_key` de nivel de tipo y
+  // desde cada `fields[X].unique_key`. El query Lambda proyecta solo este
+  // atributo para saber qué campo se busca por `TIPODOC#valor`; leer el mapa
+  // `fields` completo para eso costaría órdenes de magnitud más. Se
+  // sobrescribe siempre (incluso vacío) para que quitar una unique key del
+  // catálogo y hacer `pnpm sync:one` la quite de verdad, sin dejar la anterior
+  // viva en la fila hot-reload.
+  item.unique_keys = toAttr(uniqueKeysOf(config));
   const itemJson = JSON.stringify(item);
   if (dryRun) {
     console.log(`  🔎 [dry-run] ${typeId}: ${Object.keys(item).length} atributos, ${itemJson.length} bytes`);

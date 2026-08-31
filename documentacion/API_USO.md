@@ -288,6 +288,16 @@ Dos filtros combinables:
 
 Puedes usar uno, el otro o los dos. Con los dos, `docType` **acota primero** y el filtro por campo solo se aplica a esos documentos (mucho más barato y rápido).
 
+**Camino rápido (unique key).** Si el campo que buscas es el que su tipo declara como **unique key** en el catálogo (`unique_key`, ver `catalogs/README.md` → "Unique keys"), la búsqueda **no recorre el tipo**: se resuelve con **una sola Query** sobre la clave `TIPODOC#<valor normalizado>` en la tabla de lookup `document-validation-keys[-dev]`, sin importar cuántos documentos de ese tipo existan. Hoy lo declara `PEDIMENTO_ADUANAL` en `NUMERO_PEDIMENTO` y `NUMERO_PEDIMENTO_NORMALIZADO`:
+
+```bash
+# Una Query. Da igual si mandas el número con espacios o sin ellos:
+# la normalización (`digits` en este tipo) es la misma al escribir y al buscar.
+curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=26%2007%200823%206001630"
+```
+
+Condiciones: hace falta `docType` (la clave siempre lleva el tipo como prefijo — es lo que la hace única) y `op=eq`. Si no se cumplen, o si el valor todavía no está indexado, la búsqueda **cae al camino normal y encuentra el documento igual** — más lenta, nunca equivocada. El campo `lookup` de la respuesta dice cuál contestó.
+
 **Query params:**
 | Param | Requerido | Default | Descripción |
 |---|---|---|---|
@@ -323,7 +333,11 @@ Puedes usar uno, el otro o los dos. Con los dos, `docType` **acota primero** y e
   "order": "desc",
   "summary": false,
   "full": false,
-  "indexed": true,                    // true = Query al GSI; false = Scan
+  "indexed": true,                    // true = Query indexada; false = Scan
+  "lookup": "uniqueKey",              // qué camino contestó: "uniqueKey" (una
+                                      // Query a TIPODOC#valor), "typeIndex"
+                                      // (Query al GSI + filtro en la Lambda)
+                                      // o "scan" (sin docType)
   "restrictedToApp": "CEDIS",         // solo si la app que llama tiene AccessScope=own (ver abajo)
   "restrictedToDocTypes": ["FACTURA_HONORARIOS_XML"], // solo si tiene AllowedDocTypes configurado
   "count": 1,
@@ -371,9 +385,10 @@ curl -sS "$API/documents?field=NOMBRE_IMPORTADOR_EXPORTADOR&value=futurama&op=co
 ```
 
 **Nota de rendimiento:**
-- **Con `docType`** (`"indexed": true`): Query al GSI `DocumentTypeIndex`, se leen **solo** los documentos de ese tipo, ya ordenados por fecha; `status`, `since`/`until` y el filtro de expedientes se evalúan en DynamoDB. El envelope completo se trae por lotes (BatchGet) solo de los documentos que pasaron el filtro.
-- **Sin `docType`** (`"indexed": false`): **Scan** de la tabla y filtrado en la Lambda, porque los campos buscables viven dentro del JSON de `EnrichmentResult`. Adecuado para volúmenes moderados; manda `docType` siempre que puedas. Si un campo se vuelve "caliente" (p. ej. `NUMERO_PEDIMENTO_NORMALIZADO`), el siguiente paso es promoverlo a columna + GSI igual que se hizo con el tipo.
-- **Documentos anteriores a la indexación:** los procesados antes de que existieran estas columnas no aparecen con `docType` hasta reconstruirlas con `pnpm backfill:index` (idempotente; `-- --dry-run` para revisar antes).
+- **Por unique key** (`"lookup": "uniqueKey"`): **una** Query a `document-validation-keys[-dev]` sobre `TIPODOC#<valor normalizado>` + un BatchGet de los envelopes que devolvió. Costo constante: no depende de cuántos documentos tenga el tipo. Requiere `docType`, `op=eq` y que el tipo declare ese campo como `unique_key`.
+- **Con `docType`** (`"indexed": true`, `"lookup": "typeIndex"`): Query al GSI `DocumentTypeIndex`, se leen **solo** los documentos de ese tipo, ya ordenados por fecha; `status`, `since`/`until` y el filtro de expedientes se evalúan en DynamoDB. El envelope completo se trae por lotes (BatchGet) solo de los documentos que pasaron el filtro.
+- **Sin `docType`** (`"indexed": false`, `"lookup": "scan"`): **Scan** de la tabla y filtrado en la Lambda, porque los campos buscables viven dentro del JSON de `EnrichmentResult`. Adecuado para volúmenes moderados; manda `docType` siempre que puedas. Si un campo se vuelve "caliente", declararlo `unique_key` en el catálogo es exactamente el paso siguiente — no hace falta código, solo `pnpm build && pnpm sync:one` (y `pnpm backfill:keys` para el histórico).
+- **Documentos anteriores a la indexación:** los procesados antes de que existieran estas columnas no aparecen con `docType` hasta reconstruirlas con `pnpm backfill:index` (idempotente; `-- --dry-run` para revisar antes). Lo mismo para las unique keys declaradas después de procesar: `pnpm backfill:keys` (mientras tanto la búsqueda sigue funcionando por el camino normal).
 
 ### Seguridad — acceso por app
 
@@ -434,6 +449,7 @@ Cómo lo devuelve cada endpoint:
 | `GET /documents/{id}/file` | DynamoDB (resolver id) + S3 (`ListObjectsV2` + URL prefirmada) | El **archivo original**, no el resultado — ver §3 |
 | `GET /documents?docType=...` | DynamoDB (Query al GSI + BatchGet) | Envelope completo por match |
 | `GET /documents?field=...` | DynamoDB (Scan) | Envelope completo por match |
+| `GET /documents?docType=...&field=<unique key>` | DynamoDB (1 Query a `TIPODOC#valor` + BatchGet) | Envelope completo por match |
 | `GET /documents?...&summary=1` | DynamoDB (Query o Scan) | Resumen ligero por match |
 | `GET /documents?...&full=1` | DynamoDB + S3 por match | Envelope + `fullResult` por match |
 

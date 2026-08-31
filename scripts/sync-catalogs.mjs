@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { uniqueKeysOf } from "./_unique_keys.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(__dirname, "..");
@@ -57,13 +58,24 @@ function titleize(typeId) {
  * Escribe la lista de tipos que el query Lambda usa para resolver el parámetro
  * `docType` cuando viene como nombre en vez de TYPE_ID. `display_name` y
  * `aliases` son opcionales en cada entrada del catálogo.
+ *
+ * Lleva también las unique keys declaradas por cada tipo (`uniqueKeys`), que
+ * son lo que le permite al query Lambda reconocer que `field=NUMERO_PEDIMENTO`
+ * se resuelve con una Query a `TIPODOC#valor` en vez de recorriendo el tipo
+ * entero — ver `_unique_keys.mjs` y `enrichment-lambda/unique_keys.py`. Solo
+ * se emite cuando el tipo declara alguna, así el archivo no crece para los
+ * tipos que no la usan.
  */
 function writeTypeIndex(documentTypes) {
-  const types = Object.entries(documentTypes).map(([typeId, entry]) => ({
-    typeId,
-    displayName: entry.display_name || titleize(typeId),
-    aliases: entry.aliases || [],
-  }));
+  const types = Object.entries(documentTypes).map(([typeId, entry]) => {
+    const uniqueKeys = uniqueKeysOf(entry);
+    return {
+      typeId,
+      displayName: entry.display_name || titleize(typeId),
+      aliases: entry.aliases || [],
+      ...(uniqueKeys.length && { uniqueKeys }),
+    };
+  });
   writeFileSync(
     TYPES_OUTPUT,
     JSON.stringify({ types }, null, 2) + "\n",

@@ -18,6 +18,7 @@
 
     "__COMENTARIO_fields__": "Cada campo escalar declara `xpath` en vez de `hint`. Convenciones (ver catalogs/README.md para la lista completa): '@Attr' = atributo del nodo raíz/contexto actual; 'a/b/@Attr' = atributo de un descendiente directo; './/ns:Tag/@Attr' = atributo de un descendiente en cualquier profundidad (útil cuando el elemento vive dentro de un bloque anidado, ej. un complemento); 'a/b' (sin @) = texto de un descendiente. `xpath` también acepta una LISTA de rutas -- se prueba cada una en orden y gana la primera que resuelva algo (útil entre sub-versiones del mismo formato).",
     "fields": {
+      "__COMENTARIO_unique_key__": "Opcional, en el campo que identifica UN documento de este tipo por sí solo (UUID fiscal, folio, número de póliza): `\"unique_key\": true` — o {\"normalize\": \"alnum\"|\"digits\"|\"raw\"} — indexa el valor como TIPODOC#valor y convierte `GET /documents?docType=X&field=Y&value=Z` en una sola Query en vez de recorrer todos los documentos del tipo. Ver catalogs/README.md -> 'Unique keys'.",
       "FOLIO": {
         "type": "string",
         "required": true,

@@ -84,6 +84,7 @@ def build_cost_breakdown(
     usage = (result.get("expediente") or {}).get("usage") or {}
     segmentation = usage.get("segmentation") or {}
     extraction = usage.get("extraction") or {}
+    locator = usage.get("pageLocator") or {}
     pages = _expediente_pages(result)
     ocr_pages = pages["Ocr"] if pages else 0
 
@@ -91,6 +92,10 @@ def build_cost_breakdown(
         "BedrockClassificationUpstream": _upstream_bedrock_cost(event, "classificationResult"),
         "BedrockProcessingUpstream": _upstream_bedrock_cost(event, "processingResult"),
         "BedrockSegmentation": bedrock_cost(segmentation.get("usage"), segmentation.get("modelId")),
+        # Localizador de páginas por IA: solo se invoca cuando los marcadores
+        # del catálogo no alcanzaron y el tipo declara tamaño variable. $0 en
+        # el caso normal, porque no se llama.
+        "BedrockPageLocator": bedrock_cost(locator.get("usage"), locator.get("modelId")),
         "BedrockExtraction": bedrock_cost(extraction.get("usage"), extraction.get("modelId")),
         "TextractOcr": textract_cost(ocr_pages),
         "LambdaCompute": lambda_cost(

@@ -320,6 +320,45 @@ Ejemplo — agregar tolerancia a una validación de total:
 
 Después: `pnpm sync` (inmediato) o `pnpm build && pnpm run deploy` (versionado).
 
+### 5.4.1 Declarar una unique key (búsqueda por campo en una sola Query)
+
+Cuando un tipo tiene un campo que identifica UN documento suyo por sí solo
+—número de pedimento, UUID de un CFDI, folio de una póliza— declararlo como
+`unique_key` convierte `GET /documents?docType=...&field=...&value=...` en
+**una sola Query** en vez de recorrer todos los documentos del tipo. Sin
+tocar código: es config del catálogo.
+
+```jsonc
+// catalogs/MI_TIPO.json → fields
+"NUMERO_PEDIMENTO_NORMALIZADO": {
+  "type": "string",
+  "required": true,
+  "unique_key": { "normalize": "digits" }   // o `true` para el default
+}
+```
+
+La clave que se indexa es siempre `TIPODOC#<valor normalizado>`
+(`PEDIMENTO_ADUANAL#260708236001630`), en la tabla
+`document-validation-keys[-dev]`. El prefijo de tipo es lo que hace segura la
+palabra "unique" —dos tipos pueden usar el mismo espacio de números— y por eso
+la búsqueda rápida **necesita `docType`**.
+
+```bash
+pnpm build                                   # empaqueta la declaración
+pnpm sync:one -- --type MI_TIPO              # hot-reload, sin redeploy
+pnpm backfill:keys                           # reconstruye el histórico
+#   -- --dry-run   ver qué filas escribiría, sin escribir
+#   -- --type X    limitar a un tipo
+#   -- --prune     borrar antes las filas previas de esos documentos
+```
+
+`pnpm backfill:keys` lee las declaraciones desde `document-types.json`, que
+genera `pnpm build` — córrelo primero o el script te lo dirá. **Saltárselo no
+rompe nada**: los documentos ya procesados simplemente siguen encontrándose
+por el camino lento hasta que reconstruyas. Detalle completo (modos de
+normalización, gotchas, cómo se comportan los expedientes):
+`catalogs/README.md` → "Unique keys".
+
 ### 5.5 Reglas de precedencia del catálogo en runtime
 
 1. **DynamoDB** (si `CATALOG_TABLE` está configurada) — gana siempre. Es lo que escribe `pnpm sync`.

@@ -174,6 +174,23 @@ class TypeRegistryEntry:
     # in; `page_selector.enabled_for` resolves that against the global
     # PAGE_SELECTION_ENABLED kill-switch.
     page_selection: Optional[Dict[str, Any]] = None
+    # Declarative UNIQUE KEY(s) for this type: the field(s) whose value
+    # identifies one document of this type on its own (a pedimento number, a
+    # CFDI UUID...). Written by `unique_keys.py` to the lookup table as
+    # `TYPE_ID#<normalized value>` so `GET /documents?docType=&field=&value=`
+    # resolves with a single indexed Query instead of walking every document
+    # of the type. Shape here is always normalized to
+    # [{"field": NAME, "normalize": "upper"|"alnum"|"digits"|"raw"}].
+    #
+    # Two equivalent ways to declare it in the catalog JSON, both parsed into
+    # this list (see `_parse_unique_keys`):
+    #   - field-centric DSL, on the field itself:  "unique_key": true
+    #     (or {"normalize": "alnum"}) inside `fields[NAME]`
+    #   - type level (works for the legacy DSL too): "unique_key": "CAMPO"
+    #     / ["CAMPO_A", "CAMPO_B"] / [{"field": "...", "normalize": "..."}]
+    # Empty (the default) means the type has no unique key and searches on it
+    # take the same path they take today.
+    unique_keys: List[Dict[str, Any]] = field(default_factory=list)
     # XML namespace prefix -> URI map, used by pipeline/xml_document.py to
     # resolve each field's `xpath`/`item_xpath` (a field-centric-DSL field
     # extra, kept in FieldSpec.params like any other — see catalogs/README.md).
@@ -298,6 +315,76 @@ def _parse_field_tree(
     return result
 
 
+# Value-normalization modes accepted by a unique key declaration. The
+# implementation lives in `unique_keys.normalize_value` (mirrored in
+# query-lambda/index.mjs) — this is only the allow-list used at parse time so a
+# typo in the catalog degrades to the default instead of producing keys nothing
+# can ever look up.
+UNIQUE_KEY_NORMALIZERS = ("upper", "alnum", "digits", "raw")
+_DEFAULT_UNIQUE_KEY_NORMALIZER = "upper"
+
+
+def _unique_key_spec(name: str, options: Any) -> Optional[Dict[str, Any]]:
+    """One normalized {"field", "normalize"} spec, or None if not a key.
+
+    `options` is whatever the catalog put next to the field name: `True`,
+    a `{"normalize": ...}` dict, or `False`/None to opt out explicitly.
+    """
+    if options is False or options is None:
+        return None
+    normalize = _DEFAULT_UNIQUE_KEY_NORMALIZER
+    if isinstance(options, dict):
+        candidate = str(options.get("normalize") or "").strip().lower()
+        if candidate in UNIQUE_KEY_NORMALIZERS:
+            normalize = candidate
+        elif candidate:
+            logger.warning(
+                "unknown unique_key normalize '%s' on field %s — using '%s'",
+                candidate, name, _DEFAULT_UNIQUE_KEY_NORMALIZER,
+            )
+    return {"field": name, "normalize": normalize}
+
+
+def _parse_unique_keys(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every unique key declared for a type, in lookup order.
+
+    Merges the TYPE-level declaration (`unique_key`/`unique_keys`, the only
+    option for legacy-DSL types) with the FIELD-level one (`unique_key` on a
+    `fields[NAME]` entry, field-centric DSL), deduplicated by field name so
+    declaring it in both places is harmless rather than duplicated work at
+    write time. Accepted type-level shapes:
+
+        "unique_key": "NUMERO_PEDIMENTO"
+        "unique_key": ["NUMERO_PEDIMENTO", "NUMERO_PEDIMENTO_NORMALIZADO"]
+        "unique_key": [{"field": "UUID_FISCAL", "normalize": "alnum"}]
+    """
+    specs: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def add(spec: Optional[Dict[str, Any]]) -> None:
+        if spec and spec["field"] not in seen:
+            seen.add(spec["field"])
+            specs.append(spec)
+
+    raw = data.get("unique_keys", data.get("unique_key"))
+    declared = raw if isinstance(raw, list) else ([raw] if raw else [])
+    for item in declared:
+        if isinstance(item, str):
+            add(_unique_key_spec(item.strip(), True))
+        elif isinstance(item, dict):
+            name = str(item.get("field") or "").strip()
+            if name:
+                add(_unique_key_spec(name, item))
+
+    for name, field_data in (data.get("fields") or {}).items():
+        if name == "$common" or not isinstance(field_data, dict):
+            continue
+        if "unique_key" in field_data:
+            add(_unique_key_spec(name, field_data["unique_key"]))
+
+    return specs
+
+
 def _parse_entry(
     type_id: str,
     data: Dict[str, Any],
@@ -332,6 +419,7 @@ def _parse_entry(
             model_id=data.get("model_id") or None,
             model_ids=data.get("model_ids", {}) or {},
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
+            unique_keys=_parse_unique_keys(data),
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),
             namespaces=data.get("namespaces", {}) or {},
@@ -371,6 +459,7 @@ def _parse_entry(
         model_ids=data.get("model_ids", {}) or {},
         qr_recovery=data.get("qr_recovery"),
         page_selection=data.get("page_selection"),
+        unique_keys=_parse_unique_keys(data),
     )
 
 

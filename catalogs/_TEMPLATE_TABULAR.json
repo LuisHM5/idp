@@ -13,6 +13,7 @@
 
     "__COMENTARIO_fields__": "Campos escalares con `cell`: dirección estilo Excel ('B2' = columna B, fila 2; 1-indexado, igual que en Excel). Sin `sheet`, resuelve contra la primera hoja del libro (o la única hoja implícita de un CSV). Para leer de otra hoja: agrega `\"sheet\": \"NombreHoja\"` al campo.",
     "fields": {
+      "__COMENTARIO_unique_key__": "Opcional, en el campo que identifica UN documento de este tipo por sí solo (UUID fiscal, folio, número de póliza): `\"unique_key\": true` — o {\"normalize\": \"alnum\"|\"digits\"|\"raw\"} — indexa el valor como TIPODOC#valor y convierte `GET /documents?docType=X&field=Y&value=Z` en una sola Query en vez de recorrer todos los documentos del tipo. Ver catalogs/README.md -> 'Unique keys'.",
       "FOLIO": {
         "type": "string",
         "required": true,

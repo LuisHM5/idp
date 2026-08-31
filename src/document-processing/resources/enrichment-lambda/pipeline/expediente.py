@@ -441,10 +441,19 @@ def process_pdf(
     extraction_usage = merge_bedrock_usage(
         *(d.get("extractionMeta", {}).get("usage") for d in documents)
     )
+    # The AI page locator only runs when the free marker path gave up on a
+    # type whose size is variable — a REAL billed call, unlike the estimated
+    # savings in `pageSelection`, so it gets its own usage line and its own
+    # cost service.
+    locator_usage = merge_bedrock_usage(*(d.get("pageLocatorMeta", {}).get("usage") for d in documents))
+    locator_model = next(
+        (d["pageLocatorMeta"].get("modelId") for d in documents if d.get("pageLocatorMeta")), None
+    )
     usage_summary = {
         "segmentation": segmentation_usage or None,
         "extraction": {"modelId": used_models().get("extractor"), "usage": extraction_usage},
         "pageSelection": _page_selection_summary(documents),
+        **({"pageLocator": {"modelId": locator_model, "usage": locator_usage}} if locator_usage else {}),
     }
     return {
         "processingId": processing_id,

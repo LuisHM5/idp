@@ -55,6 +55,7 @@
       "NUMERO_PEDIMENTO": {
         "type": "string",
         "required": false,
+        "unique_key": { "normalize": "digits" },
         "hint": "Extraer el valor completo impreso en el campo 'NUM. PEDIMENTO' del ENCABEZADO/parte superior del documento (formato AA AA NNNN NNNNNNN: año + aduana + patente + consecutivo, 15 dígitos en total). Debe conservar todos los dígitos. Nunca convertir a número, nunca eliminar ceros a la derecha, eliminar espacios y nunca truncar el último dígito. ADVERTENCIA: más abajo, en el recuadro DEPÓSITO REFERENCIADO / PAGO ELECTRÓNICO, existe un campo DISTINTO etiquetado solo 'PEDIMENTO:' (sin 'NUM.') que muestra ÚNICAMENTE el consecutivo de 7 dígitos (ej. '6001630'), porque ahí PATENTE y ADUANA ya se muestran por separado. NUNCA tomar ese valor corto para NUMERO_PEDIMENTO — son dos campos con nombre parecido en el mismo documento; el de NUM. PEDIMENTO en el encabezado es siempre el correcto, de 15 dígitos.",
         "validation": [
           {
@@ -67,6 +68,7 @@
       "NUMERO_PEDIMENTO_NORMALIZADO": {
         "type": "string",
         "required": true,
+        "unique_key": { "normalize": "digits" },
         "hint": "Construir concatenando ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE + NUMERO_CONSECUTIVO. Debe contener exactamente 15 dígitos y conservar todos los ceros de la derecha 26 + 07 + 0823 + 6001630 = 260708236001630 (si no da el numero de digitos usar NUMERO_PEDIMENTO y quitar los espacios).",
         "validation": [
           {

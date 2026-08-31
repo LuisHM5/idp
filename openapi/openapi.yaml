@@ -201,6 +201,12 @@ paths:
         Requiere al menos uno de `docType` o `field`+`value`. Con ambos,
         `docType` acota primero en DynamoDB (Query al GSI `DocumentTypeIndex`,
         sin Scan) y el filtro por campo solo se aplica a esos documentos.
+
+
+        Camino rápido: si el tipo declara ese campo como `unique_key` en el
+        catálogo, la búsqueda se resuelve con UNA Query sobre
+        `TIPODOC#<valor normalizado>` en vez de recorrer el tipo — ver el
+        campo `lookup` de la respuesta y `catalogs/README.md` → "Unique keys".
       parameters:
         - name: docType
           in: query
@@ -214,10 +220,16 @@ paths:
             Dot-path del campo extraído, p. ej.
             `extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO`. Si no resuelve
             en la raíz, hace búsqueda profunda por la última clave del path.
+            Cuando es la `unique_key` declarada por el tipo (con `docType` y
+            `op=eq`) se resuelve por la tabla de lookup en una sola Query.
           schema: { type: string }
         - name: value
           in: query
-          description: Valor a comparar (case-insensitive, recorta espacios). Requiere `field`.
+          description: >
+            Valor a comparar (case-insensitive, recorta espacios). Requiere
+            `field`. En el camino de unique key se normaliza igual que al
+            indexar, así que `26 07 0823 6001630` y `260708236001630`
+            resuelven a la misma clave.
           schema: { type: string }
         - name: op
           in: query
@@ -442,7 +454,19 @@ components:
         full: { type: boolean }
         indexed:
           type: boolean
-          description: "true = Query al GSI; false = Scan de la tabla."
+          description: "true = Query indexada; false = Scan de la tabla."
+        lookup:
+          type: string
+          enum: [uniqueKey, typeIndex, scan]
+          description: >-
+            Qué camino de acceso contestó. `uniqueKey`: una sola Query sobre
+            `TIPODOC#<valor normalizado>` en la tabla de lookup, porque el
+            tipo declara ese campo como `unique_key` en el catálogo (requiere
+            docType y op=eq; costo independiente del número de documentos del
+            tipo). `typeIndex`: Query al GSI DocumentTypeIndex + filtro por
+            campo dentro de la Lambda. `scan`: sin docType, Scan de la tabla.
+            Un valor aún no indexado cae a `typeIndex`/`scan` y se encuentra
+            igual — el camino rápido nunca produce un falso negativo.
         restrictedToApp:
           type: string
           description: Solo si la app que llama tiene AccessScope=own.

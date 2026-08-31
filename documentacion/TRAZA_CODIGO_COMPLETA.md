@@ -397,11 +397,15 @@ Archivo: `enrichment-lambda/handler.py:715`.
 3. `_extract_s3_pointer()` obtiene bucket/key.
 4. `write_index_attributes()` actualiza columnas consultables de la tabla de
    documentos.
-5. `write_cost_record()` escribe el registro financiero.
-6. Devuelve el envelope a Step Functions.
+5. `write_unique_keys()` escribe una fila `TIPODOC#valor` por cada unique key
+   declarada en el catálogo (`unique_keys.py`), en la tabla de lookup.
+6. `write_cost_record()` escribe el registro financiero.
+7. Devuelve el envelope a Step Functions.
 
-Las dos escrituras auxiliares son best-effort. Si fallan, registran el error y
-no cambian el resultado de validación.
+Las tres escrituras auxiliares son best-effort. Si fallan, registran el error y
+no cambian el resultado de validación. Perder una fila de lookup solo le cuesta
+a esa búsqueda su camino rápido: el query Lambda cae al recorrido por tipo y
+encuentra el documento igual.
 
 ### 9.2 `_process(event, context)`
 
@@ -836,14 +840,27 @@ Los bytes no pasan por Lambda/API Gateway.
 
 ### 19.3 `GET /documents?...`
 
-`query()` (`:641`) distingue dos planes:
+`query()` distingue tres planes, y reporta cuál contestó en el campo `lookup`
+de la respuesta:
 
-- con `docType`: `resolveType()` normaliza id/nombre/alias;
-  `typeIndexEntries()` y `queryByType()` usan el GSI `DocumentTypeIndex`, filtran
-  status/fechas/tipos contenidos y luego `fetchItems()` hace `BatchGet` del
-  envelope;
-- sin `docType` pero con `field+value`: pagina un Scan porque los campos viven
-  dentro del JSON `EnrichmentResult`.
+- **unique key** (`"lookup": "uniqueKey"`): con `docType`, `field`, `value` y
+  `op=eq`, `uniqueKeyLookup()` revisa si algún tipo pedido declara ese campo
+  como `unique_key` en el catálogo (lo lleva `knownTypes()`, desde
+  `document-types.json` empaquetado y desde el atributo `unique_keys` de la
+  tabla de catálogo). Si sí, arma `TIPODOC#<valor normalizado>` con la MISMA
+  normalización que usó `unique_keys.py` al escribir y hace una sola `Query` a
+  la tabla de lookup; `fetchItems()` trae solo esos envelopes. En este camino
+  `collect()` NO vuelve a comparar el campo (`preMatched`): la clave es una
+  forma normalizada del valor, así que recomparar el valor crudo tiraría
+  documentos que el índice sí encontró. Cero filas —o ningún tipo que declare
+  el campo— cae a los planes siguientes: nunca es un falso negativo;
+- **por tipo** (`"lookup": "typeIndex"`): `resolveType()` normaliza
+  id/nombre/alias; `typeIndexEntries()` y `queryByType()` usan el GSI
+  `DocumentTypeIndex`, filtran status/fechas/tipos contenidos y luego
+  `fetchItems()` hace `BatchGet` del envelope, con `matchField()` comparando
+  el campo dentro de la Lambda;
+- **Scan** (`"lookup": "scan"`): sin `docType` pero con `field+value`, pagina un
+  Scan porque los campos viven dentro del JSON `EnrichmentResult`.
 
 `matchField()` intenta dot-path exacto y luego `deepFind()` por nombre de hoja.
 La búsqueda profunda requiere `AllowFieldSearch`. `summary=1` reduce respuesta;
@@ -901,7 +918,8 @@ PROCESSING_ERROR   → REQUIERE_REVISION
 | 14 | `process_xml` | `pipeline/xml_document.py:175` | XPath y parse |
 | 15 | `process_tabular` | `pipeline/tabular_document.py:313` | hoja/celda/columna |
 | 16 | `write_index_attributes` | `indexing.py:170` | UpdateItem best-effort |
-| 17 | `write_cost_record` | `cost_audit.py:114` | PutItem financiero |
+| 17 | `write_unique_keys` | `unique_keys.py:234` | BatchWrite `TIPODOC#valor`, best-effort |
+| 18 | `write_cost_record` | `cost_audit.py:114` | PutItem financiero |
 | 18 | `EnrichmentSuccessUpdate` | máquina sintetizada | EnrichmentResult + complete |
 | 19 | `handler` query | `query-lambda/index.mjs:821` | ruta y autorización |
 
@@ -971,6 +989,7 @@ la línea puntual puede desplazarse cuando se edite el archivo.
 | Fallback legacy OCR | Textract `DetectDocumentText` | `extractors/textract_bedrock.py:34-49` | bytes del documento | texto que alimenta la reextracción configurada |
 | Resultado profundo | S3 `PutObject` | `handler.py:514-530` | `results/{documentId}.json`, UTF-8 JSON | no se vuelve a leer dentro del mismo handler |
 | Índice consultable | DynamoDB `UpdateItem` | `indexing.py:170-206` | columnas de tipo, status, fechas y tracking | best-effort; una falla se registra pero no cambia el resultado |
+| Lookup por unique key | DynamoDB `BatchWriteItem` | `unique_keys.py:234-262` | `UniqueKey=TIPODOC#valor`, `DocumentId` y procedencia | best-effort; sin la fila la búsqueda cae al camino por tipo, nunca da falso negativo |
 | Auditoría financiera | DynamoDB `PutItem` | `cost_audit.py:114-162` | desglose por servicio y `DocumentId` | best-effort; no bloquea el workflow |
 | Resultado compacto | DynamoDB `UpdateItem` | estado `EnrichmentSuccessUpdate` sintetizado | `EnrichmentResult`, `WorkflowStatus=complete` | persiste lo que retornó `handler.py` |
 | Archivo terminado | S3 `CopyObject` + `DeleteObject` | estados `CopyToProcessed`/`DeleteFromRawSuccess` | `raw/...` → `processed/{id}/{file}` | la copia antecede al borrado; no es rename atómico |
@@ -997,10 +1016,10 @@ idea debe entrar y qué contrato podría afectar.
 | --- | --- | --- |
 | Propagar el costo real de clasificación y processing upstream | `multi-model-document-processing.ts:227-279`, especialmente sus `resultSelector`; hoy `model-invoke-lambda` retorna `usage`, pero no llega al cost audit | shape de `classificationResult`/`processingResult`, límite de 256 KB y tests de costo |
 | Evitar un `Scan` de catálogo en cada invocación sin perder hot reload | `handler.py:743-755`, `document_catalog.py:427-502` | precedencia DynamoDB > bundle y actualización inmediata esperada por `forceReloadCatalog` |
-| Hacer búsquedas de campos O(1) | `indexing.py:170-206`, definición de GSIs en `document-validation-stack.ts`, `query-lambda/index.mjs:641-817` | autorización por app, semántica dot-path y backfill de filas antiguas |
+| Extender el lookup O(1) a campos anidados y a filas de arrays | `unique_keys.py::_values` (hoy solo lee escalares de primer nivel), `query-lambda/index.mjs::uniqueKeyLookup` | la clave sigue siendo `TIPODOC#valor`, el fail-open al recorrido por tipo y el tope por documento |
 | Detectar `documentType` inexistente antes de subir bytes | `upload-lambda/index.mjs:72-110` y una lectura del catálogo | XML/XLSX/CSV siguen requiriendo tipo; decidir qué hacer si DynamoDB está caído |
 | Reducir riesgo de throttling por concurrencia anidada | `pdf_pages.py:165-194`, `expediente.py:174-371`, `text_extractor.py:514-672` | `OCR_WORKERS`, `EXTRACT_WORKERS`, `CHUNK_WORKERS`, reintentos y tiempo máximo de 15 min |
-| Volver coherentes las tres escrituras finales | `handler.py:715-740`, `handler.py:514-530`, `indexing.py:170-206`, estados posteriores de Step Functions | tolerancia best-effort actual, reintentos idempotentes y recuperación tras una escritura parcial |
+| Volver coherentes las cuatro escrituras finales | `handler.py:715-740`, `handler.py:514-530`, `indexing.py:170-206`, `unique_keys.py:234-262`, estados posteriores de Step Functions | tolerancia best-effort actual, reintentos idempotentes y recuperación tras una escritura parcial |
 | Dar el mismo contrato de resultado al flujo legacy y al nuevo | `_process()` en `handler.py:743-855`, `_compact_expediente()` y `query-lambda.fetchFullResult()` | clientes existentes, `API_USO.md` y tamaño del estado de Step Functions |
 | Publicar más contexto en EventBridge | estado terminal del blueprint/construct y consumidores externos | no exceder tamaño del evento; evitar duplicar el resultado completo o filtrar datos sensibles |
 | Mejorar observabilidad por fase | `tracking` en `pipeline/result_common.py`, registry de `pipeline/bedrock.py`, `indexing.py` y `cost_audit.py` | mantener paridad camelCase/PascalCase y serialización Decimal compatible con DynamoDB |
@@ -1187,6 +1206,7 @@ handler(event)
                      → [run_custom_node_validator]
                      → build_canonical_result
   → write_index_attributes → DDB documents
+  → write_unique_keys       → DDB keys   (TIPODOC#valor)
   → write_cost_record       → DDB costs
   → return Envelope         → Step Functions
 ```

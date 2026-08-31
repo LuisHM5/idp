@@ -57,8 +57,33 @@
           "type": "boolean",
           "default": true,
           "description": "Si es false, el tipo se ignora"
+        },
+        "unique_key": {
+          "description": "Campo(s) cuyo valor identifica UN documento de este tipo por sí solo. Se indexa como TIPODOC#<valor normalizado> en la tabla de lookup, así una búsqueda por ese campo se resuelve con una sola Query. En el DSL field-centric se declara sobre el campo (fields[NOMBRE].unique_key); aquí, a nivel de tipo, para el DSL legado.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "$ref": "#/definitions/UniqueKey" } }
+          ]
         }
       }
+    },
+    "UniqueKey": {
+      "oneOf": [
+        { "type": "string", "description": "Nombre del campo" },
+        {
+          "type": "object",
+          "required": ["field"],
+          "properties": {
+            "field": { "type": "string", "description": "Nombre del campo" },
+            "normalize": {
+              "type": "string",
+              "enum": ["upper", "alnum", "digits", "raw"],
+              "default": "upper",
+              "description": "Cómo se normaliza el valor antes de formar la clave: upper (trim + espacios colapsados + mayúsculas), alnum (upper y solo A-Z0-9), digits (solo 0-9), raw (trim, respeta mayúsculas/minúsculas)"
+            }
+          }
+        }
+      ]
     },
     "ValidationRule": {
       "type": "object",
