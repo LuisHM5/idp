@@ -2,7 +2,7 @@
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
-El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay ocho tipos de catálogo activos: `PEDIMENTO_ADUANAL`, para el pedimento PDF; `PEDIMENTO_ADUANAL_XML`, para extraer exhaustivamente el CFDI XML relacionado sin inventar datos aduanales que la fuente no contiene; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `FACTURA_FLETE_EXTRANJERO`, para facturas no-CFDI de transportistas extranjeros; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
+El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay nueve tipos de catálogo activos: `PEDIMENTO_ERP`, para entregar el pedimento con nombres de columna listos para el ERP; `PEDIMENTO_ADUANAL`, para el esquema aduanal completo del pedimento PDF; `PEDIMENTO_ADUANAL_XML`, para extraer exhaustivamente el CFDI XML relacionado sin inventar datos aduanales que la fuente no contiene; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `FACTURA_FLETE_EXTRANJERO`, para facturas no-CFDI de transportistas extranjeros; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
 
 ## Documentación
 
@@ -13,6 +13,7 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado princi
 | [`documentacion/RESUMEN_EJECUTIVO.md`](documentacion/RESUMEN_EJECUTIVO.md) | 👔 Versión para directivos: el proceso explicado en una imagen, sin nombres de servicios ni tecnicismos. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
 | [`documentacion/API_USO.md`](documentacion/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
+| [`documentacion/API_EJEMPLO_CS.md`](documentacion/API_EJEMPLO_CS.md) | Integración completa en C#/.NET: upload, consulta, metadata, búsqueda y descarga. |
 | [`openapi/openapi.yaml`](openapi/openapi.yaml) | Contrato OpenAPI 3.1 del mismo API. Ver localmente con `pnpm docs:api` (Scalar en `/`, Swagger UI en `/swagger`). |
 | [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
@@ -83,9 +84,9 @@ pnpm build                            # catalogs/ → config/catalogs.json + pat
 pnpm run deploy / deploy:dev / deploy:prod
 pnpm run diff                         # cambios pendientes vs. lo desplegado
 pnpm sync                             # sube TODA la carpeta catalogs/ a DynamoDB (hot-reload)
-pnpm sync:one -- --type PEDIMENTO_ADUANAL   # sube un solo tipo (--dry-run para validar)
+pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo (--dry-run para validar)
 pnpm procesar -- mi_doc.pdf           # procesa localmente sin pasar por el stack (tus credenciales AWS)
-pnpm enviar mi_doc.pdf PEDIMENTO_ADUANAL     # sube al stack desplegado
+pnpm enviar mi_doc.pdf PEDIMENTO_ERP          # sube al stack desplegado
 pnpm resultado -- --id <documentId>   # trae y formatea el resultado
 pnpm test:unit                        # tests offline del motor de reglas ($0)
 pnpm comparar -- normal_pend.pdf      # esperado vs. extraído de un documento (AWS, centavos)
@@ -137,6 +138,7 @@ documents-validator/
 │   ├── _shared.json                        # field_sets, reglas cross-documento, campos comunes
 │   ├── _TEMPLATE.json                      # plantilla DSL field-centric para tipos nuevos
 │   ├── PEDIMENTO_ADUANAL.json              # tipo activo: expediente aduanal
+│   ├── PEDIMENTO_ERP.json                   # tipo activo: salida con columnas del ERP
 │   ├── PEDIMENTO_ADUANAL_XML.json          # tipo activo: CFDI XML relacionado, exhaustivo
 │   ├── FACTURA_HONORARIOS.json              # tipo activo: CFDI de honorarios aduanales
 │   ├── FACTURA_HONORARIOS_XML.json         # tipo activo: CFDI XML determinístico

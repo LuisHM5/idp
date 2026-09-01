@@ -24,7 +24,7 @@ Dos formas de probar un documento a mano. Elige una:
 2. Envía el documento:
 
    ```bash
-   pnpm run enviar "ruta/al/archivo.pdf" PEDIMENTO_ADUANAL
+   pnpm run enviar "ruta/al/archivo.pdf" PEDIMENTO_ERP
    # sin tipo → Bedrock clasifica automáticamente
    pnpm run enviar "ruta/al/archivo.pdf"
    ```
@@ -40,8 +40,8 @@ Dos formas de probar un documento a mano. Elige una:
 Opciones útiles de `enviar`:
 
 ```bash
-pnpm run enviar doc.pdf PEDIMENTO_ADUANAL --env prod          # contra prod
-pnpm run enviar doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0  # solo dev
+pnpm run enviar doc.pdf PEDIMENTO_ERP --env prod          # contra prod
+pnpm run enviar doc.pdf PEDIMENTO_ERP --model amazon.nova-pro-v1:0  # solo dev
 ```
 
 Detalle completo: `documentacion/ENVIAR_DOCUMENTO_API.md`.
@@ -57,7 +57,7 @@ Detalle completo: `documentacion/ENVIAR_DOCUMENTO_API.md`.
    ```bash
    pnpm run procesar -- "mi expediente.pdf"        # un archivo — se auto-detecta
    pnpm run procesar -- /ruta/a/mis/docs           # una carpeta entera — se auto-detecta
-   pnpm run procesar -- /ruta/a/mis/docs PEDIMENTO_ADUANAL moonshotai.kimi-k2.5
+   pnpm run procesar -- /ruta/a/mis/docs PEDIMENTO_ERP moonshotai.kimi-k2.5
         # posicionales opcionales, en este orden: PATH [TYPE] [MODEL]
    pnpm run procesar -- factura.xml --type FACTURA_HONORARIOS_XML   # --type obligatorio en .xml/.xlsx/.csv
    ```
@@ -104,7 +104,7 @@ Two ways to test a document by hand. Pick one:
 2. Send the document:
 
    ```bash
-   pnpm run enviar "path/to/file.pdf" PEDIMENTO_ADUANAL
+   pnpm run enviar "path/to/file.pdf" PEDIMENTO_ERP
    # no type → Bedrock classifies it automatically
    pnpm run enviar "path/to/file.pdf"
    ```
@@ -120,8 +120,8 @@ Two ways to test a document by hand. Pick one:
 Useful `enviar` options:
 
 ```bash
-pnpm run enviar doc.pdf PEDIMENTO_ADUANAL --env prod                     # against prod
-pnpm run enviar doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0   # dev only
+pnpm run enviar doc.pdf PEDIMENTO_ERP --env prod                     # against prod
+pnpm run enviar doc.pdf PEDIMENTO_ERP --model amazon.nova-pro-v1:0   # dev only
 ```
 
 Full details: `documentacion/ENVIAR_DOCUMENTO_API.md`.
@@ -137,7 +137,7 @@ Full details: `documentacion/ENVIAR_DOCUMENTO_API.md`.
    ```bash
    pnpm run procesar -- "my file.pdf"              # a single file — auto-detected
    pnpm run procesar -- /path/to/my/docs           # a whole folder — auto-detected
-   pnpm run procesar -- /path/to/my/docs PEDIMENTO_ADUANAL moonshotai.kimi-k2.5
+   pnpm run procesar -- /path/to/my/docs PEDIMENTO_ERP moonshotai.kimi-k2.5
         # optional positionals, in this order: PATH [TYPE] [MODEL]
    pnpm run procesar -- invoice.xml --type FACTURA_HONORARIOS_XML   # --type required for .xml/.xlsx/.csv
    ```

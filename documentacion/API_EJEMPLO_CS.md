@@ -1,0 +1,324 @@
+# API IDP — Ejemplo completo en C#
+
+Ejemplo para integrar una aplicación .NET con IDP usando
+`PEDIMENTO_ERP`. El flujo registra el documento con metadata, sube el PDF
+directamente a S3, espera el resultado, modifica un estado externo, busca el
+documento y descarga el archivo original.
+
+Requiere .NET 6 o posterior. Usa el `HttpClient` estándar y
+`System.Text.Json`: no necesita el SDK de AWS ni paquetes NuGet adicionales.
+El código sirve igual desde una consola, un Worker Service, ASP.NET Core o
+cualquier otra aplicación .NET.
+
+## 1. Preparación
+
+Configura la URL del ambiente y la API key asignada a tu aplicación:
+
+~~~bash
+export IDP_API_URL="https://idp.alsuper.com"
+export IDP_API_KEY="<API_KEY_DE_LA_APP>"
+~~~
+
+La app debe tener permiso de escritura de metadata para ejecutar el PATCH:
+
+~~~bash
+pnpm apps:grant -- --name ERP --env prod --metadata-write
+~~~
+
+Crea el proyecto:
+
+~~~bash
+dotnet new console -n IdpEjemplo
+cd IdpEjemplo
+~~~
+
+Reemplaza el contenido de `Program.cs` por el siguiente programa.
+
+## 2. Programa completo
+
+~~~csharp
+using System.Net;
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
+
+var api = RequiredEnvironment("IDP_API_URL").TrimEnd('/');
+var apiKey = RequiredEnvironment("IDP_API_KEY");
+var filePath = args.Length > 0 ? args[0] : "pedimento.pdf";
+
+if (!File.Exists(filePath))
+{
+    throw new FileNotFoundException(
+        "Indica el PDF como primer argumento.", filePath);
+}
+
+// Este cliente se usa únicamente contra el API IDP.
+using var apiClient = new HttpClient();
+apiClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
+
+// Cliente separado para S3: nunca lleva x-api-key ni cabeceras x-amz-*.
+using var s3Client = new HttpClient();
+
+// -------------------------------------------------------------------------
+// 1. Registrar el documento. Este es el body HTTP completo del POST.
+// -------------------------------------------------------------------------
+var registerBody = new
+{
+    fileName = Path.GetFileName(filePath),
+    documentType = "PEDIMENTO_ERP",
+    metadata = new
+    {
+        lote = "A123",
+        folio_erp = "4711",
+        estado_externo = "RECIBIDO",
+        requiere_atencion = false
+    }
+};
+
+using var registerResponse = await apiClient.PostAsJsonAsync(
+    $"{api}/documents",
+    registerBody);
+await EnsureSuccess(registerResponse);
+
+var registration = await ReadJson(registerResponse);
+var documentId = registration.GetProperty("documentId").GetString()
+    ?? throw new InvalidOperationException("La respuesta no contiene documentId.");
+var uploadUrl = registration.GetProperty("uploadUrl").GetString()
+    ?? throw new InvalidOperationException("La respuesta no contiene uploadUrl.");
+
+Console.WriteLine($"Documento registrado: {documentId}");
+
+// -------------------------------------------------------------------------
+// 2. Subir los bytes directamente a S3.
+// No agregues Content-Type, x-api-key ni cabeceras x-amz-*.
+// -------------------------------------------------------------------------
+await using (var input = File.OpenRead(filePath))
+using (var uploadContent = new StreamContent(input))
+using (var uploadResponse = await s3Client.PutAsync(uploadUrl, uploadContent))
+{
+    await EnsureSuccess(uploadResponse);
+}
+
+Console.WriteLine("Archivo subido; el pipeline inició automáticamente.");
+
+// -------------------------------------------------------------------------
+// 3. Consultar hasta que exista el resultado.
+// Inmediatamente después del PUT, 404 normalmente significa que sigue
+// procesándose. Se limita la espera a 90 intentos de 5 segundos.
+// -------------------------------------------------------------------------
+var result = await WaitForResult(
+    apiClient,
+    api,
+    documentId,
+    attempts: 90,
+    delay: TimeSpan.FromSeconds(5));
+
+var validationStatus = result
+    .GetProperty("result")
+    .GetProperty("validation")
+    .GetProperty("status")
+    .GetString();
+
+Console.WriteLine($"Validación IDP: {validationStatus}");
+
+// -------------------------------------------------------------------------
+// 4. Actualizar metadata externa.
+// Este es el body HTTP completo del PATCH. Las claves no enviadas se
+// conservan; null o string vacío eliminan una clave.
+// -------------------------------------------------------------------------
+var patchBody = new Dictionary<string, object?>
+{
+    ["estado_externo"] = "ENVIADO_A_ERP",
+    ["folio_erp"] = "4711",
+    ["requiere_atencion"] = null
+};
+
+using var patchRequest = new HttpRequestMessage(
+    HttpMethod.Patch,
+    $"{api}/documents/{Uri.EscapeDataString(documentId)}/metadata")
+{
+    Content = new StringContent(
+        JsonSerializer.Serialize(patchBody),
+        Encoding.UTF8,
+        "application/merge-patch+json")
+};
+
+using var patchResponse = await apiClient.SendAsync(patchRequest);
+await EnsureSuccess(patchResponse);
+
+var patched = await ReadJson(patchResponse);
+Console.WriteLine(
+    $"Metadata versión {patched.GetProperty("metadataVersion").GetInt32()}:");
+Console.WriteLine(Pretty(patched.GetProperty("metadata")));
+
+// -------------------------------------------------------------------------
+// 5. Buscar usando todos los grupos principales de parámetros.
+// Los parámetros repetidos se conservan en el orden indicado.
+// -------------------------------------------------------------------------
+var searchUrl = BuildUrl(
+    $"{api}/documents",
+    ("docType", "PEDIMENTO_ERP"),
+    ("system", "ERP"),
+    ("meta.lote", "A123"),
+    ("meta.estado_externo", "ENVIADO_A_ERP"),
+    ("metaOp", "eq"),
+    ("field", "PROVEEDOR_ID_FISCAL"),
+    ("value", "OFU910626UQ0"),
+    ("op", "eq"),
+    ("status", "APROBADO"),
+    ("since", "2026-09-01T00:00:00Z"),
+    ("until", "2026-09-30T23:59:59Z"),
+    ("order", "desc"),
+    ("expand", "true"),
+    ("limit", "25"),
+    ("summary", "false"),
+    ("full", "false"));
+
+using var searchResponse = await apiClient.GetAsync(searchUrl);
+await EnsureSuccess(searchResponse);
+var searchResult = await ReadJson(searchResponse);
+
+Console.WriteLine(
+    $"Coincidencias: {searchResult.GetProperty("count").GetInt32()}");
+
+// Búsqueda rápida por la unique key de PEDIMENTO_ERP:
+var byNumberUrl = BuildUrl(
+    $"{api}/documents",
+    ("docType", "PEDIMENTO_ERP"),
+    ("field", "No_Pedimento"),
+    ("value", "26 07 0823 6001630"),
+    ("op", "eq"),
+    ("limit", "25"),
+    ("summary", "true"),
+    ("full", "false"));
+
+using var byNumberResponse = await apiClient.GetAsync(byNumberUrl);
+await EnsureSuccess(byNumberResponse);
+Console.WriteLine(Pretty(await ReadJson(byNumberResponse)));
+
+// -------------------------------------------------------------------------
+// 6. Obtener una URL temporal y descargar el archivo original.
+// -------------------------------------------------------------------------
+var fileInfoUrl = BuildUrl(
+    $"{api}/documents/{Uri.EscapeDataString(documentId)}/file",
+    ("expiresIn", "900"));
+
+using var fileInfoResponse = await apiClient.GetAsync(fileInfoUrl);
+await EnsureSuccess(fileInfoResponse);
+var fileInfo = await ReadJson(fileInfoResponse);
+var downloadUrl = fileInfo.GetProperty("downloadUrl").GetString()
+    ?? throw new InvalidOperationException("La respuesta no contiene downloadUrl.");
+
+using var downloadResponse = await s3Client.GetAsync(
+    downloadUrl,
+    HttpCompletionOption.ResponseHeadersRead);
+await EnsureSuccess(downloadResponse);
+
+await using (var source = await downloadResponse.Content.ReadAsStreamAsync())
+await using (var destination = File.Create("pedimento-original.pdf"))
+{
+    await source.CopyToAsync(destination);
+}
+
+Console.WriteLine("Archivo guardado como pedimento-original.pdf");
+
+static string RequiredEnvironment(string name)
+{
+    return Environment.GetEnvironmentVariable(name)
+        ?? throw new InvalidOperationException(
+            $"Falta la variable de ambiente {name}.");
+}
+
+static async Task<JsonElement> ReadJson(HttpResponseMessage response)
+{
+    var text = await response.Content.ReadAsStringAsync();
+    using var document = JsonDocument.Parse(text);
+    return document.RootElement.Clone();
+}
+
+static async Task EnsureSuccess(HttpResponseMessage response)
+{
+    if (response.IsSuccessStatusCode)
+    {
+        return;
+    }
+
+    var body = await response.Content.ReadAsStringAsync();
+    throw new HttpRequestException(
+        $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+}
+
+static async Task<JsonElement> WaitForResult(
+    HttpClient apiClient,
+    string api,
+    string documentId,
+    int attempts,
+    TimeSpan delay)
+{
+    var resultUrl =
+        $"{api}/documents/{Uri.EscapeDataString(documentId)}?full=1";
+
+    for (var attempt = 1; attempt <= attempts; attempt++)
+    {
+        using var response = await apiClient.GetAsync(resultUrl);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            Console.WriteLine($"Procesando... intento {attempt}/{attempts}");
+            await Task.Delay(delay);
+            continue;
+        }
+
+        await EnsureSuccess(response);
+        return await ReadJson(response);
+    }
+
+    throw new TimeoutException(
+        $"El documento {documentId} no terminó dentro del tiempo esperado.");
+}
+
+static string BuildUrl(
+    string baseUrl,
+    params (string Name, string Value)[] parameters)
+{
+    var query = string.Join(
+        "&",
+        parameters.Select(parameter =>
+            $"{Uri.EscapeDataString(parameter.Name)}=" +
+            Uri.EscapeDataString(parameter.Value)));
+
+    return $"{baseUrl}?{query}";
+}
+
+static string Pretty(JsonElement value)
+{
+    return JsonSerializer.Serialize(
+        value,
+        new JsonSerializerOptions { WriteIndented = true });
+}
+~~~
+
+Ejecuta el ejemplo pasando el PDF:
+
+~~~bash
+dotnet run -- /ruta/al/pedimento.pdf
+~~~
+
+## 3. Reglas importantes
+
+- POST /documents manda JSON, no los bytes del archivo.
+- El PUT y la descarga van a S3 con un HttpClient separado y sin API key.
+- La metadata es plana, usa claves en minúsculas y admite únicamente valores
+  escalares US-ASCII. El mapa completo tiene un límite de 2 KB.
+- app-origin y model-id son claves reservadas.
+- estado_externo es un estado libre del ERP; nunca sustituye
+  result.validation.status.
+- El PATCH necesita AllowMetadataWrite=true y sigue respetando el alcance y
+  los tipos autorizados de la app.
+- Un 404 al consultar inmediatamente después del PUT normalmente indica que
+  el pipeline todavía está procesando. Un 404 permanente también puede
+  significar que el documento no existe o queda fuera del alcance de la app.
+
+Referencia completa: [API_USO.md](API_USO.md). Resumen:
+[API_RESUMEN.md](API_RESUMEN.md). Contrato:
+[openapi/openapi.yaml](../openapi/openapi.yaml).

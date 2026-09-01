@@ -48,7 +48,7 @@ curl -sS -X POST "$API/documents" \
   -H "Content-Type: application/json" \
   -d '{
     "fileName": "pedimento.pdf",
-    "documentType": "PEDIMENTO_ADUANAL",
+    "documentType": "PEDIMENTO_ERP",
     "metadata": {
       "lote": "A123",
       "folio_erp": "4711",
@@ -214,10 +214,10 @@ Petición completa con todos los grupos de parámetros:
 ```bash
 curl -sS -G "$API/documents" \
   -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "system=ERP" \
   --data-urlencode "meta.lote=A123" \
-  --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" \
+  --data-urlencode "field=PROVEEDOR_ID_FISCAL" \
   --data-urlencode "value=OFU910626UQ0" \
   --data-urlencode "op=eq" \
   --data-urlencode "status=APROBADO" \
@@ -234,12 +234,12 @@ Ejemplos de metadata:
 
 ```bash
 curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "meta.sucursal=CHIH" \
   --data-urlencode "meta.estado_externo=ENVIADO_A_ERP"
 
 curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "meta.folio_erp=47" \
   --data-urlencode "metaOp=contains"
 ```
@@ -260,4 +260,4 @@ curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
 
 ---
 
-Detalle completo: `API_USO.md` · Runbook curl: `SUBIR_DOC_CURL.md` · Contrato: `openapi/openapi.yaml`
+Detalle completo: `API_USO.md` · C#/.NET: `API_EJEMPLO_CS.md` · Runbook curl: `SUBIR_DOC_CURL.md` · Contrato: `openapi/openapi.yaml`

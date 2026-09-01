@@ -23,6 +23,7 @@ This repo documents itself extensively in Spanish — **read the relevant doc in
 | `documentacion/TRAZA_CODIGO_COMPLETA.md` | Full code-level execution trace: exact functions/file:line references, payloads, AWS API calls, every pipeline branch, persistence, queries, and concrete improvement points. Read before touching `handler.py` or `pipeline/`. |
 | `documentacion/GUIA_DESPLIEGUE_Y_USO.md` | Full operational guide: install, deploy, update/delete catalogs, troubleshooting table, file map of what to edit vs. never touch. |
 | `documentacion/API_USO.md` | **REST API reference — keep in sync automatically, see below.** |
+| `documentacion/API_EJEMPLO_CS.md` | Copy-paste C#/.NET integration: register/upload, polling, metadata PATCH, search, and original-file download. |
 | `openapi/openapi.yaml` | **OpenAPI 3.1 contract for the same REST API — keep in sync automatically alongside `API_USO.md`, see below.** View locally with `pnpm docs:api` (Scalar by default, Swagger UI at `/swagger`). |
 | `documentacion/APIS_INTEGRACION.md` | Integration-facing inventory: internal APIs this repo exposes vs. external (AWS) APIs it consumes, with exact SDK operations and file references. Update alongside `API_USO.md` when the API surface or AWS service calls change. |
 | `documentacion/AMBIENTES_Y_SEGURIDAD.md` | dev vs prod stacks, custom domain, API keys, WAF. |

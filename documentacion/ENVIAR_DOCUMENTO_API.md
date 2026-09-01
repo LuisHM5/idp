@@ -5,8 +5,8 @@ Guía para mandar un documento al pipeline de validación y leer el resultado.
 ## TL;DR (script)
 
 ```bash
-pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL  # dev (default)
-pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL --env prod
+pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP  # dev (default)
+pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP --env prod
 # o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod]
 ```
 
@@ -16,7 +16,7 @@ pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL --env prod
 variables de entorno ni volver a desplegar:
 
 ```bash
-pnpm enviar doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0
+pnpm enviar doc.pdf PEDIMENTO_ERP --model amazon.nova-pro-v1:0
 ```
 
 Aplica a todas las fases del pipeline y gana sobre `BEDROCK_*_MODEL_ID`. El
@@ -97,7 +97,7 @@ FILE="2607-0823-6001630_P.pdf"
 # --- Paso 1: pedir la URL
 RESP=$(curl -sS -X POST "$API_ENDPOINT/documents" \
   -H "Content-Type: application/json" \
-  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"PEDIMENTO_ADUANAL\"}")
+  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"PEDIMENTO_ERP\"}")
 
 DOC_ID=$(echo "$RESP" | jq -r .documentId)      # guárdalo
 UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)

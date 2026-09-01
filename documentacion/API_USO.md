@@ -71,7 +71,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
 ## Flujo completo, de principio a fin
 
 Un pedimento real, de la subida hasta tener los campos extraídos. Todo con
-`PEDIMENTO_ADUANAL`; cambia el tipo y aplica igual.
+`PEDIMENTO_ERP`; cambia el tipo y aplica igual.
 
 | # | Petición | Auth | Cuerpo | Respuesta |
 |---|---|---|---|---|
@@ -118,7 +118,7 @@ KEY="tu-api-key"
 RESP=$(curl -sS -X POST "$API/documents" \
   -H "Content-Type: application/json" \
   -H "x-api-key: $KEY" \
-  -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
+  -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ERP"}')
 
 # Guarda los dos: el uploadUrl para el paso 2, el documentId para el 3.
 DOC_ID=$(echo "$RESP"     | jq -r .documentId)
@@ -139,7 +139,7 @@ const res = await fetch(`${API}/documents`, {
   headers: { "Content-Type": "application/json", "x-api-key": KEY },
   body: JSON.stringify({
     fileName: "pedimento.pdf",
-    documentType: "PEDIMENTO_ADUANAL",
+    documentType: "PEDIMENTO_ERP",
   }),
 });
 if (!res.ok) throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
@@ -162,7 +162,7 @@ KEY = "tu-api-key"
 res = requests.post(
     f"{API}/documents",
     headers={"x-api-key": KEY},
-    json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
+    json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ERP"},
     timeout=30,
 )
 res.raise_for_status()
@@ -192,7 +192,7 @@ http.DefaultRequestHeaders.Add("x-api-key", key);
 var res = await http.PostAsJsonAsync($"{api}/documents", new
 {
     fileName = "pedimento.pdf",
-    documentType = "PEDIMENTO_ADUANAL",
+    documentType = "PEDIMENTO_ERP",
 });
 res.EnsureSuccessStatusCode();
 
@@ -216,7 +216,7 @@ La única petición **sin `x-api-key`**: va firmada en la URL y no pasa por el A
 # UPLOAD_URL viene del paso 1. Si la pegas a mano, usa comillas SIMPLES: una
 # URL prefirmada real lleva ~12 `&` y sin comillas el shell la parte en el
 # primero, mandando el resto a segundo plano.
-UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ADUANAL/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
+UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ERP/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
 
 # NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL (mira los
 # `x-amz-meta-*` de arriba). Sin x-api-key: esto no pasa por el API.
@@ -476,12 +476,12 @@ documento detectado dentro del PDF. Para un pedimento declarado será uno solo:
   "expediente": {
     "documents": [
       {
-        "documentType": "PEDIMENTO_ADUANAL",
+        "documentType": "PEDIMENTO_ERP",
         "pageStart": 3, "pageEnd": 18,
         "status": "APPROVED",
         "extractedEntities": {
-          "NUMERO_PEDIMENTO": { "value": "26 07 3435 6041248", "confidence": 0.98, "valid": true },
-          "RFC_IMPORTADOR_EXPORTADOR": { "value": "OFU910626UQ0", "confidence": 0.99, "valid": true }
+          "No_Pedimento": { "value": "26 07 3435 6041248", "confidence": 0.98, "valid": true },
+          "PROVEEDOR_ID_FISCAL": { "value": "OFU910626UQ0", "confidence": 0.99, "valid": true }
         }
       }
     ]
@@ -521,7 +521,7 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
 ```jsonc
 {
   "fileName": "pedimento.pdf",           // requerido; pdf|jpg|jpeg|png|xml|xlsx|csv
-  "documentType": "PEDIMENTO_ADUANAL",   // opcional (obligatorio en .xml/.xlsx/.csv)
+  "documentType": "PEDIMENTO_ERP",   // opcional (obligatorio en .xml/.xlsx/.csv)
   "metadata": { "lote": "A123" },        // opcional; se conserva con el documento
                                          // y luego se puede filtrar con
                                          // GET /documents?meta.lote=A123 (§5)
@@ -534,8 +534,8 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
 {
   "documentId": "e18d014a-...",
   "bucket": "documentvalidationstack-...",
-  "key": "raw/PEDIMENTO_ADUANAL/e18d014a-.../pedimento.pdf",
-  "documentType": "PEDIMENTO_ADUANAL",
+  "key": "raw/PEDIMENTO_ERP/e18d014a-.../pedimento.pdf",
+  "documentType": "PEDIMENTO_ERP",
   "classificationMode": "manual",
   "uploadUrl": "https://...s3.amazonaws.com/...",
   "uploadMethod": "PUT",
@@ -603,7 +603,7 @@ curl -X POST "$API/documents" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -H "x-api-key: $KEY" \
   -d "fileName=pedimento.pdf" \
-  -d "documentType=PEDIMENTO_ADUANAL"
+  -d "documentType=PEDIMENTO_ERP"
 ```
 
 Como todo valor de un formulario es texto, `metadata` va ahí como un objeto JSON
@@ -615,7 +615,7 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 ### Notas del upload
 
-- Si mandas `documentType`, se salta la clasificación automática **y se HONRA tu tipo**: el documento se trata como ese tipo único y **no se re-clasifica ni se segmenta** en otro (p. ej. un PDF de varias páginas declarado `PEDIMENTO_ADUANAL` se procesa como un solo pedimento, no como `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). Si quieres que el sistema segmente/clasifique solo, **omite** `documentType`. Para forzar la segmentación multi-documento explícitamente, declara `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
+- Si mandas `documentType`, se salta la clasificación automática **y se HONRA tu tipo**: el documento se trata como ese tipo único y **no se re-clasifica ni se segmenta** en otro (p. ej. un PDF de varias páginas declarado `PEDIMENTO_ERP` se procesa como un solo pedimento, no como `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). Si quieres que el sistema segmente/clasifique solo, **omite** `documentType`. Para forzar la segmentación multi-documento explícitamente, declara `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
 - **Archivos `.xml`/`.xlsx`/`.csv`:** para tipos con esquema XML (sufijo `_XML`) o tabular (sufijo `_XLSX`/`_CSV`) `documentType` es **obligatorio** — la API lo rechaza con `400 DOCUMENT_TYPE_REQUIRED` si falta, porque no existe clasificación automática por visión sobre datos ya estructurados. A cambio, el documento se extrae **determinísticamente** (XPath para XML, celda/columna para XLSX/CSV — sin llamar a Bedrock en ningún paso): más rápido y sin costo de modelo. Ver `catalogs/README.md` → "Tipos con fuente XML" / "Tipos con fuente tabular".
 - **`modelId` (solo dev):** procesa **ese documento** con el modelo de Bedrock que indiques, sin redeploy — útil para comparar modelos sobre el mismo archivo. Aplica a todas las fases y gana sobre las variables `BEDROCK_*_MODEL_ID`; el resultado reporta en `tracking.modelIds` qué modelo corrió en cada fase. **El stack de prod lo ignora a propósito** (no define `ALLOW_MODEL_OVERRIDE`): el valor viene de quien sube el archivo, y en prod dejaría que un tercero eligiera el modelo —y con él el costo y la calidad de extracción— sobre documentos ajenos. Con `pnpm enviar`: `--model amazon.nova-pro-v1:0`.
 - **Fallback automático de modelo (siempre activo, no es un flag de request):** si el modelo que le tocaba a una fase (`extractor`/`recovery`) falla porque no está disponible (no habilitado, no existe, error/timeout/cuota del proveedor — nunca por un request mal formado, eso propaga tal cual), el pipeline cambia solo al siguiente modelo de una lista ordenada y reintenta, hasta 4 veces por default. `tracking.modelIds` ya refleja el modelo que **realmente** corrió (no el configurado) cuando esto pasa; además, solo para las fases donde hubo cambio, `tracking.modelFallbacks` reporta el detalle: modelo esperado vs. el que finalmente corrió, cuántos reintentos tomó, y el error de cada intento fallido. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.
@@ -626,8 +626,8 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 **Ejemplo (atajo del repo, siempre mediante URL prefirmada):**
 ```bash
-pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL              # dev por default
-pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL --env prod   # API key desde .env.production
+pnpm enviar pedimento.pdf PEDIMENTO_ERP              # dev por default
+pnpm enviar pedimento.pdf PEDIMENTO_ERP --env prod   # API key desde .env.production
 ```
 
 ---
@@ -676,9 +676,9 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
       "pages": { "totalPages": 27, "...": 0 },
       "documents": [                        // TODOS los documentos del expediente
         {
-          "documentType": "PEDIMENTO_ADUANAL",
+          "documentType": "PEDIMENTO_ERP",
           "status": "PARTIALLY_APPROVED",
-          "extractedEntities": { "NUMERO_PEDIMENTO_NORMALIZADO": "260708236001187", "...": "..." },
+          "extractedEntities": { "No_Pedimento": "260708236001187", "...": "..." },
           "arrayCounts": { "PARTIDAS": 1, "CONTRIBUCIONES": 2 },
           "liquidacionNormalizada": { "IVA": 53, "PRV": 330, "TOTAL": 383, "...": 0 }
           // si SOLO este documento falló (el resto del expediente sigue): "status": "PROCESSING_ERROR",
@@ -692,7 +692,7 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
       // complementa, no reemplaza, el resumen del `tracking` de nivel superior.
       "tracking": { "createdAt": "...", "processingStartedAt": "...", "processingCompletedAt": "...",
                      "processingSeconds": 45.23, "processingMs": 45231.7,
-                     "schema": { "pipelineVersion": "1.0.0", "typeVersions": { "PEDIMENTO_ADUANAL": "2.0" } } }
+                     "schema": { "pipelineVersion": "1.0.0", "typeVersions": { "PEDIMENTO_ERP": "1.0.0" } } }
     },
     "resultLocation": { "bucket": "...", "key": "results/{id}.json" }
   }
@@ -874,11 +874,11 @@ el **lote A123** de la **sucursal CHIH**, con este RFC de importador":
 
 ```bash
 curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "system=ERP" \
   --data-urlencode "meta.lote=A123" \
   --data-urlencode "meta.sucursal=CHIH" \
-  --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" \
+  --data-urlencode "field=PROVEEDOR_ID_FISCAL" \
   --data-urlencode "value=OFU910626UQ0" \
   --data-urlencode "summary=1" \
   | jq '{lookup, count, ids: [.matches[].documentId]}'
@@ -892,7 +892,7 @@ curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
 - **Entre filtros distintos → AND.** `system=ERP&meta.lote=A123` = del ERP **y**
   del lote A123.
 - **Repetir el mismo filtro → OR.** `system=ERP,PORTAL` (o `system=ERP&system=PORTAL`)
-  = de cualquiera de los dos. Igual `meta.lote=A123,B456` y `docType=FACTURA,PEDIMENTO_ADUANAL`.
+  = de cualquiera de los dos. Igual `meta.lote=A123,B456` y `docType=FACTURA,PEDIMENTO_ERP`.
 - **`field`/`value` repetidos se emparejan por posición** en la URL, y son AND
   entre sí: `?field=A&value=1&field=B&value=2` = el campo A vale 1 **y** el
   campo B vale 2. Si el número de `field` y de `value` no coincide → `400`, no
@@ -935,12 +935,12 @@ reporte) que quiere mirar solo lo que entró por un canal.
 
 ### Camino rápido y campos extraídos
 
-**Camino rápido (unique key).** Si el campo que buscas es el que su tipo declara como **unique key** en el catálogo (`unique_key`, ver `catalogs/README.md` → "Unique keys"), la búsqueda **no recorre el tipo**: se resuelve con **una sola Query** sobre la clave `TIPODOC#<valor normalizado>` en la tabla de lookup `document-validation-keys[-dev]`, sin importar cuántos documentos de ese tipo existan. Hoy lo declara `PEDIMENTO_ADUANAL` en `NUMERO_PEDIMENTO` y `NUMERO_PEDIMENTO_NORMALIZADO`:
+**Camino rápido (unique key).** Si el campo que buscas es el que su tipo declara como **unique key** en el catálogo (`unique_key`, ver `catalogs/README.md` → "Unique keys"), la búsqueda **no recorre el tipo**: se resuelve con **una sola Query** sobre la clave `TIPODOC#<valor normalizado>` en la tabla de lookup `document-validation-keys[-dev]`, sin importar cuántos documentos de ese tipo existan. Hoy `PEDIMENTO_ERP` lo declara en `No_Pedimento`:
 
 ```bash
 # Una Query. Da igual si mandas el número con espacios o sin ellos:
 # la normalización (`digits` en este tipo) es la misma al escribir y al buscar.
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=26%2007%200823%206001630"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&field=No_Pedimento&value=26%2007%200823%206001630"
 ```
 
 Condiciones: hace falta `docType` (la clave siempre lleva el tipo como prefijo — es lo que la hace única) y `op=eq`. Si no se cumplen, o si el valor todavía no está indexado, la búsqueda **cae al camino normal y encuentra el documento igual** — más lenta, nunca equivocada. El campo `lookup` de la respuesta dice cuál contestó.
@@ -958,11 +958,11 @@ Todos asumen `$API`/`$KEY` (y en C#/Node el cliente `http` del paso 1).
 #     -G/--data-urlencode encodea espacios y acentos, y evita que el shell
 #     parta la URL en el primer `&`.
 curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "system=ERP" \
   --data-urlencode "meta.lote=A123" \
   --data-urlencode "meta.sucursal=CHIH" \
-  --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" \
+  --data-urlencode "field=PROVEEDOR_ID_FISCAL" \
   --data-urlencode "value=OFU910626UQ0" \
   --data-urlencode "summary=1" \
   | jq '{lookup, count, ids: [.matches[].documentId]}'
@@ -971,27 +971,27 @@ curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
 #     Da igual con espacios o sin ellos: la normalización es la misma al
 #     escribir y al buscar (`digits` en este tipo).
 curl -sS -H "x-api-key: $KEY" \
-  "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=26%2007%200823%206001630" \
+  "$API/documents?docType=PEDIMENTO_ERP&field=No_Pedimento&value=26%2007%200823%206001630" \
   | jq '{lookup, count, ids: [.matches[].documentId]}'
 
 # --- Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
 #     Si el path no resuelve en la raíz, busca en profundidad por esa clave.
 curl -sS -H "x-api-key: $KEY" \
-  "$API/documents?docType=PEDIMENTO_ADUANAL&field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0&summary=1" \
+  "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_ID_FISCAL&value=OFU910626UQ0&summary=1" \
   | jq '.matches[] | {documentId, matchedValue, matchedAt}'
 
 # --- Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
 #     `matched` en cada resultado dice qué coincidió y dónde, por filtro.
 curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
-  --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" --data-urlencode "value=OFU910626UQ0" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
+  --data-urlencode "field=PROVEEDOR_ID_FISCAL" --data-urlencode "value=OFU910626UQ0" \
   --data-urlencode "field=PATENTE"                   --data-urlencode "value=3456" \
   | jq '.matches[] | {documentId, matched}'
 
 # --- Repetir un filtro es OR; filtros distintos siguen siendo AND.
 #     Esto es "(ERP o PORTAL) y (sucursal CHIH o JRZ)".
 curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "system=ERP,PORTAL" \
   --data-urlencode "meta.sucursal=CHIH,JRZ" \
   --data-urlencode "summary=1"
@@ -999,7 +999,7 @@ curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
 # --- Subcadena, y acotando por fecha y estado. `op` afecta a field/value;
 #     `metaOp` hace lo mismo con todos los meta.<clave>.
 curl -sS -H "x-api-key: $KEY" \
-  "$API/documents?docType=PEDIMENTO_ADUANAL&field=AGENTE_ADUANAL_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
+  "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
 ```
 
 </details>
@@ -1024,11 +1024,11 @@ async function buscar(pares) {
 // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
 // metadata del upload + un campo extraído del documento.
 const delLote = await buscar([
-  ["docType", "PEDIMENTO_ADUANAL"],
+  ["docType", "PEDIMENTO_ERP"],
   ["system", "ERP"],                                // quién lo subió, por su API key
   ["meta.lote", "A123"],                            // metadata del POST /documents
   ["meta.sucursal", "CHIH"],
-  ["field", "RFC_IMPORTADOR_EXPORTADOR"], ["value", "OFU910626UQ0"],
+  ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
   ["summary", "1"],
 ]);
 for (const m of delLote.matches)
@@ -1038,15 +1038,15 @@ for (const m of delLote.matches)
 // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
 // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
 const porNumero = await buscar([
-  ["docType", "PEDIMENTO_ADUANAL"],
-  ["field", "NUMERO_PEDIMENTO"], ["value", "26 07 0823 6001630"],
+  ["docType", "PEDIMENTO_ERP"],
+  ["field", "No_Pedimento"], ["value", "26 07 0823 6001630"],
 ]);
 console.log(porNumero.lookup, porNumero.count);     // "uniqueKey" 1
 
 // Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
 const porRfcYPatente = await buscar([
-  ["docType", "PEDIMENTO_ADUANAL"],
-  ["field", "RFC_IMPORTADOR_EXPORTADOR"], ["value", "OFU910626UQ0"],
+  ["docType", "PEDIMENTO_ERP"],
+  ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
   ["field", "PATENTE"], ["value", "3456"],
 ]);
 for (const m of porRfcYPatente.matches)
@@ -1073,11 +1073,11 @@ def buscar(pares):
 # Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
 # metadata del upload + un campo extraído del documento.
 del_lote = buscar([
-    ("docType", "PEDIMENTO_ADUANAL"),
+    ("docType", "PEDIMENTO_ERP"),
     ("system", "ERP"),                               # quién lo subió, por su API key
     ("meta.lote", "A123"),                           # metadata del POST /documents
     ("meta.sucursal", "CHIH"),
-    ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+    ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
     ("summary", "1"),
 ])
 for m in del_lote["matches"]:
@@ -1086,15 +1086,15 @@ for m in del_lote["matches"]:
 # Camino rápido: campo declarado `unique_key` → una sola Query.
 # El valor se normaliza igual al escribir y al buscar, así que da lo mismo
 # mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-por_numero = buscar([("docType", "PEDIMENTO_ADUANAL"),
-                     ("field", "NUMERO_PEDIMENTO"),
+por_numero = buscar([("docType", "PEDIMENTO_ERP"),
+                     ("field", "No_Pedimento"),
                      ("value", "26 07 0823 6001630")])
 print(por_numero["lookup"], por_numero["count"])      # "uniqueKey" 1
 
 # Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
 por_rfc_y_patente = buscar([
-    ("docType", "PEDIMENTO_ADUANAL"),
-    ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+    ("docType", "PEDIMENTO_ERP"),
+    ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
     ("field", "PATENTE"), ("value", "3456"),
 ])
 for m in por_rfc_y_patente["matches"]:
@@ -1125,11 +1125,11 @@ async Task<JsonElement> BuscarAsync(params (string k, string v)[] parametros)
 // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
 // metadata del upload + un campo extraído del documento.
 var delLote = await BuscarAsync(
-    ("docType", "PEDIMENTO_ADUANAL"),
+    ("docType", "PEDIMENTO_ERP"),
     ("system", "ERP"),                                 // quién lo subió, por su API key
     ("meta.lote", "A123"),                             // metadata del POST /documents
     ("meta.sucursal", "CHIH"),
-    ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+    ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
     ("summary", "1"));
 foreach (var m in delLote.GetProperty("matches").EnumerateArray())
 {
@@ -1143,8 +1143,8 @@ foreach (var m in delLote.GetProperty("matches").EnumerateArray())
 // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
 // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
 var porNumero = await BuscarAsync(
-    ("docType", "PEDIMENTO_ADUANAL"),
-    ("field", "NUMERO_PEDIMENTO"),
+    ("docType", "PEDIMENTO_ERP"),
+    ("field", "No_Pedimento"),
     ("value", "26 07 0823 6001630"));
 Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("count")}");
 ```
@@ -1154,11 +1154,11 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
 **Query params:**
 | Param | Requerido | Default | Descripción |
 |---|---|---|---|
-| `docType` | sí\* | — | Tipo de documento. Acepta el **TYPE_ID** (`PEDIMENTO_ADUANAL`) o su **nombre** / alias (`pedimento aduanal`, `Pedimento`, `pedimento-aduanal`): se normaliza (sin acentos, mayúsculas, `_`) y se resuelve contra el catálogo. Varios tipos separados por coma. Alias del propio param: `documentType`, `tipo`. |
+| `docType` | sí\* | — | Tipo de documento. Acepta el **TYPE_ID** (`PEDIMENTO_ERP`) o su nombre (`Pedimento (mapeo ERP)`): se normaliza sin distinguir acentos, mayúsculas ni `_` y se resuelve contra el catálogo. Varios tipos separados por coma. Alias del propio param: `documentType`, `tipo`. |
 | `system` | sí\* | — | Qué **sistema** subió el documento: se compara contra `tracking.appOrigin`, que sale de la **API key** del `POST /documents`. Varios separados por coma o repitiendo el param (OR). Alias: `appOrigin`, `sistema`. |
 | `meta.<clave>` | sí\* | — | **Familia de params**, no uno literal: `meta.lote=A123`, `meta.sucursal=CHIH`... Filtra por la `metadata` del `POST /documents` (§1). Claves en minúsculas. Claves distintas = AND; repetir una clave o separar por coma = OR. |
 | `metaOp` | no | `eq` | Cómo comparan **todos** los `meta.<clave>`: `eq` o `contains`. Independiente de `op`. |
-| `field` | sí\* | — | Dot-path del campo, p. ej. `extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO`. Si no resuelve en la raíz, hace **búsqueda profunda** por la última clave del path (encuentra el campo aunque esté anidado en cualquier documento). **Se puede repetir** para exigir varios campos (AND). |
+| `field` | sí\* | — | Dot-path del campo, p. ej. `extractedEntities.No_Pedimento`. Si no resuelve en la raíz, hace **búsqueda profunda** por la última clave del path (encuentra el campo aunque esté anidado en cualquier documento). **Se puede repetir** para exigir varios campos (AND). |
 | `value` | con `field` | — | Valor a comparar (case-insensitive, se recortan espacios). Uno por cada `field`, **en el mismo orden**: se emparejan por posición. |
 | `op` | no | `eq` | `eq` (igualdad exacta) o `contains` (subcadena) para los `field`/`value`. Una vez (aplica a todos) o una vez por filtro. |
 | `status` | no | — | Filtra por estado de validación: `APROBADO`, `RECHAZADO`, `REQUIERE_REVISION`. Se aplica en DynamoDB (solo con `docType`). |
@@ -1189,18 +1189,18 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
 **Respuesta `200`** — cada match es el **envelope completo** + dónde coincidió:
 ```jsonc
 {
-  "docTypes": ["PEDIMENTO_ADUANAL"],  // tipos ya resueltos a TYPE_ID
+  "docTypes": ["PEDIMENTO_ERP"],  // tipos ya resueltos a TYPE_ID
   "resolvedTypes": [                  // cómo se resolvió lo que mandaste
-    { "typeId": "PEDIMENTO_ADUANAL", "input": "pedimento aduanal", "resolvedBy": "exact" }
+    { "typeId": "PEDIMENTO_ERP", "input": "Pedimento (mapeo ERP)", "resolvedBy": "exact" }
   ],
   "expandedContainers": true,         // se buscó también dentro de expedientes
 
   // --- eco de los filtros que se aplicaron ---
   "filters": [                        // todos los field/value, en orden
-    { "field": "extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO",
+    { "field": "extractedEntities.No_Pedimento",
       "value": "260708236001187", "op": "eq" }
   ],
-  "field": "extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO",  // = filters[0],
+  "field": "extractedEntities.No_Pedimento",  // = filters[0],
   "value": "260708236001187",         // por compatibilidad con cuando solo
   "op": "eq",                         // podía haber un filtro
   "system": ["ERP"],                  // solo si mandaste system=
@@ -1235,12 +1235,12 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
       "tracking": { "appOrigin": "ERP", "...": "..." },   // qué sistema lo subió
       "metadata": { "lote": "A123", "sucursal": "chih" }, // la del POST /documents
       "matched": [                    // uno por cada filtro field/value
-        { "field": "extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO",
+        { "field": "extractedEntities.No_Pedimento",
           "matchedValue": "260708236001187",
-          "matchedAt": "*.NUMERO_PEDIMENTO_NORMALIZADO" }  // "*." = búsqueda profunda
+          "matchedAt": "*.No_Pedimento" }  // "*." = búsqueda profunda
       ],
       "matchedValue": "260708236001187",              // = matched[0], por
-      "matchedAt": "*.NUMERO_PEDIMENTO_NORMALIZADO",  // compatibilidad
+      "matchedAt": "*.No_Pedimento",  // compatibilidad
       "fullResult": { /* SOLO con full=1: detalle por-campo de S3 */ }
     }
   ]
@@ -1252,44 +1252,44 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
 **Ejemplos:**
 ```bash
 # Todos los pedimentos, del más reciente al más viejo (indexado, sin Scan)
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&summary=1"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&summary=1"
 
 # Igual, pero escribiendo el nombre del tipo en vez del id
 curl -sS "$API/documents?docType=pedimento%20aduanal&summary=1"
 
 # Tipo + campo: acota por tipo en DynamoDB y luego filtra por el campo
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO_NORMALIZADO&value=260708236001630"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&field=No_Pedimento&value=260708236001630"
 
 # Varios tipos, solo rechazados, de julio en adelante
-curl -sS "$API/documents?docType=FACTURA,PEDIMENTO_ADUANAL&status=RECHAZADO&since=2026-07-01&summary=1"
+curl -sS "$API/documents?docType=FACTURA,PEDIMENTO_ERP&status=RECHAZADO&since=2026-07-01&summary=1"
 
 # Por RFC del importador (sin tipo → Scan; búsqueda profunda)
-curl -sS "$API/documents?field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0"
+curl -sS "$API/documents?field=PROVEEDOR_ID_FISCAL&value=OFU910626UQ0"
 
 # Por coincidencia parcial en el nombre del importador
 curl -sS "$API/documents?field=NOMBRE_IMPORTADOR_EXPORTADOR&value=futurama&op=contains&limit=10"
 
 # Todo lo que subió el ERP este mes (sistema + tipo + fechas)
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&system=ERP&since=2026-09-01&summary=1"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&system=ERP&since=2026-09-01&summary=1"
 
 # El documento de un lote concreto, sin saber su documentId
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&meta.lote=A123&summary=1"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&meta.lote=A123&summary=1"
 
 # Dos claves de metadata: AND entre ellas
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&meta.lote=A123&meta.sucursal=CHIH"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&meta.lote=A123&meta.sucursal=CHIH"
 
 # Metadata por subcadena: todos los folios del ERP que empiezan con ERP-47
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&meta.folio=ERP-47&metaOp=contains"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&meta.folio=ERP-47&metaOp=contains"
 
 # Dos campos extraídos a la vez (se emparejan por posición, y son AND)
-curl -sS "$API/documents?docType=PEDIMENTO_ADUANAL&field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0&field=PATENTE&value=3456"
+curl -sS "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_ID_FISCAL&value=OFU910626UQ0&field=Patente&value=3456"
 
 # Los cuatro ejes juntos, rechazados de julio en adelante
 curl -sS -G "$API/documents" \
-  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "docType=PEDIMENTO_ERP" \
   --data-urlencode "system=ERP" \
   --data-urlencode "meta.lote=A123" \
-  --data-urlencode "field=AGENTE_ADUANAL_NOMBRE" --data-urlencode "value=GAVANTI" \
+  --data-urlencode "field=PROVEEDOR_NOMBRE" --data-urlencode "value=GAVANTI" \
   --data-urlencode "op=contains" \
   --data-urlencode "status=RECHAZADO" --data-urlencode "since=2026-07-01"
 ```
@@ -1347,11 +1347,11 @@ Además del `EnrichmentResult`, cada item lleva columnas de primer nivel que esc
 
 | Columna | Ejemplo | Para qué |
 |---|---|---|
-| `DocumentType` | `PEDIMENTO_ADUANAL` | **Partición del GSI `DocumentTypeIndex`.** Es la clasificación FINAL (la del segmentador), no la de la clasificación previa de Bedrock. |
+| `DocumentType` | `PEDIMENTO_ERP` | **Partición del GSI `DocumentTypeIndex`.** Es la clasificación FINAL (la del segmentador), no la de la clasificación previa de Bedrock. |
 | `ProcessedAt` | `2026-07-24T11:30:00+00:00` | **Orden del GSI**: resultados por fecha y rangos `since`/`until`. |
 | `DocumentTypeName` | `Pedimento Aduanal` | Nombre legible del tipo (del catálogo o derivado del id). |
 | `ValidationStatus` | `REQUIERE_REVISION` | Filtro `status=` evaluado en DynamoDB. |
-| `ContainedDocumentTypes` | `["EXPEDIENTE_...", "PEDIMENTO_ADUANAL", "FACTURA"]` | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente. |
+| `ContainedDocumentTypes` | `["EXPEDIENTE_...", "PEDIMENTO_ERP", "FACTURA"]` | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente. |
 | `DocumentName` | `expediente-2026.pdf` | Nombre del archivo original. |
 | `Tracking` | `{CreatedAt, UpdatedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, Schema, AppOrigin, ModelIds, ModelFallbacks}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. Misma paridad de campos que `result.tracking`/`expediente.tracking` (ver §2 y `indexing.py::_TRACKING_FIELD_MAP`), solo que en PascalCase para combinar con el resto de estas columnas — nunca un subconjunto recortado. `AppOrigin` es lo que filtra `?system=`, pero el filtro se evalúa sobre el envelope, no sobre esta columna. |
 | `Metadata` | `{lote: "A123", estado_externo: "EN_REVISION"}` | **Map mutable**: nace del `metadata` del `POST /documents` (§1) y `PATCH /documents/{id}/metadata` (§3) la puede crear o cambiar. Es la fuente actual que la API superpone al snapshot de `EnrichmentResult`/S3 y lo que filtra `?meta.<clave>=`. |

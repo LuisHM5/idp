@@ -127,7 +127,7 @@ Usar cualquiera de las dos keys es igual:
 ```bash
 curl -H "x-api-key: <VALOR>" https://idp.alsuper.com/documents/...
 # El script lee API_KEY (preferida) o API_KEY_APP de .env.production:
-pnpm enviar archivo.pdf PEDIMENTO_ADUANAL --env prod
+pnpm enviar archivo.pdf PEDIMENTO_ERP --env prod
 ```
 
 ### Ciclo de vida de una app registrada
@@ -309,7 +309,7 @@ en el backend"). Si una app vieja necesita ver todo, súbela explícito con
 
 #### 7. Otorgar/quitar UN permiso puntual, sin reescribir todo (`grant` / `deny`)
 ```bash
-# CEDIS ya tenía allowedDocTypes=PEDIMENTO_ADUANAL; agrégale FACTURA_HONORARIOS_XML
+# CEDIS ya tenía allowedDocTypes=PEDIMENTO_ERP; agrégale FACTURA_HONORARIOS_XML
 # sin tener que saber/retipear lo que ya tenía:
 pnpm apps:grant -- --name CEDIS --env prod --doctype FACTURA_HONORARIOS_XML
 
@@ -540,7 +540,7 @@ pnpm apps:register -- --name local-scripts --env dev   # una vez
 # pega el valor impreso en .env.dev:
 #   API_KEY_APP=<valor>
 
-pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL          # ya no hace falta API_KEY=...
+pnpm enviar pedimento.pdf PEDIMENTO_ERP               # ya no hace falta API_KEY=...
 pnpm test:e2e:pedimento -- --file normal_pend.pdf
 ```
 Una `API_KEY` exportada en el shell (o pasada inline:

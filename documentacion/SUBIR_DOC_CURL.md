@@ -1,7 +1,7 @@
 # Subir un documento por curl — paso a paso
 
 Guía práctica para copiar y pegar. Ejemplo con `./test-docs/pages.pdf` como
-`PEDIMENTO_ADUANAL`.
+`PEDIMENTO_ERP`.
 
 > Referencia completa de la API (todos los endpoints, params y respuestas):
 > `API_USO.md`. Este archivo es solo el camino corto para subir un documento.
@@ -38,7 +38,7 @@ KEY=$(grep -E '^API_KEY_APP=' .env.dev | cut -d= -f2- | tr -d '"'"'"' ')
 ```bash
 # --- comunes
 FILE="./test-docs/pages.pdf"
-TYPE="PEDIMENTO_ADUANAL"
+TYPE="PEDIMENTO_ERP"
 ```
 
 Comprueba que quedaron bien antes de seguir:
@@ -96,7 +96,7 @@ en una sola variable y no toques nada más**. No hay que separar parámetros ni
 reconstruir la firma: la URL ya lo trae todo.
 
 ```bash
-UPLOAD_URL='https://documentvalidationstack-....s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ADUANAL/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=20260831T202053Z&X-Amz-Expires=900&X-Amz-Security-Token=...&X-Amz-Signature=...&X-Amz-SignedHeaders=host&x-amz-meta-app-origin=TEST&x-amz-meta-lote=A123&x-id=PutObject'
+UPLOAD_URL='https://documentvalidationstack-....s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ERP/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=20260831T202053Z&X-Amz-Expires=900&X-Amz-Security-Token=...&X-Amz-Signature=...&X-Amz-SignedHeaders=host&x-amz-meta-app-origin=TEST&x-amz-meta-lote=A123&x-id=PutObject'
 
 curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
 ```
@@ -207,8 +207,8 @@ Los mensajes de API Gateway engañan. Esta tabla los traduce:
 Si no necesitas el detalle, el repo ya trae un script que hace los tres pasos:
 
 ```bash
-pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL              # dev
-pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL --env prod   # lee .env.production
+pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ERP              # dev
+pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ERP --env prod   # lee .env.production
 ```
 
 En dev toma `API_KEY_APP` de `.env.dev` automáticamente cuando la protección

@@ -58,8 +58,17 @@ El modo inline (`contentBase64`) fue eliminado — devuelve
 reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
 **Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). `metadata` es contexto libre del que sube que después se puede editar con `PATCH /documents/{id}/metadata` (1.5) y filtrar con `GET /documents?meta.<clave>=` (1.6); admite claves `[a-z0-9][a-z0-9._-]*`, valores planos US-ASCII y 2 KB de tope — lo demás es `400 INVALID_METADATA`. Acepta `application/json` o `application/x-www-form-urlencoded`:
-```jsonc
-{ "fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL", "metadata": {} }
+```json
+{
+  "fileName": "pedimento.pdf",
+  "documentType": "PEDIMENTO_ERP",
+  "metadata": {
+    "lote": "A123",
+    "folio_erp": "4711",
+    "estado_externo": "RECIBIDO",
+    "requiere_atencion": false
+  }
+}
 ```
 
 **Respuesta 200**: `{ "documentId", "bucket", "key", "documentType", "classificationMode", "uploadUrl"? }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3).

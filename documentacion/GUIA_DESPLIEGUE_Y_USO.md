@@ -156,7 +156,7 @@ Para probar con tus propios documentos **sin pasar por el API** (usa el mismo pi
 pnpm procesar                                        # toda la carpeta test-docs/pedimentos docs/docs
 pnpm procesar -- "mi expediente.pdf"                 # un solo archivo — se auto-detecta
 pnpm procesar -- ~/Descargas/expedientes             # tu carpeta completa — se auto-detecta
-pnpm procesar -- ~/docs PEDIMENTO_ADUANAL moonshotai.kimi-k2.5   # + tipo y modelo, posicionales
+pnpm procesar -- ~/docs PEDIMENTO_ERP moonshotai.kimi-k2.5       # + tipo y modelo, posicionales
 pnpm procesar -- ~/docs --importer OFU910626UQ0      # + checks cruzados de RFC importador
 pnpm procesar -- --out /tmp/salida                   # dónde dejar los resultados
 ```
@@ -198,7 +198,7 @@ En la carpeta **`catalogs/`** — **un archivo por tipo** (`PEDIMENTO_ADUANAL.js
 
 ```bash
 pnpm sync                          # sube TODA la carpeta a DynamoDB (hot-reload, sin redeploy)
-pnpm sync:one -- --type PEDIMENTO_ADUANAL   # sube un solo tipo
+pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo
 pnpm sync -- --dry-run             # valida el marshalling sin subir nada
 ```
 
@@ -243,13 +243,13 @@ Los tipos del catálogo de pedimentos pasan por el pipeline de expedientes. El e
     "pages": { "totalPages": 86, "nativePages": 68, "ocrPages": 18 },
     "documents": [
       {
-        "documentType": "PEDIMENTO_ADUANAL",
+        "documentType": "PEDIMENTO_ERP",
         "pageStart": 3,
         "pageEnd": 7,
         "status": "APPROVED",
         "confidence": 0.96,
         "fields": {
-          "NUMERO_PEDIMENTO_NORMALIZADO": {
+          "No_Pedimento": {
             "extractedValue": "26 07 3435 6041248", // SIEMPRE el texto original
             "normalizedValue": "260734356041248", // normalización determinística
             "confidence": 0.95,
@@ -293,7 +293,7 @@ pnpm build && pnpm run deploy
 
 # Opción B — hot-reload SIN redeploy (efecto inmediato):
 pnpm sync                              # toda la carpeta
-pnpm sync:one -- --type PEDIMENTO_ADUANAL   # un solo tipo
+pnpm sync:one -- --type PEDIMENTO_ERP       # un solo tipo
 ```
 
 > El sync a DynamoDB expande automáticamente los `field_sets` (p.ej. `COMMON_CFDI_FIELDS`, definidos en `catalogs/_shared.json`) y conserva todos los parámetros de reglas (`formula`, `tolerance`, `source`, `keywords`, `repeatable_fields`, …). Las `cross_document_validation_rules` (en `_shared.json`) solo viven en el JSON empaquetado: cambios en ellas requieren la Opción A.
@@ -344,7 +344,7 @@ tocar código: es config del catálogo.
 ```
 
 La clave que se indexa es siempre `TIPODOC#<valor normalizado>`
-(`PEDIMENTO_ADUANAL#260708236001630`), en la tabla
+(`PEDIMENTO_ERP#260708236001630`), en la tabla
 `document-validation-keys[-dev]`. El prefijo de tipo es lo que hace segura la
 palabra "unique" —dos tipos pueden usar el mismo espacio de números— y por eso
 la búsqueda rápida **necesita `docType`**.

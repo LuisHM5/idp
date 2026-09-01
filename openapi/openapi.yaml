@@ -178,7 +178,7 @@ paths:
             # UPLOAD_URL viene del paso 1. Si la pegas a mano, usa comillas SIMPLES: una
             # URL prefirmada real lleva ~12 `&` y sin comillas el shell la parte en el
             # primero, mandando el resto a segundo plano.
-            UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ADUANAL/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
+            UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ERP/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
 
             # NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL (mira los
             # `x-amz-meta-*` de arriba). Sin x-api-key: esto no pasa por el API.
@@ -615,7 +615,7 @@ paths:
             RESP=$(curl -sS -X POST "$API/documents" \
               -H "Content-Type: application/json" \
               -H "x-api-key: $KEY" \
-              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ADUANAL"}')
+              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ERP"}')
 
             # Guarda los dos: el uploadUrl para el paso 2, el documentId para el 3.
             DOC_ID=$(echo "$RESP"     | jq -r .documentId)
@@ -631,7 +631,7 @@ paths:
               headers: { "Content-Type": "application/json", "x-api-key": KEY },
               body: JSON.stringify({
                 fileName: "pedimento.pdf",
-                documentType: "PEDIMENTO_ADUANAL",
+                documentType: "PEDIMENTO_ERP",
               }),
             });
             if (!res.ok) throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
@@ -649,7 +649,7 @@ paths:
             res = requests.post(
                 f"{API}/documents",
                 headers={"x-api-key": KEY},
-                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL"},
+                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ERP"},
                 timeout=30,
             )
             res.raise_for_status()
@@ -674,7 +674,7 @@ paths:
             var res = await http.PostAsJsonAsync($"{api}/documents", new
             {
                 fileName = "pedimento.pdf",
-                documentType = "PEDIMENTO_ADUANAL",
+                documentType = "PEDIMENTO_ERP",
             });
             res.EnsureSuccessStatusCode();
 
@@ -693,7 +693,7 @@ paths:
                 summary: Pedimento con tipo declarado
                 value:
                   fileName: pedimento.pdf
-                  documentType: PEDIMENTO_ADUANAL
+                  documentType: PEDIMENTO_ERP
                   metadata: { lote: "A123" }
               autoClassify:
                 summary: Sin tipo — Bedrock clasifica y segmenta solo
@@ -707,7 +707,7 @@ paths:
                 summary: Prefirmado desde un cliente que solo manda formularios
                 value:
                   fileName: expediente.pdf
-                  documentType: PEDIMENTO_ADUANAL
+                  documentType: PEDIMENTO_ERP
       responses:
         "200":
           description: >
@@ -723,8 +723,8 @@ paths:
                   value:
                     documentId: e18d014a-...
                     bucket: documentvalidationstack-...
-                    key: raw/PEDIMENTO_ADUANAL/e18d014a-.../pedimento.pdf
-                    documentType: PEDIMENTO_ADUANAL
+                    key: raw/PEDIMENTO_ERP/e18d014a-.../pedimento.pdf
+                    documentType: PEDIMENTO_ERP
                     classificationMode: manual
                     uploadUrl: "https://...s3.amazonaws.com/..."
                     uploadMethod: PUT
@@ -806,11 +806,11 @@ paths:
             #     -G/--data-urlencode encodea espacios y acentos, y evita que el shell
             #     parta la URL en el primer `&`.
             curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-              --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+              --data-urlencode "docType=PEDIMENTO_ERP" \
               --data-urlencode "system=ERP" \
               --data-urlencode "meta.lote=A123" \
               --data-urlencode "meta.sucursal=CHIH" \
-              --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" \
+              --data-urlencode "field=PROVEEDOR_ID_FISCAL" \
               --data-urlencode "value=OFU910626UQ0" \
               --data-urlencode "summary=1" \
               | jq '{lookup, count, ids: [.matches[].documentId]}'
@@ -819,27 +819,27 @@ paths:
             #     Da igual con espacios o sin ellos: la normalización es la misma al
             #     escribir y al buscar (`digits` en este tipo).
             curl -sS -H "x-api-key: $KEY" \
-              "$API/documents?docType=PEDIMENTO_ADUANAL&field=NUMERO_PEDIMENTO&value=26%2007%200823%206001630" \
+              "$API/documents?docType=PEDIMENTO_ERP&field=No_Pedimento&value=26%2007%200823%206001630" \
               | jq '{lookup, count, ids: [.matches[].documentId]}'
 
             # --- Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
             #     Si el path no resuelve en la raíz, busca en profundidad por esa clave.
             curl -sS -H "x-api-key: $KEY" \
-              "$API/documents?docType=PEDIMENTO_ADUANAL&field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0&summary=1" \
+              "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_ID_FISCAL&value=OFU910626UQ0&summary=1" \
               | jq '.matches[] | {documentId, matchedValue, matchedAt}'
 
             # --- Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
             #     `matched` en cada resultado dice qué coincidió y dónde, por filtro.
             curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-              --data-urlencode "docType=PEDIMENTO_ADUANAL" \
-              --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" --data-urlencode "value=OFU910626UQ0" \
+              --data-urlencode "docType=PEDIMENTO_ERP" \
+              --data-urlencode "field=PROVEEDOR_ID_FISCAL" --data-urlencode "value=OFU910626UQ0" \
               --data-urlencode "field=PATENTE"                   --data-urlencode "value=3456" \
               | jq '.matches[] | {documentId, matched}'
 
             # --- Repetir un filtro es OR; filtros distintos siguen siendo AND.
             #     Esto es "(ERP o PORTAL) y (sucursal CHIH o JRZ)".
             curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-              --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+              --data-urlencode "docType=PEDIMENTO_ERP" \
               --data-urlencode "system=ERP,PORTAL" \
               --data-urlencode "meta.sucursal=CHIH,JRZ" \
               --data-urlencode "summary=1"
@@ -847,7 +847,7 @@ paths:
             # --- Subcadena, y acotando por fecha y estado. `op` afecta a field/value;
             #     `metaOp` hace lo mismo con todos los meta.<clave>.
             curl -sS -H "x-api-key: $KEY" \
-              "$API/documents?docType=PEDIMENTO_ADUANAL&field=AGENTE_ADUANAL_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
+              "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
         - lang: JavaScript
           label: Node.js 18+
           source: |
@@ -867,11 +867,11 @@ paths:
             // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
             // metadata del upload + un campo extraído del documento.
             const delLote = await buscar([
-              ["docType", "PEDIMENTO_ADUANAL"],
+              ["docType", "PEDIMENTO_ERP"],
               ["system", "ERP"],                                // quién lo subió, por su API key
               ["meta.lote", "A123"],                            // metadata del POST /documents
               ["meta.sucursal", "CHIH"],
-              ["field", "RFC_IMPORTADOR_EXPORTADOR"], ["value", "OFU910626UQ0"],
+              ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
               ["summary", "1"],
             ]);
             for (const m of delLote.matches)
@@ -881,15 +881,15 @@ paths:
             // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
             // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
             const porNumero = await buscar([
-              ["docType", "PEDIMENTO_ADUANAL"],
-              ["field", "NUMERO_PEDIMENTO"], ["value", "26 07 0823 6001630"],
+              ["docType", "PEDIMENTO_ERP"],
+              ["field", "No_Pedimento"], ["value", "26 07 0823 6001630"],
             ]);
             console.log(porNumero.lookup, porNumero.count);     // "uniqueKey" 1
 
             // Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
             const porRfcYPatente = await buscar([
-              ["docType", "PEDIMENTO_ADUANAL"],
-              ["field", "RFC_IMPORTADOR_EXPORTADOR"], ["value", "OFU910626UQ0"],
+              ["docType", "PEDIMENTO_ERP"],
+              ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
               ["field", "PATENTE"], ["value", "3456"],
             ]);
             for (const m of porRfcYPatente.matches)
@@ -911,11 +911,11 @@ paths:
             # Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
             # metadata del upload + un campo extraído del documento.
             del_lote = buscar([
-                ("docType", "PEDIMENTO_ADUANAL"),
+                ("docType", "PEDIMENTO_ERP"),
                 ("system", "ERP"),                               # quién lo subió, por su API key
                 ("meta.lote", "A123"),                           # metadata del POST /documents
                 ("meta.sucursal", "CHIH"),
-                ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+                ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
                 ("summary", "1"),
             ])
             for m in del_lote["matches"]:
@@ -924,15 +924,15 @@ paths:
             # Camino rápido: campo declarado `unique_key` → una sola Query.
             # El valor se normaliza igual al escribir y al buscar, así que da lo mismo
             # mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-            por_numero = buscar([("docType", "PEDIMENTO_ADUANAL"),
-                                 ("field", "NUMERO_PEDIMENTO"),
+            por_numero = buscar([("docType", "PEDIMENTO_ERP"),
+                                 ("field", "No_Pedimento"),
                                  ("value", "26 07 0823 6001630")])
             print(por_numero["lookup"], por_numero["count"])      # "uniqueKey" 1
 
             # Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
             por_rfc_y_patente = buscar([
-                ("docType", "PEDIMENTO_ADUANAL"),
-                ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+                ("docType", "PEDIMENTO_ERP"),
+                ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
                 ("field", "PATENTE"), ("value", "3456"),
             ])
             for m in por_rfc_y_patente["matches"]:
@@ -958,11 +958,11 @@ paths:
             // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
             // metadata del upload + un campo extraído del documento.
             var delLote = await BuscarAsync(
-                ("docType", "PEDIMENTO_ADUANAL"),
+                ("docType", "PEDIMENTO_ERP"),
                 ("system", "ERP"),                                 // quién lo subió, por su API key
                 ("meta.lote", "A123"),                             // metadata del POST /documents
                 ("meta.sucursal", "CHIH"),
-                ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+                ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
                 ("summary", "1"));
             foreach (var m in delLote.GetProperty("matches").EnumerateArray())
             {
@@ -976,8 +976,8 @@ paths:
             // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
             // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
             var porNumero = await BuscarAsync(
-                ("docType", "PEDIMENTO_ADUANAL"),
-                ("field", "NUMERO_PEDIMENTO"),
+                ("docType", "PEDIMENTO_ERP"),
+                ("field", "No_Pedimento"),
                 ("value", "26 07 0823 6001630"));
             Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("count")}");
       tags: [Consultar documentos]
@@ -1006,7 +1006,7 @@ paths:
         **Cómo se combinan:** filtros distintos son AND
         (`system=ERP&meta.lote=A123` = del ERP *y* del lote A123); repetir uno
         es OR (`system=ERP,PORTAL`, `meta.lote=A123,B456`,
-        `docType=FACTURA,PEDIMENTO_ADUANAL`). Los `field`/`value` repetidos se
+        `docType=FACTURA,PEDIMENTO_ERP`). Los `field`/`value` repetidos se
         emparejan **por posición** en la URL y son AND entre sí; si el número
         de `field` y de `value` no coincide → `400`, no una pareja inventada.
         Un documento sin `metadata` (o sin `appOrigin`) nunca matchea un
@@ -1015,7 +1015,7 @@ paths:
 
         **No necesitas el dot-path completo: basta el NOMBRE del campo.** Si el
         path no resuelve en la raíz del envelope, se hace una búsqueda profunda
-        por su última clave, así que `field=NUMERO_PEDIMENTO` lo encuentra esté
+        por su última clave, así que `field=No_Pedimento` lo encuentra esté
         donde esté anidado. `matchedAt` en cada match dice dónde coincidió: el
         path exacto, o `*.CLAVE` si fue por búsqueda profunda.
 
@@ -1034,8 +1034,8 @@ paths:
         | `scan` | **No mandaste `docType`** | Scan de toda la tabla — evítalo |
 
 
-        Hoy `PEDIMENTO_ADUANAL` declara `unique_key` en `NUMERO_PEDIMENTO` y
-        `NUMERO_PEDIMENTO_NORMALIZADO`, ambos normalizados a solo dígitos: la
+        Hoy `PEDIMENTO_ERP` declara `unique_key` en `No_Pedimento`,
+        normalizado a solo dígitos: la
         misma normalización se aplica al escribir y al buscar, así que
         `26 07 0823 6001630` y `260708236001630` encuentran lo mismo.
 
@@ -1056,7 +1056,7 @@ paths:
         - name: docType
           in: query
           description: >
-            TYPE_ID (`PEDIMENTO_ADUANAL`) o nombre/alias normalizado. Varios
+            TYPE_ID (`PEDIMENTO_ERP`) o nombre/alias normalizado. Varios
             tipos separados por coma. Alias del param: `documentType`, `tipo`.
           schema: { type: string }
         - name: system
@@ -1110,7 +1110,7 @@ paths:
           in: query
           description: >
             Dot-path del campo extraído, p. ej.
-            `extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO`. Si no resuelve
+            `extractedEntities.No_Pedimento`. Si no resuelve
             en la raíz, hace búsqueda profunda por la última clave del path.
             Cuando es la `unique_key` declarada por el tipo (con `docType` y
             `op=eq`) se resuelve por la tabla de lookup en una sola Query.
