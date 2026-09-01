@@ -103,6 +103,7 @@ import {
   BatchGetCommand,
   QueryCommand,
   ScanCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { S3Client, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -119,6 +120,7 @@ import {
   paramList,
   splitList,
 } from "./search-filters.mjs";
+import { parseMetadataPatch } from "./metadata-rules.mjs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -148,8 +150,13 @@ const DEFAULT_DOWNLOAD_EXPIRY_SECONDS = 15 * 60;
 const MAX_DOWNLOAD_EXPIRY_SECONDS = 60 * 60;
 /** Types whose items hold several documents inside (see expandContainers). */
 const CONTAINER_TYPES = ["EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"];
-/** Attributes read from the base table for every candidate. */
-const ITEM_PROJECTION = "DocumentId, WorkflowStatus, EnrichmentResult";
+/** Attributes read from the base table for every candidate.
+ * `Metadata` is aliased because it is close enough to DynamoDB's reserved
+ * words not to be worth the gamble, and it is projected on every read because
+ * it — not the snapshot inside EnrichmentResult — is the authoritative
+ * metadata once an app has patched it (see applyCurrentMetadata). */
+const ITEM_PROJECTION = "DocumentId, WorkflowStatus, EnrichmentResult, #md";
+const ITEM_PROJECTION_NAMES = { "#md": "Metadata" };
 
 function json(statusCode, payload) {
   return {
@@ -173,7 +180,13 @@ function parseEnrichment(item) {
 
 /** No x-api-key, or a valid key never registered in APPS_TABLE — today's
  * behavior, unchanged: unrestricted read access. See the module docstring. */
-const UNRESTRICTED = { appName: null, accessScope: "all", allowedDocTypes: [], allowFieldSearch: true };
+const UNRESTRICTED = {
+  appName: null,
+  accessScope: "all",
+  allowedDocTypes: [],
+  allowFieldSearch: true,
+  allowMetadataWrite: true,
+};
 
 /**
  * Resolve the caller's own app + permissions from its x-api-key, mirroring
@@ -193,6 +206,7 @@ async function resolveCallerApp(event) {
       accessScope: Item.AccessScope || "own",
       allowedDocTypes: Item.AllowedDocTypes || [],
       allowFieldSearch: !!Item.AllowFieldSearch,
+      allowMetadataWrite: !!Item.AllowMetadataWrite,
     };
   } catch (err) {
     console.error("Failed to resolve caller app permissions (failing open — read access unaffected):", err);

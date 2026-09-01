@@ -120,18 +120,27 @@ COLUMNAS_ERP = {
     "tipo_mercancia", "CL_FLETEIEPS", "num_documento", "folio", "CL_CC", "CL_IEPS_CAFE",
     "Usuario_Libero", "Fecha_Cierre", "Ped_A1_Exportacion", "CL_REC",
 }
-# Lo único que PEDIMENTO_ERP declara sin ser columna: insumo del QR y del
-# cuadro de liquidación, más la auditoría de que el QR decodificó.
+# Columnas de Costos.dbo.C_ENC_FACTURA (la tabla de facturas del ERP, otra
+# distinta de la de pedimentos) que el pedimento sí imprime.
+COLUMNAS_C_ENC_FACTURA = {"Factura", "Fecha_Factura", "Total_factura"}
+
+# Lo que PEDIMENTO_ERP declara sin ser columna de ninguna de las dos tablas:
+# insumo del QR y del cuadro de liquidación, la auditoría de que el QR
+# decodificó, y los datos del proveedor que el ERP resuelve por su cuenta
+# (los códigos internos Proveedor/prov salen del ID fiscal, no de la extracción).
 INSUMOS_ERP = {
     "ANIO_PEDIMENTO", "ADUANA_DESPACHO", "NUMERO_CONSECUTIVO",
     "QR_PEDIMENTO", "DEPOSITO_REFERENCIADO_QR_VALIDO",
     "CUADRO_LIQUIDACION", "LIQUIDACION_NORMALIZADA",
+    "PROVEEDOR_ID_FISCAL", "PROVEEDOR_NOMBRE", "PROVEEDOR_DOMICILIO",
+    "PROVEEDOR_VINCULACION", "num_acuse_valor", "INCOTERM", "MONEDA_FACTURA",
+    "FACTOR_MONEDA_FACTURA", "FACTURA_VALOR_DOLARES",
 }
 
 
 def test_pedimento_erp_solo_declara_columnas_del_erp():
     entry = cargar("PEDIMENTO_ERP")
-    sobran = set(entry.field_tree) - COLUMNAS_ERP - INSUMOS_ERP
+    sobran = set(entry.field_tree) - COLUMNAS_ERP - COLUMNAS_C_ENC_FACTURA - INSUMOS_ERP
     assert not sobran, f"campos que no son columna del ERP ni insumo declarado: {sorted(sobran)}"
 
     cl = set(entry.field_tree["LIQUIDACION_NORMALIZADA"].fields)
@@ -326,3 +335,76 @@ def test_pedimento_aduanal_no_cambia():
 
     assert derived.sources == {} and derived.labels == {}
     assert json.dumps(entities, sort_keys=True) == antes
+
+
+# ---------------------------------------------------------------- proveedor
+
+# Fila real de test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf':
+# "334274279 NO" bajo VINCULACION, y la tabla de facturas debajo.
+PROVEEDOR_ESPERADO = {
+    "PROVEEDOR_ID_FISCAL": "string",
+    "PROVEEDOR_NOMBRE": "string",
+    "PROVEEDOR_DOMICILIO": "string",
+    "PROVEEDOR_VINCULACION": "string",
+    "Factura": "string",
+    "num_acuse_valor": "string",
+    "Fecha_Factura": "date",
+    "Total_factura": "number",
+    "INCOTERM": "string",
+    "MONEDA_FACTURA": "string",
+    "FACTOR_MONEDA_FACTURA": "number",
+    "FACTURA_VALOR_DOLARES": "number",
+}
+
+
+def test_los_datos_del_proveedor_estan_declarados_con_su_tipo():
+    """El bloque DATOS DEL PROVEEDOR O COMPRADOR completo, con el tipo que
+    espera el ERP: la fecha como date y los importes como number, no como
+    texto que alguien tenga que convertir del otro lado."""
+    entry = cargar("PEDIMENTO_ERP")
+
+    for nombre, tipo in PROVEEDOR_ESPERADO.items():
+        assert nombre in entry.field_tree, f"falta {nombre}"
+        assert entry.field_tree[nombre].type == tipo, (
+            f"{nombre} es {entry.field_tree[nombre].type}, se esperaba {tipo}"
+        )
+
+
+def test_ninguno_de_esos_campos_se_le_pide_dos_veces_al_modelo():
+    """El valor en dólares de UNA factura y el del encabezado del pedimento son
+    cosas distintas y tienen nombres distintos: si alguien los colapsara,
+    Valor_ComercialDol (suma de todas las facturas) se llenaría con el importe
+    de una sola."""
+    entry = cargar("PEDIMENTO_ERP")
+
+    assert "Valor_ComercialDol" in entry.field_tree
+    assert "FACTURA_VALOR_DOLARES" in entry.field_tree
+    assert entry.field_tree["Valor_ComercialDol"].hint != entry.field_tree["FACTURA_VALOR_DOLARES"].hint
+
+
+@pytest.mark.parametrize(
+    "valor, valida",
+    [
+        ("35079805", True),                    # NUMERO DE ACUSE DE VALOR, solo el número
+        ("4099", True),                        # NUM. FACTURA tal cual
+        ("A-1234", True),
+        ("COVE2689JP013 / 35079805", False),   # el acuse completo va en num_acuse_valor
+        ("COVE2689JP013/35079805", False),
+    ],
+)
+def test_la_factura_rechaza_el_acuse_completo(valor, valida):
+    """La regla que el usuario fijó — en Factura va SOLO el número — es una
+    regla real, no un hint: el pedimento con el COVE pegado sale inválido."""
+    entry = cargar("PEDIMENTO_ERP")
+    tree, _, _ = resolve_field_tree({"Factura": valor}, {}, entry)
+
+    assert tree["Factura"]["valid"] is valida, tree["Factura"]["reason"]
+
+
+def test_el_incoterm_debe_ser_de_tres_letras():
+    entry = cargar("PEDIMENTO_ERP")
+    tree, _, _ = resolve_field_tree({"INCOTERM": "CPT"}, {}, entry)
+    assert tree["INCOTERM"]["valid"] is True
+
+    tree, _, _ = resolve_field_tree({"INCOTERM": "CPT USD 21,178.80"}, {}, entry)
+    assert tree["INCOTERM"]["valid"] is False

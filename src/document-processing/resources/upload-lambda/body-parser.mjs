@@ -71,6 +71,12 @@ const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id"]);
 /** S3's ceiling for all user metadata on one object (keys + values together). */
 const MAX_METADATA_BYTES = 2048;
 
+/** Keys have to survive an HTTP header name AND a `?meta.<clave>=` query param
+ * (see the search endpoint), so they are lowercase alphanumerics plus `.`, `_`
+ * and `-`. Rejecting a key with a space HERE is what keeps it from becoming an
+ * opaque S3 error at the presigned PUT. */
+const METADATA_KEY_SHAPE = /^[a-z0-9][a-z0-9._-]*$/;
+
 /**
  * Normalize the caller's `metadata` into what S3 can actually store, failing
  * loudly HERE instead of at the client's `PUT` — every constraint below
@@ -91,6 +97,13 @@ const MAX_METADATA_BYTES = 2048;
  *
  * Returns `{ metadata }` or `{ error: {code, message} }`, same contract as
  * `parseBody` — this module stays free of any HTTP shape of its own.
+ *
+ * ⚠️ These rules must stay identical to query-lambda's `metadata-rules.mjs`,
+ * which applies the same contract at `PATCH /documents/{id}/metadata`. The two
+ * Lambdas bundle from separate asset directories with a plain `cp`, so there is
+ * no way to import one from the other; `tests/unit/node/metadata-rules.test.mjs`
+ * runs BOTH against one shared table of cases so the parity is a test and not a
+ * comment.
  */
 export function normalizeMetadata(metadata) {
   if (metadata === undefined || metadata === null) return { metadata: {} };
@@ -108,6 +121,16 @@ export function normalizeMetadata(metadata) {
   for (const [rawKey, rawValue] of Object.entries(metadata)) {
     const key = String(rawKey).trim().toLowerCase();
     if (!key || RESERVED_METADATA_KEYS.has(key)) continue;
+    if (!METADATA_KEY_SHAPE.test(key)) {
+      return {
+        error: {
+          code: "INVALID_METADATA",
+          message:
+            `Metadata key '${key}' must be lowercase alphanumerics plus '.', '_' or '-' ` +
+            "(it has to work both as an S3 metadata header and as a ?meta.<key>= filter)",
+        },
+      };
+    }
     if (rawValue === null || rawValue === undefined) continue;
     if (typeof rawValue === "object") {
       return {
@@ -121,7 +144,7 @@ export function normalizeMetadata(metadata) {
     }
     const value = String(rawValue).trim();
     if (!value) continue;
-    if (!/^[\x20-\x7e]*$/.test(key) || !/^[\x20-\x7e]*$/.test(value)) {
+    if (!/^[\x20-\x7e]*$/.test(value)) {
       return {
         error: {
           code: "INVALID_METADATA",
