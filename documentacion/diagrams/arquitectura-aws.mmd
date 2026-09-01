@@ -20,11 +20,11 @@ flowchart TB
     DDBT[("DynamoDB<br/>tracking")]:::database
     DDBC[("DynamoDB<br/>catálogo")]:::database
     EB["EventBridge<br/>idp-broker"]:::integration
-    KMSN[("Prod: 1 CMK compartido<br/>Dev: cifrado default AWS")]:::security
+    KMSN[("Cifrado<br/>CMK prod · default dev")]:::security
     QL["Query Lambda"]:::compute
 
     CLIENTE -->|"registra"| UP
-    CLIENTE -->|"PUT directo (cualquier tamaño)"| RAW
+    CLIENTE --> RAW
     RAW --> SQS --> SFN --> LAMBDA
     LAMBDA --> RES
     LAMBDA --> DDBT

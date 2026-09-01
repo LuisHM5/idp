@@ -12,6 +12,7 @@ info:
   version: "1.0.0"
   license:
     name: ISC
+    identifier: ISC
   description: |
     API REST para procesar documentos (pedimentos aduanales, facturas,
     expedientes multi-documento...) con el pipeline de clasificación →

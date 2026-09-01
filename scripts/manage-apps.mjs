@@ -765,7 +765,7 @@ async function confirmGrantDeny(args, verb, notes) {
 async function cmdGrant(args) {
   const prompted = await promptGrantDeny(args, "grant");
   args = prompted.args;
-  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:grant -- --name <appName> [--doctype A,B] [--access-scope all] [--field-search]");
+  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:grant -- --name <appName> [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write]");
 
   const region = args.region || process.env.AWS_REGION || "us-east-1";
   const table = resolveAppsTable(args);
@@ -806,7 +806,7 @@ async function cmdGrant(args) {
 async function cmdDeny(args) {
   const prompted = await promptGrantDeny(args, "deny");
   args = prompted.args;
-  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:deny -- --name <appName> [--doctype A,B] [--access-scope own] [--field-search]");
+  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:deny -- --name <appName> [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write]");
 
   const region = args.region || process.env.AWS_REGION || "us-east-1";
   const table = resolveAppsTable(args);

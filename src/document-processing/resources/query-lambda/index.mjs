@@ -556,8 +556,11 @@ async function patchMetadataById(id, event, caller) {
           Key: { DocumentId: documentId },
           UpdateExpression:
             "SET #md = :next, #mv = if_not_exists(#mv, :zero) + :one, #mu = :updatedAt, #mb = :updatedBy",
-          ConditionExpression: hasVersion ? "#mv = :expectedVersion" : "attribute_not_exists(#mv)",
+          ConditionExpression: hasVersion
+            ? "attribute_exists(#id) AND #mv = :expectedVersion"
+            : "attribute_exists(#id) AND attribute_not_exists(#mv)",
           ExpressionAttributeNames: {
+            "#id": "DocumentId",
             "#md": "Metadata",
             "#mv": "MetadataVersion",
             "#mu": "MetadataUpdatedAt",

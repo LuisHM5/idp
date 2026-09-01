@@ -8,12 +8,22 @@ usarla después para buscarlo. Esta ficha resume verbos, parámetros y respuesta
 
 Base: `https://idp.alsuper.com` · Auth: `x-api-key` en todo salvo el paso 2.
 
+Los ejemplos usan estas variables:
+
+```bash
+API="https://idp.alsuper.com"
+KEY="<API_KEY_DE_LA_APP>"
+DOC_ID="<DOCUMENT_ID_DEVUELTO_POR_EL_POST>"
+UPLOAD_URL="<UPLOAD_URL_DEVUELTA_POR_EL_POST>"
+```
+
 ```
 1. POST /documents          → documentId, uploadUrl
 2. PUT  {uploadUrl}         → (S3, arranca el pipeline)
 3. GET  /documents/{id}     → resultado
 4. PATCH /documents/{id}/metadata → estado/marcas externas (opcional)
 5. GET  /documents/{id}/file→ archivo original   (opcional)
+6. GET  /documents?...       → buscar/listar      (opcional)
 ```
 
 ---
@@ -26,26 +36,36 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 |---|---|---|
 | `fileName` | **requerido** | `pdf` `jpg` `jpeg` `png` `xml` `xlsx` `csv` |
 | `documentType` | opcional | TYPE_ID, nombre o alias. **Requerido** en `xml` `xlsx` `csv` |
-| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. Editable (§4) y filtrable con `meta.<clave>` (§6). En form, JSON en string |
+| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. `app-origin` y `model-id` están reservadas. Editable (§4) y filtrable con `meta.<clave>` (§6). En form, JSON en string |
 | `modelId` | opcional | solo dev |
 
-Ejemplo de `metadata` al registrar:
+Petición completa de ejemplo (la metadata siempre va dentro del body del
+documento; no se manda como un JSON separado):
 
-```json
-{
-  "lote": "A123",
-  "folio_erp": "4711",
-  "estado_externo": "RECIBIDO",
-  "requiere_atencion": false
-}
+```bash
+curl -sS -X POST "$API/documents" \
+  -H "x-api-key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fileName": "pedimento.pdf",
+    "documentType": "PEDIMENTO_ADUANAL",
+    "metadata": {
+      "lote": "A123",
+      "folio_erp": "4711",
+      "estado_externo": "RECIBIDO",
+      "requiere_atencion": false
+    }
+  }'
 ```
 
 Números y booleanos se guardan como texto (`"4711"`, `"false"`). Los nombres
-de estado son libres de la app; no sustituyen `validation.status`.
+de estado son libres de la app; no sustituyen `validation.status`. `modelId`
+se omite porque es únicamente un override de pruebas en dev; si se usa, va al
+mismo nivel que `fileName`, no dentro de `metadata`.
 
 | `200` | |
 |---|---|
-| `documentId` | id para los pasos 3 y 4 |
+| `documentId` | id para los pasos 3, 4 y 5 |
 | `uploadUrl` | destino del paso 2 |
 | `uploadMethod` | `PUT` |
 | `uploadExpiresInSeconds` · `uploadExpiresAt` | 900 s |
@@ -61,6 +81,10 @@ Auth: **ninguna** · Body: **bytes crudos** · Cabeceras: **ninguna**
 
 Host S3, no la API. Usa la URL completa tal cual.
 
+```bash
+curl -sS -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
+```
+
 | `200` | cuerpo vacío |
 |---|---|
 | `403` | `AccessDenied` (mandaste cabeceras `x-amz-*`) · `SignatureDoesNotMatch` (URL alterada o expirada) |
@@ -71,6 +95,10 @@ Host S3, no la API. Usa la URL completa tal cual.
 
 Auth: `x-api-key`
 
+```bash
+curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
+```
+
 | Param | | |
 |---|---|---|
 | `id` | **requerido** | path. Acepta id completo o prefijo |
@@ -78,9 +106,12 @@ Auth: `x-api-key`
 
 | `200` | |
 |---|---|
-| `documentId` · `validation.status` | `APROBADO` `REQUIERE_REVISION` `RECHAZADO` |
-| `expediente.documents[]` | `documentType` `pageStart` `pageEnd` `status` `extractedEntities` |
-| `tracking` · `warnings` · `crossDocumentChecks` | |
+| `documentId` · `workflowStatus` · `documentType` · `documentTypeName` | wrapper de la API |
+| `result.documentId` · `result.documentClassification` | envelope persistido |
+| `result.validation.status` | `APROBADO` `REQUIERE_REVISION` `RECHAZADO` |
+| `result.expediente.documents[]` | `documentType` `pageStart` `pageEnd` `status` `extractedEntities` |
+| `result.tracking` · `result.metadata` · `result.warnings` · `result.expediente.crossDocumentChecks` | contexto y detalle |
+| `fullResult` | solo con `full=1`; resultado profundo desde S3 con la metadata vigente superpuesta |
 
 `404` — no existe **o todavía procesando**. Reintenta.
 
@@ -88,25 +119,45 @@ Auth: `x-api-key`
 
 ## 4. `PATCH /documents/{id}/metadata`
 
-Auth: `x-api-key` · Requiere `AllowMetadataWrite=true` · Body: JSON Merge Patch plano
+Auth: `x-api-key` · Requiere `AllowMetadataWrite=true` · Body: JSON Merge Patch plano.
+Un valor crea/reemplaza; `null` o string vacío borra; una clave ausente se
+conserva. Los estados externos son libres de la app y nunca cambian
+`validation.status`.
 
-| Body | efecto |
-|---|---|
-| `{"estado_externo":"EN_REVISION"}` | crea/reemplaza; estado libre de la app, no cambia `validation.status` |
-| `{"estado_externo":null}` | borra la clave |
-| clave ausente | conserva el valor actual |
+Petición completa para crear/reemplazar claves:
 
-Ejemplos de parámetros/body:
-
-```jsonc
-// Avanzar el seguimiento de la app y agregar una marca
-{ "estado_externo": "ENVIADO_A_ERP", "folio_erp": "4711" }
-
-// Quitar una marca, conservando todas las demás claves
-{ "requiere_atencion": null }
+```bash
+curl -sS -X PATCH "$API/documents/$DOC_ID/metadata" \
+  -H "x-api-key: $KEY" \
+  -H "Content-Type: application/merge-patch+json" \
+  -d '{
+    "estado_externo": "ENVIADO_A_ERP",
+    "folio_erp": "4711",
+    "requiere_atencion": true
+  }'
 ```
 
-`200` → `documentId` · `metadata` completa · `metadataVersion` · `updatedAt` · `updatedBy`
+Petición completa para borrar una clave:
+
+```bash
+curl -sS -X PATCH "$API/documents/$DOC_ID/metadata" \
+  -H "x-api-key: $KEY" \
+  -H "Content-Type: application/merge-patch+json" \
+  -d '{"requiere_atencion": null}'
+```
+
+El body mostrado es **todo el body HTTP del PATCH**, pero no tiene que repetir
+todo el mapa de metadata: solo enumera las operaciones. Las claves ausentes se
+conservan; por eso reenviar el mapa completo sería innecesario y propenso a
+pisar cambios de otra integración.
+
+| `200` | |
+|---|---|
+| `documentId` | documento modificado |
+| `metadata` | mapa completo después de aplicar el parche, no solo las claves enviadas |
+| `metadataVersion` | versión entera resultante del control de concurrencia |
+| `updatedAt` | fecha ISO-8601 de la modificación |
+| `updatedBy` | nombre registrado de la app que hizo el cambio |
 
 `400` `INVALID_JSON` `INVALID_METADATA` `EMPTY_PATCH` · `403` `FORBIDDEN` · `404` `NOT_FOUND` · `409` `METADATA_CONFLICT`
 
@@ -116,12 +167,22 @@ Ejemplos de parámetros/body:
 
 Auth: `x-api-key`
 
+```bash
+curl -sS "$API/documents/$DOC_ID/file?expiresIn=900" -H "x-api-key: $KEY"
+```
+
 | Param | | |
 |---|---|---|
 | `id` | **requerido** | path |
 | `expiresIn` | opcional | segundos. default 900, min 60, max 3600 |
 
-`200` → `downloadUrl` (prefirmada; la descarga va a S3, sin `x-api-key`) · `404`
+| `200` | |
+|---|---|
+| `documentId` · `fileName` · `fileSizeBytes` · `location` | identidad y ubicación (`processed`/`failed`) |
+| `downloadUrl` · `downloadMethod` | URL prefirmada + `GET`; la descarga va a S3 sin `x-api-key` |
+| `expiresInSeconds` · `expiresAt` | vigencia efectiva |
+
+`404` `NOT_FOUND` o `FILE_NOT_FOUND`
 
 ---
 
@@ -148,27 +209,52 @@ Cuatro filtros, **todos en AND**. Repetir uno es **OR**.
 | `summary` | `false` | `1` resumen ligero (incluye `appOrigin` y `metadata`) |
 | `full` | `false` | `1` agrega detalle desde S3 |
 
-```
-GET /documents?docType=PEDIMENTO_ADUANAL&system=ERP&meta.lote=A123
-              &field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0
+Petición completa con todos los grupos de parámetros:
+
+```bash
+curl -sS -G "$API/documents" \
+  -H "x-api-key: $KEY" \
+  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "system=ERP" \
+  --data-urlencode "meta.lote=A123" \
+  --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" \
+  --data-urlencode "value=OFU910626UQ0" \
+  --data-urlencode "op=eq" \
+  --data-urlencode "status=APROBADO" \
+  --data-urlencode "since=2026-09-01T00:00:00Z" \
+  --data-urlencode "until=2026-09-30T23:59:59Z" \
+  --data-urlencode "order=desc" \
+  --data-urlencode "expand=true" \
+  --data-urlencode "limit=25" \
+  --data-urlencode "summary=false" \
+  --data-urlencode "full=false"
 ```
 
 Ejemplos de metadata:
 
-```text
-GET /documents?meta.estado_externo=EN_REVISION
-GET /documents?docType=PEDIMENTO_ADUANAL&meta.folio_erp=4711
-GET /documents?meta.sucursal=CHIH&meta.estado_externo=ENVIADO_A_ERP
-GET /documents?meta.folio_erp=47&metaOp=contains
+```bash
+curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
+  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "meta.sucursal=CHIH" \
+  --data-urlencode "meta.estado_externo=ENVIADO_A_ERP"
+
+curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
+  --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+  --data-urlencode "meta.folio_erp=47" \
+  --data-urlencode "metaOp=contains"
 ```
 
 | `200` | |
 |---|---|
 | `count` · `scanned` · `matches[]` | |
-| `lookup` | `uniqueKey` (1 Query) · `typeIndex` · `scan` |
-| `filters[]` · `system[]` · `metaFilters[]` | eco de lo que se aplicó |
-| `matches[].matched[]` | `{field, matchedValue, matchedAt}` por filtro |
-| `matches[].matchedValue` · `matchedAt` | el primero, por compatibilidad |
+| `docTypes[]` · `resolvedTypes[]` · `expandedContainers` | presentes cuando se pidió/acotó tipo |
+| `field` · `value` · `op` · `filters[]` | eco de filtros extraídos; los tres escalares corresponden al primero |
+| `system[]` · `metaFilters[]` · `metaOp` | eco de sistema/metadata cuando se enviaron |
+| `status` · `since` · `until` · `order` | eco de estado/ventana/orden |
+| `summary` · `full` · `indexed` · `lookup` | forma de respuesta y camino (`uniqueKey`, `typeIndex`, `scan`) |
+| `restrictedToApp` · `restrictedToDocTypes[]` | solo si los permisos de la app acotaron la consulta |
+| `matches[].matched[]` | `{field, matchedValue, matchedAt}` por filtro extraído |
+| `matches[].matchedValue` · `matches[].matchedAt` | coincidencia del primer filtro, por compatibilidad |
 
 `400` `MISSING_PARAMS` `INVALID_PARAMS` · `403` sin permiso de `docType` o sin `AllowFieldSearch` (`system`/`meta.<clave>` no lo piden)
 

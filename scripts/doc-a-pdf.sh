@@ -74,6 +74,7 @@ CSSEOF
 # añadiría encima un bloque <h1 class="title"> duplicado.
 pandoc "$IN" \
   --standalone --embed-resources \
+  --resource-path="$(dirname "$IN")" \
   --css "$TMP/estilo.css" \
   -o "$TMP/doc.html"
 
