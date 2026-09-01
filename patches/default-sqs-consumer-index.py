@@ -66,23 +66,40 @@ def handler(event, context):
 
                     print(f'Processing S3 object: s3://{bucket}/{key}')
 
-                    # Which app uploaded this (set by upload-lambda as S3
-                    # object metadata, resolved from the caller's x-api-key —
-                    # see upload-lambda/index.mjs's resolveAppOrigin). Read
-                    # here, not in the enrichment Lambda, so it reaches EVERY
-                    # document regardless of pipeline branch: the enrichment
-                    # Lambda only re-fetches the raw object (and its metadata)
-                    # for the expediente flow or when re-extraction triggers,
-                    # not on every standard-flow invocation. Best-effort and
-                    # isolated from the record's own try/except below — a
-                    # failure here (permissions, throttling, object already
-                    # moved) must never trigger an SQS retry/DLQ.
+                    # Everything upload-lambda attached to the object as S3
+                    # metadata, read back in ONE HeadObject:
+                    #
+                    #   - `app-origin` — which app uploaded this, resolved from
+                    #     the caller's x-api-key (see upload-lambda/index.mjs's
+                    #     resolveAppOrigin);
+                    #   - every other key — the caller's own `metadata` from
+                    #     `POST /documents` (normalizeMetadata already lowercased
+                    #     it and stripped the two reserved keys below), carried
+                    #     onto the result envelope as `metadata` so
+                    #     `GET /documents?meta.<key>=<value>` can filter on it.
+                    #
+                    # Read here, not in the enrichment Lambda, so both reach
+                    # EVERY document regardless of pipeline branch: the
+                    # enrichment Lambda only re-fetches the raw object (and its
+                    # metadata) for the expediente flow or when re-extraction
+                    # triggers, not on every standard-flow invocation.
+                    # Best-effort and isolated from the record's own
+                    # try/except below — a failure here (permissions,
+                    # throttling, object already moved) must never trigger an
+                    # SQS retry/DLQ, it just costs traceability on one document.
                     app_origin = None
+                    upload_metadata = {}
                     try:
                         head = s3_client.head_object(Bucket=bucket, Key=key)
-                        app_origin = (head.get('Metadata') or {}).get('app-origin')
+                        object_metadata = head.get('Metadata') or {}
+                        app_origin = object_metadata.get('app-origin')
+                        # `model-id` is an execution knob, not document context.
+                        upload_metadata = {
+                            k: v for k, v in object_metadata.items()
+                            if k not in ('app-origin', 'model-id') and v not in (None, '')
+                        }
                     except Exception as e:
-                        print(f'Could not read app-origin metadata for s3://{bucket}/{key}: {e}')
+                        print(f'Could not read upload metadata for s3://{bucket}/{key}: {e}')
 
                     # Manual classification (upload-lambda's `documentType` param)
                     # stores the object as raw/{TYPE}/{uuid}/{file} instead of the
@@ -129,7 +146,8 @@ def handler(event, context):
                         'eventTime': event_time,
                         'eventName': event_name,
                         'source': 'sqs-consumer',
-                        **({'appOrigin': app_origin} if app_origin else {})
+                        **({'appOrigin': app_origin} if app_origin else {}),
+                        **({'uploadMetadata': upload_metadata} if upload_metadata else {})
                     }
 
                     print(f'Starting Step Functions execution with input: {json.dumps(step_function_input, indent=2)}')

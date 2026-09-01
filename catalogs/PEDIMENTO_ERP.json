@@ -17,6 +17,7 @@
       "Tipo": "Tipo (el pedimento imprime IMP/EXP; la traducción al código numérico del ERP es del ERP, no del documento)",
       "Pais_Origen": "Pais_Origen (código literal de la partida, ej. USA; misma nota que Tipo)",
       "Tipo_Cambio": "Tipo_Cambio",
+      "Tipo_Pago": "Tipo_Pago (no se imprime en el pedimento: se deriva del TOTAL del cuadro de liquidación con un bloque `derived`; código numérico 1=Anticipo y Pasivo / 2=Solo Anticipo / 3=Solo Pasivo, con la etiqueta en `label`)",
       "Valor_ComercialDol": "Valor_ComercialDol",
       "ValorAduana": "ValorAduana",
       "Valor_ComercialPesos": "Valor_ComercialPesos",
@@ -30,7 +31,7 @@
       "ANIO_PEDIMENTO / ADUANA_DESPACHO / NUMERO_CONSECUTIVO / QR_PEDIMENTO / DEPOSITO_REFERENCIADO_QR_VALIDO / CUADRO_LIQUIDACION": "sin columna en el ERP — son insumo del QR y del cuadro de liquidación, o auditoría de que el QR decodificó"
     },
     "__COMENTARIO_validaciones__": "PEDIMENTO_ADUANAL valida VALOR_ADUANA con un `custom_formula` (= PRECIO_PAGADO + incrementables, tolerancia 5). Esa regla NO se reprodujo aquí porque el evaluador de fórmulas solo admite identificadores en MAYÚSCULAS (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:150): con nombres del ERP como `Valor_ComercialPesos` la fórmula lanza \"identifier not allowed\" y la regla se marca `skipped`, es decir queda inerte. Dejarla escrita daría una falsa sensación de validación. Para recuperarla (aquí y para un GI_Total = suma de incrementables) basta ampliar ese regex a identificadores mixtos; mientras tanto, ValorAduana vs Valor_ComercialPesos + GI_* debe cuadrarse del lado del ERP.",
-    "__COMENTARIO_sin_columna__": "Campos de PEDIMENTO_ADUANAL omitidos por no existir como columna en el ERP: FECHA_PAGO, AGENTE_ADUANAL_NOMBRE, FACTURAS[] y los buckets IEPS, IEPS_26_5, OTROS_IEPS y 2IF. Columnas del ERP que el pedimento NO imprime y que por eso no se declaran (las llena el ERP, no la extracción): Num_Pedimento (id interno del registro), Lote, Tipo_Pago, Ped_Rectificacion, Num_Anticipo, Com_Pendiente, Status, Fecha_Captura, Fecha_Empate, Dia_Empate, Usuario, tipo_mercancia, num_documento, folio, Usuario_Libero, Fecha_Cierre, Ped_A1_Exportacion.",
+    "__COMENTARIO_sin_columna__": "Campos de PEDIMENTO_ADUANAL omitidos por no existir como columna en el ERP: FECHA_PAGO, AGENTE_ADUANAL_NOMBRE, FACTURAS[] y los buckets IEPS, IEPS_26_5, OTROS_IEPS y 2IF. Columnas del ERP que el pedimento NO imprime y que por eso no se declaran (las llena el ERP, no la extracción): Num_Pedimento (id interno del registro), Lote, Ped_Rectificacion, Num_Anticipo, Com_Pendiente, Status, Fecha_Captura, Fecha_Empate, Dia_Empate, Usuario, tipo_mercancia, num_documento, folio, Usuario_Libero, Fecha_Cierre, Ped_A1_Exportacion.",
     "qr_recovery": {
       "confidence": 0.99,
       "page_marker_min_matches": 2,
@@ -104,10 +105,7 @@
       "No_Pedimento": {
         "type": "string",
         "required": true,
-        "pedimento_role": [
-          "numero",
-          "normalizado"
-        ],
+        "pedimento_role": ["numero", "normalizado"],
         "unique_key": {
           "normalize": "digits"
         },
@@ -207,10 +205,7 @@
         "validation": [
           {
             "rule_type": "in",
-            "values": [
-              "IMP",
-              "EXP"
-            ],
+            "values": ["IMP", "EXP"],
             "message": "El tipo de operación debe ser IMP o EXP"
           }
         ]
@@ -232,6 +227,32 @@
             "message": "El tipo de cambio debe ser mayor que cero"
           }
         ]
+      },
+      "Tipo_Pago": {
+        "type": "number",
+        "required": true,
+        "computed": true,
+        "derived": {
+          "from": "CUADRO_LIQUIDACION.TOTAL",
+          "cases": [
+            {
+              "when": {
+                "gt": 383
+              },
+              "value": 1,
+              "label": "Anticipo y Pasivo"
+            },
+            {
+              "when": {
+                "lte": 383
+              },
+              "value": 3,
+              "label": "Solo Pasivo"
+            }
+          ]
+        },
+        "hint": "NO se extrae del pedimento: no viene impreso. Lo calcula el pipeline a partir del TOTAL del cuadro de liquidación (bloque `derived`, ver catalogs/README.md). Códigos del ERP: 1 = Anticipo y Pasivo, 2 = Solo Anticipo, 3 = Solo Pasivo. El valor que sale es el código numérico (lo que guarda la columna) y la etiqueta viaja aparte, en `label`, para poder leer el resultado sin la tabla de códigos. OJO: esta regla solo puede producir 1 y 3 — el 2 (Solo Anticipo) no se distingue desde el total del pedimento, así que si el ERP lo necesita tiene que decidirlo él. El umbral 383 es la cuota fija de DTA: un pedimento cuyo total es solo esa cuota no genera anticipo. Si la cuota cambia, se actualiza el 383 AQUÍ, no en código. Si el TOTAL no se pudo leer, el campo sale null y el check de presencia manda el documento a revisión, en vez de suponer un tipo de pago.",
+        "validation": []
       },
       "Pais_Origen": {
         "type": "string",
@@ -379,9 +400,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "DTA"
-            ],
+            "concept_aliases": ["DTA"],
             "hint": "Suma de conceptos DTA.",
             "validation": []
           },
@@ -389,11 +408,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "IGI",
-              "IGE",
-              "IGI/IGE"
-            ],
+            "concept_aliases": ["IGI", "IGE", "IGI/IGE"],
             "hint": "Suma de conceptos IGI, IGE o IGI/IGE.",
             "validation": []
           },
@@ -401,9 +416,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "PRV"
-            ],
+            "concept_aliases": ["PRV"],
             "hint": "Suma de conceptos PRV.",
             "validation": []
           },
@@ -411,9 +424,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "ECI"
-            ],
+            "concept_aliases": ["ECI"],
             "hint": "Suma de conceptos ECI.",
             "validation": []
           },
@@ -421,9 +432,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "MT"
-            ],
+            "concept_aliases": ["MT"],
             "hint": "Suma de conceptos MT.",
             "validation": []
           },
@@ -431,9 +440,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "CC"
-            ],
+            "concept_aliases": ["CC"],
             "hint": "Suma de conceptos CC.",
             "validation": []
           },
@@ -441,11 +448,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "IVA",
-              "IVA PRV",
-              "IVA/PRV"
-            ],
+            "concept_aliases": ["IVA", "IVA PRV", "IVA/PRV"],
             "hint": "Suma de IVA, IVA PRV e IVA/PRV. La pantalla concentra estos conceptos en un solo campo IVA.",
             "validation": []
           },
@@ -513,10 +516,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "F.IEPS",
-              "FIEPS"
-            ],
+            "concept_aliases": ["F.IEPS", "FIEPS"],
             "hint": "Importe del concepto impreso como F.IEPS o FIEPS. Es numérico; no representa la forma de pago.",
             "validation": []
           },
@@ -524,9 +524,7 @@
             "type": "number",
             "required": false,
             "default": 0,
-            "concept_aliases": [
-              "REC"
-            ],
+            "concept_aliases": ["REC"],
             "hint": "Importe del concepto impreso como REC (recargos) en el cuadro de liquidación.",
             "validation": []
           },
@@ -538,6 +536,18 @@
             "validation": []
           }
         }
+      },
+      "PROVEEDOR_ID_FISCAL": {
+        "type": "string",
+        "required": true,
+        "hint": "ID fiscal, Tax ID o RFC del proveedor. Se utilizará para buscar el código interno del proveedor.",
+        "validation": []
+      },
+      "PROVEEDOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre, denominación o razón social del proveedor.",
+        "validation": []
       }
     }
   }

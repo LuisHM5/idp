@@ -105,6 +105,27 @@ def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
     return ids
 
 
+def _upload_metadata(event: Dict[str, Any]) -> Dict[str, str]:
+    """The caller's own `metadata` from `POST /documents`, as the SQS consumer
+    read it back off the S3 object (`uploadMetadata` in the Step Functions
+    input — see patches/default-sqs-consumer-index.py).
+
+    Already lowercased, ASCII, flat and reserved-key-free by the time it gets
+    here (upload-lambda's normalizeMetadata, then the consumer's own filter),
+    so this only guards the shape: a malformed or absent payload yields `{}`
+    rather than poisoning the envelope, because nothing about this system's
+    own correctness depends on caller-supplied context.
+    """
+    raw = event.get("uploadMetadata")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in raw.items()
+        if k and v not in (None, "")
+    }
+
+
 def build_canonical_result(
     document_id: str,
     classification: str,
@@ -114,6 +135,7 @@ def build_canonical_result(
     model_ids: Optional[Dict[str, str]] = None,
     app_origin: Optional[str] = None,
     model_fallbacks: Optional[Dict[str, Dict[str, Any]]] = None,
+    upload_metadata: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Assemble the Canonical_Result output JSON."""
     total = len(checks)
@@ -146,6 +168,12 @@ def build_canonical_result(
         "documentId": document_id,
         "documentClassification": classification,
         "tracking": tracking,
+        # The caller's own context from `POST /documents` (`metadata`), carried
+        # here verbatim and never interpreted — see _upload_metadata. Kept OUT
+        # of `tracking`, which is this system's provenance: these two have
+        # different owners, different trust levels, and only this one is
+        # filterable with `GET /documents?meta.<key>=<value>`.
+        **({"metadata": upload_metadata} if upload_metadata else {}),
         "extractedEntities": entity_map,
         "validation": {
             "status": status,
@@ -573,6 +601,11 @@ def _run_expediente(
         "documentId": document_id,
         "documentClassification": final_classification,
         "tracking": tracking,
+        **(
+            {"metadata": _upload_metadata(event)}
+            if _upload_metadata(event)
+            else {}
+        ),
         "extractedEntities": _entities_for_envelope(main or {}),
         "validation": {
             "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
@@ -849,6 +882,7 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
             model_ids=_model_ids(event),
             app_origin=event.get("appOrigin"),
             model_fallbacks=fallback_events(),
+            upload_metadata=_upload_metadata(event),
         )
         if reextraction_meta:
             result["validation"]["reextraction"] = reextraction_meta
@@ -870,4 +904,5 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
             ],
             "REQUIERE_REVISION",
             app_origin=event.get("appOrigin"),
+            upload_metadata=_upload_metadata(event),
         )

@@ -85,7 +85,35 @@
         }
       },
 
-      "__COMENTARIO_array__": "Un campo repetible (antes repeatable_fields, con VALOR_CRUDO/PAGINA/ORDEN/CONFIANZA repetidos a mano en decenas de grupos). `item_fields` describe UNA fila; el pipeline la aplica a todas las filas detectadas. `$common` inyecta subcampos compartidos definidos en _shared.json (_common_item_fields) sin volver a escribirlos — así es como se elimina la repetición de PAGINA/ORDEN/CONFIANZA/VALOR_CRUDO en cada grupo.",
+      "__COMENTARIO_derived__": "Opcional. Un campo que NO está impreso en el documento: su valor se DECIDE por una condición sobre otros campos ya extraídos (el caso real: `Tipo_Pago` del ERP, que sale del total del cuadro de liquidación porque el pedimento nunca lo imprime). Va junto con `computed: true`, que lo saca del prompt de Bedrock — no se le pide al modelo un valor que se va a descartar. Los `cases` se evalúan EN ORDEN y gana el primero que matchee; varias llaves dentro de un mismo `when` se combinan con AND. Operadores: `gt`/`gte`/`lt`/`lte` (numéricos, parsean \"$ 12,450.00\"), `eq`/`ne`, `in` (lista), `matches` (regex), `empty`/`not_empty`. Si ningún caso matchea sale `default` (null si lo omites) — con `required: true` eso manda el documento a revisión en vez de inventar un valor. La confianza se hereda del campo en `from` y el `source` de salida es DERIVED. CUÁNDO USARLO: si la regla se puede escribir como una comparación, úsalo — es determinista, gratis y lo cambia quien conoce el negocio sin tocar código. Si la regla necesita LEER o interpretar el documento, no lo uses: deja el campo normal con un buen `hint` y que lo llene el modelo. Borra esta llave y el campo de ejemplo si tu tipo no tiene reglas así. `label` es opcional y no sustituye al valor: sirve para códigos que se guardan como número pero significan algo en palabras (Tipo_Pago del ERP: 1 = Anticipo y Pasivo, 2 = Solo Anticipo, 3 = Solo Pasivo) — el campo conserva el código que espera el sistema destino y el resultado igual dice qué significa, en `label`, junto al `value`. Ver catalogs/README.md -> 'Campos derivados de una condición'.",
+    "TIPO_DE_PAGO": {
+      "type": "number",
+      "required": false,
+      "computed": true,
+      "derived": {
+        "from": "ENCABEZADO.TOTAL",
+        "cases": [
+          {
+            "when": {
+              "gt": 383
+            },
+            "value": 1,
+            "label": "Anticipo y Pasivo"
+          },
+          {
+            "when": {
+              "lte": 383
+            },
+            "value": 3,
+            "label": "Solo Pasivo"
+          }
+        ],
+        "default": null
+      },
+      "hint": "Calculado por el pipeline a partir de ENCABEZADO.TOTAL, no se extrae del documento. El umbral vive AQUÍ: si cambia la regla de negocio se edita este JSON, no el código.",
+      "validation": []
+    },
+    "__COMENTARIO_array__": "Un campo repetible (antes repeatable_fields, con VALOR_CRUDO/PAGINA/ORDEN/CONFIANZA repetidos a mano en decenas de grupos). `item_fields` describe UNA fila; el pipeline la aplica a todas las filas detectadas. `$common` inyecta subcampos compartidos definidos en _shared.json (_common_item_fields) sin volver a escribirlos — así es como se elimina la repetición de PAGINA/ORDEN/CONFIANZA/VALOR_CRUDO en cada grupo.",
       "DETALLES": {
         "type": "array",
         "required": false,

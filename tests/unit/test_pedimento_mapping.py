@@ -21,8 +21,9 @@ sys.path.insert(0, str(LAMBDA_DIR))
 
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import expediente, qr_recovery  # noqa: E402
+from pipeline.derived import SOURCE_DERIVED, apply_derived_fields  # noqa: E402
 from pipeline.liquidacion import build_liquidacion_normalizada  # noqa: E402
-from validators.engine import resolve_field_tree  # noqa: E402
+from validators.engine import document_status_from_checks, resolve_field_tree  # noqa: E402
 
 # Pedimento real de test-docs/full-dataset-pedimentos/normal_pend.pdf: su QR
 # (Pa=0823, dn=6001630, ap=2026, pad=072) produce estos cuatro componentes.
@@ -208,3 +209,120 @@ def test_lo_que_llena_el_modelo_sigue_marcado_como_del_modelo(type_id, qr_decodi
 
     assert tree[campo]["source"] == "MODEL_EXTRACTION"
     assert tree[campo]["confidence"] == 0.88
+
+
+# ---------------------------------------------------------------- Tipo_Pago
+
+def resolver_erp(cuadro, confidences=None):
+    """Corre el tramo determinista del pipeline sobre un cuadro de liquidación
+    dado y devuelve el árbol resuelto y sus checks, tal como los arma
+    `_extract_segment`: liquidación normalizada, campos `derived` y luego el
+    motor con el `source_overrides` que producen."""
+    entry = cargar("PEDIMENTO_ERP")
+    entities = {"CUADRO_LIQUIDACION": cuadro}
+    confidences = dict(confidences or {})
+    liq = build_liquidacion_normalizada(entities, entry)
+    if liq is not None:
+        entities["LIQUIDACION_NORMALIZADA"] = liq
+    derived = apply_derived_fields(entities, confidences, entry)
+    tree, checks, _ = resolve_field_tree(
+        entities, confidences, entry,
+        source_overrides=derived.sources, value_labels=derived.labels,
+    )
+    return tree, checks
+
+
+# Códigos de la columna Tipo_Pago del ERP: 1 = Anticipo y Pasivo, 2 = Solo
+# Anticipo, 3 = Solo Pasivo. El 2 no se puede decidir desde el pedimento.
+@pytest.mark.parametrize(
+    "total, codigo, etiqueta",
+    [
+        (383, 3, "Solo Pasivo"),      # el pedimento real: PRV + IVA PRV = la cuota fija
+        (382.5, 3, "Solo Pasivo"),
+        (383.01, 1, "Anticipo y Pasivo"),
+        (12450, 1, "Anticipo y Pasivo"),
+    ],
+)
+def test_tipo_pago_se_deriva_del_total_del_cuadro(total, codigo, etiqueta):
+    """Tipo_Pago no está impreso en el pedimento: sale del TOTAL del cuadro de
+    liquidación, con el umbral declarado en el catálogo (no en código). El
+    valor es el código que guarda la columna; la etiqueta viaja aparte."""
+    tree, _ = resolver_erp({"CONCEPTOS": CONCEPTOS, "TOTAL": total})
+
+    assert tree["Tipo_Pago"]["value"] == codigo
+    assert tree["Tipo_Pago"]["label"] == etiqueta
+
+
+def test_el_codigo_es_numero_no_texto():
+    """La columna del ERP es numérica: un "3" en string entraría distinto."""
+    tree, _ = resolver_erp({"CONCEPTOS": CONCEPTOS, "TOTAL": 383})
+
+    assert isinstance(tree["Tipo_Pago"]["value"], int)
+
+
+def test_tipo_pago_reporta_que_lo_calculo_el_pipeline_y_hereda_la_confianza():
+    """No lo escribió el modelo — de hecho el modelo ni siquiera lo ve — así que
+    su `source` no puede decir MODEL_EXTRACTION, y su confianza es exactamente
+    la del TOTAL del que salió: ni más ni menos."""
+    tree, _ = resolver_erp(
+        {"CONCEPTOS": CONCEPTOS, "TOTAL": 383},
+        {"CUADRO_LIQUIDACION.TOTAL": 0.93},
+    )
+
+    assert tree["Tipo_Pago"]["source"] == SOURCE_DERIVED
+    assert tree["Tipo_Pago"]["confidence"] == 0.93
+
+
+def test_sin_total_legible_no_se_supone_un_tipo_de_pago():
+    """Si el TOTAL no se pudo leer, el campo sale vacío y el documento cae a
+    revisión, en vez de entrar al ERP como puro pasivo."""
+    tree, checks = resolver_erp({"CONCEPTOS": [], "TOTAL": None})
+
+    assert tree["Tipo_Pago"]["value"] is None
+    assert tree["Tipo_Pago"]["valid"] is False
+    assert "label" not in tree["Tipo_Pago"]  # etiquetar un valor que nadie decidió sería inventar
+    assert document_status_from_checks(checks) != "APPROVED"
+
+
+def test_el_modelo_no_gasta_tokens_adivinando_tipo_pago():
+    """`computed: true` lo saca del schema que se le manda a Bedrock."""
+    entry = cargar("PEDIMENTO_ERP")
+    assert entry.field_tree["Tipo_Pago"].computed is True
+
+
+def test_el_pipeline_real_llena_tipo_pago(monkeypatch, qr_decodificado):
+    """No basta con que el evaluador funcione: `_extract_segment` tiene que
+    llamarlo. Se corre el tramo real con una extracción enlatada — si alguien
+    quita el paso de campos `derived` del pipeline, esto se pone rojo."""
+    from pipeline.segmenter import Segment
+    from pipeline.text_extractor import ExtractedDoc
+
+    entry = cargar("PEDIMENTO_ERP")
+    extraido = ExtractedDoc(
+        entity_map={"CUADRO_LIQUIDACION": {"CONCEPTOS": CONCEPTOS, "TOTAL": 383}},
+        confidences={"CUADRO_LIQUIDACION.TOTAL": 0.91},
+    )
+    monkeypatch.setattr(expediente, "get_type_entry", lambda _t: entry)
+    monkeypatch.setattr(expediente, "extract_document", lambda *a, **k: extraido)
+    monkeypatch.setattr(expediente.page_selector, "enabled_for", lambda _e: False)
+    seg = Segment(doc_type="PEDIMENTO_ERP", page_start=1, page_end=1, confidence=0.9)
+
+    doc = expediente._extract_segment(seg, [PAGINA_QR], model_id=None, reader=object())
+
+    assert doc["_entities"]["Tipo_Pago"] == 3
+    assert doc["_recovered_sources"]["Tipo_Pago"] == SOURCE_DERIVED
+    assert doc["_derived_labels"]["Tipo_Pago"] == "Solo Pasivo"
+    assert doc["_confidences"]["Tipo_Pago"] == 0.91
+
+
+def test_pedimento_aduanal_no_cambia():
+    """El catálogo maestro no declara ningún `derived`, así que el paso nuevo es
+    un no-op para él: mismo entity_map, sin fuentes que sobreescribir."""
+    entry = cargar("PEDIMENTO_ADUANAL")
+    entities = {"CUADRO_LIQUIDACION": {"CONCEPTOS": CONCEPTOS, "TOTAL": 383}}
+    antes = json.dumps(entities, sort_keys=True)
+
+    derived = apply_derived_fields(entities, {}, entry)
+
+    assert derived.sources == {} and derived.labels == {}
+    assert json.dumps(entities, sort_keys=True) == antes

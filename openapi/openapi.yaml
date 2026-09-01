@@ -710,8 +710,11 @@ paths:
 
             - `INVALID_JSON` — el body no es JSON válido.
 
-            - `INVALID_METADATA` — body de formulario cuyo `metadata` no es un
-            objeto JSON válido codificado en string.
+            - `INVALID_METADATA` — el `metadata` no es guardable como metadata
+            de objeto S3: un valor anidado, un carácter no US-ASCII, más de
+            2 KB entre claves y valores, o (en un body de formulario) un JSON
+            en string que no parsea. El detalle va en `message`, con la clave
+            concreta. Ver el campo `metadata` en `UploadRequest`.
 
             - `INLINE_UPLOAD_REMOVED` — el body trae `contentBase64`. El modo
             inline se eliminó; usa el flujo de dos pasos.
@@ -733,6 +736,20 @@ paths:
         - lang: Shell
           label: curl
           source: |
+            # --- Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió
+            #     + metadata del upload + un campo extraído del documento.
+            #     -G/--data-urlencode encodea espacios y acentos, y evita que el shell
+            #     parta la URL en el primer `&`.
+            curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
+              --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+              --data-urlencode "system=ERP" \
+              --data-urlencode "meta.lote=A123" \
+              --data-urlencode "meta.sucursal=CHIH" \
+              --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" \
+              --data-urlencode "value=OFU910626UQ0" \
+              --data-urlencode "summary=1" \
+              | jq '{lookup, count, ids: [.matches[].documentId]}'
+
             # --- Camino rápido: campo declarado `unique_key` (una sola Query).
             #     Da igual con espacios o sin ellos: la normalización es la misma al
             #     escribir y al buscar (`digits` en este tipo).
@@ -746,7 +763,24 @@ paths:
               "$API/documents?docType=PEDIMENTO_ADUANAL&field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0&summary=1" \
               | jq '.matches[] | {documentId, matchedValue, matchedAt}'
 
-            # --- Subcadena, y acotando por fecha y estado.
+            # --- Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
+            #     `matched` en cada resultado dice qué coincidió y dónde, por filtro.
+            curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
+              --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+              --data-urlencode "field=RFC_IMPORTADOR_EXPORTADOR" --data-urlencode "value=OFU910626UQ0" \
+              --data-urlencode "field=PATENTE"                   --data-urlencode "value=3456" \
+              | jq '.matches[] | {documentId, matched}'
+
+            # --- Repetir un filtro es OR; filtros distintos siguen siendo AND.
+            #     Esto es "(ERP o PORTAL) y (sucursal CHIH o JRZ)".
+            curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
+              --data-urlencode "docType=PEDIMENTO_ADUANAL" \
+              --data-urlencode "system=ERP,PORTAL" \
+              --data-urlencode "meta.sucursal=CHIH,JRZ" \
+              --data-urlencode "summary=1"
+
+            # --- Subcadena, y acotando por fecha y estado. `op` afecta a field/value;
+            #     `metaOp` hace lo mismo con todos los meta.<clave>.
             curl -sS -H "x-api-key: $KEY" \
               "$API/documents?docType=PEDIMENTO_ADUANAL&field=AGENTE_ADUANAL_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
         - lang: JavaScript
@@ -754,8 +788,10 @@ paths:
           source: |
             // Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
             // consulta cae a un Scan de toda la tabla.
-            async function buscar(params) {
-              const qs = new URLSearchParams(params);          // encodea espacios y acentos
+            // Una LISTA de pares, no un objeto: `field`/`value` se pueden repetir y
+            // URLSearchParams los manda en ese mismo orden, que es como se emparejan.
+            async function buscar(pares) {
+              const qs = new URLSearchParams(pares);            // encodea espacios y acentos
               const r = await fetch(`${API}/documents?${qs}`, {
                 headers: { "x-api-key": KEY },
               });
@@ -763,51 +799,80 @@ paths:
               return r.json();
             }
 
+            // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
+            // metadata del upload + un campo extraído del documento.
+            const delLote = await buscar([
+              ["docType", "PEDIMENTO_ADUANAL"],
+              ["system", "ERP"],                                // quién lo subió, por su API key
+              ["meta.lote", "A123"],                            // metadata del POST /documents
+              ["meta.sucursal", "CHIH"],
+              ["field", "RFC_IMPORTADOR_EXPORTADOR"], ["value", "OFU910626UQ0"],
+              ["summary", "1"],
+            ]);
+            for (const m of delLote.matches)
+              console.log(m.documentId, m.appOrigin, m.metadata, m.matched);
+
             // Camino rápido: campo declarado `unique_key` → una sola Query.
             // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
             // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-            const porNumero = await buscar({
-              docType: "PEDIMENTO_ADUANAL",
-              field: "NUMERO_PEDIMENTO",
-              value: "26 07 0823 6001630",
-            });
-            console.log(porNumero.lookup, porNumero.count);   // "uniqueKey" 1
+            const porNumero = await buscar([
+              ["docType", "PEDIMENTO_ADUANAL"],
+              ["field", "NUMERO_PEDIMENTO"], ["value", "26 07 0823 6001630"],
+            ]);
+            console.log(porNumero.lookup, porNumero.count);     // "uniqueKey" 1
 
-            // Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
-            const porRfc = await buscar({
-              docType: "PEDIMENTO_ADUANAL",
-              field: "RFC_IMPORTADOR_EXPORTADOR",
-              value: "OFU910626UQ0",
-              summary: "1",
-            });
-            for (const m of porRfc.matches)
-              console.log(m.documentId, m.matchedValue, "←", m.matchedAt);
+            // Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
+            const porRfcYPatente = await buscar([
+              ["docType", "PEDIMENTO_ADUANAL"],
+              ["field", "RFC_IMPORTADOR_EXPORTADOR"], ["value", "OFU910626UQ0"],
+              ["field", "PATENTE"], ["value", "3456"],
+            ]);
+            for (const m of porRfcYPatente.matches)
+              for (const hit of m.matched)
+                console.log(m.documentId, hit.field, hit.matchedValue, "←", hit.matchedAt);
         - lang: Python
           label: Python 3 (requests)
           source: |
             # Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
             # consulta cae a un Scan de toda la tabla.
-            def buscar(**params):
-                r = requests.get(f"{API}/documents", params=params,   # requests encodea solo
+            # Una LISTA de pares, no un dict: `field`/`value` se pueden repetir y requests
+            # los manda en ese mismo orden, que es como se emparejan.
+            def buscar(pares):
+                r = requests.get(f"{API}/documents", params=pares,   # requests encodea solo
                                  headers={"x-api-key": KEY}, timeout=30)
                 r.raise_for_status()
                 return r.json()
 
+            # Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
+            # metadata del upload + un campo extraído del documento.
+            del_lote = buscar([
+                ("docType", "PEDIMENTO_ADUANAL"),
+                ("system", "ERP"),                               # quién lo subió, por su API key
+                ("meta.lote", "A123"),                           # metadata del POST /documents
+                ("meta.sucursal", "CHIH"),
+                ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+                ("summary", "1"),
+            ])
+            for m in del_lote["matches"]:
+                print(m["documentId"], m.get("appOrigin"), m.get("metadata"), m["matched"])
+
             # Camino rápido: campo declarado `unique_key` → una sola Query.
             # El valor se normaliza igual al escribir y al buscar, así que da lo mismo
             # mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-            por_numero = buscar(docType="PEDIMENTO_ADUANAL",
-                                field="NUMERO_PEDIMENTO",
-                                value="26 07 0823 6001630")
-            print(por_numero["lookup"], por_numero["count"])   # "uniqueKey" 1
+            por_numero = buscar([("docType", "PEDIMENTO_ADUANAL"),
+                                 ("field", "NUMERO_PEDIMENTO"),
+                                 ("value", "26 07 0823 6001630")])
+            print(por_numero["lookup"], por_numero["count"])      # "uniqueKey" 1
 
-            # Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
-            por_rfc = buscar(docType="PEDIMENTO_ADUANAL",
-                             field="RFC_IMPORTADOR_EXPORTADOR",
-                             value="OFU910626UQ0",
-                             summary="1")
-            for m in por_rfc["matches"]:
-                print(m["documentId"], m["matchedValue"], "←", m["matchedAt"])
+            # Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
+            por_rfc_y_patente = buscar([
+                ("docType", "PEDIMENTO_ADUANAL"),
+                ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+                ("field", "PATENTE"), ("value", "3456"),
+            ])
+            for m in por_rfc_y_patente["matches"]:
+                for hit in m["matched"]:
+                    print(m["documentId"], hit["field"], hit["matchedValue"], "<-", hit["matchedAt"])
         - lang: C#
           label: .NET 6+
           source: |
@@ -815,11 +880,31 @@ paths:
 
             // Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
             // consulta cae a un Scan de toda la tabla.
+            // `Add` (no el indexador `qs[k] = v`): repite la clave en vez de pisarla, que
+            // es lo que hace falta para mandar varios field/value — se emparejan por
+            // posición — o varios valores del mismo filtro.
             async Task<JsonElement> BuscarAsync(params (string k, string v)[] parametros)
             {
                 var qs = HttpUtility.ParseQueryString(string.Empty);
-                foreach (var (k, v) in parametros) qs[k] = v;
+                foreach (var (k, v) in parametros) qs.Add(k, v);
                 return await http.GetFromJsonAsync<JsonElement>($"{api}/documents?{qs}");
+            }
+
+            // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
+            // metadata del upload + un campo extraído del documento.
+            var delLote = await BuscarAsync(
+                ("docType", "PEDIMENTO_ADUANAL"),
+                ("system", "ERP"),                                 // quién lo subió, por su API key
+                ("meta.lote", "A123"),                             // metadata del POST /documents
+                ("meta.sucursal", "CHIH"),
+                ("field", "RFC_IMPORTADOR_EXPORTADOR"), ("value", "OFU910626UQ0"),
+                ("summary", "1"));
+            foreach (var m in delLote.GetProperty("matches").EnumerateArray())
+            {
+                Console.WriteLine(m.GetProperty("documentId"));
+                foreach (var hit in m.GetProperty("matched").EnumerateArray())
+                    Console.WriteLine($"  {hit.GetProperty("field")} = {hit.GetProperty("matchedValue")}"
+                                      + $" <- {hit.GetProperty("matchedAt")}");
             }
 
             // Camino rápido: campo declarado `unique_key` → una sola Query.
@@ -830,26 +915,37 @@ paths:
                 ("field", "NUMERO_PEDIMENTO"),
                 ("value", "26 07 0823 6001630"));
             Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("count")}");
-
-            // Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
-            var porRfc = await BuscarAsync(
-                ("docType", "PEDIMENTO_ADUANAL"),
-                ("field", "RFC_IMPORTADOR_EXPORTADOR"),
-                ("value", "OFU910626UQ0"),
-                ("summary", "1"));
-            foreach (var m in porRfc.GetProperty("matches").EnumerateArray())
-            {
-                var id    = m.GetProperty("documentId");
-                var valor = m.GetProperty("matchedValue");
-                var donde = m.GetProperty("matchedAt");
-                Console.WriteLine($"{id} {valor} <- {donde}");
-            }
       tags: [Consultar documentos]
-      summary: Buscar/listar documentos por tipo y/o por cualquier campo extraído
-      description: >
-        Requiere al menos uno de `docType` o `field`+`value`. Con ambos,
-        `docType` acota primero en DynamoDB (Query al GSI `DocumentTypeIndex`,
-        sin Scan) y el filtro por campo solo se aplica a esos documentos.
+      summary: Buscar documentos por tipo, sistema, metadata y campos extraídos
+      # Bloque LITERAL (`|`), no plegado (`>`): las tablas markdown de abajo
+      # necesitan sus saltos de línea reales — `>` une las líneas seguidas y
+      # una tabla acaba renderizada como un párrafo con pipes.
+      description: |
+        Cuatro filtros, **todos combinables y todos en AND** — un documento
+        tiene que cumplirlos todos para salir en `matches`. Basta mandar uno:
+
+
+        | Filtro | Qué acota | De dónde sale el dato |
+        | --- | --- | --- |
+        | `docType` | El tipo de documento | Columna indexada `DocumentType`. **Es el único que se filtra dentro de DynamoDB** (Query al GSI `DocumentTypeIndex`, sin Scan) |
+        | `system` | Qué sistema lo subió | `tracking.appOrigin`, resuelto de la **API key** del `POST /documents` — no de nada que mande el cliente en el body |
+        | `meta.<clave>` | La metadata del upload | El objeto `metadata` del `POST /documents`, tal cual, sin interpretarlo |
+        | `field`+`value` | Cualquier campo extraído | El envelope del resultado. Se puede repetir para exigir varios campos a la vez |
+
+
+        Solo `docType` se resuelve en DynamoDB; los otros tres se aplican en la
+        Lambda sobre lo que ese primer filtro dejó pasar, así que **mándalo
+        siempre que puedas**: es lo que evita el Scan.
+
+
+        **Cómo se combinan:** filtros distintos son AND
+        (`system=ERP&meta.lote=A123` = del ERP *y* del lote A123); repetir uno
+        es OR (`system=ERP,PORTAL`, `meta.lote=A123,B456`,
+        `docType=FACTURA,PEDIMENTO_ADUANAL`). Los `field`/`value` repetidos se
+        emparejan **por posición** en la URL y son AND entre sí; si el número
+        de `field` y de `value` no coincide → `400`, no una pareja inventada.
+        Un documento sin `metadata` (o sin `appOrigin`) nunca matchea un
+        filtro `meta.*`/`system`: no hay comodín.
 
 
         **No necesitas el dot-path completo: basta el NOMBRE del campo.** Si el
@@ -868,7 +964,7 @@ paths:
 
         | `lookup` | Cuándo | Costo |
         | --- | --- | --- |
-        | `uniqueKey` | El campo está declarado `unique_key` en el catálogo del tipo, con `docType` y `op=eq` | **Una** Query, sin importar cuántos documentos existan |
+        | `uniqueKey` | **Alguno** de los `field` está declarado `unique_key` en el catálogo del tipo, con `docType` y `op=eq` | **Una** Query, sin importar cuántos documentos existan. Los demás filtros (`system`, `meta.*`, los otros campos) se aplican solo sobre lo que devolvió |
         | `typeIndex` | Hay `docType`, pero el campo no es unique key | Query al GSI del tipo + filtrado en la Lambda |
         | `scan` | **No mandaste `docType`** | Scan de toda la tabla — evítalo |
 
@@ -887,6 +983,10 @@ paths:
         **Permiso aparte:** usar `field`/`value` requiere que la app tenga
         `AllowFieldSearch` (default **false**, por ser la ruta más cara). Sin él
         la respuesta es `403`, aunque el `docType` sí esté permitido.
+        **`system` y `meta.<clave>` NO están detrás de ese permiso**: leen una
+        sola clave conocida del envelope en vez de recorrerlo entero, y son
+        justo lo que necesita una app con acceso normal por `docType` para
+        reencontrar su propio documento ("el que subí para el lote A123").
       parameters:
         - name: docType
           in: query
@@ -894,6 +994,53 @@ paths:
             TYPE_ID (`PEDIMENTO_ADUANAL`) o nombre/alias normalizado. Varios
             tipos separados por coma. Alias del param: `documentType`, `tipo`.
           schema: { type: string }
+        - name: system
+          in: query
+          description: >
+            Qué sistema subió el documento: se compara contra
+            `tracking.appOrigin`, que la API resuelve de la **API key** con la
+            que se hizo el `POST /documents`. Una app no puede declararse otra
+            — un `metadata: {"app-origin": "..."}` en el body se descarta.
+
+
+            Varios sistemas separados por coma o repitiendo el parámetro (OR).
+            Alias del param: `appOrigin`, `sistema`.
+
+
+            Ortogonal a los permisos por app: una app con `AccessScope: "own"`
+            ya está limitada a sus propios documentos, así que ahí este filtro
+            solo puede acotar más. Es útil sobre todo para una app con
+            `AccessScope: "all"` que quiere mirar un solo canal de entrada.
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
+          example: ["ERP,PORTAL"]
+        - name: meta.<clave>
+          in: query
+          description: >
+            **Familia de parámetros**, no un parámetro literal: `meta.lote=A123`,
+            `meta.sucursal=CHIH`... Filtra por la `metadata` que se mandó en el
+            `POST /documents`, que viaja con el documento hasta su resultado.
+
+
+            Las claves van en **minúsculas** (S3 las guarda así, y la API las
+            baja a minúsculas en los dos extremos: `meta.Lote` y `meta.lote`
+            son el mismo filtro). Claves distintas son AND; repetir una clave,
+            o separar sus valores por coma, es OR.
+
+
+            Solo encuentra documentos **subidos con esa metadata**: no es
+            reconstruible hacia atrás, así que un documento ya procesado antes
+            de mandarla nunca va a matchear.
+          schema: { type: string }
+          example: A123
+        - name: metaOp
+          in: query
+          description: >
+            Cómo comparan **todos** los `meta.<clave>`: `eq` exacto o
+            `contains` subcadena. Independiente de `op`, que es para
+            `field`/`value`.
+          schema: { type: string, enum: [eq, contains], default: eq }
         - name: field
           in: query
           description: >
@@ -902,18 +1049,33 @@ paths:
             en la raíz, hace búsqueda profunda por la última clave del path.
             Cuando es la `unique_key` declarada por el tipo (con `docType` y
             `op=eq`) se resuelve por la tabla de lookup en una sola Query.
-          schema: { type: string }
+
+
+            **Se puede repetir** (`?field=A&value=1&field=B&value=2`): los
+            pares se emparejan por posición y se exigen todos (AND). Cada
+            match devuelve `matched[]` con lo que coincidió por filtro.
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
         - name: value
           in: query
           description: >
             Valor a comparar (case-insensitive, recorta espacios). Requiere
-            `field`. En el camino de unique key se normaliza igual que al
-            indexar, así que `26 07 0823 6001630` y `260708236001630`
-            resuelven a la misma clave.
-          schema: { type: string }
+            `field`, uno por cada `field` y en el mismo orden. En el camino de
+            unique key se normaliza igual que al indexar, así que
+            `26 07 0823 6001630` y `260708236001630` resuelven a la misma clave.
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
         - name: op
           in: query
-          schema: { type: string, enum: [eq, contains], default: eq }
+          description: >
+            Cómo comparan los `field`/`value`. Se puede mandar una vez (aplica
+            a todos los filtros) o una vez por filtro, en el mismo orden;
+            cualquier otra cantidad → `400 INVALID_PARAMS`.
+          schema: { type: array, items: { type: string, enum: [eq, contains] } }
+          style: form
+          explode: true
         - name: status
           in: query
           description: Solo se aplica en DynamoDB junto con `docType`.
@@ -950,14 +1112,25 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DocumentSearchResponse" }
         "400":
-          description: "`MISSING_PARAMS` — falta `docType` y también `field`+`value`."
+          description: |
+            Códigos posibles:
+
+            - `MISSING_PARAMS` — no mandaste ninguno de `docType`,
+              `field`+`value`, `system` o `meta.<clave>`; o mandaste `field`
+              sin su `value`; o el número de `field` y de `value` no coincide
+              (se emparejan por posición, así que una lista desbalanceada es
+              ambigua y no se adivina).
+
+            - `INVALID_PARAMS` — mandaste varios `op` pero ni uno solo (que
+              aplicaría a todos los filtros) ni uno por filtro.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "403":
           description: >
             `FORBIDDEN` — se pidió un `docType` fuera de `AllowedDocTypes` de
-            la app, o se usó `field`/`value` sin `AllowFieldSearch`.
+            la app, o se usó `field`/`value` sin `AllowFieldSearch`
+            (`system`/`meta.<clave>` no requieren ese permiso).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1010,7 +1183,7 @@ components:
             `message`. Upload: MISSING_FIELD, INVALID_FORMAT,
             DOCUMENT_TYPE_REQUIRED, INVALID_DOCUMENT_TYPE, INVALID_JSON,
             INVALID_METADATA, INLINE_UPLOAD_REMOVED, PRESIGN_FAILED.
-            Consulta: NOT_FOUND, MISSING_PARAMS, FORBIDDEN.
+            Consulta: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS, FORBIDDEN.
         message: { type: string }
     UploadRequest:
       type: object
@@ -1041,12 +1214,34 @@ components:
             sin redeploy. El stack de prod lo ignora a propósito.
         metadata:
           type: object
-          description: >
-            Metadata arbitraria que se conserva con el documento. En un body
-            `x-www-form-urlencoded` va como objeto JSON en string
-            (`metadata={"lote":"A123"}`); si no es JSON válido → 400
-            INVALID_METADATA.
+          description: |
+            Contexto propio del que sube (un lote, un folio del ERP, una
+            sucursal): se conserva con el documento, viaja hasta su resultado
+            y **es filtrable** después con
+            `GET /documents?meta.<clave>=<valor>`. Este sistema nunca lo
+            interpreta.
+
+            Lo que S3 puede guardar como metadata de objeto, y solo eso —
+            se valida aquí, no en el `PUT` del paso 2, donde el mismo error
+            aparecería como un `403` de S3 que parece de permisos:
+
+            - **Claves en minúsculas.** Se bajan a minúsculas de todos modos
+              (S3 lo hace), así que `{"Lote": "A123"}` se busca luego igual
+              con `meta.lote=` que con `meta.Lote=`.
+            - **Valores planos y US-ASCII.** Números y booleanos se guardan
+              como texto. Un objeto/arreglo anidado, o un acento, → `400
+              INVALID_METADATA`.
+            - **2 KB en total** entre claves y valores (tope de S3) → `400
+              INVALID_METADATA`.
+            - `app-origin` y `model-id` son claves **del sistema** y se
+              descartan en silencio: la primera es la trazabilidad que
+              `?system=` filtra y sale de tu API key, no del body.
+
+            En un body `x-www-form-urlencoded` va como objeto JSON en string
+            (`metadata={"lote":"A123"}`); si no es JSON válido → `400
+            INVALID_METADATA`.
           additionalProperties: true
+          example: { lote: "A123", sucursal: "CHIH" }
     UploadResponse:
       type: object
       description: >
@@ -1163,9 +1358,38 @@ components:
               input: { type: string }
               resolvedBy: { type: string }
         expandedContainers: { type: boolean }
-        field: { type: string }
-        value: { type: string }
-        op: { type: string }
+        field:
+          type: string
+          description: >
+            El `field` del PRIMER filtro; igual que cuando solo podía haber
+            uno. Con varios, léelos en `filters`.
+        value: { type: string, description: El `value` del primer filtro. }
+        op: { type: string, description: El `op` del primer filtro. }
+        filters:
+          type: array
+          description: Todos los filtros por campo, en el orden en que se mandaron.
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              value: { type: string }
+              op: { type: string, enum: [eq, contains] }
+        system:
+          type: array
+          items: { type: string }
+          description: Los sistemas pedidos (OR entre ellos). Solo si se mandó `system`.
+        metaFilters:
+          type: array
+          description: >
+            Los filtros `meta.<clave>` aplicados, con la clave ya en
+            minúsculas. AND entre claves, OR entre los valores de una misma
+            clave. Solo si se mandó alguno.
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              values: { type: array, items: { type: string } }
+        metaOp: { type: string, enum: [eq, contains] }
         order: { type: string }
         summary: { type: boolean }
         full: { type: boolean }
@@ -1197,5 +1421,11 @@ components:
           type: array
           items:
             type: object
-            description: Envelope completo por match (o resumen si summary=1), + matchedValue/matchedAt.
+            description: >
+              Envelope completo por match (o resumen ligero si `summary=1`).
+              Con `summary=1` incluye además `appOrigin` y `metadata`, para no
+              tener que volver a pedir el documento solo para ver por qué
+              entró. Cuando hubo filtros por campo trae `matched[]` — un
+              `{field, matchedValue, matchedAt}` por filtro — y
+              `matchedValue`/`matchedAt` sueltos, que son los del primero.
             additionalProperties: true

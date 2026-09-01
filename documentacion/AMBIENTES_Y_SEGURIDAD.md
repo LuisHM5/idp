@@ -285,7 +285,7 @@ redeploy ni tocan la key), aplicados por `query-lambda` en cada
 |---|---|---|
 | `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma. `all`: sin restricción. |
 | `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` a esos tipos — ni para subir ni para consultar otros. `none` en `reconfigure` quita la restricción. |
-| `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}`. |
+| `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}` — y `system=`/`meta.<clave>=`, que **no** están detrás de este permiso: leen una sola clave conocida del envelope en vez de recorrerlo entero, y no amplían lo que la app ya puede ver (con `AccessScope: own`, `system=` solo puede acotar más). |
 
 **Por qué 404, no 403, en un documento fuera de alcance**: `GET /documents/{id}`
 y `.../file` devuelven `404 NOT_FOUND` cuando el documento existe pero la app

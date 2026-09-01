@@ -162,6 +162,15 @@ function deriveAttributes(envelope) {
   if (name) attrs.DocumentName = { S: name };
   const tracking = trackingAttribute(envelope);
   if (tracking) attrs.Tracking = toDdbAttr(tracking);
+  // The caller's own upload metadata, same column indexing.py writes. Only
+  // documents processed after it started being carried through the pipeline
+  // have it in the envelope at all — for the older ones there is nothing to
+  // recover here, since it only ever lived on the raw S3 object.
+  const metadata = envelope.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    const attr = toDdbAttr(metadata);
+    if (attr) attrs.Metadata = attr;
+  }
   return attrs;
 }
 

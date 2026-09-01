@@ -17,17 +17,35 @@
  *       documentacion/API_USO.md for why (size limits) and the access-control
  *       implications of a presigned URL / a single shared API key.
  *
- *   GET /documents?docType=<tipo>[&field=<dot.path>&value=<v>][&op=eq|contains]
+ *   GET /documents?docType=<tipo>[&system=<app>][&meta.<clave>=<valor>]
+ *                 [&field=<dot.path>&value=<v>][&op=eq|contains]
  *                 [&status=<s>][&since=&until=][&order=desc|asc][&limit=N]
- *       Searches processed documents. `docType` accepts the canonical TYPE_ID
- *       (PEDIMENTO_ADUANAL) or its human name/alias ("pedimento aduanal"),
- *       comma-separated for several types, and filters IN DYNAMODB via the
- *       DocumentTypeIndex GSI (PK DocumentType, SK ProcessedAt) — no Scan.
- *       `field`/`value` then filter the matched documents in the Lambda:
- *       `field` is a dot-path resolved against the result envelope (e.g.
- *       extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO); if it does not resolve
- *       there, a deep search matches any nested key equal to the last path
- *       segment. Matching is case-insensitive and trims whitespace.
+ *       Searches processed documents. Every filter below is ANDed, so one
+ *       request can ask for "this type, from this system, with this upload
+ *       metadata, and this extracted value":
+ *
+ *         docType   the canonical TYPE_ID (PEDIMENTO_ADUANAL) or its human
+ *                   name/alias ("pedimento aduanal"), comma-separated for
+ *                   several types. Filtered IN DYNAMODB via the
+ *                   DocumentTypeIndex GSI (PK DocumentType, SK ProcessedAt) —
+ *                   no Scan. Everything else is applied in this Lambda, over
+ *                   the envelopes that survive it.
+ *         system    which app uploaded it: `tracking.appOrigin`, resolved from
+ *                   the uploader's x-api-key (see the SQS consumer patch).
+ *                   Several are ORed. Aliases: `appOrigin`, `sistema`.
+ *         meta.*    the caller's own `metadata` from POST /documents, carried
+ *                   on the envelope as `metadata` (see handler.py's
+ *                   _upload_metadata). Keys are lowercase; repeating one key
+ *                   ORs its values, different keys are ANDed. `metaOp=contains`
+ *                   switches the whole group to substring matching.
+ *         field/value  a dot-path resolved against the result envelope (e.g.
+ *                   extractedEntities.NUMERO_PEDIMENTO_NORMALIZADO); if it
+ *                   does not resolve there, a deep search matches any nested
+ *                   key equal to the last path segment. May be repeated —
+ *                   `?field=A&value=1&field=B&value=2` — and the pairs are
+ *                   matched by position (see buildFilters/paramList).
+ *
+ *       Matching is case-insensitive and trims whitespace throughout.
  *
  * Cost model: with `docType` the query reads only that type's items (Query on
  * the GSI, newest first, server-side filters for status/date/contained type)
@@ -58,6 +76,9 @@
  *   - `AllowFieldSearch` — whether this app may use `field=`/`value=` at all
  *     (the Scan-based deep search, the most expensive and most abusable
  *     route here) — default false; most apps only need `docType=`/`{id}`.
+ *     It does NOT gate `system=`/`meta.<clave>=`: those read one shallow,
+ *     known key off the envelope instead of walking it, and they are what an
+ *     app with plain docType access needs to find its own document again.
  *
  * A denied `GET /documents/{id}` or `/file` returns **404**, not 403 — it
  * must not confirm that a document you can't see even exists. `query()`
@@ -86,6 +107,18 @@ import {
 import { S3Client, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { readFileSync } from "fs";
+
+import {
+  buildFilters,
+  buildMetaFilters,
+  buildSystems,
+  documentAppOrigin,
+  matchesMeta,
+  matchesSystems,
+  matchField,
+  paramList,
+  splitList,
+} from "./search-filters.mjs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -136,16 +169,6 @@ function parseEnrichment(item) {
   }
 }
 
-/** Resolve a dot-path (no array indices) against an object. */
-function resolvePath(obj, path) {
-  let cur = obj;
-  for (const key of path.split(".")) {
-    if (cur == null || typeof cur !== "object") return undefined;
-    cur = cur[key];
-  }
-  return cur;
-}
-
 // ---------------------------------------------------- per-app authorization
 
 /** No x-api-key, or a valid key never registered in APPS_TABLE — today's
@@ -177,11 +200,6 @@ async function resolveCallerApp(event) {
   }
 }
 
-/** `tracking.appOrigin` on a result envelope — see handler.py. */
-function documentAppOrigin(envelope) {
-  return (envelope && envelope.tracking && envelope.tracking.appOrigin) || null;
-}
-
 /** Whether `caller` is allowed to see this specific document. */
 function canSeeDocument(caller, envelope) {
   if (!envelope) return false;
@@ -192,50 +210,6 @@ function canSeeDocument(caller, envelope) {
     return false;
   }
   return true;
-}
-
-function norm(v) {
-  return String(v == null ? "" : v).trim().toLowerCase();
-}
-
-function compare(actual, expected, op) {
-  if (actual == null) return false;
-  const a = norm(actual);
-  const b = norm(expected);
-  return op === "contains" ? a.includes(b) : a === b;
-}
-
-/**
- * Deep search: does any key named `leaf` anywhere in `obj` match `value`?
- * Returns the first matching value, or undefined.
- */
-function deepFind(obj, leaf, expected, op) {
-  const stack = [obj];
-  while (stack.length) {
-    const cur = stack.pop();
-    if (Array.isArray(cur)) {
-      for (const el of cur) if (el && typeof el === "object") stack.push(el);
-    } else if (cur && typeof cur === "object") {
-      for (const [k, v] of Object.entries(cur)) {
-        if (k === leaf && compare(v, expected, op)) return v;
-        if (v && typeof v === "object") stack.push(v);
-      }
-    }
-  }
-  return undefined;
-}
-
-/** Try exact dot-path first, then a deep search by the leaf key. */
-function matchField(envelope, path, value, op) {
-  const direct = resolvePath(envelope, path);
-  if (direct !== undefined && typeof direct !== "object") {
-    if (compare(direct, value, op)) return { matched: true, value: direct, where: path };
-    return { matched: false };
-  }
-  const leaf = path.split(".").pop();
-  const found = deepFind(envelope, leaf, value, op);
-  if (found !== undefined) return { matched: true, value: found, where: `*.${leaf}` };
-  return { matched: false };
 }
 
 /** Compact one document result for list/search responses.
@@ -252,6 +226,12 @@ function summarize(envelope) {
     documentClassification: envelope.documentClassification,
     status: (envelope.validation && envelope.validation.status) || exp.status,
     processedAt: envelope.processedAt,
+    // The two filterable axes that are NOT extracted from the document:
+    // which app uploaded it and the caller's own upload metadata. Included
+    // even when they are the thing being filtered on, so a `summary=1`
+    // response can be read back without a second call to confirm what matched.
+    ...(documentAppOrigin(envelope) && { appOrigin: documentAppOrigin(envelope) }),
+    ...(envelope.metadata && { metadata: envelope.metadata }),
     extractedEntities: envelope.extractedEntities || {},
     arrayCounts: primary.arrayCounts || {},
     liquidacionNormalizada: primary.liquidacionNormalizada,
@@ -780,10 +760,17 @@ async function fetchItems(documentIds) {
   return documentIds.map((id) => byId.get(id)).filter(Boolean);
 }
 
-async function query(params, caller) {
-  const field = params.field || params.path;
-  const value = params.value;
-  const op = params.op === "contains" ? "contains" : "eq";
+async function query(params, caller, multi) {
+  const built = buildFilters(params, multi);
+  // buildFilters reports `{code, message}` (it is HTTP-agnostic, like
+  // body-parser.mjs); the wire shape is `{error, message}` — see ErrorResponse
+  // in openapi.yaml, which callers program against.
+  if (built.error) return json(400, { error: built.error.code, message: built.error.message });
+  const filters = built.filters;
+  const metaFilters = buildMetaFilters(params, multi);
+  const metaOp = params.metaOp === "contains" ? "contains" : "eq";
+  const systems = buildSystems(params, multi);
+
   const limit = Math.min(parseInt(params.limit, 10) || 25, MAX_LIMIT);
   const full = params.full === "1" || params.full === "true";
   const summary = params.summary === "1" || params.summary === "true";
@@ -793,28 +780,33 @@ async function query(params, caller) {
   const since = params.since || undefined;
   const until = params.until || undefined;
 
-  // docType / documentType / tipo: TYPE_ID or human name, comma-separated.
-  const rawTypes = String(params.docType || params.documentType || params.tipo || "")
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
+  // docType / documentType / tipo: TYPE_ID or human name, comma-separated
+  // and/or repeated.
+  const rawTypes = [
+    ...new Set(
+      splitList([
+        ...paramList(params, multi, "docType"),
+        ...paramList(params, multi, "documentType"),
+        ...paramList(params, multi, "tipo"),
+      ])
+    ),
+  ];
 
-  if (!rawTypes.length && (!field || value == null)) {
+  if (!rawTypes.length && !filters.length && !systems.length && !metaFilters.length) {
     return json(400, {
       error: "MISSING_PARAMS",
       message:
-        "Provide 'docType' (type id or name) and/or 'field' + 'value' (dot-path search)",
-    });
-  }
-  if (field && value == null) {
-    return json(400, {
-      error: "MISSING_PARAMS",
-      message: "'field' requires 'value'",
+        "Provide at least one of: 'docType' (type id or name), 'field' + 'value' " +
+        "(dot-path search), 'system' (uploading app) or 'meta.<key>' (upload metadata)",
     });
   }
   // The Scan-based deep search is the most expensive and most abusable route
   // here (see the module docstring) — most apps only need docType/id lookups.
-  if (field && !caller.allowFieldSearch) {
+  // `system`/`meta.<key>` are deliberately NOT behind this permission: both
+  // read one shallow, known key off the envelope instead of walking it, and
+  // they are exactly what an app with plain docType access needs to find its
+  // own document again ("the one I uploaded for lote A123").
+  if (filters.length && !caller.allowFieldSearch) {
     return json(403, {
       error: "FORBIDDEN",
       message: "This app is not allowed to use field/value search. Ask for --allow-field-search if it's needed.",
@@ -850,32 +842,48 @@ async function query(params, caller) {
   const matches = [];
   let scanned = 0;
 
-  /** Filter a batch of base items by field/value and collect the matches.
+  /** Filter a batch of base items and collect the matches.
    *
-   * `preMatched` (unique-key path) carries the hit the lookup table already
-   * resolved for a document id. It bypasses `matchField` on purpose: the key
-   * is a NORMALIZED form of the value (`alnum` collapses `24 47 3456 4000123`
-   * and `24473456400012` onto one key), so re-comparing the raw envelope
-   * value against the caller's raw input would drop documents the index
-   * legitimately matched. */
-  const collect = async (items, indexMeta, preMatched) => {
+   * Every filter is ANDed: the uploading system, then the upload metadata
+   * (both shallow, known keys — cheapest first), then each field/value pair.
+   *
+   * `preMatched` (unique-key path) carries the row the lookup table already
+   * resolved for a document id, and `driver` says WHICH filter it answered.
+   * That one filter bypasses `matchField` on purpose: the key is a NORMALIZED
+   * form of the value (`digits` collapses `26 07 0823 6001630` and
+   * `260708236001630` onto one key), so re-comparing the raw envelope value
+   * against the caller's raw input would drop documents the index legitimately
+   * matched. Every OTHER filter still has to hold. */
+  const collect = async (items, indexMeta, preMatched, driver) => {
     for (const item of items) {
       scanned++;
       const envelope = parseEnrichment(item);
       if (!envelope) continue;
       if (!canSeeDocument(caller, envelope)) continue;
-      let matchedValue;
-      let matchedAt;
-      const hit = preMatched && preMatched.get(item.DocumentId);
-      if (hit) {
-        matchedValue = hit.Value;
-        matchedAt = `${hit.DocumentType}.${hit.FieldName}`;
-      } else if (field) {
-        const m = matchField(envelope, field, value, op);
-        if (!m.matched) continue;
-        matchedValue = m.value;
-        matchedAt = m.where;
+      if (!matchesSystems(envelope, systems)) continue;
+      if (!matchesMeta(envelope, metaFilters, metaOp)) continue;
+
+      const matched = [];
+      let rejected = false;
+      for (const f of filters) {
+        const hit = f === driver && preMatched && preMatched.get(item.DocumentId);
+        if (hit) {
+          matched.push({
+            field: f.field,
+            matchedValue: hit.Value,
+            matchedAt: `${hit.DocumentType}.${hit.FieldName}`,
+          });
+          continue;
+        }
+        const m = matchField(envelope, f.field, f.value, f.op);
+        if (!m.matched) {
+          rejected = true;
+          break;
+        }
+        matched.push({ field: f.field, matchedValue: m.value, matchedAt: m.where });
       }
+      if (rejected) continue;
+
       // Default: the complete DynamoDB envelope (documentClassification,
       // validation, expediente.documents[...], tracking) — same shape stored
       // and published downstream. summary=1 returns only a compact view.
@@ -889,7 +897,15 @@ async function query(params, caller) {
           documentName: meta.DocumentName,
           validationStatus: meta.ValidationStatus,
         }),
-        ...(field && { matchedValue, matchedAt }),
+        // `matched` has one entry per field filter, in the order they were
+        // given. matchedValue/matchedAt keep naming the FIRST of them, so a
+        // single-filter caller sees the exact response shape it saw before
+        // several filters were possible.
+        ...(matched.length && {
+          matched,
+          matchedValue: matched[0].matchedValue,
+          matchedAt: matched[0].matchedAt,
+        }),
       };
       // full=1 additionally embeds the deepest S3 result (per-field fields[]
       // detail + full array contents) — costs one S3 GET per match.
@@ -900,15 +916,22 @@ async function query(params, caller) {
     return false;
   };
 
-  // Fast path: the caller is searching by a field the type declares as its
-  // unique key, so the answer is one Query on `TIPODOC#valor` instead of a
-  // walk over every document of the type. `op=contains` can't use it (a hash
-  // key has no substring semantics) and neither can a search with no docType
-  // (the key is always type-scoped — that's what makes it unique).
+  // Fast path: one of the filters is on a field the type declares as its
+  // unique key, so the answer starts from one Query on `TIPODOC#valor` instead
+  // of a walk over every document of the type — the remaining filters then
+  // only run against that handful of documents. `op=contains` can't use it (a
+  // hash key has no substring semantics) and neither can a search with no
+  // docType (the key is always type-scoped — that's what makes it unique).
   let lookupPath = docTypes.length ? "typeIndex" : "scan";
-  if (docTypes.length && field && op === "eq") {
-    const hits = await uniqueKeyLookup(docTypes, field, value, { status, since, until });
-    if (hits && hits.length) {
+  if (docTypes.length) {
+    for (const driver of filters) {
+      if (driver.op !== "eq") continue;
+      const hits = await uniqueKeyLookup(docTypes, driver.field, driver.value, { status, since, until });
+      // hits === null  → no type declares this field as a unique key.
+      // hits.length === 0 → nothing indexed under it *yet* (a document
+      // processed before the declaration, or before `pnpm backfill:keys` ran).
+      // Both fall through to the normal path, which still finds it.
+      if (!hits || !hits.length) continue;
       lookupPath = "uniqueKey";
       const byId = new Map(hits.map((h) => [h.DocumentId, h]));
       const ordered = hits
@@ -919,21 +942,23 @@ async function query(params, caller) {
         )
         .map((h) => h.DocumentId);
       // Batched rather than one BatchGet of the first `limit` ids: `collect`
-      // also drops documents this app may not see, so slicing up front could
-      // return fewer than `limit` while matches were still available. 25 also
-      // keeps every request under BatchGetItem's 100-key cap.
+      // also drops documents this app may not see (and now, documents the
+      // other filters reject), so slicing up front could return fewer than
+      // `limit` while matches were still available. 25 also keeps every
+      // request under BatchGetItem's 100-key cap.
       const BATCH = 25;
       for (let i = 0; i < ordered.length; i += BATCH) {
-        const done = await collect(await fetchItems(ordered.slice(i, i + BATCH)), null, byId);
+        const done = await collect(await fetchItems(ordered.slice(i, i + BATCH)), null, byId, driver);
         if (done) break;
       }
       return respond();
     }
-    // hits === null  → no type declares this field as a unique key.
-    // hits.length === 0 → nothing indexed under it *yet* (a document
-    // processed before the declaration, or before `pnpm backfill:keys` ran).
-    // Both fall through to the normal path, which still finds it.
   }
+
+  // Whether a document that reached the index still has to be checked in the
+  // Lambda. Without any of these every index hit is already a match, so the
+  // walk can stop at exactly `limit` envelopes.
+  const needsPostFilter = filters.length > 0 || systems.length > 0 || metaFilters.length > 0;
 
   if (docTypes.length) {
     // Indexed path: only this type's items are read, in ProcessedAt order.
@@ -949,9 +974,7 @@ async function query(params, caller) {
     for await (const entry of typeIndexEntries(docTypes, { status, since, until, order, expand })) {
       indexMeta.set(entry.DocumentId, entry);
       buffer.push(entry);
-      // Without a field filter every index hit is a match, so never fetch more
-      // envelopes than the caller asked for.
-      const target = field ? BATCH : Math.min(BATCH, limit - matches.length);
+      const target = needsPostFilter ? BATCH : Math.min(BATCH, limit - matches.length);
       if (buffer.length >= target) {
         done = await flush();
         if (done) break;
@@ -979,13 +1002,19 @@ async function query(params, caller) {
   return respond();
 
   function respond() {
+    const first = filters[0];
     return json(200, {
       ...(docTypes.length && {
         docTypes,
         resolvedTypes: resolved,
         expandedContainers: expand,
       }),
-      ...(field && { field, value, op }),
+      // `field`/`value`/`op` echo the FIRST filter, unchanged from when only
+      // one was possible; `filters` is the whole list and is what to read
+      // when there may be several.
+      ...(first && { field: first.field, value: first.value, op: first.op, filters }),
+      ...(systems.length && { system: systems }),
+      ...(metaFilters.length && { metaFilters, metaOp }),
       ...(status && { status }),
       ...(since && { since }),
       ...(until && { until }),
@@ -995,7 +1024,7 @@ async function query(params, caller) {
       indexed: docTypes.length > 0,
       // Which access path actually answered: "uniqueKey" (one Query on the
       // TIPODOC#valor lookup table), "typeIndex" (Query on DocumentTypeIndex
-      // + in-Lambda field match) or "scan" (no docType — full table Scan).
+      // + in-Lambda filtering) or "scan" (no docType — full table Scan).
       lookup: lookupPath,
       // Present whenever the caller's own permissions shaped the results —
       // so "why don't I see X" is answerable from the response itself.
@@ -1013,6 +1042,9 @@ async function query(params, caller) {
 export async function handler(event) {
   const id = event.pathParameters && event.pathParameters.id;
   const params = event.queryStringParameters || {};
+  // Repeated query params (several `field`/`value` pairs) only survive in the
+  // multi-value map — see paramList.
+  const multi = event.multiValueQueryStringParameters || null;
   // `event.resource` is API Gateway's resource path template
   // ("/documents/{id}/file" vs "/documents/{id}"), stable regardless of how
   // `id` was URL-encoded — safer than pattern-matching `event.path`.
@@ -1021,7 +1053,7 @@ export async function handler(event) {
     const caller = await resolveCallerApp(event);
     if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params, caller);
     if (id) return await getById(decodeURIComponent(id), params, caller);
-    return await query(params, caller);
+    return await query(params, caller, multi);
   } catch (err) {
     return json(500, { error: "INTERNAL_ERROR", message: String(err && err.message || err) });
   }

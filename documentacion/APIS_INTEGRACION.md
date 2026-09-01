@@ -33,7 +33,7 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 | 1 | `POST` | `/documents` | **Iniciar el proceso**: sube un documento (o pide una URL para subir uno grande) y arranca la validación | `upload-lambda/index.mjs` |
 | 2 | `GET` | `/documents/{id}` | **Consultar** el resultado completo de un documento ya procesado, por su id | `query-lambda/index.mjs` |
 | 3 | `GET` | `/documents/{id}/file` | **Descargar** el archivo original (el PDF/imagen/XML/XLSX/CSV que se subió, no el resultado) vía URL prefirmada de S3 | `query-lambda/index.mjs` |
-| 4 | `GET` | `/documents?docType=&field=&value=` | **Buscar/listar** documentos por tipo o por cualquier campo extraído | `query-lambda/index.mjs` |
+| 4 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata del upload y/o cualquier campo extraído | `query-lambda/index.mjs` |
 
 **Descarga del archivo original (endpoint 3):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que el modo prefirmado de subida, `getSignedUrl`), no los bytes — ver el porqué (límite de 10 MB de API Gateway) y las implicaciones de seguridad de una key compartida en la sección 1.5 y en `API_USO.md` §3.
 
@@ -56,7 +56,7 @@ El modo inline (`contentBase64`) fue eliminado — devuelve
 **tamaño** decidiera qué código corría: base64 infla ~33 %, y arriba de ~4 MB
 reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
-**Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). Acepta `application/json` o `application/x-www-form-urlencoded`:
+**Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). `metadata` es contexto libre del que sube que después se puede filtrar con `GET /documents?meta.<clave>=` (1.5); se guarda como metadata de objeto S3, así que va con claves en minúsculas, valores planos US-ASCII y 2 KB de tope — lo demás es `400 INVALID_METADATA`. Acepta `application/json` o `application/x-www-form-urlencoded`:
 ```jsonc
 { "fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL", "metadata": {} }
 ```
@@ -81,7 +81,16 @@ No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cual
 
 ### 1.5 `GET /documents` — Buscar/listar
 
-Dos filtros combinables (al menos uno es obligatorio): `docType` (indexado vía GSI, acepta `TYPE_ID` o nombre humano) y/o `field`+`value` (búsqueda por cualquier campo extraído, con `op=eq|contains`). Soporta `status`, `since`/`until`, `order`, `limit`, `summary`, `full`. Sin `docType`, hace `Scan` completo de la tabla (más lento, adecuado para volumen moderado).
+Cuatro filtros combinables, **todos en AND** (al menos uno es obligatorio):
+
+| Filtro | Dónde se evalúa | Notas |
+|---|---|---|
+| `docType` | **DynamoDB** (Query al GSI `DocumentTypeIndex`) | Acepta `TYPE_ID` o nombre humano, coma para varios. Es el único que evita el `Scan` |
+| `system` | Lambda | `tracking.appOrigin`, resuelto de la `x-api-key` del `POST /documents` — no de nada que mande el cliente. Alias `appOrigin`, `sistema` |
+| `meta.<clave>` | Lambda | La `metadata` del `POST /documents` (`meta.lote=A123`). Claves en minúsculas; claves distintas AND, misma clave OR. `metaOp=contains` para subcadena |
+| `field`+`value` | Lambda | Cualquier campo extraído, con `op=eq|contains`. Repetible: los pares se emparejan por posición y son AND |
+
+Soporta además `status`, `since`/`until`, `order`, `limit`, `summary`, `full`. Sin `docType`, hace `Scan` completo de la tabla (más lento, adecuado para volumen moderado). `system` y `meta.<clave>` leen una sola clave conocida del envelope, así que —a diferencia de `field`/`value`— no están detrás del permiso `AllowFieldSearch`.
 
 ### 1.6 Autenticación, límites y alcance de acceso (por ambiente)
 

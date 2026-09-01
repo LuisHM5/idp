@@ -37,6 +37,7 @@ from document_catalog import FieldSpec, TypeRegistryEntry, get_type_entry
 from validators import engine
 from validators.engine import ValidationContext
 
+from .derived import apply_derived_fields
 from .liquidacion import build_liquidacion_normalizada
 from .result_common import build_tracking, checks_to_json, error_result
 
@@ -228,10 +229,15 @@ def process_xml(
     liq = build_liquidacion_normalizada(entity_map, entry)
     if liq is not None:
         entity_map["LIQUIDACION_NORMALIZADA"] = liq
+    # Config-driven derived fields (`derived` blocks in the catalog) — same
+    # convention and same ordering as the PDF pipeline; a no-op for a type
+    # that declares none. See catalogs/README.md.
+    derived = apply_derived_fields(entity_map, confidences, entry)
 
     ctx = ValidationContext(expected_values=expected_values, sibling_documents=[], document_text="")
     resolved_tree, checks, _effective_confidences = engine.resolve_field_tree(
         entity_map, confidences, entry, ctx, default_source="XML_EXTRACTION",
+        source_overrides=derived.sources, value_labels=derived.labels,
     )
     status = engine.document_status_from_checks(checks)
 

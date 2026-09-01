@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
-import { parseBody } from "./body-parser.mjs";
+import { parseBody, normalizeMetadata } from "./body-parser.mjs";
 
 const s3 = new S3Client({});
 const ddb = new DynamoDBClient({});
@@ -171,10 +171,21 @@ export async function handler(event) {
   const apiKeyId = event.requestContext?.identity?.apiKeyId;
   const appOrigin = await resolveAppOrigin(apiKeyId);
 
+  // The caller's own `metadata` rides along as S3 object metadata, normalized
+  // to what S3 can actually hold (see normalizeMetadata) — that is also what
+  // makes it searchable later: the SQS consumer reads it back off the object
+  // and it ends up on the result envelope as `metadata`, filterable with
+  // `GET /documents?meta.<clave>=<valor>`.
+  const normalizedMetadata = normalizeMetadata(metadata);
+  if (normalizedMetadata.error) {
+    return errorResponse(400, normalizedMetadata.error.code, normalizedMetadata.error.message);
+  }
+  const objectMetadata = { ...normalizedMetadata.metadata };
   // A per-request model override travels as S3 object metadata. The
   // enrichment Lambda only honours it when the deployment allows it (dev), so
-  // accepting it here is inert in prod.
-  const objectMetadata = { ...(metadata || {}) };
+  // accepting it here is inert in prod. Both keys below are set AFTER the
+  // caller's metadata and are stripped from it by normalizeMetadata, so a body
+  // field can never impersonate another app or smuggle in a model override.
   if (typeof modelId === "string" && modelId.trim()) {
     objectMetadata["model-id"] = modelId.trim();
   }

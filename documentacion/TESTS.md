@@ -5,7 +5,7 @@ valores esperados vs. extraídos de un documento para decidir si hay un bug.
 
 | Comando                                   | Qué prueba                                                                     | Requiere AWS            | Costo aprox. |
 | ----------------------------------------- | ------------------------------------------------------------------------------ | ----------------------- | ------------ |
-| `pnpm test:unit`                          | Motor de reglas, normalizadores, catálogo, y el ground truth de pedimentos (esquema/nombres de campo válidos) — ver [1](#1-antes-de-gastar-dinero-valida-el-ground-truth-gratis) | No | $0 |
+| `pnpm test:unit`                          | Motor de reglas, normalizadores, catálogo, el ground truth de pedimentos (esquema/nombres de campo válidos — ver [1](#1-antes-de-gastar-dinero-valida-el-ground-truth-gratis)) y el contrato de la API: parseo del body del upload, normalización de `metadata` y filtros de `GET /documents` (`tests/unit/node/`, corren con `node --test`) | No | $0 |
 | `pnpm test:encryption`                    | Sintetiza ambos stacks y exige 0 CMK en dev / 1 CMK compartida en prod | No (sí requiere Docker para bundling) | $0 |
 | `pnpm comparar -- normal_pend.pdf`        | **Un solo documento**: valores esperados vs extraídos, campo por campo — ver [2](#2-comparar-expected-vs-real-de-un-documento-con-costo-script-simple) | Sí (Textract + Bedrock) | ~$0.02–0.35  |
 | `pnpm test:pedimentos`                    | Pipeline completo contra los 9 PDFs reales de `test-docs/pedimentos docs/docs` | Sí (Textract + Bedrock) | ~$1 USD      |

@@ -13,6 +13,14 @@ run a DynamoDB Query against the `DocumentTypeIndex` GSI:
     ContainedDocumentTypes  (SS) every type found inside an expediente
     DocumentName            (S)  source file name, when known
     IndexedAt               (S)  when these columns were written
+    Metadata                (M)  the caller's own `metadata` from
+                                 `POST /documents` (see handler.py's
+                                 _upload_metadata), promoted so it is readable
+                                 from the item/console without parsing the
+                                 `EnrichmentResult` blob. The query API
+                                 filters it from the envelope, not from here
+                                 — this column is for operators, not the
+                                 hot path
     Tracking                (M)  {CreatedAt, UpdatedAt?, ProcessingStartedAt?,
                                  ProcessingCompletedAt?, ProcessingSeconds?,
                                  ProcessingTime?, Schema?, AppOrigin?, ModelIds?,
@@ -164,6 +172,9 @@ def derive_index_attributes(
     tracking_attr = _tracking_attribute(result)
     if tracking_attr:
         attributes["Tracking"] = tracking_attr
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict) and metadata:
+        attributes["Metadata"] = _decimalize(metadata)
     return attributes
 
 
@@ -214,4 +225,5 @@ def index_column_names() -> List[str]:
         "DocumentName",
         "IndexedAt",
         "Tracking",
+        "Metadata",
     ]

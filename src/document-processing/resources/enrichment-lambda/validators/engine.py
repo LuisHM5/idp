@@ -711,6 +711,7 @@ def resolve_field_tree(
     computed_field_names: Optional[set] = None,
     default_source: str = "MODEL_EXTRACTION",
     source_overrides: Optional[Dict[str, str]] = None,
+    value_labels: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], List[RuleCheck], Dict[str, Optional[float]]]:
     """Field-centric DSL (schema_version 4.x) equivalent of
     `resolve_fields()` — walks `type_entry.field_tree` and returns ONE
@@ -738,6 +739,14 @@ def resolve_field_tree(
     concatenating what the QR already proved) are not model output and must
     not be reported as such — `{path: label}`, keyed by the same dotted path
     as `confidences`, so it works whatever the catalog named the field.
+
+    `value_labels` adds a human-readable `label` next to a scalar's `value`,
+    keyed by the same dotted path. It exists for codes that are stored as a
+    number but mean something in words (the ERP's `Tipo_Pago`: 1 = "Anticipo y
+    Pasivo"): the field keeps the numeric value the destination system wants,
+    and the reader still sees what it means without a lookup table. The `label`
+    key is only present on nodes that actually have one — a field nobody
+    labelled comes back in exactly the shape it did before.
 
     Trust determination (`valid`/`confidence`) is not raw model self-report
     alone — it is deliberately conservative:
@@ -771,6 +780,7 @@ def resolve_field_tree(
     ctx = ctx or ValidationContext()
     computed_field_names = computed_field_names or set()
     source_overrides = source_overrides or {}
+    value_labels = value_labels or {}
     own_rules, own_required = _flatten_field_tree_rules(type_entry.field_tree)
 
     checks: List[RuleCheck] = []
@@ -904,13 +914,16 @@ def resolve_field_tree(
             # `valid`.
             confidence = round(max(0.0, min(confidence, type_entry.min_confidence - 0.01)), 4)
         effective_confidences[path] = confidence
-        return {
+        node = {
             "value": resolved_value,
             "confidence": confidence,
             "valid": valid,
             "reason": reason,
             "source": source,
         }
+        if path in value_labels:
+            node["label"] = value_labels[path]
+        return node
 
     effective_confidences: Dict[str, Optional[float]] = {}
     result = {

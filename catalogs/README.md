@@ -144,7 +144,17 @@ como en el DSL viejo.
   "item_type": "string",
 
   // Solo si el valor lo calcula el pipeline, no el modelo (ver más abajo):
-  "computed": true
+  "computed": true,
+
+  // Solo si el valor se DECIDE por una condición sobre otros campos ya
+  // extraídos, en vez de leerse del documento (ver "Campos derivados"):
+  "derived": {
+    "from": "CUADRO_LIQUIDACION.TOTAL",
+    "cases": [
+      { "when": { "gt": 383 }, "value": 1, "label": "Anticipo y Pasivo" },
+      { "when": { "lte": 383 }, "value": 3, "label": "Solo Pasivo" }
+    ]
+  }
 }
 ```
 
@@ -165,10 +175,14 @@ como en el DSL viejo.
   **determinísticamente después de la extracción**, no el modelo — se excluye
   del prompt/tool-schema de Bedrock (pedirle al modelo que adivine un valor
   que se va a descartar desperdicia tokens de salida) y su resultado sale
-  siempre con `source: "NORMALIZED"`. El único consumidor de esta convención
-  hoy es `LIQUIDACION_NORMALIZADA` (ver próxima sección) — si marcas otro
-  campo como `computed` sin que algo en `pipeline/` lo llene explícitamente,
-  simplemente sale vacío/null, nadie lo calcula solo.
+  siempre con `source: "NORMALIZED"` (o el origen real, si quien lo llenó
+  declara uno — ver `derived`). Hay dos consumidores de esta convención:
+  `LIQUIDACION_NORMALIZADA` (agregación de conceptos) y `derived` (una
+  condición), ambos en las secciones de abajo — si marcas un campo como
+  `computed` sin declarar ninguno de los dos, simplemente sale vacío/null,
+  nadie lo calcula solo.
+- **`derived`** declara ESA condición. Ver "Campos derivados de una
+  condición" más abajo.
 - **`unique_key`** marca el campo por el que se busca este tipo — ver la
   sección siguiente.
 
@@ -812,10 +826,93 @@ soporta `TASA` con tolerancia numérica y `TASA_NOT_IN` con una lista), y
 Esto es una **convención de nombre**, no un mecanismo genérico para
 cualquier objeto computado: solo el campo literalmente llamado
 `LIQUIDACION_NORMALIZADA` dispara esta lógica (`pipeline/liquidacion.py`
-busca ese nombre exacto en `field_tree`). Si necesitas otro objeto calculado
-con una lógica de agregación distinta, hay que escribir su propio módulo en
-`pipeline/` y engancharlo en `pipeline/expediente.py::_extract_segment`,
-igual que se hizo para este.
+busca ese nombre exacto en `field_tree`). Si lo que necesitas es **elegir un
+valor por condición** en vez de agregar un array, no escribas código: usa
+`derived` (siguiente sección). Solo una lógica de **agregación distinta**
+—otra forma de sumar/filtrar filas— sigue necesitando su propio módulo en
+`pipeline/` enganchado en `pipeline/expediente.py::_extract_segment`, igual
+que se hizo para este.
+
+### Campos derivados de una condición (`derived`)
+
+Algunos campos **no están impresos en el documento**: son una regla de negocio
+sobre valores que sí se extrajeron. `Tipo_Pago` del ERP es el caso típico — el
+pedimento nunca imprime "tipo de pago", se decide según el total del cuadro de
+liquidación. Eso se declara en el catálogo, no en código:
+
+```jsonc
+"Tipo_Pago": {
+  "type": "number",
+  "required": true,
+  "computed": true,                       // lo llena el pipeline -> fuera del prompt de Bedrock
+  "derived": {
+    "from": "CUADRO_LIQUIDACION.TOTAL",    // path punteado a otro campo ya extraído
+    "cases": [                             // en orden: gana el PRIMERO que matchee
+      { "when": { "gt": 383 },  "value": 1, "label": "Anticipo y Pasivo" },
+      { "when": { "lte": 383 }, "value": 3, "label": "Solo Pasivo" }
+    ],
+    "default": null                        // opcional; si no lo pones, es null
+  },
+  "hint": "Calculado, no impreso: ...",
+  "validation": []
+}
+```
+
+Sale así, con el código que guarda el sistema destino y, al lado, qué significa:
+
+```jsonc
+"Tipo_Pago": { "value": 3, "label": "Solo Pasivo", "confidence": 0.93,
+               "valid": true, "reason": null, "source": "DERIVED" }
+```
+
+Operadores admitidos dentro de un `when` (varios en el mismo `when` = **AND**):
+
+| Operador | Ejemplo | Matchea cuando |
+|---|---|---|
+| `gt` `gte` `lt` `lte` | `{"gt": 383}` | Comparación numérica. `"$ 12,450.00"` se parsea igual que `12450`. |
+| `eq` `ne` | `{"eq": "A1"}` | Igualdad numérica si ambos lados son números; si no, texto sin espacios ni mayúsculas. |
+| `in` | `{"in": ["A1", "A3"]}` | El valor es uno de la lista (misma comparación que `eq`). |
+| `matches` | `{"matches": "^A"}` | Regex (case-insensitive) sobre el valor. |
+| `empty` / `not_empty` | `{"not_empty": true}` | El campo vino vacío / trae algo. |
+
+Reglas del mecanismo (`pipeline/derived.py`):
+
+- **`label` es opcional y NUNCA sustituye al `value`.** Está para los códigos
+  que se guardan como número pero significan algo en palabras (`Tipo_Pago` del
+  ERP: 1 = Anticipo y Pasivo, 2 = Solo Anticipo, 3 = Solo Pasivo): el campo
+  conserva el código que el destino espera, y quien lea el resultado no
+  necesita la tabla de códigos. Se declara por `case` y aparece como `label`
+  junto al `value`; un campo sin etiqueta sale exactamente igual que antes.
+  Si no matchea ningún `case` no hay etiqueta: ponerle una al `default` sería
+  darle significado a un valor que nadie decidió.
+- **`from` acepta paths anidados** (`CUADRO_LIQUIDACION.TOTAL`) y se evalúa
+  DESPUÉS de `LIQUIDACION_NORMALIZADA`, así que también puedes apuntar a un
+  concepto ya normalizado (`LIQUIDACION_NORMALIZADA.CL_Total`).
+- **La confianza se hereda** del campo del que se derivó: un campo derivado es
+  exactamente tan confiable como su insumo, nunca más.
+- **El `source` de salida es `"DERIVED"`**, no `MODEL_EXTRACTION`: el resultado
+  dice que el valor lo calculó el sistema.
+- **Si el insumo no se pudo leer**, ningún `when` matchea y sale el `default`
+  (null si no lo declaras). Con `required: true`, el check de presencia manda
+  el documento a revisión — que es lo correcto: mejor vacío que un valor
+  inventado a partir de un dato que nadie leyó.
+- **No hay evaluación de expresiones**: el conjunto de operadores es cerrado y
+  `value` sale literal. Un catálogo no puede ejecutar código. Un operador mal
+  escrito **no matchea** (en vez de matchear siempre) y queda logueado.
+- Sirve en los tres pipelines (PDF, XML y tabular), y un tipo que no declare
+  ningún `derived` no paga nada: el paso no hace trabajo.
+
+**¿Código o IA?** El criterio para decidir dónde va una regla:
+
+| La regla... | Va en | Por qué |
+|---|---|---|
+| se escribe como comparación/umbral sobre campos ya extraídos | `derived` | Determinista, $0 de Bedrock, auditable, y `computed: true` la saca del prompt. |
+| es una suma/filtro sobre un array de conceptos | `LIQUIDACION_NORMALIZADA` (`concept_aliases`/`filters`) | Ya existe, sección anterior. |
+| necesita **leer o interpretar** el documento (texto libre, criterio) | campo normal con `hint` | Lo llena el modelo. Es lo que ya pasa hoy; no hace falta mecanismo nuevo. |
+
+En resumen: si puedes escribir la regla como una condición, no se la preguntes
+al modelo — sale gratis, sale igual siempre, y queda documentada en el catálogo
+donde la puede cambiar quien conoce el negocio.
 
 ## `pipeline: "expediente"`: qué controla realmente
 

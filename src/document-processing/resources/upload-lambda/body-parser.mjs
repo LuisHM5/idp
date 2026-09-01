@@ -58,3 +58,92 @@ export function parseBody(event) {
     return { error: { code: "INVALID_JSON", message: "Request body is not valid JSON" } };
   }
 }
+
+/**
+ * S3 object-metadata keys this system owns; a caller's own `metadata` may not
+ * write them. `app-origin` is the traceability signal the query API filters on
+ * (`GET /documents?system=`) and it is resolved from the request's OWN
+ * x-api-key — letting a body field set it would let any app claim to be
+ * another one. `model-id` has its own top-level `modelId` field.
+ */
+const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id"]);
+
+/** S3's ceiling for all user metadata on one object (keys + values together). */
+const MAX_METADATA_BYTES = 2048;
+
+/**
+ * Normalize the caller's `metadata` into what S3 can actually store, failing
+ * loudly HERE instead of at the client's `PUT` — every constraint below
+ * otherwise surfaces as an opaque S3 error minutes later and one hop away
+ * (non-ASCII mangles the presigned signature into `403 SignatureDoesNotMatch`,
+ * which reads like a permissions bug; oversized metadata is a `400
+ * MetadataTooLarge` against a URL this Lambda handed out as valid).
+ *
+ *   - Keys are lowercased, because S3 lowercases them on the way in anyway.
+ *     Doing it here means `metadata: {"Lote": ...}` and `?meta.lote=` agree
+ *     instead of the caller having to guess which casing survived the trip.
+ *   - Reserved keys are dropped (see RESERVED_METADATA_KEYS) — silently, not
+ *     with a 400: they are this system's own, so a caller that happens to use
+ *     the name is not making an error worth failing an upload over.
+ *   - Scalars become strings; `null`/`undefined`/`""` entries are dropped.
+ *   - Objects, arrays, non-ASCII and >2KB total are rejected: S3 user
+ *     metadata is an HTTP header, and it holds neither structure nor UTF-8.
+ *
+ * Returns `{ metadata }` or `{ error: {code, message} }`, same contract as
+ * `parseBody` — this module stays free of any HTTP shape of its own.
+ */
+export function normalizeMetadata(metadata) {
+  if (metadata === undefined || metadata === null) return { metadata: {} };
+  if (typeof metadata !== "object" || Array.isArray(metadata)) {
+    return {
+      error: {
+        code: "INVALID_METADATA",
+        message: "Field 'metadata' must be a JSON object",
+      },
+    };
+  }
+
+  const out = {};
+  let bytes = 0;
+  for (const [rawKey, rawValue] of Object.entries(metadata)) {
+    const key = String(rawKey).trim().toLowerCase();
+    if (!key || RESERVED_METADATA_KEYS.has(key)) continue;
+    if (rawValue === null || rawValue === undefined) continue;
+    if (typeof rawValue === "object") {
+      return {
+        error: {
+          code: "INVALID_METADATA",
+          message:
+            `Field 'metadata.${key}' must be a string, number or boolean — S3 object ` +
+            "metadata is a flat set of headers and cannot hold nested objects or arrays",
+        },
+      };
+    }
+    const value = String(rawValue).trim();
+    if (!value) continue;
+    if (!/^[\x20-\x7e]*$/.test(key) || !/^[\x20-\x7e]*$/.test(value)) {
+      return {
+        error: {
+          code: "INVALID_METADATA",
+          message:
+            `Field 'metadata.${key}' must be US-ASCII — S3 stores user metadata as an ` +
+            "HTTP header, and a non-ASCII byte there breaks the presigned signature",
+        },
+      };
+    }
+    bytes += key.length + value.length;
+    out[key] = value;
+  }
+
+  if (bytes > MAX_METADATA_BYTES) {
+    return {
+      error: {
+        code: "INVALID_METADATA",
+        message:
+          `Field 'metadata' is ${bytes} bytes; S3 caps user metadata at ${MAX_METADATA_BYTES} ` +
+          "for the whole object (keys and values together)",
+      },
+    };
+  }
+  return { metadata: out };
+}

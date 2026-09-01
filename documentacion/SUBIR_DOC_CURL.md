@@ -115,6 +115,11 @@ curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
 documento (incluida la que mandaste en `metadata` en el paso 1) viaja en el
 query string, ya firmada. Por eso el `PUT` no lleva ninguna cabecera.
 
+Esa misma metadata es con la que después puedes reencontrar el documento sin
+haber guardado su `documentId`: `GET /documents?docType=...&meta.lote=A123`
+(ver `API_USO.md` §4). `app-origin` no lo mandaste tú — sale de tu API key, y
+se filtra con `?system=`.
+
 Qué NO lleva esta petición:
 
 | | |

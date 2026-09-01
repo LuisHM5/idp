@@ -115,6 +115,35 @@
             "message": "El total no coincide con la suma de conceptos"
           }
         ]
+      },
+
+      "__COMENTARIO_derived__": "Opcional. Un campo que NO viene en el XML: su valor se DECIDE por una condición sobre otros campos ya extraídos. Va junto con `computed: true` y en vez de `xpath` declara un bloque `derived` con `from` (path a otro campo) y `cases` en orden (gana el primero que matchee; varias llaves en un `when` = AND). Operadores: `gt`/`gte`/`lt`/`lte`, `eq`/`ne`, `in`, `matches`, `empty`/`not_empty`. Sin match sale `default` (null si lo omites). La confianza se hereda del campo en `from` y el `source` de salida es DERIVED. Funciona igual que en los tipos de PDF — mismo evaluador (pipeline/derived.py). Úsalo cuando la regla se pueda escribir como comparación; si necesita interpretar contenido, deja el campo normal. Borra esta llave y el ejemplo si no aplica. `label` es opcional y no sustituye al valor: sirve para códigos que se guardan como número pero significan algo en palabras (Tipo_Pago del ERP: 1 = Anticipo y Pasivo, 2 = Solo Anticipo, 3 = Solo Pasivo) — el campo conserva el código que espera el sistema destino y el resultado igual dice qué significa, en `label`, junto al `value`. Ver catalogs/README.md -> 'Campos derivados de una condición'.",
+      "TIPO_DE_PAGO": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "TOTAL",
+          "cases": [
+            {
+              "when": {
+                "gt": 383
+              },
+              "value": 1,
+              "label": "Anticipo y Pasivo"
+            },
+            {
+              "when": {
+                "lte": 383
+              },
+              "value": 3,
+              "label": "Solo Pasivo"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado por el pipeline a partir de TOTAL, no se lee del XML. El umbral vive AQUÍ: si cambia la regla de negocio se edita este JSON, no el código.",
+        "validation": []
       }
     },
 

@@ -32,6 +32,7 @@ from document_catalog import (
 from validators import engine
 from validators.engine import RuleCheck, ValidationContext
 
+from .derived import SOURCE_DERIVED, apply_derived_fields
 from .liquidacion import build_liquidacion_normalizada
 from .normalize import (
     digits_exact,
@@ -181,6 +182,16 @@ def _extract_segment(
         if liq is not None:
             doc["_entities"]["LIQUIDACION_NORMALIZADA"] = liq
             doc["liquidacionNormalizada"] = liq
+        # Config-driven derived fields (`derived` blocks in the catalog): a value
+        # decided by condition from fields already established, not read off the
+        # page. After the liquidation build on purpose, so a rule can read either
+        # the raw extraction or a normalized concept total.
+        derived = apply_derived_fields(
+            doc["_entities"], doc.setdefault("_confidences", {}), entry
+        )
+        doc.setdefault("_recovered_sources", {}).update(derived.sources)
+        if derived.labels:
+            doc["_derived_labels"] = derived.labels
     except Exception as e:
         # Full traceback goes to CloudWatch (logger.exception, not just
         # logger.error's bare message) so a real crash is diagnosable without
@@ -374,6 +385,7 @@ def process_pdf(
             resolved_tree, checks, effective_confidences = engine.resolve_field_tree(
                 entity_map, confidences, entry, ctx,
                 source_overrides=doc.get("_recovered_sources"),
+                value_labels=doc.get("_derived_labels"),
             )
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
@@ -410,6 +422,7 @@ def process_pdf(
         # Already consumed as `source_overrides` when the field tree resolved;
         # it is internal bookkeeping, not part of the emitted document.
         doc.pop("_recovered_sources", None)
+        doc.pop("_derived_labels", None)
         entities = doc.pop("_entities", {})
         if "fields" not in doc:
             doc["fields"] = {}
@@ -695,7 +708,9 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
 # confidence 0.99); DERIVED is computed from values already established
 # (concatenating the 4 components, or a regex over the page text).
 _SOURCE_QR = "QR_RECOVERY"
-_SOURCE_DERIVED = "DERIVED"
+# Defined in pipeline.derived (the config-driven derived-field evaluator uses
+# the same label) so the two never drift apart.
+_SOURCE_DERIVED = SOURCE_DERIVED
 
 
 def _mark_source(doc: Dict[str, Any], field: str, label: str) -> None:

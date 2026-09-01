@@ -207,8 +207,13 @@ Ruta: `POST /documents` → `upload-lambda/index.mjs:handler` (`:141`).
 6. `resolveAppOrigin(apiKeyId)` (`:122`) hace `GetItem` en `AppsTable`. El
    lookup es best-effort: devuelve `null` sin llave y `unregistered` si una
    llave válida no está registrada o la consulta falla.
-7. Copia `metadata`; añade `model-id` si el request lo pidió y `app-origin` si
-   pudo resolverlo.
+7. Normaliza la `metadata` del request con `normalizeMetadata`
+   (`body-parser.mjs`) a lo que S3 puede guardar —claves en minúsculas,
+   valores escalares US-ASCII, 2 KB en total— y descarta ahí mismo las claves
+   reservadas `app-origin`/`model-id`; lo que no cumple es `400
+   INVALID_METADATA` aquí y no un `403` de S3 en el `PUT` del paso 2. Encima
+   de esa copia añade `model-id` si el request lo pidió y `app-origin` si pudo
+   resolverlo — en ese orden, así que un campo del body nunca los pisa.
 8. Si el body trae `contentBase64`, responde `400 INLINE_UPLOAD_REMOVED`: el
    modo inline se eliminó para que el tamaño del archivo no decida qué código
    corre. Si no, sigue siempre al modo prefirmado.
@@ -975,7 +980,7 @@ la línea puntual puede desplazarse cuando se edite el archivo.
 | Carga inline | S3 `PutObject` | `upload-lambda/index.mjs:252-298` | bucket, key `raw/...`, bytes, MIME y metadata | solo confirma éxito; el error devuelve HTTP 500 |
 | Carga grande | firma local para S3 `PutObject` | `upload-lambda/index.mjs:203-246` | mismo bucket/key/metadata, expiración de 15 min | URL; el `PUT` real lo hace el cliente directamente contra S3 |
 | Disparo | S3 notifica SQS | configuración del blueprint | evento `ObjectCreated` limitado a `raw/` | el consumidor recibe el evento dentro de un mensaje SQS |
-| Trazabilidad inicial | S3 `HeadObject` | `patches/default-sqs-consumer-index.py:77-92` | bucket y key recibidos | metadata `app-origin`; es best-effort |
+| Trazabilidad inicial y contexto del cliente | S3 `HeadObject` | `patches/default-sqs-consumer-index.py` (lectura de metadata) | bucket y key recibidos | `app-origin` → `appOrigin`, y el resto de la metadata del objeto → `uploadMetadata`, ambos en el input de Step Functions; es best-effort, un fallo aquí solo cuesta trazabilidad |
 | Orquestación | Step Functions `StartExecution` | `patches/default-sqs-consumer-index.py:148-179` | ARN, `name={documentId}-execution`, input JSON | ARN/fecha de ejecución; `ExecutionAlreadyExists` se descarta |
 | Inicialización | DynamoDB `PutItem` | estado `InitMetadataEntry` de la máquina sintetizada | `DocumentId`, contenido y `WorkflowStatus=pending` | no regresa datos de negocio |
 | Tasks upstream | Lambda `Invoke` | tasks creadas por `multi-model-document-processing.ts:118-219` | estado completo + fase + prompt/modelo | payload de clasificación o procesamiento |
@@ -1001,7 +1006,8 @@ la línea puntual puede desplazarse cuando se edite el archivo.
 | Archivo original | S3 `ListObjectsV2` y URL `GetObject` firmada | `query-lambda/index.mjs:453-524` | busca `processed/`, `failed/` y `raw/` | ubicación, metadata y URL temporal de descarga |
 | Lista por tipo | DynamoDB `Query` sobre GSI | `query-lambda/index.mjs:534-582` | `DocumentTypeIndex` + filtros | ids ordenados/paginados del tipo permitido |
 | Materialización de lista | DynamoDB `BatchGetItem` | `query-lambda/index.mjs:616-639` | lote de `DocumentId`; un retry para unprocessed keys | filas compactas preservando orden lógico |
-| Búsqueda arbitraria | DynamoDB `Scan` paginado | `query-lambda/index.mjs:641-817` | proyección de filas y filtros aplicados en código | coincidencias por dot-path; costo crece con toda la tabla |
+| Búsqueda arbitraria | DynamoDB `Scan` paginado | `query-lambda/index.mjs::query` (rama sin `docType`) | proyección de filas y filtros aplicados en código | coincidencias por dot-path; costo crece con toda la tabla |
+| Filtros por sistema y metadata | ninguna llamada AWS | `query-lambda/search-filters.mjs::matchesSystems`/`matchesMeta` | `tracking.appOrigin` y `metadata` del envelope ya traído | se evalúan en la Lambda sobre lo que la Query/Scan devolvió, así que no añaden lecturas a una consulta que ya trae `docType` |
 
 No hay una llamada SDK explícita a KMS: en prod S3 usa el CMK compartido de
 forma transparente; dev usa cifrado administrado por el servicio y no crea un

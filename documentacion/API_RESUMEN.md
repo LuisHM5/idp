@@ -21,7 +21,7 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 |---|---|---|
 | `fileName` | **requerido** | `pdf` `jpg` `jpeg` `png` `xml` `xlsx` `csv` |
 | `documentType` | opcional | TYPE_ID, nombre o alias. **Requerido** en `xml` `xlsx` `csv` |
-| `metadata` | opcional | objeto libre. En form, JSON en string |
+| `metadata` | opcional | objeto plano: claves en minúsculas, valores US-ASCII sin anidar, 2 KB en total. Filtrable después con `meta.<clave>` (§5). En form, JSON en string |
 | `modelId` | opcional | solo dev |
 
 | `200` | |
@@ -82,29 +82,41 @@ Auth: `x-api-key`
 
 ## 5. `GET /documents` — búsqueda
 
-Auth: `x-api-key` · Requiere al menos `docType` **o** `field`+`value`
+Auth: `x-api-key` · Requiere al menos uno de `docType`, `system`, `meta.<clave>` o `field`+`value`
+
+Cuatro filtros, **todos en AND**. Repetir uno es **OR**.
 
 | Param | Default | |
 |---|---|---|
 | `docType` | | TYPE_ID, nombre o alias. Coma para varios. **Mándalo siempre**: sin él la consulta hace Scan |
-| `field` | | Nombre del campo. No hace falta el dot-path completo |
-| `value` | | Valor. Case-insensitive |
-| `op` | `eq` | `eq` · `contains` |
+| `system` | | Qué sistema lo subió (`tracking.appOrigin`, sale de la API key del upload). Coma para varios. Alias `appOrigin` `sistema` |
+| `meta.<clave>` | | Metadata del upload: `meta.lote=A123`. Claves en minúsculas. Claves distintas = AND, misma clave = OR |
+| `metaOp` | `eq` | `eq` · `contains`, para todos los `meta.<clave>` |
+| `field` | | Nombre del campo. No hace falta el dot-path completo. **Repetible** (AND) |
+| `value` | | Valor. Case-insensitive. Uno por `field`, **en el mismo orden** |
+| `op` | `eq` | `eq` · `contains`. Una vez (a todos) o una por filtro |
 | `status` | | `APROBADO` `RECHAZADO` `REQUIERE_REVISION` |
 | `since` · `until` | | ISO-8601 |
 | `order` | `desc` | `desc` · `asc` |
 | `expand` | `true` | `0` no busca dentro de expedientes |
 | `limit` | `25` | tope `100` |
-| `summary` | `false` | `1` resumen ligero |
+| `summary` | `false` | `1` resumen ligero (incluye `appOrigin` y `metadata`) |
 | `full` | `false` | `1` agrega detalle desde S3 |
+
+```
+GET /documents?docType=PEDIMENTO_ADUANAL&system=ERP&meta.lote=A123
+              &field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0
+```
 
 | `200` | |
 |---|---|
 | `count` · `scanned` · `matches[]` | |
 | `lookup` | `uniqueKey` (1 Query) · `typeIndex` · `scan` |
-| `matches[].matchedValue` · `matchedAt` | dónde coincidió |
+| `filters[]` · `system[]` · `metaFilters[]` | eco de lo que se aplicó |
+| `matches[].matched[]` | `{field, matchedValue, matchedAt}` por filtro |
+| `matches[].matchedValue` · `matchedAt` | el primero, por compatibilidad |
 
-`400` `MISSING_PARAMS` · `403` sin permiso de `docType` o sin `AllowFieldSearch`
+`400` `MISSING_PARAMS` `INVALID_PARAMS` · `403` sin permiso de `docType` o sin `AllowFieldSearch` (`system`/`meta.<clave>` no lo piden)
 
 ---
 

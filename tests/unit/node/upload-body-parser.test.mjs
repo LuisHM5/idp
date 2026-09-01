@@ -10,7 +10,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseBody } from "../../../src/document-processing/resources/upload-lambda/body-parser.mjs";
+import {
+  normalizeMetadata,
+  parseBody,
+} from "../../../src/document-processing/resources/upload-lambda/body-parser.mjs";
 
 const form = (body, extra = {}) => ({
   headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -126,4 +129,67 @@ test("contentBase64 sigue parseándose: el handler lo rechaza, no el parser", ()
   const b64 = Buffer.from("%PDF-1.7").toString("base64");
   const { body } = parseBody(form(`fileName=a.pdf&contentBase64=${encodeURIComponent(b64)}`));
   assert.equal(Buffer.from(body.contentBase64, "base64").toString(), "%PDF-1.7");
+});
+
+// --- normalizeMetadata ----------------------------------------------------
+// La metadata del POST se guarda como metadata de objeto S3 y de ahí la lee el
+// consumidor SQS para dejarla en el envelope, donde `?meta.<clave>=` la filtra.
+// Todo lo que S3 no aguanta se rechaza AQUÍ: en el PUT prefirmado el mismo
+// error aparece como un 403 de S3 que parece de permisos y no lo es.
+
+test("baja las claves a minúsculas, como haría S3 de todos modos", () => {
+  const { metadata } = normalizeMetadata({ Lote: "A123", SUCURSAL: "CHIH" });
+  assert.deepEqual(metadata, { lote: "A123", sucursal: "CHIH" });
+});
+
+test("los escalares se vuelven string", () => {
+  const { metadata } = normalizeMetadata({ piezas: 12, urgente: true });
+  assert.deepEqual(metadata, { piezas: "12", urgente: "true" });
+});
+
+test("descarta vacíos y nulos en vez de guardar claves sin valor", () => {
+  const { metadata } = normalizeMetadata({ a: "", b: null, c: undefined, d: "  ", e: "ok" });
+  assert.deepEqual(metadata, { e: "ok" });
+});
+
+test("una clave reservada del sistema se ignora: nadie suplanta a otra app", () => {
+  const { metadata } = normalizeMetadata({ "app-origin": "OTRA_APP", "model-id": "x", lote: "A1" });
+  assert.deepEqual(metadata, { lote: "A1" });
+});
+
+test("la reservada también se ignora escrita con mayúsculas", () => {
+  const { metadata } = normalizeMetadata({ "App-Origin": "OTRA_APP" });
+  assert.deepEqual(metadata, {});
+});
+
+test("sin metadata devuelve un objeto vacío, no un error", () => {
+  assert.deepEqual(normalizeMetadata(undefined), { metadata: {} });
+  assert.deepEqual(normalizeMetadata(null), { metadata: {} });
+});
+
+test("un valor anidado es 400: la metadata de S3 es plana", () => {
+  const { error } = normalizeMetadata({ lote: { id: "A123" } });
+  assert.equal(error.code, "INVALID_METADATA");
+  assert.match(error.message, /metadata\.lote/);
+});
+
+test("un arreglo en la raíz también es 400", () => {
+  assert.equal(normalizeMetadata([{ lote: "A1" }]).error.code, "INVALID_METADATA");
+});
+
+test("un acento es 400 aquí, no un 403 de S3 media hora después", () => {
+  const { error } = normalizeMetadata({ sucursal: "Chihuahua Centro ñ" });
+  assert.equal(error.code, "INVALID_METADATA");
+  assert.match(error.message, /US-ASCII/);
+});
+
+test("pasarse de 2KB es 400, con el tamaño real en el mensaje", () => {
+  const { error } = normalizeMetadata({ nota: "x".repeat(2100) });
+  assert.equal(error.code, "INVALID_METADATA");
+  assert.match(error.message, /2104 bytes/);
+});
+
+test("justo debajo del tope pasa", () => {
+  const { metadata } = normalizeMetadata({ nota: "x".repeat(2044) });
+  assert.equal(metadata.nota.length, 2044);
 });
