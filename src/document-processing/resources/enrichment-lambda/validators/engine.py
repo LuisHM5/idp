@@ -29,6 +29,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import TypeRegistryEntry, ValidationRule
+from pipeline import confidence as conf_policy
 from pipeline.normalize import (
     normalize_field,
     parse_amount,
@@ -641,11 +642,18 @@ def resolve_fields(
     resolved: Dict[str, Dict[str, Any]] = {}
     for name in type_entry.extraction_fields:
         value = entity_map.get(name)
-        confidence = confidences.get(name)
+        raw_confidence = confidences.get(name)
+        # Same confidence contract as `resolve_field_tree`: always a number,
+        # and a value under the discard floor is dropped rather than handed on
+        # (see `pipeline.confidence`).
+        confidence = conf_policy.UNKNOWN if raw_confidence is None else conf_policy.clamp(raw_confidence)
+        discarded = not _is_empty(value) and conf_policy.discarded(
+            confidence, type_entry.discard_below_confidence
+        )
         entry: Dict[str, Any] = {
             "extractedValue": value,
             "normalizedValue": normalize_field(name, value),
-            "confidence": round(confidence, 4) if confidence is not None else None,
+            "confidence": confidence,
             "checks": [
                 {"rule": c.rule, "valid": c.valid, "message": c.message, "skipped": c.skipped}
                 for c in checks if c.field.split(".", 1)[0] == name
@@ -656,14 +664,18 @@ def resolve_fields(
             entry["normalizedValue"] = None
         elif name in failures_by_field:
             entry["status"] = INVALID
+        elif discarded:
+            entry["status"] = LOW_CONFIDENCE
         elif name in warnings_by_field:
             entry["status"] = REVIEW_REQUIRED
-        elif confidence is not None and confidence < type_entry.min_confidence:
+        elif confidence < type_entry.min_confidence:
             entry["status"] = LOW_CONFIDENCE
         else:
             entry["status"] = VALIDATED
 
         entry["value"] = entry["normalizedValue"] if entry["normalizedValue"] is not None else entry["extractedValue"]
+        if discarded:
+            entry["value"] = None
         entry["valid"] = entry["status"] in (VALIDATED, NOT_APPLICABLE)
         if entry["valid"]:
             entry["reason"] = None
@@ -673,6 +685,11 @@ def resolve_fields(
                 entry["reason"] = "; ".join(reasons)
             elif entry["status"] == NOT_FOUND:
                 entry["reason"] = f"required field '{name}' missing or empty"
+            elif discarded:
+                entry["reason"] = (
+                    f"value discarded: confidence {confidence} below discard floor "
+                    f"{type_entry.discard_below_confidence}"
+                )
             elif entry["status"] == LOW_CONFIDENCE:
                 entry["reason"] = f"confidence {entry['confidence']} below minimum {type_entry.min_confidence}"
             else:
@@ -712,6 +729,8 @@ def resolve_field_tree(
     default_source: str = "MODEL_EXTRACTION",
     source_overrides: Optional[Dict[str, str]] = None,
     value_labels: Optional[Dict[str, Any]] = None,
+    row_confidences: Optional[Dict[str, Dict[str, float]]] = None,
+    default_confidence: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], List[RuleCheck], Dict[str, Optional[float]]]:
     """Field-centric DSL (schema_version 4.x) equivalent of
     `resolve_fields()` — walks `type_entry.field_tree` and returns ONE
@@ -748,6 +767,35 @@ def resolve_field_tree(
     key is only present on nodes that actually have one — a field nobody
     labelled comes back in exactly the shape it did before.
 
+    `row_confidences` ({row_key: {campo: conf}}, see `pipeline.confidence`)
+    gives each ARRAY ROW CELL its own number. Without it every cell of every
+    row reports the array's segment-level OCR score, which says nothing about
+    the individual row the reader is looking at.
+
+    `default_confidence` is what a value inherits when the extractor attached
+    no number of its own — callers pass how well the SOURCE was read (the
+    segment's OCR confidence for the PDF pipeline, 1.0 for the deterministic
+    XML/tabular ones). It matters because of the discard rule below: without
+    it, a pipeline that simply forgot to register a field's confidence would
+    have its values deleted as untrustworthy. With it, a 0.0 means "nothing
+    supports this value", never "nobody measured it".
+
+    Confidence contract — `confidence` is ALWAYS a number in 0-1, never null:
+    - A field nobody could measure (no value on the page, no extractor number,
+      nothing to inherit) reports 0.0 — "no lo sé". `null` forced every
+      consumer to special-case the absence of a number before comparing it.
+    - A computed field inherits the confidence of what produced it: the mean
+      of the cells a total summed (`pipeline.liquidacion`), or the source
+      field a `derived` block read (`pipeline.derived`).
+    - Below `type_entry.discard_below_confidence` (0.50 by default) a value is
+      DISCARDED, not just flagged: `value` becomes null, `valid` false and the
+      reason says so, while `confidence` keeps the low number that caused it.
+      A wrong-looking amount that still parses is worse downstream than an
+      explicit blank. This is stricter than `min_confidence`, which flags the
+      field but keeps the value for a human to judge, and it only ever applies
+      to a field that HAS a value — an empty optional field is not "discarded",
+      it was never there.
+
     Trust determination (`valid`/`confidence`) is not raw model self-report
     alone — it is deliberately conservative:
     - A `custom_formula`/`cfdi_total`/`equals_field` check failure is
@@ -775,12 +823,17 @@ def resolve_field_tree(
     element is `path -> confidence` for every scalar leaf actually resolved
     (post-capping), so a caller computing a document-level average (see
     `pipeline/expediente.py`) reflects the same trust determination as the
-    per-field values instead of averaging the pre-cap raw numbers.
+    per-field values instead of averaging the pre-cap raw numbers. A leaf with
+    no value maps to None there (not to the 0.0 its node reports): the
+    document's own confidence describes what was READ, and averaging in a zero
+    per field that was never on the page would sink it for no reason.
     """
     ctx = ctx or ValidationContext()
     computed_field_names = computed_field_names or set()
     source_overrides = source_overrides or {}
     value_labels = value_labels or {}
+    row_confidences = row_confidences or {}
+    discard_floor = type_entry.discard_below_confidence
     own_rules, own_required = _flatten_field_tree_rules(type_entry.field_tree)
 
     checks: List[RuleCheck] = []
@@ -876,11 +929,19 @@ def resolve_field_tree(
                 rendered = []
                 for row in items:
                     row = row if isinstance(row, dict) else {}
+                    # Each cell falls back to what the extractor measured for
+                    # THIS row (pipeline.confidence), then to the array's own
+                    # number. Without the per-row map every cell of every row
+                    # reported the same segment-level OCR score.
+                    row_conf = row_confidences.get(conf_policy.row_key(row), {})
                     rendered.append({
                         "valid": True,
                         "reason": None,
                         "fields": {
-                            sub_name: walk_node(sub_spec, f"{path}.{sub_name}", row.get(sub_name), computed, array_conf)
+                            sub_name: walk_node(
+                                sub_spec, f"{path}.{sub_name}", row.get(sub_name), computed,
+                                row_conf.get(sub_name, array_conf),
+                            )
                             for sub_name, sub_spec in spec.item_fields.items()
                         },
                     })
@@ -889,15 +950,44 @@ def resolve_field_tree(
             for v in items:
                 resolved_v, source = resolve_leaf(spec.name, v, computed)
                 rendered_items.append({
-                    "value": resolved_v, "confidence": array_conf, "valid": True, "reason": None,
+                    "value": resolved_v,
+                    "confidence": conf_policy.clamp(
+                        array_conf if array_conf is not None else default_confidence
+                    ),
+                    "valid": True, "reason": None,
                     "source": source,
                 })
             return {"items": rendered_items}
         # scalar
         valid, reason = valid_reason(path)
         resolved_value, source = resolve_leaf(spec.name, value, computed, path)
-        confidence = confidences.get(path, fallback_conf)
-        if valid and confidence is not None and confidence < type_entry.min_confidence:
+        raw_confidence = confidences.get(path, fallback_conf)
+        if raw_confidence is None:
+            raw_confidence = default_confidence
+        # Always a number from here on — see the confidence contract above.
+        confidence = conf_policy.UNKNOWN if raw_confidence is None else conf_policy.clamp(raw_confidence)
+        empty = _is_empty(resolved_value)
+        if empty:
+            # No value, no confidence: an absent field reports UNKNOWN, never
+            # the document-level default (which describes how well the source
+            # was READ — there is nothing here that was read).
+            confidence = conf_policy.UNKNOWN
+            # Nothing was read, so there is nothing to distrust: the node
+            # reports UNKNOWN (0.0) and skips both thresholds below — a field
+            # that isn't on the document is not a "discarded" one, and a
+            # required one already failed its own presence check.
+            pass
+        elif conf_policy.discarded(confidence, discard_floor):
+            # Too unreliable to hand on as data: drop the VALUE, keep the
+            # number that explains why (see the confidence contract above).
+            discard_reason = (
+                f"value discarded: confidence {confidence} below discard floor {discard_floor}"
+            )
+            resolved_value = None
+            valid = False
+            reason = f"{reason}; {discard_reason}" if reason else discard_reason
+            checks.append(RuleCheck(path, "discard_low_confidence", False, discard_reason, severity="warning"))
+        elif valid and confidence < type_entry.min_confidence:
             valid, reason = False, f"confidence {confidence} below minimum {type_entry.min_confidence}"
             # Previously this only demoted the node's own valid/reason —
             # document_status_from_checks (what every field-tree caller uses
@@ -905,7 +995,7 @@ def resolve_field_tree(
             # a below-threshold field never affected document status. Record
             # it as a real check so it does.
             checks.append(RuleCheck(path, "min_confidence", False, reason, severity="warning"))
-        elif not valid and confidence is not None and type_entry.min_confidence > 0 and confidence >= type_entry.min_confidence:
+        elif not valid and type_entry.min_confidence > 0 and confidence >= type_entry.min_confidence:
             # This field is untrustworthy for a reason the raw model×OCR
             # number can't see (its own rule failed, or it's an implicated
             # operand of a failed cross-field check elsewhere) — don't let a
@@ -913,7 +1003,9 @@ def resolve_field_tree(
             # threshold so `confidence` alone tells the truth, not just
             # `valid`.
             confidence = round(max(0.0, min(confidence, type_entry.min_confidence - 0.01)), 4)
-        effective_confidences[path] = confidence
+        # An empty field's 0.0 says "nothing here", not "read badly" — kept out
+        # of the document-level average (see this function's docstring).
+        effective_confidences[path] = None if empty else confidence
         node = {
             "value": resolved_value,
             "confidence": confidence,

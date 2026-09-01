@@ -21,8 +21,12 @@ sys.path.insert(0, str(LAMBDA_DIR))
 
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import expediente, qr_recovery  # noqa: E402
+from pipeline.confidence import row_key  # noqa: E402
 from pipeline.derived import SOURCE_DERIVED, apply_derived_fields  # noqa: E402
-from pipeline.liquidacion import build_liquidacion_normalizada  # noqa: E402
+from pipeline.liquidacion import (  # noqa: E402
+    apply_liquidacion_normalizada,
+    build_liquidacion_normalizada,
+)
 from validators.engine import document_status_from_checks, resolve_field_tree  # noqa: E402
 
 # Pedimento real de test-docs/full-dataset-pedimentos/normal_pend.pdf: su QR
@@ -106,7 +110,52 @@ def test_los_conceptos_del_cuadro_caen_en_las_columnas_del_catalogo(type_id):
     salida = build_liquidacion_normalizada(entity_map, entry)
 
     for columna, importe in LIQUIDACION_ESPERADA[type_id].items():
-        assert salida[columna] == importe, f"{type_id}.{columna} = {salida[columna]!r}"
+        assert salida.values[columna] == importe, f"{type_id}.{columna} = {salida.values[columna]!r}"
+
+
+@pytest.mark.parametrize("type_id", TIPOS)
+def test_cada_columna_calculada_reporta_su_propia_confianza(type_id):
+    """Un total calculado vale lo que valen las celdas que sumó: hereda el
+    PROMEDIO de sus confianzas. Un concepto que no está en el cuadro hereda la
+    del cuadro en el que se buscó. Antes ninguna columna reportaba nada: la
+    salida traía `LIQUIDACION_NORMALIZADA` entera con `confidence: null`."""
+    entry = cargar(type_id)
+    # dos renglones de IVA, uno leído mal y otro perfecto: el catálogo los
+    # concentra en la misma columna, así que su confianza es el promedio.
+    conceptos = CONCEPTOS + [{"CLAVE_CONCEPTO": "IVA", "IMPORTE": 7}]
+    entity_map = {"CUADRO_LIQUIDACION": {"CONCEPTOS": conceptos, "TOTAL": 390}}
+    row_conf = {
+        row_key(c): {"IMPORTE": conf}
+        for c, conf in zip(conceptos, (0.6, 0.7, 0.9))
+    }
+    prv = "CL_PRV" if type_id == "PEDIMENTO_ERP" else "PRV"
+    iva = "CL_IVA" if type_id == "PEDIMENTO_ERP" else "IVA"
+    dta = "CL_DTA" if type_id == "PEDIMENTO_ERP" else "DTA"
+
+    salida = build_liquidacion_normalizada(
+        entity_map, entry, {"CUADRO_LIQUIDACION.CONCEPTOS": 0.9}, row_conf
+    )
+
+    assert salida.confidences[prv] == 0.6            # su única celda, no el promedio del cuadro
+    assert salida.confidences[iva] == 0.8            # promedio de las dos celdas que sumó (0.7, 0.9)
+    assert salida.confidences[dta] == 0.9            # concepto ausente: vale lo que el cuadro leído
+
+
+@pytest.mark.parametrize("type_id", TIPOS)
+def test_una_columna_sin_fuente_medida_no_inventa_un_cero_de_confianza(type_id):
+    """Si nadie midió la tabla de la que sale la columna, la liquidación no
+    reporta confianza: el motor le pone la del documento leído. Reportar 0.0
+    aquí borraría ceros legítimos — un pedimento sin partidas de IEPS tiene
+    CL_IEPS30 = 0 por buena razón, y el piso de descarte lo volvería null."""
+    entry = cargar(type_id)
+    entity_map = {"CUADRO_LIQUIDACION": {"CONCEPTOS": CONCEPTOS, "TOTAL": 383}}
+
+    prv = "CL_PRV" if type_id == "PEDIMENTO_ERP" else "PRV"
+
+    salida = build_liquidacion_normalizada(entity_map, entry)
+
+    assert set(salida.confidences.values()) == {None}
+    assert salida.values[prv] == 330.0  # el valor sale igual: solo cambia qué tanto se confía
 
 
 # Columnas de la tabla de pedimentos del ERP (encabezados del export CSV).
@@ -222,6 +271,11 @@ def test_lo_que_llena_el_modelo_sigue_marcado_como_del_modelo(type_id, qr_decodi
 
 # ---------------------------------------------------------------- Tipo_Pago
 
+# Qué tan bien se leyó la página: lo que `_extract_segment` le pasa al motor
+# como `default_confidence` para lo que el extractor no numeró campo por campo.
+CONFIANZA_OCR = 0.98
+
+
 def resolver_erp(cuadro, confidences=None):
     """Corre el tramo determinista del pipeline sobre un cuadro de liquidación
     dado y devuelve el árbol resuelto y sus checks, tal como los arma
@@ -230,13 +284,12 @@ def resolver_erp(cuadro, confidences=None):
     entry = cargar("PEDIMENTO_ERP")
     entities = {"CUADRO_LIQUIDACION": cuadro}
     confidences = dict(confidences or {})
-    liq = build_liquidacion_normalizada(entities, entry)
-    if liq is not None:
-        entities["LIQUIDACION_NORMALIZADA"] = liq
+    apply_liquidacion_normalizada(entities, confidences, entry)
     derived = apply_derived_fields(entities, confidences, entry)
     tree, checks, _ = resolve_field_tree(
         entities, confidences, entry,
         source_overrides=derived.sources, value_labels=derived.labels,
+        default_confidence=CONFIANZA_OCR,
     )
     return tree, checks
 
@@ -396,15 +449,21 @@ def test_la_factura_rechaza_el_acuse_completo(valor, valida):
     """La regla que el usuario fijó — en Factura va SOLO el número — es una
     regla real, no un hint: el pedimento con el COVE pegado sale inválido."""
     entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree({"Factura": valor}, {}, entry)
+    tree, _, _ = resolve_field_tree(
+        {"Factura": valor}, {}, entry, default_confidence=CONFIANZA_OCR
+    )
 
     assert tree["Factura"]["valid"] is valida, tree["Factura"]["reason"]
 
 
 def test_el_incoterm_debe_ser_de_tres_letras():
     entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree({"INCOTERM": "CPT"}, {}, entry)
+    tree, _, _ = resolve_field_tree(
+        {"INCOTERM": "CPT"}, {}, entry, default_confidence=CONFIANZA_OCR
+    )
     assert tree["INCOTERM"]["valid"] is True
 
-    tree, _, _ = resolve_field_tree({"INCOTERM": "CPT USD 21,178.80"}, {}, entry)
+    tree, _, _ = resolve_field_tree(
+        {"INCOTERM": "CPT USD 21,178.80"}, {}, entry, default_confidence=CONFIANZA_OCR
+    )
     assert tree["INCOTERM"]["valid"] is False

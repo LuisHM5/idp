@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pipeline import confidence as conf_policy
+
 logger = logging.getLogger(__name__)
 
 # --- Data Models ---
@@ -122,6 +124,13 @@ class TypeRegistryEntry:
     business_destination: str = ""
     # Minimum extraction confidence for a field to be VALIDATED (else LOW_CONFIDENCE).
     min_confidence: float = 0.70
+    # Floor below which a value is DISCARDED rather than merely flagged: the
+    # field comes back with `value: null`, `valid: false` and its (low)
+    # confidence, because a number nobody trusts that still LOOKS like data is
+    # worse downstream than an explicit "no lo sé". Strictly stricter than
+    # `min_confidence`, which keeps the value for a human to judge. Policy and
+    # default (0.50) live in `pipeline.confidence`.
+    discard_below_confidence: float = conf_policy.DISCARD_BELOW
     # Declared schema version for THIS type (from JSON or DynamoDB). Surfaced in
     # each result's tracking so you can tell which version processed a document,
     # including hot-reloaded DynamoDB overrides.
@@ -413,6 +422,9 @@ def _parse_entry(
             aliases=data.get("aliases", []) or [],
             business_destination=data.get("business_destination", ""),
             min_confidence=float(data.get("min_confidence", 0.70)),
+            discard_below_confidence=float(
+                data.get("discard_below_confidence", conf_policy.DISCARD_BELOW)
+            ),
             schema_version=data.get("schema_version"),
             form_mapping=data.get("form_mapping", {}) or {},
             pipeline=data.get("pipeline"),
@@ -451,6 +463,9 @@ def _parse_entry(
         allowed_subtypes=data.get("allowed_subtypes", []) or [],
         business_destination=data.get("business_destination", ""),
         min_confidence=float(data.get("min_confidence", 0.70)),
+        discard_below_confidence=float(
+            data.get("discard_below_confidence", conf_policy.DISCARD_BELOW)
+        ),
         schema_version=data.get("schema_version"),
         structured_fields=data.get("structured_fields", {}) or {},
         form_mapping=data.get("form_mapping", {}) or {},

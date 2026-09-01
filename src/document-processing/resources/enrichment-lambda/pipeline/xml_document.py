@@ -38,7 +38,7 @@ from validators import engine
 from validators.engine import ValidationContext
 
 from .derived import apply_derived_fields
-from .liquidacion import build_liquidacion_normalizada
+from .liquidacion import apply_liquidacion_normalizada
 from .result_common import build_tracking, checks_to_json, error_result
 
 logger = logging.getLogger(__name__)
@@ -226,9 +226,7 @@ def process_xml(
     # Deterministic customs liquidation normalization, same convention as the
     # PDF pipeline: only fires when the type declares a LIQUIDACION_NORMALIZADA
     # computed field; a no-op for every other type (see catalogs/README.md).
-    liq = build_liquidacion_normalizada(entity_map, entry)
-    if liq is not None:
-        entity_map["LIQUIDACION_NORMALIZADA"] = liq
+    liq = apply_liquidacion_normalizada(entity_map, confidences, entry)
     # Config-driven derived fields (`derived` blocks in the catalog) — same
     # convention and same ordering as the PDF pipeline; a no-op for a type
     # that declares none. See catalogs/README.md.
@@ -238,6 +236,7 @@ def process_xml(
     resolved_tree, checks, _effective_confidences = engine.resolve_field_tree(
         entity_map, confidences, entry, ctx, default_source="XML_EXTRACTION",
         source_overrides=derived.sources, value_labels=derived.labels,
+        default_confidence=_XML_CONFIDENCE,
     )
     status = engine.document_status_from_checks(checks)
 

@@ -249,7 +249,9 @@ def test_factura_honorarios_reconciles_cfdi_expenses_and_balance():
         expected_values={"RECEPTOR_RFC": "XEXX010101000"}
     )
 
-    _, checks, _ = resolve_field_tree(values, {}, entry, context)
+    # Sin confianza por campo, el motor usa la del documento leído (lo que le
+    # pasa `_extract_segment`): un CFDI legible, no una extracción sin medir.
+    _, checks, _ = resolve_field_tree(values, {}, entry, context, default_confidence=0.98)
 
     assert not [check for check in checks if not check.valid]
     assert not [check for check in checks if check.skipped]

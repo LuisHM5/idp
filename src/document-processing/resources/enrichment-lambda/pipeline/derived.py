@@ -132,11 +132,15 @@ def _matches(value: Any, when: Dict[str, Any]) -> bool:
 def _evaluate(spec: Dict[str, Any], entity_map: Dict[str, Any]) -> Tuple[Any, Any, Optional[str]]:
     """Return (value, label, source_path) for one `derived` block.
 
-    `label` is the matched case's optional human-readable tag, or None.
-    `source_path` is the path the value was decided from — the caller uses it
-    to inherit that field's confidence — or None when nothing matched and the
-    block's `default` was used (no source, so no confidence and no label:
-    labelling a value nothing decided would be inventing meaning).
+    `label` is the matched case's optional human-readable tag, or None — a
+    fallen-through `default` gets none, since labelling a value no case
+    decided would be inventing meaning.
+
+    `source_path` is the field the block READ, which the caller uses to
+    inherit its confidence. It is reported for the `default` too: nothing
+    matched *that input*, so the fallback is exactly as trustworthy as the
+    input it was chosen for. Only a malformed block (no `from`) has no source
+    at all, and its value is then a constant nobody measured.
     """
     from_path = spec.get("from")
     if not from_path:
@@ -146,7 +150,7 @@ def _evaluate(spec: Dict[str, Any], entity_map: Dict[str, Any]) -> Tuple[Any, An
     for case in spec.get("cases") or []:
         if isinstance(case, dict) and _matches(value, case.get("when") or {}):
             return case.get("value"), case.get("label"), str(from_path)
-    return spec.get("default"), None, None
+    return spec.get("default"), None, str(from_path)
 
 
 def apply_derived_fields(
@@ -158,7 +162,9 @@ def apply_derived_fields(
 
     Mutates `entity_map` (the value) and `confidences` (inherited from the
     field the value was decided from, so a derived field is exactly as
-    trustworthy as its input and never more). Returns the two per-path views
+    trustworthy as its input and never more — and never `null`: a field whose
+    input was never extracted inherits nothing and is reported as UNKNOWN by
+    `engine.resolve_field_tree`, see `pipeline.confidence`). Returns the two per-path views
     `engine.resolve_field_tree` takes: `sources` ({path: SOURCE_DERIVED}, so
     the output says the system computed the value instead of implying a model
     extracted it) and `labels` ({path: label} for the cases that declared one).
@@ -197,8 +203,14 @@ def apply_derived_fields(
                 sources[path] = SOURCE_DERIVED
                 if label is not None:
                     labels[path] = label
+                # A derived field is exactly as trustworthy as the field it
+                # read — including when no case matched and the block's
+                # `default` was used: nothing matched THAT input, so the
+                # fallback is as good as the input it was chosen for. A block
+                # that produced no value inherits nothing: there is nothing to
+                # trust, and `engine.resolve_field_tree` reports it as UNKNOWN.
                 inherited = confidences.get(from_path) if from_path else None
-                if inherited is not None:
+                if inherited is not None and not _is_empty(value):
                     confidences[path] = inherited
                 else:
                     confidences.pop(path, None)

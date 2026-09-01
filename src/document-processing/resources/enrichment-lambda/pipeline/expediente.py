@@ -33,7 +33,7 @@ from validators import engine
 from validators.engine import RuleCheck, ValidationContext
 
 from .derived import SOURCE_DERIVED, apply_derived_fields
-from .liquidacion import build_liquidacion_normalizada
+from .liquidacion import apply_liquidacion_normalizada
 from .normalize import (
     digits_exact,
     find_pedimento_components,
@@ -160,6 +160,11 @@ def _extract_segment(
         extracted = extract_document(extract_pages, entry, model_id=model_id)
         doc["_entities"] = extracted.entity_map
         doc["_confidences"] = extracted.confidences
+        # Per-row confidences of array fields (see pipeline.confidence): the
+        # liquidation totals below average the cells they sum, and the
+        # validation pass gives each row cell its own number instead of the
+        # whole array sharing the segment's OCR score.
+        doc["_row_confidences"] = extracted.row_confidences
         doc["_text"] = "\n".join(p.text for p in seg_pages)
         doc["extractionMeta"] = extracted.meta
         if selection is not None:
@@ -178,9 +183,10 @@ def _extract_segment(
         _recover_references(doc, entry)
         # Deterministic customs liquidation normalization (config-driven):
         # DTA/IGI/IVA/PRV/IEPS_* from CUADRO_LIQUIDACION.CONCEPTOS + CONTRIBUCIONES.
-        liq = build_liquidacion_normalizada(doc["_entities"], entry)
+        liq = apply_liquidacion_normalizada(
+            doc["_entities"], doc["_confidences"], entry, doc["_row_confidences"]
+        )
         if liq is not None:
-            doc["_entities"]["LIQUIDACION_NORMALIZADA"] = liq
             doc["liquidacionNormalizada"] = liq
         # Config-driven derived fields (`derived` blocks in the catalog): a value
         # decided by condition from fields already established, not read off the
@@ -386,6 +392,11 @@ def process_pdf(
                 entity_map, confidences, entry, ctx,
                 source_overrides=doc.get("_recovered_sources"),
                 value_labels=doc.get("_derived_labels"),
+                row_confidences=doc.get("_row_confidences"),
+                # How well the SOURCE was read, for values the extractor
+                # attached no number to — see the discard rule in
+                # `resolve_field_tree` / `pipeline.confidence`.
+                default_confidence=(doc.get("extractionMeta") or {}).get("segmentConfidence"),
             )
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
@@ -395,8 +406,13 @@ def process_pdf(
             # Average the post-capping (trust-aware) confidences, not the raw
             # model×OCR ones — a field demoted by a failed check should pull
             # the document-level number down too, not just its own node.
+            # `effective_confidences` deliberately keeps None for a field with
+            # no value: an absent optional field reports `confidence: 0.0` in
+            # the output (never null — see pipeline.confidence), but averaging
+            # those zeros in would sink the document's own number for fields
+            # that were never on the page to begin with.
             conf_values = [v for v in effective_confidences.values() if v is not None]
-            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else None
+            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else 0.0
             # Persisted (not popped) — handler.py's envelope assembly needs to
             # know, per document, whether `extractedEntities` is already the
             # full recursive field-centric-DSL shape (pass through as-is) or
@@ -409,8 +425,12 @@ def process_pdf(
             doc["checks"] = checks_to_json(checks)
             doc["status"] = engine.document_status(resolved, checks, entry)
             doc["businessDestination"] = entry.business_destination or None
-            conf_values = [f["confidence"] for f in resolved.values() if f.get("confidence") is not None]
-            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else None
+            conf_values = [
+                f["confidence"] for f in resolved.values()
+                if f.get("confidence") is not None
+                and f.get("status") not in (engine.NOT_FOUND, engine.NOT_APPLICABLE)
+            ]
+            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else 0.0
 
     # ---- expediente-level cross-document rules
     cross_checks = _run_cross_document_rules(documents, expected_values)
@@ -419,6 +439,7 @@ def process_pdf(
     for doc in documents:
         doc.pop("_text", None)
         doc.pop("_confidences", None)
+        doc.pop("_row_confidences", None)
         # Already consumed as `source_overrides` when the field tree resolved;
         # it is internal bookkeeping, not part of the emitted document.
         doc.pop("_recovered_sources", None)

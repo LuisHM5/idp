@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from document_catalog import FieldSpec, TypeRegistryEntry
 
 from .bedrock import converse_structured, resolve_model
+from .confidence import row_key
 from .pdf_pages import PageText
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,13 @@ class ExtractedDoc:
     entity_map: Dict[str, Any]           # scalars: str|None; repeatables: list[dict]
     confidences: Dict[str, float]        # per-field combined confidence 0-1
     meta: Dict[str, Any] = field(default_factory=dict)
+    # Per-ROW confidences of array fields: {row_key(row): {SUBCAMPO: conf}}.
+    # Keyed by row content (pipeline.confidence.row_key), not by index, so it
+    # survives the chunk merge below. Consumers: `pipeline.liquidacion` (a
+    # total inherits the mean of the cells it summed) and
+    # `validators.engine.resolve_field_tree` (each row cell reports its own
+    # number instead of the whole array sharing the segment's OCR score).
+    row_confidences: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 def _schema_block(type_entry: TypeRegistryEntry) -> str:
@@ -370,13 +378,22 @@ def _build_field_tree_prompts(type_entry: TypeRegistryEntry, pages: List[PageTex
 
 def _parse_field_tree_response(
     raw: Any, tree: Dict[str, FieldSpec], seg_conf: float, prefix: str = ""
-) -> Tuple[Dict[str, Any], Dict[str, float]]:
+) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]]]:
     """Recursively turn one tool-call response (or one array row) into a
-    nested plain-value entity dict plus a flat {dotted.path: confidence} map.
+    nested plain-value entity dict, a flat {dotted.path: confidence} map, and
+    the per-row confidences of every array field ({row_key: {campo: conf}}).
     Mirrors the scalar-handling of the legacy loop in `extract_document`
-    (str/None coercion, confidence clamped and combined with OCR confidence)."""
+    (str/None coercion, confidence clamped and combined with OCR confidence).
+
+    The model reports a confidence per CELL of an array row (the tool schema
+    asks for `{value, confidence}` inside `item_fields` too). Those numbers
+    used to be parsed and thrown away, so every cell of every row ended up
+    reporting the array's segment-level OCR score — and a total summed from
+    those rows had no confidence at all. They are kept here, keyed by row
+    content so the chunk merge can't invalidate them."""
     entity: Dict[str, Any] = {}
     confidences: Dict[str, float] = {}
+    row_confidences: Dict[str, Dict[str, float]] = {}
     if not isinstance(raw, dict):
         raw = {}
     for name, spec in tree.items():
@@ -386,16 +403,22 @@ def _parse_field_tree_response(
             continue
         node = raw.get(name)
         if spec.type == "object":
-            sub_entity, sub_conf = _parse_field_tree_response(node, spec.fields, seg_conf, path + ".")
+            sub_entity, sub_conf, sub_rows = _parse_field_tree_response(node, spec.fields, seg_conf, path + ".")
             entity[name] = sub_entity
             confidences.update(sub_conf)
+            row_confidences.update(sub_rows)
         elif spec.type == "array":
             items = node if isinstance(node, list) else []
             if spec.item_fields:
                 rows = []
                 for item in items:
-                    row_entity, _row_conf = _parse_field_tree_response(item, spec.item_fields, seg_conf)
+                    row_entity, row_conf, nested_rows = _parse_field_tree_response(
+                        item, spec.item_fields, seg_conf
+                    )
                     rows.append(row_entity)
+                    row_confidences.update(nested_rows)
+                    if row_conf:
+                        row_confidences[row_key(row_entity)] = row_conf
                 entity[name] = rows
             else:
                 entity[name] = [i for i in items if i not in (None, "")]
@@ -415,7 +438,7 @@ def _parse_field_tree_response(
             except (TypeError, ValueError):
                 llm_conf = 0.85
             confidences[path] = round(max(0.0, min(1.0, llm_conf)) * seg_conf, 4)
-    return entity, confidences
+    return entity, confidences, row_confidences
 
 
 def _merge_field_tree_entities(
@@ -448,7 +471,7 @@ def _call_model_field_tree(
     pages: List[PageText],
     model_id: Optional[str],
     cache: bool = False,
-) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, int]]:
+) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int]]:
     """Field-tree equivalent of `_call_model` — same overflow split-in-half
     retry on `max_tokens`, same caching rule, but a genuinely nested response
     shape (objects/arrays nest for real, not via a flat dotted-key convention)."""
@@ -467,15 +490,21 @@ def _call_model_field_tree(
 
     if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
         mid = len(pages) // 2
-        left_e, left_c, left_u = _call_model_field_tree(type_entry, pages[:mid], model_id, cache=True)
-        right_e, right_c, right_u = _call_model_field_tree(type_entry, pages[mid:], model_id, cache=True)
+        left_e, left_c, left_r, left_u = _call_model_field_tree(type_entry, pages[:mid], model_id, cache=True)
+        right_e, right_c, right_r, right_u = _call_model_field_tree(type_entry, pages[mid:], model_id, cache=True)
         merged_entity = _merge_field_tree_entities(left_e, right_e, type_entry.field_tree)
         merged_conf = {**left_c, **right_c}
-        return merged_entity, merged_conf, _merge_usage(_merge_usage(usage, left_u), right_u)
+        # Row confidences are keyed by row CONTENT, so the two halves merge
+        # with a plain dict update no matter how the rows themselves were
+        # concatenated or deduped above.
+        merged_rows = {**left_r, **right_r}
+        return merged_entity, merged_conf, merged_rows, _merge_usage(_merge_usage(usage, left_u), right_u)
 
     seg_conf = _segment_confidence(pages)
-    entity, confidences = _parse_field_tree_response(parsed or {}, type_entry.field_tree, seg_conf)
-    return entity, confidences, usage
+    entity, confidences, row_confidences = _parse_field_tree_response(
+        parsed or {}, type_entry.field_tree, seg_conf
+    )
+    return entity, confidences, row_confidences, usage
 
 
 def _extract_document_field_tree(
@@ -493,15 +522,18 @@ def _extract_document_field_tree(
     usage: Dict[str, int] = {}
     entity_map: Dict[str, Any] = {}
     confidences: Dict[str, float] = {}
-    for entity, conf, chunk_usage in results:
+    row_confidences: Dict[str, Dict[str, float]] = {}
+    for entity, conf, row_conf, chunk_usage in results:
         entity_map = _merge_field_tree_entities(entity_map, entity, type_entry.field_tree)
         confidences.update(conf)
+        row_confidences.update(row_conf)
         usage = _merge_usage(usage, chunk_usage)
 
     seg_conf = _segment_confidence(pages)
     return ExtractedDoc(
         entity_map=entity_map,
         confidences=confidences,
+        row_confidences=row_confidences,
         meta={
             "chunks": len(chunks),
             "pages": [p.number for p in pages],
