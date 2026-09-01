@@ -37,6 +37,7 @@ from .normalize import (
     digits_exact,
     find_pedimento_components,
     find_pedimento_reference,
+    looks_like_pedimento_field,
     normalize_pedimento,
     normalize_uuid,
     normalize_year_2digit,
@@ -370,7 +371,10 @@ def process_pdf(
             # boolean with `qr_source: "valid"` can carry a `boolean_true`
             # rule, so normal rule dispatch handles it without a TYPE_ID or
             # output-field special case here.
-            resolved_tree, checks, effective_confidences = engine.resolve_field_tree(entity_map, confidences, entry, ctx)
+            resolved_tree, checks, effective_confidences = engine.resolve_field_tree(
+                entity_map, confidences, entry, ctx,
+                source_overrides=doc.get("_recovered_sources"),
+            )
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
             doc["checks"] = checks_to_json(checks)
@@ -403,6 +407,9 @@ def process_pdf(
     for doc in documents:
         doc.pop("_text", None)
         doc.pop("_confidences", None)
+        # Already consumed as `source_overrides` when the field tree resolved;
+        # it is internal bookkeeping, not part of the emitted document.
+        doc.pop("_recovered_sources", None)
         entities = doc.pop("_entities", {})
         if "fields" not in doc:
             doc["fields"] = {}
@@ -648,6 +655,7 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
     if result["decodedText"] and _has_field(entry, decoded_text_field):
         entities[decoded_text_field] = result["decodedText"]
         confidences[decoded_text_field] = confidence
+        _mark_source(doc, decoded_text_field, _SOURCE_QR)
 
     # Formal "the expected QR and its required fields are present" signal —
     # a required boolean field (catalog validation: `boolean_true`) rather
@@ -659,6 +667,7 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
     if _has_field(entry, validity_field):
         entities[validity_field] = qr_valid
         confidences[validity_field] = confidence
+        _mark_source(doc, validity_field, _SOURCE_QR)
 
     if not result["fields"]:
         return
@@ -670,6 +679,59 @@ def _recover_from_qr(doc: Dict[str, Any], entry, seg: Segment, reader: Optional[
         entities[name] = value
         confidences[name] = confidence
         recovered[name] = value
+        _mark_source(doc, name, _SOURCE_QR)
+
+
+# Canonical name of each pedimento-number role, used when a catalog does not
+# say otherwise. A type can rename any of them by declaring `pedimento_role`
+# on the field itself (same field-centric convention as `qr_source` /
+# `concept_aliases`): a catalog whose fields carry the ERP's own column names
+# writes `"No_Pedimento": {..., "pedimento_role": ["numero", "normalizado"]}`
+# and keeps every deterministic recovery below — which used to be wired to
+# these literal names, so renaming a field silently turned it off.
+# Labels for `extractedEntities[...]["source"]` on a value the pipeline
+# recovered itself. Neither is model output, and the difference matters when
+# reading a result: QR_RECOVERY is read off the printed code (deterministic,
+# confidence 0.99); DERIVED is computed from values already established
+# (concatenating the 4 components, or a regex over the page text).
+_SOURCE_QR = "QR_RECOVERY"
+_SOURCE_DERIVED = "DERIVED"
+
+
+def _mark_source(doc: Dict[str, Any], field: str, label: str) -> None:
+    """Record where a recovered field's value came from, so the output can
+    report it instead of defaulting to MODEL_EXTRACTION."""
+    doc.setdefault("_recovered_sources", {})[field] = label
+
+
+_PEDIMENTO_ROLE_DEFAULTS = {
+    "referencia": "PEDIMENTO_REFERENCE",
+    "numero": "NUMERO_PEDIMENTO",
+    "normalizado": "NUMERO_PEDIMENTO_NORMALIZADO",
+    "anio": "ANIO_PEDIMENTO",
+    "aduana": "ADUANA_DESPACHO",
+    "patente": "PATENTE",
+    "consecutivo": "NUMERO_CONSECUTIVO",
+}
+
+
+def _pedimento_field_names(entry) -> Dict[str, str]:
+    """Role -> field name for this type. Defaults to the canonical names, so
+    every existing catalog behaves exactly as before; a field declaring
+    `pedimento_role` (a role string, or a list when one column plays several
+    roles — the ERP keeps a single 15-digit column) overrides its role."""
+    names = dict(_PEDIMENTO_ROLE_DEFAULTS)
+    for field_name, spec in (getattr(entry, "field_tree", None) or {}).items():
+        declared = (getattr(spec, "params", {}) or {}).get("pedimento_role")
+        if not declared:
+            continue
+        for role in (declared if isinstance(declared, list) else [declared]):
+            role = str(role).strip().lower()
+            if role in names:
+                names[role] = field_name
+            else:
+                logger.warning("unknown pedimento_role %r on field %s", role, field_name)
+    return names
 
 
 def _recover_references(doc: Dict[str, Any], entry) -> None:
@@ -684,6 +746,9 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     entities = doc.get("_entities") or {}
     text = doc.get("_text", "")
     recovered: Dict[str, str] = {}
+    names = _pedimento_field_names(entry)
+    f_ref, f_num = names["referencia"], names["numero"]
+    f_norm = names["normalizado"]
 
     # PEDIMENTO_REFERENCE legitimately takes several shapes on other document
     # types (find_pedimento_reference itself falls back to shorter
@@ -697,20 +762,22 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     # into this field. That's a non-empty but wrong-length value, so it needs
     # the same "not digits_exact" override the 4 atomic fields already get
     # below, not just an empty-value fill.
-    if _has_field(entry, "PEDIMENTO_REFERENCE") and entities.get("PEDIMENTO_REFERENCE") in (None, "", []):
+    if _has_field(entry, f_ref) and entities.get(f_ref) in (None, "", []):
         match = find_pedimento_reference(text)
         if match:
-            entities["PEDIMENTO_REFERENCE"] = match
-            doc.setdefault("_confidences", {})["PEDIMENTO_REFERENCE"] = 0.95
-            recovered["PEDIMENTO_REFERENCE"] = match
+            entities[f_ref] = match
+            doc.setdefault("_confidences", {})[f_ref] = 0.95
+            recovered[f_ref] = match
+            _mark_source(doc, f_ref, _SOURCE_DERIVED)
 
-    if _has_field(entry, "NUMERO_PEDIMENTO") and not digits_exact(entities.get("NUMERO_PEDIMENTO"), 15):
+    if _has_field(entry, f_num) and not digits_exact(entities.get(f_num), 15):
         match = find_pedimento_reference(text)
         digits = digits_exact(match, 15) if match else None
         if digits:
-            entities["NUMERO_PEDIMENTO"] = digits
-            doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO"] = 0.95
-            recovered["NUMERO_PEDIMENTO"] = digits
+            entities[f_num] = digits
+            doc.setdefault("_confidences", {})[f_num] = 0.95
+            recovered[f_num] = digits
+            _mark_source(doc, f_num, _SOURCE_DERIVED)
 
     # Fill any of the 4 atomic pedimento-number components the model left
     # empty OR extracted with the wrong digit count, by splitting the full
@@ -728,26 +795,29 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     if components:
         anio_c, aduana_c, patente_c, consecutivo_c = components
         for name, comp_value, expected_len in (
-            ("ANIO_PEDIMENTO", anio_c, 2),
-            ("ADUANA_DESPACHO", aduana_c, 2),
-            ("PATENTE", patente_c, 4),
-            ("NUMERO_CONSECUTIVO", consecutivo_c, 7),
+            (names["anio"], anio_c, 2),
+            (names["aduana"], aduana_c, 2),
+            (names["patente"], patente_c, 4),
+            (names["consecutivo"], consecutivo_c, 7),
         ):
             if _has_field(entry, name) and not digits_exact(entities.get(name), expected_len):
                 entities[name] = comp_value
                 doc.setdefault("_confidences", {})[name] = 0.9
                 recovered[name] = comp_value
+                _mark_source(doc, name, _SOURCE_DERIVED)
 
     # ANIO_PEDIMENTO must be 2 digits; models sometimes expand it to 4
     # ("2026" instead of "26") despite the catalog hint saying otherwise —
     # collapsing it loses no information (same digits) so it's safe to fix
     # deterministically rather than leave it failing its own regex rule.
-    if _has_field(entry, "ANIO_PEDIMENTO"):
-        anio_raw = entities.get("ANIO_PEDIMENTO")
+    if _has_field(entry, names["anio"]):
+        anio_raw = entities.get(names["anio"])
         fixed_anio = normalize_year_2digit(anio_raw) if anio_raw not in (None, "", []) else None
         if fixed_anio and fixed_anio != str(anio_raw).strip():
-            entities["ANIO_PEDIMENTO"] = fixed_anio
-            recovered["ANIO_PEDIMENTO"] = fixed_anio
+            entities[names["anio"]] = fixed_anio
+            recovered[names["anio"]] = fixed_anio
+            _mark_source(doc, names["anio"],
+                         doc.get("_recovered_sources", {}).get(names["anio"], _SOURCE_DERIVED))
 
     # Derived, purely mechanical: the normalized 15-digit form. Prefer
     # rebuilding it from the 4 atomic fields the model already extracted
@@ -762,20 +832,34 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     # drop or duplicate a digit the way regenerating the string can, so this
     # overrides the model's value whenever all 4 parts are present and each
     # already has its expected digit count.
-    if _has_field(entry, "NUMERO_PEDIMENTO_NORMALIZADO"):
-        anio = digits_exact(entities.get("ANIO_PEDIMENTO"), 2)
-        aduana = digits_exact(entities.get("ADUANA_DESPACHO"), 2)
-        patente = digits_exact(entities.get("PATENTE"), 4)
-        consecutivo = digits_exact(entities.get("NUMERO_CONSECUTIVO"), 7)
+    if _has_field(entry, f_norm):
+        anio = digits_exact(entities.get(names["anio"]), 2)
+        aduana = digits_exact(entities.get(names["aduana"]), 2)
+        patente = digits_exact(entities.get(names["patente"]), 4)
+        consecutivo = digits_exact(entities.get(names["consecutivo"]), 7)
         computed = f"{anio}{aduana}{patente}{consecutivo}" if all((anio, aduana, patente, consecutivo)) else None
 
-        current = entities.get("NUMERO_PEDIMENTO_NORMALIZADO")
-        if computed and computed != current:
-            entities["NUMERO_PEDIMENTO_NORMALIZADO"] = computed
-            doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO_NORMALIZADO"] = (
-                doc.get("_confidences", {}).get("NUMERO_CONSECUTIVO", 0.9)
+        current = entities.get(f_norm)
+        if computed:
+            # Concatenating four QR-proven components yields a QR-grade value;
+            # anything less certain came from the page text and stays DERIVED.
+            from_qr = all(
+                doc.get("_recovered_sources", {}).get(names[r]) == _SOURCE_QR
+                for r in ("anio", "aduana", "patente", "consecutivo")
             )
-            recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = computed
+            computed_confidence = doc.get("_confidences", {}).get(names["consecutivo"], 0.9)
+            if computed != current:
+                entities[f_norm] = computed
+                recovered[f_norm] = computed
+            # The confidence and the source are refreshed even when the value
+            # was ALREADY right: an earlier, weaker pass (the regex over the
+            # page text, 0.95/DERIVED) may have written the very same digits
+            # first, and reporting that instead of the QR's 0.99 understates
+            # evidence the pipeline actually has. Never lowers an existing
+            # number — only the better one wins.
+            if computed_confidence >= doc.get("_confidences", {}).get(f_norm, 0.0):
+                doc.setdefault("_confidences", {})[f_norm] = computed_confidence
+                _mark_source(doc, f_norm, _SOURCE_QR if from_qr else _SOURCE_DERIVED)
         elif not computed and not digits_exact(current, 15):
             # Fallback for when the atomic fields aren't all usable. Also
             # fires when the model's OWN concatenation attempt is present but
@@ -789,14 +873,15 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
             # *anything* here, even a wrong value — only overwrite when the
             # fallback source verifiably yields exactly 15 digits, so a bad
             # guess is never replaced by an equally unverified one.
-            source = entities.get("NUMERO_PEDIMENTO") or entities.get("PEDIMENTO_REFERENCE")
+            source = entities.get(f_num) or entities.get(f_ref)
             digits = normalize_pedimento(source) if source else None
             if digits and len(digits) == 15:
-                entities["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
-                doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO_NORMALIZADO"] = (
-                    doc.get("_confidences", {}).get("NUMERO_PEDIMENTO", 0.9)
+                entities[f_norm] = digits
+                doc.setdefault("_confidences", {})[f_norm] = (
+                    doc.get("_confidences", {}).get(f_num, 0.9)
                 )
-                recovered["NUMERO_PEDIMENTO_NORMALIZADO"] = digits
+                recovered[f_norm] = digits
+                _mark_source(doc, f_norm, _SOURCE_DERIVED)
 
     # NUMERO_PEDIMENTO_NORMALIZADO at >=0.99 confidence means it's QR-sourced
     # (see qr_recovery's confidence, typically 0.99) — fully trusted, not a
@@ -806,24 +891,47 @@ def _recover_references(doc: Dict[str, Any], entry) -> None:
     # reference), even when NORMALIZADO itself is the complete, correct
     # value — no reason to trust the model's own NUMERO_PEDIMENTO over data
     # already confirmed by the QR.
-    if _has_field(entry, "NUMERO_PEDIMENTO"):
-        normalizado_confidence = doc.get("_confidences", {}).get("NUMERO_PEDIMENTO_NORMALIZADO")
-        normalizado_value = digits_exact(entities.get("NUMERO_PEDIMENTO_NORMALIZADO"), 15)
+    if _has_field(entry, f_num) and f_num != f_norm:
+        normalizado_confidence = doc.get("_confidences", {}).get(f_norm)
+        normalizado_value = digits_exact(entities.get(f_norm), 15)
         if (
             normalizado_confidence is not None
             and normalizado_confidence >= 0.99
             and normalizado_value
-            and entities.get("NUMERO_PEDIMENTO") != normalizado_value
+            and entities.get(f_num) != normalizado_value
         ):
-            entities["NUMERO_PEDIMENTO"] = normalizado_value
-            doc.setdefault("_confidences", {})["NUMERO_PEDIMENTO"] = normalizado_confidence
-            recovered["NUMERO_PEDIMENTO"] = normalizado_value
+            entities[f_num] = normalizado_value
+            doc.setdefault("_confidences", {})[f_num] = normalizado_confidence
+            recovered[f_num] = normalizado_value
+            _mark_source(doc, f_num, doc.get("_recovered_sources", {}).get(f_norm, _SOURCE_DERIVED))
 
     if recovered:
-        doc["recoveredFields"] = recovered
+        # Merge, don't replace: `_recover_from_qr` ran first and already
+        # recorded what it read off the QR (patente, consecutivo, año,
+        # aduana). Assigning here dropped those from the audit trail, leaving
+        # a result that showed only the fields THIS pass touched.
+        doc.setdefault("recoveredFields", {}).update(recovered)
 
 
 # ------------------------------------------------------- cross-document rules
+
+
+def _pedimento_ref_value(entities: Dict[str, Any]) -> Optional[str]:
+    """The pedimento reference carried by an already-processed document.
+
+    Tries the canonical field names first, then any field whose NAME reads as
+    a pedimento number (`looks_like_pedimento_field`) — a type that renamed
+    the column via `pedimento_role` (e.g. the ERP's `No_Pedimento`) has no
+    canonical name left to match, and would otherwise drop out of
+    same_pedimento silently.
+    """
+    ref = _first_value(entities, _PEDIMENTO_REF_FIELDS)
+    if ref:
+        return ref
+    for name, value in (entities or {}).items():
+        if looks_like_pedimento_field(name) and value not in (None, "", []):
+            return str(value)
+    return None
 
 
 def _first_value(entities: Dict[str, Any], names: tuple) -> Optional[str]:
@@ -869,7 +977,7 @@ def _cross_same_pedimento(rule: Dict[str, Any], documents: List[Dict[str, Any]])
     refs: Dict[str, List[str]] = {}
     for d in involved:
         entities = d.get("_entities") or d.get("extractedEntities") or {}
-        ref = _first_value(entities, _PEDIMENTO_REF_FIELDS)
+        ref = _pedimento_ref_value(entities)
         cons = pedimento_consecutivo(ref) if ref else None
         if cons:
             refs.setdefault(cons, []).append(d["documentType"])

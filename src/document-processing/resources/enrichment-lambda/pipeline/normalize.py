@@ -256,6 +256,20 @@ def normalize_uuid(value: Any) -> Optional[str]:
     return text if _UUID_RE.match(text) else None
 
 
+_PEDIMENTO_NUMBER_TOKEN_RE = re.compile(r"(?:^|_)(NUMERO|NUM|NO|REFERENCE|NORMALIZADO)(?:_|$)")
+
+
+def looks_like_pedimento_field(field_name: str) -> bool:
+    """True for a field name that reads as "the pedimento number" under any
+    naming convention: NUMERO_PEDIMENTO, PEDIMENTO_REFERENCE,
+    NUMERO_PEDIMENTO_NORMALIZADO — or an ERP column such as No_Pedimento,
+    which the previous substring test ("NUMERO"/"REFERENCE"/"NORMALIZADO" in
+    the name) missed, leaving that field un-normalized (spaces kept).
+    """
+    name = str(field_name).upper()
+    return "PEDIMENTO" in name and bool(_PEDIMENTO_NUMBER_TOKEN_RE.search(name))
+
+
 def normalize_field(field_name: str, value: Any) -> Any:
     """Best-effort normalization keyed on field-name conventions.
 
@@ -267,7 +281,7 @@ def normalize_field(field_name: str, value: Any) -> Any:
         return value
     name = field_name.upper()
 
-    if "PEDIMENTO" in name and ("NUMERO" in name or "REFERENCE" in name or "NORMALIZADO" in name):
+    if looks_like_pedimento_field(name):
         return normalize_pedimento(value) or str(value).strip()
     if name.endswith("RFC") or name.startswith("RFC") or "_RFC" in name or name.endswith("TAX_ID"):
         return normalize_rfc(value) or str(value).strip().upper()

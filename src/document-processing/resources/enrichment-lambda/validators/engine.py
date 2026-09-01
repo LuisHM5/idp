@@ -710,6 +710,7 @@ def resolve_field_tree(
     ctx: Optional[ValidationContext] = None,
     computed_field_names: Optional[set] = None,
     default_source: str = "MODEL_EXTRACTION",
+    source_overrides: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, Any], List[RuleCheck], Dict[str, Optional[float]]]:
     """Field-centric DSL (schema_version 4.x) equivalent of
     `resolve_fields()` — walks `type_entry.field_tree` and returns ONE
@@ -730,7 +731,13 @@ def resolve_field_tree(
     `default_source`. Callers whose entity_map didn't come from the model
     (e.g. `pipeline.xml_document`, which parses deterministic XML source data)
     pass their own label here so the output honestly describes where a value
-    came from instead of implying an LLM extracted it.
+    came from instead of implying an LLM extracted it. `source_overrides`
+    does the same per FIELD rather than per document, for the mixed case:
+    most of a pedimento is model-extracted, but the fields
+    `pipeline.expediente` recovered deterministically (from the QR, or by
+    concatenating what the QR already proved) are not model output and must
+    not be reported as such — `{path: label}`, keyed by the same dotted path
+    as `confidences`, so it works whatever the catalog named the field.
 
     Trust determination (`valid`/`confidence`) is not raw model self-report
     alone — it is deliberately conservative:
@@ -763,6 +770,7 @@ def resolve_field_tree(
     """
     ctx = ctx or ValidationContext()
     computed_field_names = computed_field_names or set()
+    source_overrides = source_overrides or {}
     own_rules, own_required = _flatten_field_tree_rules(type_entry.field_tree)
 
     checks: List[RuleCheck] = []
@@ -814,7 +822,7 @@ def resolve_field_tree(
             return True, None
         return False, "; ".join(c.message for c in failed)
 
-    def resolve_leaf(leaf_name: str, value: Any, computed: bool) -> Tuple[Any, str]:
+    def resolve_leaf(leaf_name: str, value: Any, computed: bool, path: Optional[str] = None) -> Tuple[Any, str]:
         """Resolve a scalar leaf's OUTPUT value together with its source tag.
 
         Previously this only decided the tag (`source_for`) while the caller
@@ -825,12 +833,18 @@ def resolve_field_tree(
         The tag must describe what's actually in `value`.
         """
         if computed:
-            return value, "NORMALIZED"
-        if value is not None:
-            normalized = normalize_field(leaf_name, value)
-            if normalized != value:
-                return normalized, "NORMALIZED"
-        return value, default_source
+            resolved, label = value, "NORMALIZED"
+        else:
+            resolved, label = value, default_source
+            if value is not None:
+                normalized = normalize_field(leaf_name, value)
+                if normalized != value:
+                    resolved, label = normalized, "NORMALIZED"
+        # An override only replaces the LABEL — WHERE the value came from —
+        # never the value itself: a recovered `computed` field (the QR's
+        # boolean validity flag) must stay the boolean it is, not the
+        # stringified form normalization would produce for it.
+        return resolved, (source_overrides.get(path or leaf_name) or label)
 
     def walk_node(spec: Any, path: str, value: Any, computed: bool, fallback_conf: Optional[float]) -> Dict[str, Any]:
         computed = computed or spec.computed
@@ -871,7 +885,7 @@ def resolve_field_tree(
             return {"items": rendered_items}
         # scalar
         valid, reason = valid_reason(path)
-        resolved_value, source = resolve_leaf(spec.name, value, computed)
+        resolved_value, source = resolve_leaf(spec.name, value, computed, path)
         confidence = confidences.get(path, fallback_conf)
         if valid and confidence is not None and confidence < type_entry.min_confidence:
             valid, reason = False, f"confidence {confidence} below minimum {type_entry.min_confidence}"

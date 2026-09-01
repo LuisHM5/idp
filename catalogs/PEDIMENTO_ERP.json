@@ -1,0 +1,544 @@
+{
+  "__NOTAS__": "PEDIMENTO_ADUANAL.json con los campos renombrados a las columnas de la tabla de pedimentos del ERP. Misma fuente (PDF del pedimento), mismos hints, mismas reglas y el mismo bloque qr_recovery; solo cambia el nombre de cada campo y se conservan ÚNICAMENTE los que existen como columna en el ERP, más los campos del QR (datos deterministas, confianza 0.99). Ver __COMENTARIO_equivalencias__ para el mapeo campo->columna y __COMENTARIO_sin_columna__ para lo que se dejó fuera.",
+  "PEDIMENTO_ERP": {
+    "schema_version": "1.0.0",
+    "display_name": "Pedimento (mapeo ERP)",
+    "aliases": [],
+    "description": "Pedimento aduanal extraído con los nombres de campo de la tabla del ERP, listo para insertar sin traducción intermedia.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "min_confidence": 0.8,
+    "__COMENTARIO_nombres_acoplados__": "Los campos llevan el nombre de la columna del ERP, incluidos No_Pedimento y Patente. Lo que antes ataba esos dos a NUMERO_PEDIMENTO/PATENTE era el pipeline: `pedimento_role` (expediente.py) declara el ROL de cada campo, así que la recuperación determinista (QR -> patente/consecutivo/año/aduana, concatenación de los 15 dígitos, relleno por regex desde el texto y la copia del valor QR) sigue funcionando con cualquier nombre. No_Pedimento juega los dos roles ('numero' y 'normalizado') porque el ERP tiene una sola columna de 15 dígitos. ANIO_PEDIMENTO, ADUANA_DESPACHO y NUMERO_CONSECUTIVO conservan su nombre canónico por no tener columna en el ERP: son insumo del QR.",
+    "__COMENTARIO_equivalencias__": {
+      "No_Pedimento": "No_Pedimento (15 dígitos, armado en código desde el QR)",
+      "Patente": "Patente (el ERP la guarda sin ceros a la izquierda: 0823 -> 823)",
+      "Referencia": "Referencia (REF impreso en el encabezado del pedimento)",
+      "Cve_Pedimento": "Cve_Pedimento",
+      "Fecha_Entrada": "Fecha_Entrada",
+      "Tipo": "Tipo (el pedimento imprime IMP/EXP; la traducción al código numérico del ERP es del ERP, no del documento)",
+      "Pais_Origen": "Pais_Origen (código literal de la partida, ej. USA; misma nota que Tipo)",
+      "Tipo_Cambio": "Tipo_Cambio",
+      "Valor_ComercialDol": "Valor_ComercialDol",
+      "ValorAduana": "ValorAduana",
+      "Valor_ComercialPesos": "Valor_ComercialPesos",
+      "GI_ValSeguros": "GI_ValSeguros",
+      "GI_Seguros": "GI_Seguros",
+      "GI_Fletes": "GI_Fletes",
+      "GI_Embalajes": "GI_Embalajes",
+      "GI_Otros": "GI_Otros",
+      "GI_Total": "GI_Total (no se imprime en el pedimento: es la suma de los cinco incrementables, verificada con custom_formula)",
+      "LIQUIDACION_NORMALIZADA.CL_*": "CL_DTA, CL_IGI, CL_PRV, CL_ECI, CL_MT, CL_CC, CL_IVA, CL_IEPS08, CL_IEPS25, CL_IEPS30, CL_IEPS50, CL_IEPS_CAFE, CL_FLETEIEPS, CL_REC, CL_Total — mismos nombres del ERP, dentro del objeto computado que el pipeline arma solo si se llama LIQUIDACION_NORMALIZADA (pipeline/liquidacion.py::_config_from_field_tree)",
+      "ANIO_PEDIMENTO / ADUANA_DESPACHO / NUMERO_CONSECUTIVO / QR_PEDIMENTO / DEPOSITO_REFERENCIADO_QR_VALIDO / CUADRO_LIQUIDACION": "sin columna en el ERP — son insumo del QR y del cuadro de liquidación, o auditoría de que el QR decodificó"
+    },
+    "__COMENTARIO_validaciones__": "PEDIMENTO_ADUANAL valida VALOR_ADUANA con un `custom_formula` (= PRECIO_PAGADO + incrementables, tolerancia 5). Esa regla NO se reprodujo aquí porque el evaluador de fórmulas solo admite identificadores en MAYÚSCULAS (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:150): con nombres del ERP como `Valor_ComercialPesos` la fórmula lanza \"identifier not allowed\" y la regla se marca `skipped`, es decir queda inerte. Dejarla escrita daría una falsa sensación de validación. Para recuperarla (aquí y para un GI_Total = suma de incrementables) basta ampliar ese regex a identificadores mixtos; mientras tanto, ValorAduana vs Valor_ComercialPesos + GI_* debe cuadrarse del lado del ERP.",
+    "__COMENTARIO_sin_columna__": "Campos de PEDIMENTO_ADUANAL omitidos por no existir como columna en el ERP: FECHA_PAGO, AGENTE_ADUANAL_NOMBRE, FACTURAS[] y los buckets IEPS, IEPS_26_5, OTROS_IEPS y 2IF. Columnas del ERP que el pedimento NO imprime y que por eso no se declaran (las llena el ERP, no la extracción): Num_Pedimento (id interno del registro), Lote, Tipo_Pago, Ped_Rectificacion, Num_Anticipo, Com_Pendiente, Status, Fecha_Captura, Fecha_Empate, Dia_Empate, Usuario, tipo_mercancia, num_documento, folio, Usuario_Libero, Fecha_Cierre, Ped_A1_Exportacion.",
+    "qr_recovery": {
+      "confidence": 0.99,
+      "page_marker_min_matches": 2,
+      "short_segment_max_pages": 3,
+      "page_markers": [
+        "NUM\\.?\\s*PEDIMENTO",
+        "CVE\\.?\\s*PEDIM",
+        "DEP[OÓ]SITO REFERENCIADO",
+        "L[IÍ]NEA DE CAPTURA",
+        "PAGO ELECTR[OÓ]NICO",
+        "NOMBRE DE LA INSTITUCI[OÓ]N BANCARIA",
+        "IMPORTE PAGADO",
+        "N[UÚ]MERO DE OPERACI[OÓ]N BANCARIA",
+        "N[UÚ]MERO DE TRANSACCI[OÓ]N SAT",
+        "MEDIO DE PRESENTACI[OÓ]N",
+        "MEDIO DE RECEPCI[OÓ]N"
+      ],
+      "url_contains": "aplicacionesc.mat.sat.gob.mx",
+      "fields": {
+        "Patente": {
+          "param": "pa",
+          "digits": 4
+        },
+        "NUMERO_CONSECUTIVO": {
+          "param": "dn",
+          "digits": 7
+        },
+        "ANIO_PEDIMENTO": {
+          "param": "ap",
+          "digits": 2,
+          "slice": "-2:"
+        },
+        "ADUANA_DESPACHO": {
+          "param": "pad",
+          "digits": 2,
+          "slice": ":2"
+        }
+      }
+    },
+    "page_selection": {
+      "__COMENTARIO__": "Idéntico a PEDIMENTO_ADUANAL: calibrado con `python scripts/analizar-seleccion-paginas.py` sobre test-docs/. Con min_score=3 ninguna página ajena al pedimento alcanza el umbral. Si la selección supera max_ratio se procesan TODAS (fail-open): nunca se recorta contenido para cumplir un número.",
+      "enabled": true,
+      "min_score": 3,
+      "follow_pages": 1,
+      "max_ratio": 0.6,
+      "min_pages": 5,
+      "expected_pages": 6,
+      "start_markers": [
+        "PEDIMENTO\\s+P[áa]gina\\s+1\\s+de",
+        "FORMA\\s+SIMPLIFICADA\\s+DEL\\s+PEDIMENTO"
+      ],
+      "end_markers": [
+        "FIN\\s+DE\\s+PEDIMENTO",
+        "NUM\\.?\\s*TOTAL\\s+DE\\s+PARTIDAS"
+      ],
+      "page_of_pattern": "P[áa]gina\\s+(\\d+)\\s+de\\s*:?\\s*(\\d+)",
+      "markers": [
+        "NUM\\.?\\s*PEDIMENTO",
+        "CVE\\.?\\s*PEDIM",
+        "T\\.?\\s*OPER|TIPO\\s+OPER",
+        "ANEXO\\s+DEL\\s+PEDIMENTO",
+        "FORMA\\s+SIMPLIFICADA\\s+DEL\\s+PEDIMENTO",
+        "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
+        "DEP[OÓ]SITO\\s+REFERENCIADO",
+        "L[IÍ]NEA\\s+DE\\s+CAPTURA",
+        "VALOR\\s+ADUANA",
+        "\\bREGIMEN\\s*:"
+      ]
+    },
+    "fields": {
+      "No_Pedimento": {
+        "type": "string",
+        "required": true,
+        "pedimento_role": [
+          "numero",
+          "normalizado"
+        ],
+        "unique_key": {
+          "normalize": "digits"
+        },
+        "hint": "Número de pedimento COMPLETO, 15 dígitos, sin espacios: el valor impreso en 'NUM. PEDIMENTO' del ENCABEZADO (formato AA AA NNNN NNNNNNN = año + aduana + patente + consecutivo), o la concatenación de ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE... (por ejemplo 26 + 07 + 0823 + 6001630 = 260708236001630). Conservar todos los dígitos: nunca convertir a número, nunca quitar ceros a la derecha ni truncar el último dígito. ADVERTENCIA: más abajo, en el recuadro DEPÓSITO REFERENCIADO / PAGO ELECTRÓNICO, hay un campo DISTINTO etiquetado solo 'PEDIMENTO:' (sin 'NUM.') con ÚNICAMENTE el consecutivo de 7 dígitos (ej. '6001630'), porque ahí PATENTE y ADUANA se muestran por separado. NUNCA tomar ese valor corto: el de NUM. PEDIMENTO del encabezado es el correcto, de 15 dígitos.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{15}$",
+            "message": "El número de pedimento debe contener exactamente 15 dígitos"
+          }
+        ]
+      },
+      "ANIO_PEDIMENTO": {
+        "type": "string",
+        "required": true,
+        "hint": "Año del número de pedimento en formato de 2 dígitos.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "El año del pedimento debe contener 2 dígitos"
+          }
+        ]
+      },
+      "ADUANA_DESPACHO": {
+        "type": "string",
+        "required": true,
+        "hint": "Aduana contenida en el número de pedimento. Extraer 2 dígitos y conservar ceros iniciales.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La aduana debe contener 2 dígitos"
+          }
+        ]
+      },
+      "NUMERO_CONSECUTIVO": {
+        "type": "string",
+        "required": true,
+        "hint": "Consecutivo del pedimento. Extraer exactamente 7 dígitos como string, sin eliminar ceros finales.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{7}$",
+            "message": "El consecutivo debe contener 7 dígitos"
+          }
+        ]
+      },
+      "Patente": {
+        "type": "string",
+        "required": true,
+        "pedimento_role": "patente",
+        "hint": "Patente o autorización del agente aduanal. Extraer como string de 4 dígitos (el ERP la guarda sin ceros a la izquierda: 0823 -> 823).",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}$",
+            "message": "La patente debe contener 4 dígitos"
+          }
+        ]
+      },
+      "QR_PEDIMENTO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "hint": "Texto completo decodificado del código QR de verificación SAT/SOIANET impreso en la página 1 del pedimento (URL con parámetros pa/dn/ap/pad). Nunca inferir ni completar este campo: se llena únicamente de forma determinista al decodificar el QR (pipeline/qr_recovery.py); queda vacío cuando no se detecta o no se puede decodificar.",
+        "validation": []
+      },
+      "DEPOSITO_REFERENCIADO_QR_VALIDO": {
+        "type": "boolean",
+        "required": true,
+        "computed": true,
+        "hint": "Verificación determinista, nunca inferida por el modelo: true solo cuando se localizó el recuadro DEPÓSITO REFERENCIADO - LÍNEA DE CAPTURA / PAGO ELECTRÓNICO y su código QR decodificó correctamente patente, año, aduana y consecutivo (pipeline/qr_recovery.py).",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "No se localizó o no se pudo decodificar el código QR del recuadro DEPÓSITO REFERENCIADO - LÍNEA DE CAPTURA del pedimento"
+          }
+        ]
+      },
+      "Referencia": {
+        "type": "string",
+        "required": false,
+        "hint": "Referencia del agente/agencia aduanal impresa como 'REF:' en el encabezado de cada página del pedimento (ej. 0011111123604). Copiar tal cual, sin la etiqueta REF.",
+        "validation": []
+      },
+      "Fecha_Entrada": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha marcada como ENTRADA en el pedimento. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "Tipo": {
+        "type": "string",
+        "required": true,
+        "hint": "Código T.OPER o TIPO OPER. Normalmente IMP o EXP.",
+        "validation": [
+          {
+            "rule_type": "in",
+            "values": [
+              "IMP",
+              "EXP"
+            ],
+            "message": "El tipo de operación debe ser IMP o EXP"
+          }
+        ]
+      },
+      "Cve_Pedimento": {
+        "type": "string",
+        "required": true,
+        "hint": "Campo CVE.PEDIMENTO o CVE.PEDIM, por ejemplo A1 o R1.",
+        "validation": []
+      },
+      "Tipo_Cambio": {
+        "type": "number",
+        "required": true,
+        "hint": "Tipo de cambio impreso en el encabezado.",
+        "validation": [
+          {
+            "rule_type": "greater_than",
+            "value": 0,
+            "message": "El tipo de cambio debe ser mayor que cero"
+          }
+        ]
+      },
+      "Pais_Origen": {
+        "type": "string",
+        "required": false,
+        "hint": "País de origen principal de las mercancías, tal como aparece en la columna PAIS ORIGEN/PAIS VENTA de cada partida. Utilizarlo solamente cuando las partidas compartan el mismo país. NUNCA tomarlo de un bloque de domicilio (proveedor, importador o transportista); copiar el código/valor literal impreso en la partida (ej. USA), sin traducir ni expandir.",
+        "validation": []
+      },
+      "Valor_ComercialDol": {
+        "type": "number",
+        "required": true,
+        "hint": "Campo VALOR DOLARES del encabezado del pedimento.",
+        "validation": []
+      },
+      "ValorAduana": {
+        "type": "number",
+        "required": true,
+        "hint": "Campo VALOR ADUANA, normalmente expresado en pesos mexicanos.",
+        "validation": []
+      },
+      "Valor_ComercialPesos": {
+        "type": "number",
+        "required": true,
+        "hint": "Campo PRECIO PAGADO/VALOR COMERCIAL:. Se utiliza como Valor Comercial Pesos en la pantalla de captura. (No confundir con ValorAduana)",
+        "validation": []
+      },
+      "GI_ValSeguros": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Campo VAL. SEGUROS del bloque de gastos incrementables.",
+        "validation": []
+      },
+      "GI_Seguros": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Campo SEGUROS del bloque de gastos incrementables.",
+        "validation": []
+      },
+      "GI_Fletes": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Campo FLETES del bloque de gastos incrementables.",
+        "validation": []
+      },
+      "GI_Embalajes": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Campo EMBALAJES del bloque de gastos incrementables.",
+        "validation": []
+      },
+      "GI_Otros": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Campo OTROS INCREMENTABLES.",
+        "validation": []
+      },
+      "GI_Total": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Suma de los gastos incrementables (VAL. SEGUROS + SEGUROS + FLETES + EMBALAJES + OTROS INCREMENTABLES). El pedimento no lo imprime como un campo propio: sumar los del bloque de incrementables.",
+        "validation": []
+      },
+      "CUADRO_LIQUIDACION": {
+        "type": "object",
+        "required": true,
+        "hint": "Extraer todos los conceptos impresos en el cuadro de liquidación, incluyendo ambas mitades de la tabla.",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CUADRO_LIQUIDACION.CONCEPTOS.IMPORTE",
+            "subfield": "TOTAL",
+            "tolerance": 1,
+            "skip_if_missing": true,
+            "message": "El total no coincide con la suma de conceptos"
+          }
+        ],
+        "fields": {
+          "CONCEPTOS": {
+            "type": "array",
+            "required": true,
+            "hint": "Un registro por cada concepto encontrado en el cuadro de liquidación.",
+            "validation": [],
+            "item_fields": {
+              "CLAVE_CONCEPTO": {
+                "type": "string",
+                "required": true,
+                "hint": "Clave o nombre impreso, por ejemplo DTA, PRV, IVA PRV, IEPS, F.IEPS o 2IF. Se llama CLAVE_CONCEPTO (no CONCEPTO) porque es el nombre por el que pipeline/liquidacion.py::_sum_concepts busca la clave al aplicar concept_aliases; con CONCEPTO los CL_* se quedan en 0.",
+                "validation": []
+              },
+              "FORMA_PAGO": {
+                "type": "string",
+                "required": false,
+                "hint": "Valor de la columna F.P. Conservarlo como string.",
+                "validation": []
+              },
+              "TASA": {
+                "type": "number",
+                "required": false,
+                "hint": "Tasa asociada al concepto cuando pueda determinarse, especialmente para IEPS.",
+                "validation": []
+              },
+              "IMPORTE": {
+                "type": "number",
+                "required": true,
+                "hint": "Importe del concepto.",
+                "validation": []
+              }
+            }
+          },
+          "TOTAL_EFECTIVO": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "hint": "Total EFECTIVO impreso.",
+            "validation": []
+          },
+          "TOTAL_OTROS": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "hint": "Total OTROS impreso.",
+            "validation": []
+          },
+          "TOTAL": {
+            "type": "number",
+            "required": true,
+            "hint": "TOTAL impreso en el cuadro de liquidación.",
+            "validation": []
+          }
+        }
+      },
+      "LIQUIDACION_NORMALIZADA": {
+        "type": "object",
+        "required": false,
+        "computed": true,
+        "hint": "Objeto calculado a partir de CUADRO_LIQUIDACION, con los nombres de columna del ERP. Los conceptos inexistentes deben regresar 0.00.",
+        "validation": [],
+        "fields": {
+          "CL_DTA": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "DTA"
+            ],
+            "hint": "Suma de conceptos DTA.",
+            "validation": []
+          },
+          "CL_IGI": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "IGI",
+              "IGE",
+              "IGI/IGE"
+            ],
+            "hint": "Suma de conceptos IGI, IGE o IGI/IGE.",
+            "validation": []
+          },
+          "CL_PRV": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "PRV"
+            ],
+            "hint": "Suma de conceptos PRV.",
+            "validation": []
+          },
+          "CL_ECI": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "ECI"
+            ],
+            "hint": "Suma de conceptos ECI.",
+            "validation": []
+          },
+          "CL_MT": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "MT"
+            ],
+            "hint": "Suma de conceptos MT.",
+            "validation": []
+          },
+          "CL_CC": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "CC"
+            ],
+            "hint": "Suma de conceptos CC.",
+            "validation": []
+          },
+          "CL_IVA": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "IVA",
+              "IVA PRV",
+              "IVA/PRV"
+            ],
+            "hint": "Suma de IVA, IVA PRV e IVA/PRV. La pantalla concentra estos conceptos en un solo campo IVA.",
+            "validation": []
+          },
+          "CL_IEPS08": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {
+              "CLAVE_CONTRIBUCION": "IEPS",
+              "TASA": 8
+            },
+            "hint": "IEPS correspondiente a la tasa del 8%.",
+            "validation": []
+          },
+          "CL_IEPS25": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {
+              "CLAVE_CONTRIBUCION": "IEPS",
+              "TASA": 25
+            },
+            "hint": "IEPS correspondiente a la tasa del 25%. PENDIENTE DE CONFIRMAR: PEDIMENTO_ADUANAL solo tiene un bucket de tasa 25 (IEPS_25_CAFEINA), que aquí quedó en CL_IEPS_CAFE; si el ERP usa CL_IEPS25 para otra tasa (26.5%) hay que cambiar este filtro.",
+            "validation": []
+          },
+          "CL_IEPS30": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {
+              "CLAVE_CONTRIBUCION": "IEPS",
+              "TASA": 30
+            },
+            "hint": "IEPS correspondiente a la tasa del 30%.",
+            "validation": []
+          },
+          "CL_IEPS50": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {
+              "CLAVE_CONTRIBUCION": "IEPS",
+              "TASA": 50
+            },
+            "hint": "IEPS correspondiente a la tasa del 50%.",
+            "validation": []
+          },
+          "CL_IEPS_CAFE": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "source": "PARTIDAS.CONTRIBUCIONES_PARTIDA",
+            "filters": {
+              "CLAVE_CONTRIBUCION": "IEPS",
+              "TASA": 25
+            },
+            "hint": "IEPS correspondiente al campo 25% CAFEÍNA.",
+            "validation": []
+          },
+          "CL_FLETEIEPS": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "F.IEPS",
+              "FIEPS"
+            ],
+            "hint": "Importe del concepto impreso como F.IEPS o FIEPS. Es numérico; no representa la forma de pago.",
+            "validation": []
+          },
+          "CL_REC": {
+            "type": "number",
+            "required": false,
+            "default": 0,
+            "concept_aliases": [
+              "REC"
+            ],
+            "hint": "Importe del concepto impreso como REC (recargos) en el cuadro de liquidación.",
+            "validation": []
+          },
+          "CL_Total": {
+            "type": "number",
+            "required": true,
+            "source": "CUADRO_LIQUIDACION.TOTAL",
+            "hint": "TOTAL impreso en el cuadro de liquidación.",
+            "validation": []
+          }
+        }
+      }
+    }
+  }
+}
