@@ -11,9 +11,8 @@ mejora del dataflow**.
 
 ```mermaid
 flowchart TD
-    U[Cliente] -->|"POST /documents (base64)"| UL[upload-lambda/index.mjs]
-    U -->|"o aws s3 cp directo"| S3RAW
-    UL -->|"escribe"| S3RAW[("S3 raw/{TIPO?}/{uuid}/file")]
+    U[Cliente] -->|"POST /documents (solo metadata)"| UL[upload-lambda/index.mjs]
+    U -->|"PUT a URL prefirmada"| S3RAW[("S3 raw/{TIPO?}/{uuid}/file")]
     S3RAW -->|"trigger prefijo raw/"| SFN
 
     subgraph SFN["Step Functions (blueprint BedrockDocumentProcessing)"]
@@ -28,7 +27,7 @@ flowchart TD
     E -.->|"escribe columnas"| DDB[("DynamoDB DocumentProcessingTable — COMPACTO")]
     EB[EventBridge idp-broker] -->|"document-processed-successful"| CONS[Consumidores]
 
-    Q[Cliente] -->|"GET /documents/{id} o ?field="| QL[query-lambda/index.mjs]
+    Q[Cliente] -->|"GET /documents* o PATCH metadata"| QL[query-lambda/index.mjs]
     QL --> DDB
     QL --> S3RES
 ```
@@ -105,7 +104,10 @@ Un solo documento; **reutiliza** la extracción de `ProcessingStep`:
 
 ### 5. Consulta — `query-lambda/index.mjs`
 - `GET /documents/{id}` → envelope de DynamoDB (`+ fullResult` de S3 con `full=1`).
-- `GET /documents?field=&value=` → **Scan** de la tabla + filtro por dot-path.
+- `GET /documents?docType=...` → Query al GSI; sin tipo, la búsqueda profunda puede caer en Scan.
+- `PATCH /documents/{id}/metadata` → merge patch en la columna `Metadata`
+  con versión optimista. La API la superpone en GET/filtros, pero no cambia
+  `validation.status`, EventBridge ni el snapshot histórico de S3.
 
 ## Dónde vive el dato en cada etapa (dataflow)
 
@@ -116,7 +118,7 @@ Un solo documento; **reutiliza** la extracción de `ProcessingStep`:
 | Processing | S3 raw | entidades legacy o bypass | DynamoDB `ProcessingResult` |
 | Enrichment A | S3 raw | expediente validado | S3 `results/` (full) + DynamoDB (compacto) |
 | Enrichment B | `ProcessingResult` | canonical result | DynamoDB |
-| Consulta | id / campo | envelope / matches | — |
+| Consulta/metadata | id / filtros / merge patch | envelope / matches / metadata actual | `Metadata` mutable en DynamoDB; resultados históricos intactos |
 
 ## Oportunidades de mejora del dataflow
 

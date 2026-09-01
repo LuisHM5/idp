@@ -46,7 +46,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
     Lambda** (no genera costo de backend). Ver `AMBIENTES_Y_SEGURIDAD.md`.
   - **No la mandes en el `PUT` a S3** (paso 2 de la subida): ese va firmado en la
     URL y no pasa por API Gateway.
-- **Autorización por app:** además de autenticar, la `x-api-key` decide **qué documentos** puede leer esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 4 y `AMBIENTES_Y_SEGURIDAD.md`.
+- **Autorización por app:** además de autenticar, la `x-api-key` decide qué documentos puede leer o editar esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 5 y `AMBIENTES_Y_SEGURIDAD.md`.
 - **Formato:** JSON. Errores devuelven `{ "error": "CODIGO", "message": "..." }`.
   Programa contra `error` (código estable), no contra `message`.
 

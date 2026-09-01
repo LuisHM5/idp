@@ -844,7 +844,23 @@ Entrada: `query-lambda/index.mjs:handler` (`:821`). Primero
 primero `processed/{id}/` y luego `failed/{id}/`; genera una URL GET prefirmada.
 Los bytes no pasan por Lambda/API Gateway.
 
-### 19.3 `GET /documents?...`
+### 19.3 `PATCH /documents/{id}/metadata`
+
+1. `resolveCallerApp()` exige `AllowMetadataWrite`; una key no registrada o
+   un fallo de AppsTable conservan lectura fail-open, pero escritura fail-closed.
+2. `resolveItemById()` resuelve id completo/prefijo y `canSeeDocument()` aplica
+   `AccessScope`/`AllowedDocTypes`; fuera de alcance responde 404.
+3. `parseMetadataPatch()` (`metadata-rules.mjs`) normaliza el merge patch plano:
+   escalar=set, `null`/vacío=delete, ausente=conservar; ASCII, 2 KB y claves
+   `[a-z0-9][a-z0-9._-]*`.
+4. `patchMetadataById()` ejecuta `UpdateItem` condicional sobre
+   `MetadataVersion`; ante conflicto relee y reaplica para no perder cambios
+   concurrentes. Escribe `Metadata`, versión, fecha y app autora, nunca
+   `EnrichmentResult` ni S3.
+5. `parseEnrichment()`/`fetchFullResult()` superponen esa `Metadata` actual al
+   snapshot histórico para que GET, `full=1` y filtros vean lo mismo.
+
+### 19.4 `GET /documents?...`
 
 `query()` distingue tres planes, y reporta cuál contestó en el campo `lookup`
 de la respuesta:
@@ -1003,6 +1019,7 @@ la línea puntual puede desplazarse cuando se edite el archivo.
 | Notificación | EventBridge `PutEvents` | último estado de la máquina | source/detail-type y datos de origen/id | no incluye el resultado profundo; el consumidor consulta por id |
 | Consulta por id | DynamoDB `GetItem`, fallback `Scan` | `query-lambda/index.mjs:378-399` | PK exacta; luego `begins_with(DocumentId)` | fila compacta autorizada para la app |
 | Resultado completo | S3 `GetObject` | `query-lambda/index.mjs:431-441` | `results/{documentId}.json` | JSON añadido como `fullResult` cuando `full=1` |
+| Metadata externa mutable | DynamoDB `UpdateItem` condicional | `query-lambda/index.mjs::patchMetadataById` | `Metadata` + versión/auditoría | merge patch autorizado; no toca validación/S3 |
 | Archivo original | S3 `ListObjectsV2` y URL `GetObject` firmada | `query-lambda/index.mjs:453-524` | busca `processed/`, `failed/` y `raw/` | ubicación, metadata y URL temporal de descarga |
 | Lista por tipo | DynamoDB `Query` sobre GSI | `query-lambda/index.mjs:534-582` | `DocumentTypeIndex` + filtros | ids ordenados/paginados del tipo permitido |
 | Materialización de lista | DynamoDB `BatchGetItem` | `query-lambda/index.mjs:616-639` | lote de `DocumentId`; un retry para unprocessed keys | filas compactas preservando orden lógico |
@@ -1094,7 +1111,7 @@ Archivo: `src/document-validation-stack.ts`.
 | Bloque | Datos/configuración que conecta | Destino runtime |
 | --- | --- | --- |
 | `BedrockDocumentProcessingStack.constructor()` (`:107`) | env, modelos, tablas importadas, bucket/cola/State Machine del blueprint, Lambdas y permisos | crea las rutas y recursos que usarán todas las funciones siguientes |
-| rutas (`:702-717`) | `POST /documents`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file` | API Gateway → Upload/Query Lambda |
+| rutas del stack | `POST /documents`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file`, `PATCH /documents/{id}/metadata` | API Gateway → Upload/Query Lambda |
 
 ### 27.4 Upload Lambda
 
@@ -1704,7 +1721,8 @@ Archivo: `src/document-processing/resources/query-lambda/index.mjs`.
 | Función | Entrada | Transformación/llamadas | Salida/destino |
 | --- | --- | --- | --- |
 | `json()` (`:120`) | status + payload | serializa proxy response/CORS | HTTP → API Gateway |
-| `parseEnrichment()` (`:129`) | fila DDB | parsea `EnrichmentResult` string/dict | Envelope → auth/filter/response |
+| `parseEnrichment()` | fila DDB | parsea `EnrichmentResult` y superpone la columna `Metadata` actual | Envelope → auth/filter/response |
+| `parseMetadataPatch()` (`metadata-rules.mjs`) | patch + metadata actual | valida/normaliza y calcula set/remove/next | operación pura → PATCH handler |
 | `resolvePath()` (`:139`) | object + dot-path | recorre keys/arrays soportados | valor/undefined → matching |
 | `resolveCallerApp()` (`:159`) | API event | obtiene ApiKeyId, consulta AppsTable y normaliza scope/tipos/field-search | caller policy → handler/query/get | DynamoDB `GetItem`; fallback no registrado según política |
 | `documentAppOrigin()` (`:180`) | Envelope | lee tracking app origin | string → auth |
@@ -1723,11 +1741,12 @@ Archivo: `src/document-processing/resources/query-lambda/index.mjs`.
 | `fetchFullResult()` (`:431`) | documentId | `GetObject results/{id}.json`, parsea JSON | DeepResult/None → `getById` |
 | `findSourceObject()` (`:453`) | documentId | prueba prefijos processed/failed/raw con `ListObjectsV2` | bucket/key/location/metadata → file route |
 | `getFileById()` (`:477`) | id, params, caller | autoriza por fila, localiza original y firma `GetObject` | URL temporal + metadata → API |
+| `patchMetadataById()` | id, event, caller | autoriza, aplica merge patch y `UpdateItem` con lock optimista/reintentos | metadata completa + versión/auditoría → API |
 | `queryByType()` (`:534`) | TYPE_ID + filtros indexables | generador pagina `DocumentTypeIndex`, aplica status/fecha/contained server-side | entries id/processedAt → typeIndexEntries | DynamoDB `Query` |
 | `typeIndexEntries()` (`:593`) | varios type ids + opts | merge de generadores por tipo | stream ordenado de ids → query | `queryByType` |
 | `fetchItems()` (`:616`) | ids | BatchGet proyección; reintenta unprocessed una vez | filas → query | DynamoDB `BatchGetItem` |
 | `query()` (`:641`) | query params + caller | valida combinaciones/permisos/tipos; con tipo usa GSI+BatchGet; sin tipo hace Scan; parsea, autoriza, filtra campo y limita | HTTP `{count,items,...}` → handler | helpers anteriores, DynamoDB Query/BatchGet/Scan |
-| `handler()` (`:821`) | API event | resuelve caller y enruta por path/id/file/query; captura error | respuesta `json()` → API Gateway |
+| `handler()` | API event | resuelve caller y enruta por path/id/file/metadata/query; captura error | respuesta `json()` → API Gateway |
 
 Flujos de lectura separados:
 
@@ -1743,6 +1762,13 @@ GET /documents/{id}/file
   → resolveItemById → auth
   → findSourceObject → S3 ListObjectsV2
   → presigned GetObject URL → json
+
+PATCH /documents/{id}/metadata
+  → resolveCallerApp (AllowMetadataWrite)
+  → resolveItemById → auth
+  → parseMetadataPatch
+  → DDB UpdateItem condicional [→ reread/retry si hay conflicto]
+  → json
 
 GET /documents?docType=...
   → resolveType → queryByType/typeIndexEntries → DDB GSI Query

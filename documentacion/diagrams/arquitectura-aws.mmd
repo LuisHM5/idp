@@ -2,8 +2,8 @@
 flowchart TB
     CLIENTE["Cliente"]:::client
 
-    UP["POST /documents"]:::network
-    QG["GET /documents"]:::network
+    UP["POST /documents<br/>→ URL de upload"]:::network
+    QG["GET /documents*<br/>PATCH metadata"]:::network
 
     RAW[("S3 raw/")]:::storage
     SQS["SQS"]:::integration
@@ -23,8 +23,8 @@ flowchart TB
     KMSN[("Prod: 1 CMK compartido<br/>Dev: cifrado default AWS")]:::security
     QL["Query Lambda"]:::compute
 
-    CLIENTE -->|"< 4 MB"| UP --> RAW
-    CLIENTE -->|"≥ 4 MB: PUT"| RAW
+    CLIENTE -->|"registra"| UP
+    CLIENTE -->|"PUT directo (cualquier tamaño)"| RAW
     RAW --> SQS --> SFN --> LAMBDA
     LAMBDA --> RES
     LAMBDA --> DDBT
@@ -38,7 +38,7 @@ flowchart TB
     KMSN -.-> EB
     KMSN -.-> LAMBDA
 
-    CLIENTE -->|"consulta"| QG --> QL
+    CLIENTE -->|"consulta / marca"| QG --> QL
     QL --> DDBT
     QL --> RES
 

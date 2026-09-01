@@ -130,8 +130,9 @@ documents-validator/
 │       │   └── custom_validators/          # validadores Node.js (solo flujo estándar)
 │       ├── upload-lambda/index.mjs         # POST /documents
 │       │   └── body-parser.mjs             #   parseo del body + normalización de metadata
-│       └── query-lambda/index.mjs          # GET /documents...
-│           └── search-filters.mjs          #   filtros de búsqueda (tipo, sistema, metadata, campos)
+│       └── query-lambda/index.mjs          # GET /documents... + PATCH metadata externa
+│           ├── search-filters.mjs          #   filtros de búsqueda (tipo, sistema, metadata, campos)
+│           └── metadata-rules.mjs          #   merge patch y contrato plano/ASCII/2 KB
 ├── catalogs/
 │   ├── _shared.json                        # field_sets, reglas cross-documento, campos comunes
 │   ├── _TEMPLATE.json                      # plantilla DSL field-centric para tipos nuevos

@@ -463,12 +463,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MetadataPatchResponse" }
         "400":
-          description: `INVALID_JSON`, `INVALID_METADATA` o `EMPTY_PATCH`.
+          description: "INVALID_JSON, INVALID_METADATA o EMPTY_PATCH."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "403":
-          description: `FORBIDDEN`; la app no tiene `AllowMetadataWrite`.
+          description: "FORBIDDEN; la app no tiene AllowMetadataWrite."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -478,7 +478,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "409":
-          description: `METADATA_CONFLICT`; reintentar el mismo PATCH.
+          description: "METADATA_CONFLICT; reintentar el mismo PATCH."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

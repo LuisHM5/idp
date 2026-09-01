@@ -219,7 +219,8 @@ const UNREGISTERED = { ...UNRESTRICTED, allowMetadataWrite: false };
  */
 async function resolveCallerApp(event) {
   const apiKeyId = event.requestContext && event.requestContext.identity && event.requestContext.identity.apiKeyId;
-  if (!apiKeyId || !APPS_TABLE) return UNRESTRICTED;
+  if (!apiKeyId) return UNRESTRICTED;
+  if (!APPS_TABLE) return UNREGISTERED;
   try {
     const { Item } = await ddb.send(
       new GetCommand({ TableName: APPS_TABLE, Key: { ApiKeyId: apiKeyId } })

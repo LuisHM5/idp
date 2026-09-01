@@ -276,16 +276,21 @@ pnpm apps:reconfigure -- --name CEDIS --env prod --allowed-doctypes FACTURA_HONO
 
 # Una app de soporte que sí necesita el buscador libre (caro, ver abajo)
 pnpm apps:reconfigure -- --name Soporte --env prod --access-scope all --allow-field-search
+
+# ERP puede mantener sus estados/marcas externos después del procesamiento
+pnpm apps:reconfigure -- --name ERP --env prod --allow-metadata-write
 ```
-Tres controles, todos atributos en DynamoDB (no en API Gateway — no requieren
+Cuatro controles, todos atributos en DynamoDB (no en API Gateway — no requieren
 redeploy ni tocan la key), aplicados por `query-lambda` en cada
-`GET /documents/{id}`, `GET /documents/{id}/file` y `GET /documents?...`:
+`GET /documents/{id}`, `GET /documents/{id}/file`, `GET /documents?...` y
+`PATCH /documents/{id}/metadata`:
 
 | Flag | Default (app nueva) | Qué controla |
 |---|---|---|
 | `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma. `all`: sin restricción. |
-| `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` a esos tipos — ni para subir ni para consultar otros. `none` en `reconfigure` quita la restricción. |
+| `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` al consultar, descargar o editar metadata de esos tipos. No bloquea el upload. `none` en `reconfigure` quita la restricción. |
 | `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}` — y `system=`/`meta.<clave>=`, que **no** están detrás de este permiso: leen una sola clave conocida del envelope en vez de recorrerlo entero, y no amplían lo que la app ya puede ver (con `AccessScope: own`, `system=` solo puede acotar más). |
+| `--allow-metadata-write` | `false` | Si puede usar `PATCH /documents/{id}/metadata` para estados transitorios/marcas propios. No permite cambiar `validation.status`; sigue limitado por scope y tipos. |
 
 **Por qué 404, no 403, en un documento fuera de alcance**: `GET /documents/{id}`
 y `.../file` devuelven `404 NOT_FOUND` cuando el documento existe pero la app
@@ -314,6 +319,10 @@ pnpm apps:deny -- --name CEDIS --env prod --doctype FACTURA_HONORARIOS_XML
 # Subir/bajar el scope o el acceso al buscador libre, igual de puntual:
 pnpm apps:grant -- --name Soporte --env prod --access-scope all --field-search
 pnpm apps:deny  -- --name Soporte --env prod --field-search
+
+# Otorgar/quitar solo la edición de metadata:
+pnpm apps:grant -- --name ERP --env prod --metadata-write
+pnpm apps:deny  -- --name ERP --env prod --metadata-write
 ```
 `reconfigure --allowed-doctypes A,B` **reemplaza** la lista completa — para
 agregar un tipo a una app que ya tenía otros, hay que retipearlos todos.
@@ -326,10 +335,10 @@ String Set vacío, y además un `AllowedDocTypes` vacío en el código de
 lo que se buscaba al quitar el último tipo permitido.
 
 Antes de aplicar, ambos comandos muestran los permisos **actuales** de la app
-(scope, field-search, tipos) y qué va a cambiar, con la misma confirmación
+(scope, field-search, metadata-write, tipos) y qué va a cambiar, con la misma confirmación
 `(S/n)` que el resto de comandos. `--field-search` es un flag sin valor cuyo
 sentido lo fija el comando: en `grant` siempre habilita, en `deny` siempre
-deshabilita. `--access-scope own|all` sí toma un valor explícito en ambos
+deshabilita. `--metadata-write` funciona igual. `--access-scope own|all` sí toma un valor explícito en ambos
 comandos (por si alguna vez necesitas "otorgar" `own` a propósito, ej. una
 app que tenía `all` y quieres acotarla sin usar `reconfigure`) — la
 diferencia real entre `grant`/`deny` para `--doctype` es la única que importa
@@ -412,10 +421,11 @@ el diseño es **fail-open a nivel de trazabilidad**: el documento se procesa
 igual, solo con `appOrigin` ausente o `"unregistered"` — nunca se bloquea una
 subida por no poder resolver quién la hizo.
 
-**Del lado de leer** (`query-lambda`, cada `GET /documents*`): resuelve el
+**Del lado de leer o editar metadata** (`query-lambda`, cada `GET /documents*`
+y `PATCH /documents/{id}/metadata`): resuelve el
 `ApiKeyId` del caller igual que arriba (mismo `GetItem` contra
 `document-validation-apps[-dev]`, mismo hot-path-friendly), y con eso decide
-`accessScope`/`allowedDocTypes`/`allowFieldSearch` para esa request. Dos casos
+`accessScope`/`allowedDocTypes`/`allowFieldSearch`/`allowMetadataWrite` para esa request. Dos casos
 quedan **sin restricción** a propósito (`accessScope: "all"` implícito):
 sin `x-api-key` en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado — no hay
 identidad que restringir) y una key válida que API Gateway aceptó pero que
@@ -426,6 +436,11 @@ solo por no haberse migrado todavía). Un fallo al resolver los permisos
 debe convertirse en que nadie pueda leer nada; esto protege segregación de
 datos entre apps ya autenticadas, no un secreto. Código: `query-lambda/index.mjs`
 → `resolveCallerApp`/`canSeeDocument`.
+
+Ese fail-open es **solo de lectura**. Una key válida pero no registrada y un
+fallo al leer AppsTable reciben `AllowMetadataWrite=false`: una degradación de
+permisos nunca autoriza una mutación. En dev abierto (sin key) sí se permite el
+PATCH para facilitar pruebas; en prod siempre hay key.
 
 ### Permisos IAM para ejecutar `manage-apps.mjs` de forma segura
 

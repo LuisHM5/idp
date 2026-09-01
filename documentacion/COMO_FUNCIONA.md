@@ -33,8 +33,8 @@ flowchart LR
         K[("DynamoDB<br/>catálogo hot-reload")]
     end
 
-    A -->|"&lt; 4 MB: API"| B --> C
-    A -->|"≥ 4 MB: directo"| C
+    A -->|"1. registrar"| B
+    A -->|"2. PUT directo (cualquier tamaño)"| C
     C --> D --> E
     E --> F --> G --> H
     H -->|detalle completo| I

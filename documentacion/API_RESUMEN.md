@@ -1,6 +1,10 @@
-# API — resumen
+# API IDP — Resumen de integración
 
-Una página. Solo verbos, parámetros y respuestas.
+**IDP Documents Validator** recibe documentos de sistemas externos, los almacena
+de forma segura, extrae y valida sus datos y deja el resultado disponible para
+consulta. Además, cada app puede conservar metadata propia —por ejemplo lote,
+folio ERP o un estado transitorio—, actualizarla sin reprocesar el documento y
+usarla después para buscarlo. Esta ficha resume verbos, parámetros y respuestas.
 
 Base: `https://idp.alsuper.com` · Auth: `x-api-key` en todo salvo el paso 2.
 
@@ -24,6 +28,20 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 | `documentType` | opcional | TYPE_ID, nombre o alias. **Requerido** en `xml` `xlsx` `csv` |
 | `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. Editable (§4) y filtrable con `meta.<clave>` (§6). En form, JSON en string |
 | `modelId` | opcional | solo dev |
+
+Ejemplo de `metadata` al registrar:
+
+```json
+{
+  "lote": "A123",
+  "folio_erp": "4711",
+  "estado_externo": "RECIBIDO",
+  "requiere_atencion": false
+}
+```
+
+Números y booleanos se guardan como texto (`"4711"`, `"false"`). Los nombres
+de estado son libres de la app; no sustituyen `validation.status`.
 
 | `200` | |
 |---|---|
@@ -78,6 +96,16 @@ Auth: `x-api-key` · Requiere `AllowMetadataWrite=true` · Body: JSON Merge Patc
 | `{"estado_externo":null}` | borra la clave |
 | clave ausente | conserva el valor actual |
 
+Ejemplos de parámetros/body:
+
+```jsonc
+// Avanzar el seguimiento de la app y agregar una marca
+{ "estado_externo": "ENVIADO_A_ERP", "folio_erp": "4711" }
+
+// Quitar una marca, conservando todas las demás claves
+{ "requiere_atencion": null }
+```
+
 `200` → `documentId` · `metadata` completa · `metadataVersion` · `updatedAt` · `updatedBy`
 
 `400` `INVALID_JSON` `INVALID_METADATA` `EMPTY_PATCH` · `403` `FORBIDDEN` · `404` `NOT_FOUND` · `409` `METADATA_CONFLICT`
@@ -123,6 +151,15 @@ Cuatro filtros, **todos en AND**. Repetir uno es **OR**.
 ```
 GET /documents?docType=PEDIMENTO_ADUANAL&system=ERP&meta.lote=A123
               &field=RFC_IMPORTADOR_EXPORTADOR&value=OFU910626UQ0
+```
+
+Ejemplos de metadata:
+
+```text
+GET /documents?meta.estado_externo=EN_REVISION
+GET /documents?docType=PEDIMENTO_ADUANAL&meta.folio_erp=4711
+GET /documents?meta.sucursal=CHIH&meta.estado_externo=ENVIADO_A_ERP
+GET /documents?meta.folio_erp=47&metaOp=contains
 ```
 
 | `200` | |
