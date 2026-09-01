@@ -18,6 +18,9 @@
       "Pais_Origen": "Pais_Origen (código literal de la partida, ej. USA; misma nota que Tipo)",
       "Tipo_Cambio": "Tipo_Cambio",
       "Tipo_Pago": "Tipo_Pago (no se imprime en el pedimento: se deriva del TOTAL del cuadro de liquidación con un bloque `derived`; código numérico 1=Anticipo y Pasivo / 2=Solo Anticipo / 3=Solo Pasivo, con la etiqueta en `label`)",
+      "Factura / Fecha_Factura / Total_factura": "columnas de Costos.dbo.C_ENC_FACTURA (la tabla de facturas, NO la de pedimentos): salen de la tabla DATOS DEL PROVEEDOR O COMPRADOR del anexo",
+      "num_acuse_valor": "no existe hoy como columna; se declara porque el usuario lo pidió para conservar el COVE completo cuando la factura viene como 'COVE... / 12345678'",
+      "PROVEEDOR_* / INCOTERM / MONEDA_FACTURA / FACTOR_MONEDA_FACTURA / FACTURA_VALOR_DOLARES": "sin columna en el ERP: los códigos internos Proveedor y prov de C_ENC_FACTURA los resuelve el ERP a partir de PROVEEDOR_ID_FISCAL, no los declara la extracción",
       "Valor_ComercialDol": "Valor_ComercialDol",
       "ValorAduana": "ValorAduana",
       "Valor_ComercialPesos": "Valor_ComercialPesos",
@@ -30,8 +33,9 @@
       "LIQUIDACION_NORMALIZADA.CL_*": "CL_DTA, CL_IGI, CL_PRV, CL_ECI, CL_MT, CL_CC, CL_IVA, CL_IEPS08, CL_IEPS25, CL_IEPS30, CL_IEPS50, CL_IEPS_CAFE, CL_FLETEIEPS, CL_REC, CL_Total — mismos nombres del ERP, dentro del objeto computado que el pipeline arma solo si se llama LIQUIDACION_NORMALIZADA (pipeline/liquidacion.py::_config_from_field_tree)",
       "ANIO_PEDIMENTO / ADUANA_DESPACHO / NUMERO_CONSECUTIVO / QR_PEDIMENTO / DEPOSITO_REFERENCIADO_QR_VALIDO / CUADRO_LIQUIDACION": "sin columna en el ERP — son insumo del QR y del cuadro de liquidación, o auditoría de que el QR decodificó"
     },
+    "__COMENTARIO_facturas__": "Los campos de proveedor y factura están PLANOS (un solo juego de valores), por decisión del usuario (2026-09-01). Consecuencia asumida: un pedimento puede traer VARIOS proveedores y varias facturas — en test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf' hay 2 proveedores y 10 facturas — y de esos solo se reporta la PRIMERA fila; las demás no llegan al ERP. Los hints dicen explícitamente 'la PRIMERA fila' para que al menos sea predecible cuál se toma. Si algún día hace falta insertar una fila por factura en C_ENC_FACTURA, esto tiene que volverse un `type: array` con item_fields (PEDIMENTO_ADUANAL ya lo tiene así, en su campo FACTURAS). OJO al hacerlo: `validation` y `required` dentro de item_fields NO se evalúan hoy (_flatten_field_tree_rules, validators/engine.py), así que las reglas regex de Factura e INCOTERM que sí corren aquí quedarían inertes ahí.",
     "__COMENTARIO_validaciones__": "PEDIMENTO_ADUANAL valida VALOR_ADUANA con un `custom_formula` (= PRECIO_PAGADO + incrementables, tolerancia 5). Esa regla NO se reprodujo aquí porque el evaluador de fórmulas solo admite identificadores en MAYÚSCULAS (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:150): con nombres del ERP como `Valor_ComercialPesos` la fórmula lanza \"identifier not allowed\" y la regla se marca `skipped`, es decir queda inerte. Dejarla escrita daría una falsa sensación de validación. Para recuperarla (aquí y para un GI_Total = suma de incrementables) basta ampliar ese regex a identificadores mixtos; mientras tanto, ValorAduana vs Valor_ComercialPesos + GI_* debe cuadrarse del lado del ERP.",
-    "__COMENTARIO_sin_columna__": "Campos de PEDIMENTO_ADUANAL omitidos por no existir como columna en el ERP: FECHA_PAGO, AGENTE_ADUANAL_NOMBRE, FACTURAS[] y los buckets IEPS, IEPS_26_5, OTROS_IEPS y 2IF. Columnas del ERP que el pedimento NO imprime y que por eso no se declaran (las llena el ERP, no la extracción): Num_Pedimento (id interno del registro), Lote, Ped_Rectificacion, Num_Anticipo, Com_Pendiente, Status, Fecha_Captura, Fecha_Empate, Dia_Empate, Usuario, tipo_mercancia, num_documento, folio, Usuario_Libero, Fecha_Cierre, Ped_A1_Exportacion.",
+    "__COMENTARIO_sin_columna__": "Campos de PEDIMENTO_ADUANAL omitidos por no existir como columna en el ERP: FECHA_PAGO, AGENTE_ADUANAL_NOMBRE y los buckets IEPS, IEPS_26_5, OTROS_IEPS y 2IF. El FACTURAS[] del maestro sí se recuperó, pero aplanado (ver __COMENTARIO_facturas__), y con más campos de los que el maestro declara: PEDIMENTO_ADUANAL.FACTURAS no trae domicilio, vinculación, incoterm, moneda ni factor de moneda. Columnas del ERP que el pedimento NO imprime y que por eso no se declaran (las llena el ERP, no la extracción): Num_Pedimento (id interno del registro), Lote, Ped_Rectificacion, Num_Anticipo, Com_Pendiente, Status, Fecha_Captura, Fecha_Empate, Dia_Empate, Usuario, tipo_mercancia, num_documento, folio, Usuario_Libero, Fecha_Cierre, Ped_A1_Exportacion. De Costos.dbo.C_ENC_FACTURA tampoco se declaran las que el pedimento no imprime o que ya viven en otro campo de este catálogo: Num_enc_factura, Proveedor, prov, Sucursal/sucursal2, Tecla, Tipo_proveedor, Tipo_factura, Documento, Reloj, Status, Usuario, Num_Pedimento (id interno, no los 15 dígitos), num_factura, num_poliza, num_gasto, y los CL_IGI/CL_DTA/CL_PRV/CL_CC/IVA/IEPS/tipo_cambio, que en este catálogo ya salen del cuadro de liquidación y del encabezado.",
     "qr_recovery": {
       "confidence": 0.99,
       "page_marker_min_matches": 2,
@@ -547,6 +551,78 @@
         "type": "string",
         "required": true,
         "hint": "Nombre, denominación o razón social del proveedor.",
+        "validation": []
+      },
+      "PROVEEDOR_DOMICILIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Columna DOMICILIO de la tabla DATOS DEL PROVEEDOR O COMPRADOR, del MISMO proveedor de PROVEEDOR_NOMBRE. Casi siempre viene partido en varias líneas (calle y número, código postal, ciudad, estado y país): unirlo en un solo texto separado por espacios y respetando el orden impreso, por ejemplo 'BUTTONWILLOW AVE No.Ext.1356 C.P.93654 REEDLEY CALIFORNIA ESTADOS UNIDOS DE AMERICA'. No inventar ni completar partes que no estén impresas.",
+        "validation": []
+      },
+      "PROVEEDOR_VINCULACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Columna VINCULACION (o VINCULACIÓN) de la misma fila del proveedor: SI o NO. Copiarlo tal cual como texto, no convertirlo a booleano. En la tabla el valor suele quedar pegado al ID fiscal ('334274279 NO'): aquí va solo el SI/NO.",
+        "validation": []
+      },
+      "Factura": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de factura de la PRIMERA fila de la tabla de facturas del proveedor. El encabezado de esa columna cambia según el pedimento: si dice NUM. FACTURA el valor ya es el número (p.ej. 4099); si dice NUMERO DE ACUSE DE VALOR el valor viene como 'COVE2689JP013 / 35079805' y entonces aquí va SOLO el número que sigue a la diagonal (35079805), nunca el COVE ni la diagonal — el texto completo va en num_acuse_valor. Si la tabla de acuses solo trae COVE, vinculación e incoterm (sin número de factura), dejar este campo vacío. NUNCA el número de factura mencionado en OBSERVACIONES (frases como 'SE DIGITALIZA FACTURA(S) CON INCREMENTABLES NO. ...'): esas son facturas de flete o seguro, no de mercancía.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "message": "El número de factura no debe traer el COVE ni la diagonal: solo el número"
+          }
+        ]
+      },
+      "num_acuse_valor": {
+        "type": "string",
+        "required": false,
+        "hint": "Texto COMPLETO de la columna NUMERO DE ACUSE DE VALOR de esa misma fila, tal como está impreso: 'COVE2689JP013 / 35079805' cuando trae el número de factura al lado, o solo 'COVE26871ECA1' cuando la tabla lista únicamente acuses. Dejarlo vacío si el encabezado de esa columna es NUM. FACTURA: ese pedimento no declara acuse de valor.",
+        "validation": []
+      },
+      "Fecha_Factura": {
+        "type": "date",
+        "required": false,
+        "hint": "Columna FECHA de la misma fila de la factura. NO es la fecha de ENTRADA ni la de PAGO del pedimento, que van en Fecha_Entrada. Normalizar a YYYY-MM-DD (24/08/2026 -> 2026-08-24).",
+        "validation": []
+      },
+      "Total_factura": {
+        "type": "number",
+        "required": false,
+        "hint": "Columna VAL. MON. FACT de la misma fila: el importe de la factura EN SU PROPIA MONEDA. Sin separador de miles ni símbolo (21,178.80 -> 21178.80). CUIDADO: en el texto extraído esta columna suele quedar pegada al FACTOR MON. FACT, como '1.0000021,178.80'; el factor es el número con muchos decimales (1.00000000) y el importe es el otro. Si la moneda es USD, este valor coincide con FACTURA_VALOR_DOLARES.",
+        "validation": []
+      },
+      "INCOTERM": {
+        "type": "string",
+        "required": false,
+        "hint": "Columna INCOTERM de la misma fila: tres letras, por ejemplo CPT, DAP, FOB, EXW, CIF. Copiar tal cual, en mayúsculas.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Za-z]{3}$",
+            "message": "El INCOTERM debe ser un código de tres letras"
+          }
+        ]
+      },
+      "MONEDA_FACTURA": {
+        "type": "string",
+        "required": false,
+        "hint": "Columna MONEDA FACT (a veces solo MONEDA) de la misma fila: código de tres letras de la moneda en que está emitida la factura, por ejemplo USD. No confundir con el tipo de cambio del encabezado (Tipo_Cambio).",
+        "validation": []
+      },
+      "FACTOR_MONEDA_FACTURA": {
+        "type": "number",
+        "required": false,
+        "hint": "Columna FACTOR MON. FACT de la misma fila: el factor que lleva la moneda de la factura a dólares. Vale 1.00000000 cuando la factura ya viene en USD. NO es el tipo de cambio a pesos: ese es Tipo_Cambio, del encabezado del pedimento.",
+        "validation": []
+      },
+      "FACTURA_VALOR_DOLARES": {
+        "type": "number",
+        "required": false,
+        "hint": "Columna VAL. DOLARES de la misma fila: el valor de ESA factura en dólares. No confundir con Valor_ComercialDol, que es el VALOR DOLARES del encabezado del pedimento, es decir la suma de todas las facturas.",
         "validation": []
       }
     }
