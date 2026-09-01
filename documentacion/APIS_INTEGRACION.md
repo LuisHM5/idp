@@ -32,10 +32,11 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 |---|---|---|---|---|
 | 1 | `POST` | `/documents` | **Iniciar el proceso**: sube un documento (o pide una URL para subir uno grande) y arranca la validación | `upload-lambda/index.mjs` |
 | 2 | `GET` | `/documents/{id}` | **Consultar** el resultado completo de un documento ya procesado, por su id | `query-lambda/index.mjs` |
-| 3 | `GET` | `/documents/{id}/file` | **Descargar** el archivo original (el PDF/imagen/XML/XLSX/CSV que se subió, no el resultado) vía URL prefirmada de S3 | `query-lambda/index.mjs` |
-| 4 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata del upload y/o cualquier campo extraído | `query-lambda/index.mjs` |
+| 3 | `PATCH` | `/documents/{id}/metadata` | **Actualizar seguimiento externo**: estados transitorios, folios y marcas propios de la app, sin alterar la validación | `query-lambda/index.mjs` |
+| 4 | `GET` | `/documents/{id}/file` | **Descargar** el archivo original (el PDF/imagen/XML/XLSX/CSV que se subió, no el resultado) vía URL prefirmada de S3 | `query-lambda/index.mjs` |
+| 5 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata actual y/o cualquier campo extraído | `query-lambda/index.mjs` |
 
-**Descarga del archivo original (endpoint 3):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que el modo prefirmado de subida, `getSignedUrl`), no los bytes — ver el porqué (límite de 10 MB de API Gateway) y las implicaciones de seguridad de una key compartida en la sección 1.5 y en `API_USO.md` §3.
+**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.7 y en `API_USO.md` §4.
 
 ### 1.2 `POST /documents` — Iniciar el proceso de subida
 
@@ -56,7 +57,7 @@ El modo inline (`contentBase64`) fue eliminado — devuelve
 **tamaño** decidiera qué código corría: base64 infla ~33 %, y arriba de ~4 MB
 reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
-**Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). `metadata` es contexto libre del que sube que después se puede filtrar con `GET /documents?meta.<clave>=` (1.5); se guarda como metadata de objeto S3, así que va con claves en minúsculas, valores planos US-ASCII y 2 KB de tope — lo demás es `400 INVALID_METADATA`. Acepta `application/json` o `application/x-www-form-urlencoded`:
+**Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). `metadata` es contexto libre del que sube que después se puede editar con `PATCH /documents/{id}/metadata` (1.5) y filtrar con `GET /documents?meta.<clave>=` (1.6); admite claves `[a-z0-9][a-z0-9._-]*`, valores planos US-ASCII y 2 KB de tope — lo demás es `400 INVALID_METADATA`. Acepta `application/json` o `application/x-www-form-urlencoded`:
 ```jsonc
 { "fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ADUANAL", "metadata": {} }
 ```
@@ -77,9 +78,24 @@ Devuelve, en JSON, una **URL prefirmada de S3** (`downloadUrl`, no los bytes) pa
 
 No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que `POST /documents` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
 
-`404 NOT_FOUND` si el id no existe; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las **implicaciones de seguridad de exponer archivos originales bajo el mismo modelo de API key** (ver 1.5): [`API_USO.md`](API_USO.md) §3.
+`404 NOT_FOUND` si el id no existe o queda fuera del alcance de la app; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las implicaciones de la URL temporal (ver 1.7): [`API_USO.md`](API_USO.md) §4.
 
-### 1.5 `GET /documents` — Buscar/listar
+### 1.5 `PATCH /documents/{id}/metadata` — Actualizar seguimiento externo
+
+Aplica un JSON Merge Patch plano a la columna mutable `Metadata`: un valor
+escalar crea/reemplaza, `null` o `""` borra y una clave ausente se conserva.
+Permite a ERP/portal/CEDIS manejar estados transitorios libres como
+`RECIBIDO`, `EN_REVISION` o `ENVIADO_A_ERP`; estos **no cambian**
+`validation.status`, `WorkflowStatus`, EventBridge ni el resultado histórico
+de S3. La API superpone la columna actual en todas sus lecturas y filtros.
+
+Una app registrada necesita `AllowMetadataWrite=true` (`pnpm apps:grant --
+--name APP --metadata-write`) y además queda limitada por `AccessScope` y
+`AllowedDocTypes`. Usa `UpdateItem` con `MetadataVersion` como lock optimista:
+si dos integraciones escriben a la vez, relee/reaplica para no perder claves
+independientes. Devuelve la metadata completa, versión, fecha y app autora.
+
+### 1.6 `GET /documents` — Buscar/listar
 
 Cuatro filtros combinables, **todos en AND** (al menos uno es obligatorio):
 
@@ -87,23 +103,31 @@ Cuatro filtros combinables, **todos en AND** (al menos uno es obligatorio):
 |---|---|---|
 | `docType` | **DynamoDB** (Query al GSI `DocumentTypeIndex`) | Acepta `TYPE_ID` o nombre humano, coma para varios. Es el único que evita el `Scan` |
 | `system` | Lambda | `tracking.appOrigin`, resuelto de la `x-api-key` del `POST /documents` — no de nada que mande el cliente. Alias `appOrigin`, `sistema` |
-| `meta.<clave>` | Lambda | La `metadata` del `POST /documents` (`meta.lote=A123`). Claves en minúsculas; claves distintas AND, misma clave OR. `metaOp=contains` para subcadena |
+| `meta.<clave>` | Lambda | La metadata actual (`POST` + cambios por `PATCH`; `meta.lote=A123`). Claves en minúsculas; claves distintas AND, misma clave OR. `metaOp=contains` para subcadena |
 | `field`+`value` | Lambda | Cualquier campo extraído, con `op=eq|contains`. Repetible: los pares se emparejan por posición y son AND |
 
 Soporta además `status`, `since`/`until`, `order`, `limit`, `summary`, `full`. Sin `docType`, hace `Scan` completo de la tabla (más lento, adecuado para volumen moderado). `system` y `meta.<clave>` leen una sola clave conocida del envelope, así que —a diferencia de `field`/`value`— no están detrás del permiso `AllowFieldSearch`.
 
-### 1.6 Autenticación, límites y alcance de acceso (por ambiente)
+### 1.7 Autenticación, límites y alcance de acceso (por ambiente)
 
 | | dev | prod |
 |---|---|---|
-| Auth | Ninguna (abierto) | **`x-api-key`** obligatorio en los 4 endpoints — sin key válida, `403` nativo de API Gateway sin invocar Lambda |
+| Auth | Ninguna (abierto) | **`x-api-key`** obligatorio en los 5 endpoints — sin key válida, `403` nativo de API Gateway sin invocar Lambda |
 | Rate limit | No | WAFv2 (rate-based + reglas gestionadas) + usage plan (throttle/cuota por key) |
-| Payload (upload) | Igual en ambos | Inline tope real ~4 MB (base64 + límite de invocación síncrona de Lambda, 6 MB); sin tope real vía modo prefirmado |
+| Payload (upload) | Igual en ambos | El archivo nunca pasa por la API: `POST` devuelve URL y el cliente hace `PUT` directo a S3 |
 | Payload (descarga, 1.4) | Igual en ambos | Sin tope propio — nunca pasa por Lambda/API Gateway, hereda el tamaño que tenga el archivo en S3 |
 
 Detalle completo (ciclo de vida de API keys, WAF, dominio propio): [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md).
 
-**Importante para el equipo de integración — la `x-api-key` NO es una ACL por documento.** Sea la key de una app registrada (`pnpm apps:register`) o una key única compartida "por sistema", **cualquier key válida puede leer, listar y descargar el archivo original de CUALQUIER documento procesado en ese ambiente**, no solo los que subió la misma app — `tracking.appOrigin` es trazabilidad (para auditoría posterior), nunca un control de acceso; no hay ningún filtro server-side que lo compare contra la key que hace el request. Esto ya era cierto para `GET /documents/{id}` (JSON), pero pesa más en 1.4 porque expone bytes de archivo (posible PII: identificaciones, RFC/CURP, montos) en vez de solo campos extraídos. Si varios sistemas externos van a compartir el mismo ambiente/key y sus datos deben estar aislados entre sí (no solo etiquetados), la opción real hoy es una key + stack por sistema, o agregar una validación de `appOrigin` en `query-lambda` antes de responder (no implementada). Ver `API_USO.md` §3 para el detalle completo, incluida la implicación adicional de que la URL prefirmada en sí misma es una credencial de acceso de vida corta una vez emitida.
+Cada app registrada queda por default con `AccessScope=own`: solo lee, lista,
+descarga o modifica documentos cuyo `tracking.appOrigin` coincide con su
+`AppName`; un id fuera de alcance responde `404`. `AllowedDocTypes` puede
+restringir más. `AccessScope=all` es un grant administrativo explícito. Dos
+casos conservan lectura irrestricta por compatibilidad — dev sin key y una key
+válida todavía no adoptada — pero una key no registrada **no puede escribir
+metadata**. Una URL de descarga ya emitida sigue siendo una credencial de vida
+corta y debe tratarse como secreto. Ver `API_USO.md` §3/§4 y
+`AMBIENTES_Y_SEGURIDAD.md`.
 
 ---
 
@@ -147,7 +171,6 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 
 | Operación | Quién la llama | Nota |
 |---|---|---|
-| `PutObject` (directo) | `upload-lambda/index.mjs` | Modo inline: escribe el archivo subido a `raw/` |
 | `PutObject` (vía URL presignada, `getSignedUrl`) | `upload-lambda/index.mjs` | Modo prefirmado: el cliente hace el `PUT`, no la Lambda |
 | `GetObject` | `enrichment-lambda/handler.py` | Lee el archivo de `raw/` para procesarlo |
 | `PutObject` | `enrichment-lambda/handler.py` | Escribe el resultado completo a `results/{id}.json` |
@@ -168,6 +191,7 @@ Tres tablas distintas, mismo servicio:
 | `Scan` | `query-lambda/index.mjs` | tracking | Fallback por prefijo de id, y búsqueda sin `docType` |
 | `Query` | `query-lambda/index.mjs` | tracking | Vía GSI `DocumentTypeIndex` — la ruta indexada, sin `Scan` |
 | `BatchGetItem` | `query-lambda/index.mjs` | tracking | Trae el envelope completo de los ids que matchearon el índice |
+| `UpdateItem` condicional | `query-lambda/index.mjs` | tracking | `PATCH /documents/{id}/metadata`: actualiza `Metadata` y su versión/auditoría; no toca `EnrichmentResult` |
 | `UpdateItem` | `enrichment-lambda/indexing.py` | tracking | Promueve columnas indexadas al terminar de validar |
 | `Scan` | `enrichment-lambda/document_catalog.py` | catálogo | Carga tipos/reglas hot-reload al inicio de cada invocación |
 | `Scan` | `query-lambda/index.mjs` | catálogo | Resuelve nombre humano → `TYPE_ID` |
@@ -201,8 +225,9 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 |---|---|---|---|---|
 | `POST /documents` | Interna | Entrante (terceros → nosotros) | — | `API_USO.md` §1 |
 | `GET /documents/{id}` | Interna | Entrante | — | `API_USO.md` §2 |
-| `GET /documents/{id}/file` | Interna | Entrante | — | `API_USO.md` §3 |
-| `GET /documents` | Interna | Entrante | — | `API_USO.md` §4 |
+| `PATCH /documents/{id}/metadata` | Interna | Entrante | — | `API_USO.md` §3 |
+| `GET /documents/{id}/file` | Interna | Entrante | — | `API_USO.md` §4 |
+| `GET /documents` | Interna | Entrante | — | `API_USO.md` §5 |
 | Amazon Bedrock (Converse/InvokeModel) | Externa | Saliente (nosotros → AWS) | Alta — es el motor de IA del producto | `ARQUITECTURA.md`, `COSTOS.md` |
 | Amazon Textract | Externa | Saliente | Media — solo OCR de páginas escaneadas | `ARQUITECTURA.md` |
 | Amazon S3 | Externa | Saliente | Alta — almacenamiento de todo el pipeline | `ARQUITECTURA.md` |
@@ -217,7 +242,8 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 ## 4. Para el equipo de integración (checklist temprano)
 
 - **Autenticación**: en prod, todo consumidor externo del API interna necesita una `x-api-key` provisionada — pedirla con anticipación (no es self-service hoy).
-- **Tamaño de archivo (subida)**: si el sistema que integra manda documentos >4 MB, debe implementar el flujo de **modo prefirmado** (dos pasos: pedir `uploadUrl`, luego `PUT` a S3), no el modo inline.
+- **Tamaño de archivo (subida)**: siempre se implementa el flujo de dos pasos (pedir `uploadUrl`, luego `PUT` directo a S3); el modo inline ya no existe.
 - **Consumo del resultado**: dos formas — *pull* (`GET /documents/{id}` por polling) o *push* (suscribirse a EventBridge, requiere estar dentro de la cuenta/organización AWS o una regla de reenvío cross-account — a definir con el equipo de plataforma).
-- **Descarga del archivo original**: soportada vía `GET /documents/{id}/file` (URL prefirmada de S3, sin tope de tamaño real — ver 1.4). **Antes de dar esta URL a un consumidor externo**, confirmar que entiende que **una sola `x-api-key` no aísla los documentos por sistema** (1.6): si varios consumidores comparten ambiente/key, cualquiera puede descargar los archivos de cualquier otro. Si eso es inaceptable para el requisito de integración (p. ej. datos de clientes distintos), resolverlo ANTES de comprometerse — no es un cambio trivial una vez que el consumidor ya integró.
+- **Metadata externa**: si la integración necesita estados transitorios/marcas, otorgar `AllowMetadataWrite` y usar `PATCH /documents/{id}/metadata`; no reutilizar `validation.status`.
+- **Descarga del archivo original**: soportada vía `GET /documents/{id}/file` (URL prefirmada de S3, sin tope de tamaño real — ver 1.4). La API key aplica el alcance por app antes de emitirla; después, la URL misma es una credencial temporal y no debe compartirse.
 - **Dependencia de proveedor único**: todo el pipeline depende de AWS (Bedrock/Textract/S3/DynamoDB) — no hay abstracción multi-proveedor; cualquier cambio de proveedor de IA es un rediseño, no una config.

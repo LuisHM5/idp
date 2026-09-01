@@ -107,8 +107,10 @@ export function parseMetadataPatch(patch, current = {}) {
     );
   }
 
-  const set = {};
-  const remove = [];
+  // Keep the last operation for a normalized key. JSON may legally contain
+  // both `Estado` and `estado`; after lowercasing they are one key, so source
+  // order must decide whether the final operation sets or deletes it.
+  const operations = new Map();
   let sawReserved = false;
   for (const [rawKey, rawValue] of Object.entries(patch)) {
     const entry = normalizeEntry(rawKey, rawValue);
@@ -117,8 +119,17 @@ export function parseMetadataPatch(patch, current = {}) {
       continue;
     }
     if (entry.error) return entry;
-    if (entry.value === undefined) remove.push(entry.key);
-    else set[entry.key] = entry.value;
+    operations.set(
+      entry.key,
+      entry.value === undefined ? { kind: "remove" } : { kind: "set", value: entry.value }
+    );
+  }
+
+  const set = {};
+  const remove = [];
+  for (const [key, operation] of operations) {
+    if (operation.kind === "remove") remove.push(key);
+    else set[key] = operation.value;
   }
 
   if (!Object.keys(set).length && !remove.length) {

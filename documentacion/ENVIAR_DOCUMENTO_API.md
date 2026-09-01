@@ -30,8 +30,8 @@ extracción— sobre documentos ajenos. Si lo usas contra prod, el script avisa 
 el documento se procesa con el modelo configurado.
 
 El script hace todo: verifica tu sesión de AWS, obtiene el endpoint del stack,
-elige inline (chico) o URL prefirmada de S3 (grande) y te devuelve el
-`documentId`. Luego:
+pide una URL prefirmada, sube el archivo directo a S3 y te devuelve el
+`documentId`. Todos los tamaños usan el mismo flujo. Luego:
 
 ```bash
 pnpm resultado -- --id <documentId> --wait             # dev
@@ -45,11 +45,13 @@ concreto con `--stack <NOMBRE>`; esta opción gana sobre `--env`.
 
 ## ¿Necesito autenticación?
 
-- **El API es PÚBLICO** (sin API key ni auth): el método `POST /documents` se creó
-  con `AuthorizationType.NONE` (`src/document-validation-stack.ts`). El `curl` no
-  lleva ningún header de autorización — ni para archivos chicos (inline) ni
-  para grandes (URL prefirmada): la URL prefirmada por sí sola autoriza el
-  `PUT` a S3, sin necesitar credenciales AWS del lado del cliente.
+- **Prod exige una API key** en `x-api-key`. `pnpm enviar --env prod` usa primero
+  una `API_KEY` exportada y, si no existe, lee `API_KEY` o `API_KEY_APP` de
+  `.env.production`. Si no encuentra ninguna, se detiene antes de llamar al
+  API. Dev queda abierto por default; si despliegas dev con
+  `DEV_API_KEY_REQUIRED=true`, el script toma `API_KEY_APP` de `.env.dev`.
+- La URL prefirmada autoriza por sí sola el segundo paso, el `PUT` directo a
+  S3; ese `PUT` no lleva `x-api-key` ni otras cabeceras adicionales.
 - **Las credenciales AWS** en `scripts/enviar-documento.sh` solo se usan para
   *leer* el endpoint desde los outputs del stack (`aws cloudformation
   describe-stacks`) — no para subir el archivo. Verifícalas con:

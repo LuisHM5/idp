@@ -126,8 +126,8 @@ AWS físicos distintos):
 Usar cualquiera de las dos keys es igual:
 ```bash
 curl -H "x-api-key: <VALOR>" https://idp.alsuper.com/documents/...
-# o con el script:
-API_KEY=<VALOR> pnpm enviar archivo.pdf PEDIMENTO_ADUANAL --env prod
+# El script lee API_KEY (preferida) o API_KEY_APP de .env.production:
+pnpm enviar archivo.pdf PEDIMENTO_ADUANAL --env prod
 ```
 
 ### Ciclo de vida de una app registrada
@@ -528,14 +528,14 @@ pnpm apps:register -- --name local-scripts --env dev   # una vez
 pnpm enviar pedimento.pdf PEDIMENTO_ADUANAL          # ya no hace falta API_KEY=...
 pnpm test:e2e:pedimento -- --file normal_pend.pdf
 ```
-Reglas de precedencia (las mismas en los tres scripts): un `API_KEY`
-exportado en el shell (o pasado inline: `API_KEY=<valor> pnpm enviar ...`)
-**siempre gana** sobre `API_KEY_APP` — sigue siendo la forma de probar con
-una app específica sin cambiar `.env.dev`. En **prod nunca se autodetecta
-nada**: ahí `API_KEY` hay que darlo explícito siempre, a propósito (ver
-"Notas" abajo). Si `DEV_API_KEY_REQUIRED=true` pero no hay `API_KEY_APP`
-configurado, el script avisa por consola y deja que el request siga (recibirá
-403 igual — el aviso es solo para que sepas por qué).
+Una `API_KEY` exportada en el shell (o pasada inline:
+`API_KEY=<valor> pnpm enviar ...`) **siempre gana** y permite probar con otra
+app sin cambiar archivos. En prod, `pnpm enviar` usa después `API_KEY_APP` del
+shell y, si tampoco existe, lee `API_KEY` o `API_KEY_APP` de
+`.env.production`. Si no encuentra ninguna, se detiene antes del request con
+un error claro. En dev conserva el comportamiento anterior: cuando
+`DEV_API_KEY_REQUIRED=true`, toma `API_KEY_APP` de `.env.dev`; si falta, avisa
+y el request recibirá 403.
 
 ### WAF + rate limiting + anti-DDoS
 - **Regla rate-based** por IP (default 2000 req/5min, configurable con `wafRateLimit`).

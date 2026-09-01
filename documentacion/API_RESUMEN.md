@@ -8,7 +8,8 @@ Base: `https://idp.alsuper.com` · Auth: `x-api-key` en todo salvo el paso 2.
 1. POST /documents          → documentId, uploadUrl
 2. PUT  {uploadUrl}         → (S3, arranca el pipeline)
 3. GET  /documents/{id}     → resultado
-4. GET  /documents/{id}/file→ archivo original   (opcional)
+4. PATCH /documents/{id}/metadata → estado/marcas externas (opcional)
+5. GET  /documents/{id}/file→ archivo original   (opcional)
 ```
 
 ---
@@ -21,7 +22,7 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 |---|---|---|
 | `fileName` | **requerido** | `pdf` `jpg` `jpeg` `png` `xml` `xlsx` `csv` |
 | `documentType` | opcional | TYPE_ID, nombre o alias. **Requerido** en `xml` `xlsx` `csv` |
-| `metadata` | opcional | objeto plano: claves en minúsculas, valores US-ASCII sin anidar, 2 KB en total. Filtrable después con `meta.<clave>` (§5). En form, JSON en string |
+| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. Editable (§4) y filtrable con `meta.<clave>` (§6). En form, JSON en string |
 | `modelId` | opcional | solo dev |
 
 | `200` | |
@@ -67,7 +68,23 @@ Auth: `x-api-key`
 
 ---
 
-## 4. `GET /documents/{id}/file`
+## 4. `PATCH /documents/{id}/metadata`
+
+Auth: `x-api-key` · Requiere `AllowMetadataWrite=true` · Body: JSON Merge Patch plano
+
+| Body | efecto |
+|---|---|
+| `{"estado_externo":"EN_REVISION"}` | crea/reemplaza; estado libre de la app, no cambia `validation.status` |
+| `{"estado_externo":null}` | borra la clave |
+| clave ausente | conserva el valor actual |
+
+`200` → `documentId` · `metadata` completa · `metadataVersion` · `updatedAt` · `updatedBy`
+
+`400` `INVALID_JSON` `INVALID_METADATA` `EMPTY_PATCH` · `403` `FORBIDDEN` · `404` `NOT_FOUND` · `409` `METADATA_CONFLICT`
+
+---
+
+## 5. `GET /documents/{id}/file`
 
 Auth: `x-api-key`
 
@@ -80,7 +97,7 @@ Auth: `x-api-key`
 
 ---
 
-## 5. `GET /documents` — búsqueda
+## 6. `GET /documents` — búsqueda
 
 Auth: `x-api-key` · Requiere al menos uno de `docType`, `system`, `meta.<clave>` o `field`+`value`
 
@@ -90,7 +107,7 @@ Cuatro filtros, **todos en AND**. Repetir uno es **OR**.
 |---|---|---|
 | `docType` | | TYPE_ID, nombre o alias. Coma para varios. **Mándalo siempre**: sin él la consulta hace Scan |
 | `system` | | Qué sistema lo subió (`tracking.appOrigin`, sale de la API key del upload). Coma para varios. Alias `appOrigin` `sistema` |
-| `meta.<clave>` | | Metadata del upload: `meta.lote=A123`. Claves en minúsculas. Claves distintas = AND, misma clave = OR |
+| `meta.<clave>` | | Metadata actual (upload + PATCH): `meta.lote=A123`. Claves en minúsculas. Claves distintas = AND, misma clave = OR |
 | `metaOp` | `eq` | `eq` · `contains`, para todos los `meta.<clave>` |
 | `field` | | Nombre del campo. No hace falta el dot-path completo. **Repetible** (AND) |
 | `value` | | Valor. Case-insensitive. Uno por `field`, **en el mismo orden** |

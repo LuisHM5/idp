@@ -208,8 +208,9 @@ Si no necesitas el detalle, el repo ya trae un script que hace los tres pasos:
 
 ```bash
 pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL              # dev
-API_KEY=<key-de-prod> pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL --env prod
+pnpm enviar ./test-docs/pages.pdf PEDIMENTO_ADUANAL --env prod   # lee .env.production
 ```
 
-En dev toma `API_KEY_APP` de `.env.dev` automáticamente; en prod hay que
-exportar `API_KEY` a mano.
+En dev toma `API_KEY_APP` de `.env.dev` automáticamente cuando la protección
+está activada. En prod toma `API_KEY` o `API_KEY_APP` de `.env.production`;
+una `API_KEY` exportada siempre tiene prioridad.

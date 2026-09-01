@@ -419,6 +419,70 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /documents/{id}/metadata:
+    patch:
+      operationId: patchDocumentMetadata
+      tags: [Consultar documentos]
+      summary: Actualizar metadata externa sin alterar la validación
+      description: |
+        Aplica un JSON Merge Patch plano sobre la metadata mutable del
+        documento. Sirve para estados transitorios y marcas propios de la app
+        (`RECIBIDO`, `EN_REVISION`, `ENVIADO_A_ERP`, etc.); **no cambia**
+        `validation.status`, `workflowStatus`, el resultado publicado en
+        EventBridge ni el JSON histórico de S3.
+
+        - Un valor escalar crea o reemplaza una clave.
+        - `null` o `""` elimina esa clave.
+        - Una clave ausente se conserva.
+        - Claves en minúsculas tras normalizar, con forma
+          `[a-z0-9][a-z0-9._-]*`; valores planos US-ASCII; 2 KB para el mapa
+          resultante completo.
+        - `app-origin` y `model-id` son reservadas y no se pueden modificar.
+
+        Las apps registradas necesitan `AllowMetadataWrite=true` (se otorga
+        con `pnpm apps:grant -- --name APP --metadata-write`) y solo pueden
+        modificar documentos permitidos por su `AccessScope` y
+        `AllowedDocTypes`. `{id}` acepta id completo o prefijo.
+      parameters:
+        - $ref: "#/components/parameters/DocumentIdPath"
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/MetadataPatch" }
+            example:
+              estado_externo: EN_REVISION
+              folio_erp: "4711"
+              marca_anterior: null
+          application/json:
+            schema: { $ref: "#/components/schemas/MetadataPatch" }
+      responses:
+        "200":
+          description: Metadata actualizada; devuelve el mapa completo resultante.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetadataPatchResponse" }
+        "400":
+          description: `INVALID_JSON`, `INVALID_METADATA` o `EMPTY_PATCH`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: `FORBIDDEN`; la app no tiene `AllowMetadataWrite`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Documento inexistente o fuera del alcance de la app.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: `METADATA_CONFLICT`; reintentar el mismo PATCH.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
   /documents/{id}/file:
     get:
       operationId: getDocumentFile
@@ -1183,7 +1247,8 @@ components:
             `message`. Upload: MISSING_FIELD, INVALID_FORMAT,
             DOCUMENT_TYPE_REQUIRED, INVALID_DOCUMENT_TYPE, INVALID_JSON,
             INVALID_METADATA, INLINE_UPLOAD_REMOVED, PRESIGN_FAILED.
-            Consulta: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS, FORBIDDEN.
+            Consulta/escritura: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS,
+            FORBIDDEN, EMPTY_PATCH, METADATA_CONFLICT.
         message: { type: string }
     UploadRequest:
       type: object
@@ -1228,6 +1293,7 @@ components:
             - **Claves en minúsculas.** Se bajan a minúsculas de todos modos
               (S3 lo hace), así que `{"Lote": "A123"}` se busca luego igual
               con `meta.lote=` que con `meta.Lote=`.
+              Solo admiten `[a-z0-9][a-z0-9._-]*`.
             - **Valores planos y US-ASCII.** Números y booleanos se guardan
               como texto. Un objeto/arreglo anidado, o un acento, → `400
               INVALID_METADATA`.
@@ -1242,6 +1308,34 @@ components:
             INVALID_METADATA`.
           additionalProperties: true
           example: { lote: "A123", sucursal: "CHIH" }
+    MetadataPatch:
+      type: object
+      minProperties: 1
+      description: >
+        JSON Merge Patch plano. Valores string/number/boolean crean o
+        reemplazan; null o string vacío eliminan. Los estados son propios de
+        la integración y no cambian el estado canónico de validación.
+      additionalProperties:
+        oneOf:
+          - type: string
+          - type: number
+          - type: boolean
+          - type: "null"
+      example: { estado_externo: EN_REVISION, folio_erp: "4711", marca_anterior: null }
+    MetadataPatchResponse:
+      type: object
+      required: [documentId, metadata, metadataVersion, updatedAt, updatedBy]
+      properties:
+        documentId: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+          description: Mapa completo después de aplicar el merge patch.
+        metadataVersion: { type: integer, minimum: 1 }
+        updatedAt: { type: string, format: date-time }
+        updatedBy:
+          type: string
+          description: App registrada que hizo el cambio (`dev-unrestricted` en dev abierto).
     UploadResponse:
       type: object
       description: >

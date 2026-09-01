@@ -24,10 +24,11 @@
 # Requisitos:
 #   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar) — solo
 #     para LEER el endpoint del stack, no para subir el archivo.
-#   - curl, base64
+#   - curl
 #
 # x-api-key:
-#   - prod SIEMPRE la exige: exporta API_KEY=<valor> a mano.
+#   - prod SIEMPRE la exige: si API_KEY no está exportada, se lee
+#     automáticamente de API_KEY_APP/API_KEY en .env.production.
 #   - dev: si .env.dev tiene DEV_API_KEY_REQUIRED=true, se usa AUTOMÁTICAMENTE
 #     API_KEY_APP (de .env.dev o ya exportado) sin que tengas que pasar nada —
 #     ver documentacion/AMBIENTES_Y_SEGURIDAD.md. API_KEY explícito siempre gana.
@@ -54,7 +55,7 @@ PROD_STACK="DocumentValidationStack"
 read_dotenv_var() {
   local file="$1" key="$2" line val
   [[ -f "$file" ]] || return 0
-  line="$(grep -E "^${key}=" "$file" | tail -1)"
+  line="$(grep -E "^${key}=" "$file" | tail -1 || true)"
   [[ -n "$line" ]] || return 0
   val="${line#*=}"
   val="${val%\"}"; val="${val#\"}"
@@ -179,15 +180,32 @@ echo "API_ENDPOINT = $API_ENDPOINT"
 FILE_NAME=$(basename "$FILE")
 SIZE=$(wc -c < "$FILE")
 
-# En prod el API siempre exige `x-api-key`: exporta API_KEY con el valor de
-# tu key (aws apigateway get-api-key --api-key <id> --include-value) — nunca
-# se autodetecta ahí, es intencional (ver documentacion/AMBIENTES_Y_SEGURIDAD.md).
+# En prod el API siempre exige `x-api-key`. Una API_KEY exportada gana; si no
+# existe, toma API_KEY_APP del shell o API_KEY/API_KEY_APP de .env.production,
+# en ese orden. Así el comando normal funciona sin repetir secretos en la línea
+# de comandos y todavía permite probar otra key explícitamente.
 #
 # En dev, si no diste API_KEY a mano y .env.dev tiene DEV_API_KEY_REQUIRED=true,
 # se usa automáticamente API_KEY_APP (de .env.dev o ya exportado) — regístrala
 # una vez con `pnpm apps:register -- --name local-scripts --env dev` y pega el
 # valor en .env.dev. Un API_KEY ya exportado en el shell siempre gana.
-if [[ "$ENV" == "dev" && -z "${API_KEY:-}" ]]; then
+if [[ "$ENV" == "prod" && -z "${API_KEY:-}" ]]; then
+  ENV_PRODUCTION_FILE="$SCRIPT_DIR/../.env.production"
+  API_KEY="${API_KEY_APP:-}"
+  if [[ -z "$API_KEY" ]]; then
+    API_KEY="$(read_dotenv_var "$ENV_PRODUCTION_FILE" API_KEY)"
+  fi
+  if [[ -z "$API_KEY" ]]; then
+    API_KEY="$(read_dotenv_var "$ENV_PRODUCTION_FILE" API_KEY_APP)"
+  fi
+  if [[ -n "$API_KEY" ]]; then
+    echo "Usando la API key configurada para producción."
+  else
+    echo "No hay API_KEY/API_KEY_APP exportada ni configurada en .env.production." >&2
+    echo "Agrega API_KEY_APP=<valor> a .env.production o exporta API_KEY y reintenta." >&2
+    exit 1
+  fi
+elif [[ "$ENV" == "dev" && -z "${API_KEY:-}" ]]; then
   ENV_DEV_FILE="$SCRIPT_DIR/../.env.dev"
   DEV_KEY_REQUIRED="${DEV_API_KEY_REQUIRED:-$(read_dotenv_var "$ENV_DEV_FILE" DEV_API_KEY_REQUIRED)}"
   if [[ "$(printf '%s' "$DEV_KEY_REQUIRED" | tr '[:upper:]' '[:lower:]')" == "true" ]]; then
@@ -222,13 +240,23 @@ trap 'rm -f "$REQ_BODY_FILE"' EXIT
   printf '}'
 } > "$REQ_BODY_FILE"
 
-PRESIGN_RESPONSE=$(curl -sS -X POST "$API_ENDPOINT/documents" \
+PRESIGN_BODY=$(mktemp)
+trap 'rm -f "$REQ_BODY_FILE" "$PRESIGN_BODY"' EXIT
+PRESIGN_HTTP_CODE=$(curl -sS -X POST "$API_ENDPOINT/documents" \
   -H "Content-Type: application/json" \
   "${API_KEY_HEADER[@]}" \
-  --data-binary @"$REQ_BODY_FILE")
+  --data-binary @"$REQ_BODY_FILE" \
+  -o "$PRESIGN_BODY" -w '%{http_code}')
+PRESIGN_RESPONSE=$(<"$PRESIGN_BODY")
 
-UPLOAD_URL=$(echo "$PRESIGN_RESPONSE" | grep -o '"uploadUrl"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
-DOCID=$(echo "$PRESIGN_RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+if [[ ! "$PRESIGN_HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
+  echo "El API rechazó la solicitud de URL prefirmada (HTTP $PRESIGN_HTTP_CODE):" >&2
+  echo "$PRESIGN_RESPONSE" >&2
+  exit 1
+fi
+
+UPLOAD_URL=$(echo "$PRESIGN_RESPONSE" | grep -o '"uploadUrl"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/' || true)
+DOCID=$(echo "$PRESIGN_RESPONSE" | grep -o '"documentId"[^,}]*' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/' || true)
 if [[ -z "$UPLOAD_URL" || -z "$DOCID" ]]; then
   echo "No obtuve uploadUrl/documentId del API. Respuesta:" >&2
   echo "$PRESIGN_RESPONSE" >&2
@@ -245,7 +273,7 @@ fi
 echo "Subiendo directo a S3 vía URL prefirmada..."
 # Sin --fail: S3 explica el motivo en el cuerpo del error. --fail lo descarta
 # y deja solo "error: 403", que no dice nada de por qué.
-PUT_BODY=$(mktemp); trap 'rm -f "$REQ_BODY_FILE" "$PUT_BODY"' EXIT
+PUT_BODY=$(mktemp); trap 'rm -f "$REQ_BODY_FILE" "$PRESIGN_BODY" "$PUT_BODY"' EXIT
 HTTP_CODE=$(curl -sS -X PUT --upload-file "$FILE" \
   -o "$PUT_BODY" -w '%{http_code}' "$UPLOAD_URL")
 if [[ "$HTTP_CODE" != "200" ]]; then

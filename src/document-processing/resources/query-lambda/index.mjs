@@ -1,7 +1,7 @@
 /**
  * QueryLambda - Read/search processed documents.
  *
- * Three endpoints (all GET, public like the upload API unless the stage
+ * Four endpoints (public like the upload API unless the stage
  * requires an API key — see AMBIENTES_Y_SEGURIDAD.md):
  *
  *   GET /documents/{id}
@@ -16,6 +16,12 @@
  *       `findSourceObject`/`getFileById` below and
  *       documentacion/API_USO.md for why (size limits) and the access-control
  *       implications of a presigned URL / a single shared API key.
+ *
+ *   PATCH /documents/{id}/metadata
+ *       Applies a flat JSON Merge Patch to the mutable metadata stored on the
+ *       DynamoDB item. It never changes validation status or the immutable
+ *       result in S3. Registered apps need AllowMetadataWrite and remain
+ *       bounded by AccessScope/AllowedDocTypes.
  *
  *   GET /documents?docType=<tipo>[&system=<app>][&meta.<clave>=<valor>]
  *                 [&field=<dot.path>&value=<v>][&op=eq|contains]
@@ -64,7 +70,7 @@
  * looked up in the same `document-validation-apps[-dev]` table upload-lambda
  * uses to resolve `appOrigin` (see `manage-apps.mjs` for how these fields
  * are set — `apps:register`/`apps:reconfigure --access-scope/--allowed-doctypes
- * /--allow-field-search`):
+ * /--allow-field-search/--allow-metadata-write`):
  *
  *   - `AccessScope: "own"` (default for any app registered from here on) —
  *     can only read documents whose `tracking.appOrigin` (see handler.py)
@@ -79,6 +85,9 @@
  *     It does NOT gate `system=`/`meta.<clave>=`: those read one shallow,
  *     known key off the envelope instead of walking it, and they are what an
  *     app with plain docType access needs to find its own document again.
+ *   - `AllowMetadataWrite` — whether PATCH may change the mutable Metadata
+ *     column. It defaults false for registered apps. AccessScope and
+ *     AllowedDocTypes still decide which concrete documents it may change.
  *
  * A denied `GET /documents/{id}` or `/file` returns **404**, not 403 — it
  * must not confirm that a document you can't see even exists. `query()`
@@ -90,8 +99,8 @@
  * (dev without `DEV_API_KEY_REQUIRED`) and a valid AWS key API Gateway itself
  * accepted but that was never registered here (e.g. `idp-default` before
  * `pnpm apps:adopt` — the pre-existing system-wide key, a deliberate
- * grandfather case, not a bug). A permissions-lookup failure ALSO fails open
- * (logged, but the read proceeds unrestricted) — this guards data
+ * grandfather case, not a bug). Unregistered keys and permission-lookup
+ * failures stay fail-open for reads but fail closed for metadata writes — this guards data
  * segregation between already-authenticated apps, not a secret, so an
  * outage in the Apps table should not become an outage of every read.
  */
@@ -167,10 +176,22 @@ function json(statusCode, payload) {
 }
 
 /** Parse the rich result stored as a JSON string in the DynamoDB item. */
+function isMetadataObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Overlay the mutable DynamoDB Metadata column onto an immutable result
+ * snapshot. EnrichmentResult and results/{id}.json record processing-time
+ * state; after PATCH, Metadata is authoritative for every API read. */
+function applyCurrentMetadata(envelope, item) {
+  if (!envelope || !Object.prototype.hasOwnProperty.call(item || {}, "Metadata")) return envelope;
+  return { ...envelope, metadata: isMetadataObject(item.Metadata) ? { ...item.Metadata } : {} };
+}
+
 function parseEnrichment(item) {
   if (!item || typeof item.EnrichmentResult !== "string") return null;
   try {
-    return JSON.parse(item.EnrichmentResult);
+    return applyCurrentMetadata(JSON.parse(item.EnrichmentResult), item);
   } catch {
     return null;
   }
@@ -188,6 +209,9 @@ const UNRESTRICTED = {
   allowMetadataWrite: true,
 };
 
+/** Grandfathered read access is not authority to mutate stored data. */
+const UNREGISTERED = { ...UNRESTRICTED, allowMetadataWrite: false };
+
 /**
  * Resolve the caller's own app + permissions from its x-api-key, mirroring
  * upload-lambda's `resolveAppOrigin` GetItem-by-ApiKeyId lookup — same table,
@@ -200,7 +224,7 @@ async function resolveCallerApp(event) {
     const { Item } = await ddb.send(
       new GetCommand({ TableName: APPS_TABLE, Key: { ApiKeyId: apiKeyId } })
     );
-    if (!Item) return UNRESTRICTED; // valid AWS key, never registered here (e.g. idp-default) — grandfathered
+    if (!Item) return UNREGISTERED; // valid key, never registered — grandfathered reads only
     return {
       appName: Item.AppName,
       accessScope: Item.AccessScope || "own",
@@ -210,7 +234,7 @@ async function resolveCallerApp(event) {
     };
   } catch (err) {
     console.error("Failed to resolve caller app permissions (failing open — read access unaffected):", err);
-    return UNRESTRICTED;
+    return UNREGISTERED;
   }
 }
 
@@ -449,21 +473,122 @@ async function getById(id, params, caller) {
   };
   // full=1 adds the deepest S3 result (per-field detail: fields[] with
   // extractedValue/normalizedValue/status/checks, full array contents).
-  if (full) resp.fullResult = await fetchFullResult(documentId);
+  if (full) resp.fullResult = await fetchFullResult(documentId, item);
   return json(200, resp);
 }
 
 /** Load the complete result from S3 (results/{id}.json), or null. */
-async function fetchFullResult(documentId) {
+async function fetchFullResult(documentId, item) {
   if (!BUCKET) return null;
   try {
     const obj = await s3.send(
       new GetObjectCommand({ Bucket: BUCKET, Key: `results/${documentId}.json` })
     );
-    return JSON.parse(await obj.Body.transformToString());
+    return applyCurrentMetadata(JSON.parse(await obj.Body.transformToString()), item);
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------- PATCH metadata by id
+
+function parsePatchBody(event) {
+  const raw = event.body;
+  if (raw === undefined || raw === null || raw === "") return { body: undefined };
+  if (typeof raw !== "string") return { body: raw };
+  const decoded = event.isBase64Encoded ? Buffer.from(raw, "base64").toString("utf8") : raw;
+  try {
+    return { body: JSON.parse(decoded) };
+  } catch {
+    return { error: { code: "INVALID_JSON", message: "Request body is not valid JSON" } };
+  }
+}
+
+/** Apply one JSON Merge Patch without losing concurrent changes. */
+async function patchMetadataById(id, event, caller) {
+  if (!caller.allowMetadataWrite) {
+    return json(403, {
+      error: "FORBIDDEN",
+      message: "This app is not allowed to modify metadata. Ask for --allow-metadata-write if it's needed.",
+    });
+  }
+
+  const parsedBody = parsePatchBody(event);
+  if (parsedBody.error) return json(400, { error: parsedBody.error.code, message: parsedBody.error.message });
+
+  let item = await resolveItemById(id);
+  if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  const documentId = item.DocumentId;
+
+  // MetadataVersion is an optimistic lock. A competing patch advances it;
+  // this request then rereads, reapplies its own merge, and retries.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const envelope = parseEnrichment(item);
+    if (!canSeeDocument(caller, envelope)) {
+      return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+    }
+
+    const current = isMetadataObject(item.Metadata)
+      ? item.Metadata
+      : isMetadataObject(envelope && envelope.metadata)
+        ? envelope.metadata
+        : {};
+    const patch = parseMetadataPatch(parsedBody.body, current);
+    if (patch.error) return json(400, { error: patch.error.code, message: patch.error.message });
+
+    const hasVersion = Number.isFinite(item.MetadataVersion);
+    const updatedAt = new Date().toISOString();
+    const updatedBy = caller.appName || "dev-unrestricted";
+    const values = {
+      ":next": patch.next,
+      ":zero": 0,
+      ":one": 1,
+      ":updatedAt": updatedAt,
+      ":updatedBy": updatedBy,
+      ...(hasVersion && { ":expectedVersion": item.MetadataVersion }),
+    };
+
+    try {
+      const updated = await ddb.send(
+        new UpdateCommand({
+          TableName: TABLE,
+          Key: { DocumentId: documentId },
+          UpdateExpression:
+            "SET #md = :next, #mv = if_not_exists(#mv, :zero) + :one, #mu = :updatedAt, #mb = :updatedBy",
+          ConditionExpression: hasVersion ? "#mv = :expectedVersion" : "attribute_not_exists(#mv)",
+          ExpressionAttributeNames: {
+            "#md": "Metadata",
+            "#mv": "MetadataVersion",
+            "#mu": "MetadataUpdatedAt",
+            "#mb": "MetadataUpdatedBy",
+          },
+          ExpressionAttributeValues: values,
+          ReturnValues: "ALL_NEW",
+        })
+      );
+      const attrs = updated.Attributes || {};
+      return json(200, {
+        documentId,
+        metadata: isMetadataObject(attrs.Metadata) ? attrs.Metadata : patch.next,
+        metadataVersion: attrs.MetadataVersion ?? (hasVersion ? item.MetadataVersion + 1 : 1),
+        updatedAt: attrs.MetadataUpdatedAt || updatedAt,
+        updatedBy: attrs.MetadataUpdatedBy || updatedBy,
+      });
+    } catch (err) {
+      if (err && err.name === "ConditionalCheckFailedException") {
+        const fresh = await ddb.send(new GetCommand({ TableName: TABLE, Key: { DocumentId: documentId } }));
+        if (!fresh.Item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+        item = fresh.Item;
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return json(409, {
+    error: "METADATA_CONFLICT",
+    message: "Metadata changed concurrently too many times. Retry the same PATCH.",
+  });
 }
 
 // ------------------------------------------------------- GET file by id
@@ -757,6 +882,7 @@ async function fetchItems(documentIds) {
         [TABLE]: {
           Keys: documentIds.map((DocumentId) => ({ DocumentId })),
           ProjectionExpression: ITEM_PROJECTION,
+          ExpressionAttributeNames: ITEM_PROJECTION_NAMES,
         },
       },
     })
@@ -766,7 +892,15 @@ async function fetchItems(documentIds) {
   const pending = ((res.UnprocessedKeys || {})[TABLE] || {}).Keys || [];
   if (pending.length) {
     const retry = await ddb.send(
-      new BatchGetCommand({ RequestItems: { [TABLE]: { Keys: pending, ProjectionExpression: ITEM_PROJECTION } } })
+      new BatchGetCommand({
+        RequestItems: {
+          [TABLE]: {
+            Keys: pending,
+            ProjectionExpression: ITEM_PROJECTION,
+            ExpressionAttributeNames: ITEM_PROJECTION_NAMES,
+          },
+        },
+      })
     );
     items.push(...(((retry.Responses || {})[TABLE]) || []));
   }
@@ -923,7 +1057,7 @@ async function query(params, caller, multi) {
       };
       // full=1 additionally embeds the deepest S3 result (per-field fields[]
       // detail + full array contents) — costs one S3 GET per match.
-      if (full) entry.fullResult = await fetchFullResult(envelope.documentId);
+      if (full) entry.fullResult = await fetchFullResult(envelope.documentId, item);
       matches.push(entry);
       if (matches.length >= limit) return true;
     }
@@ -1006,6 +1140,7 @@ async function query(params, caller, multi) {
       new ScanCommand({
         TableName: TABLE,
         ProjectionExpression: ITEM_PROJECTION,
+        ExpressionAttributeNames: ITEM_PROJECTION_NAMES,
         ExclusiveStartKey,
       })
     );
@@ -1063,9 +1198,13 @@ export async function handler(event) {
   // ("/documents/{id}/file" vs "/documents/{id}"), stable regardless of how
   // `id` was URL-encoded — safer than pattern-matching `event.path`.
   const isFileRoute = event.resource === "/documents/{id}/file";
+  const isMetadataRoute = event.resource === "/documents/{id}/metadata";
   try {
     const caller = await resolveCallerApp(event);
     if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params, caller);
+    if (id && isMetadataRoute && event.httpMethod === "PATCH") {
+      return await patchMetadataById(decodeURIComponent(id), event, caller);
+    }
     if (id) return await getById(decodeURIComponent(id), params, caller);
     return await query(params, caller, multi);
   } catch (err) {

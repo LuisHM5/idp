@@ -668,7 +668,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     documentBucket.grantPut(uploadFn);
     appsTable.grantReadData(uploadFn);
 
-    // Query Lambda - read a document by id and search by any extracted field.
+    // Query Lambda - read/search documents and patch caller-owned metadata.
     const queryFn = new lambda.Function(this, "QueryLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
@@ -677,7 +677,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       ),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
-      description: "Document read/search via REST API",
+      description: "Document read/search and metadata patch via REST API",
       environment: {
         DOCUMENT_TABLE: documentTable.tableName,
         DOCUMENT_BUCKET: documentBucket.bucketName,
@@ -692,6 +692,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // for its CMK) — grantReadData covers `${tableArn}/index/*` — plus read of
     // the full results/ objects in S3.
     documentTable.grantReadData(queryFn);
+    // PATCH /documents/{id}/metadata only updates the mutable metadata/audit
+    // columns on the base item. Keep write permission on this one table.
+    documentTable.grant(queryFn, "dynamodb:UpdateItem");
     documentBucket.grantRead(queryFn);
     // Camino rápido de búsqueda: si el campo consultado es la unique key
     // declarada por el tipo, una sola Query aquí sustituye al recorrido
@@ -703,7 +706,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     }
     // So the Query Lambda can resolve the caller's own app (from its
     // x-api-key) and enforce per-app document access (AccessScope/
-    // AllowedDocTypes/AllowFieldSearch — see manage-apps.mjs) instead of any
+    // AllowedDocTypes/AllowFieldSearch/AllowMetadataWrite — see
+    // manage-apps.mjs) instead of any
     // valid key being able to read any app's documents.
     queryFn.addEnvironment("APPS_TABLE", appsTable.tableName);
     appsTable.grantReadData(queryFn);
@@ -715,7 +719,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         "REST API for uploading documents to the validation pipeline",
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
-        allowMethods: ["GET", "POST", "OPTIONS"],
+        allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
       },
       // Dev has no API key / WAF (open on purpose, for easy testing — see
       // methodOptions below), so without a stage-wide default it has no rate
@@ -745,6 +749,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // GET  /documents?field=<dot.path>&value=<v>  → search by any extracted field
     // GET  /documents/{id}                        → full result for one document
     // GET  /documents/{id}/file                   → presigned S3 URL to the original uploaded file
+    // PATCH /documents/{id}/metadata              → merge external metadata (not validation status)
     const uploadIntegration = new apigateway.LambdaIntegration(uploadFn);
     const queryIntegration = new apigateway.LambdaIntegration(queryFn);
     const documentsResource = api.root.addResource("documents");
@@ -753,6 +758,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const documentByIdResource = documentsResource.addResource("{id}");
     documentByIdResource.addMethod("GET", queryIntegration, methodOptions);
     documentByIdResource.addResource("file").addMethod("GET", queryIntegration, methodOptions);
+    documentByIdResource.addResource("metadata").addMethod("PATCH", queryIntegration, methodOptions);
 
     // Alias NO DOCUMENTADO de `POST /documents`, a propósito: la documentación
     // (openapi.yaml, API_USO.md) describe únicamente `/documents`, y esta ruta

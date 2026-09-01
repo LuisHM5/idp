@@ -16,6 +16,7 @@
  *   pnpm apps:rotate -- --name CEDIS --env dev          (key nueva, la vieja queda deshabilitada)
  *   pnpm apps:reconfigure -- --name CEDIS --env dev --rate-limit 50   (solo cambia límites, misma key)
  *   pnpm apps:reconfigure -- --name CEDIS --env dev --access-scope all --allow-field-search
+ *   pnpm apps:grant -- --name ERP --env prod --metadata-write
  *   pnpm apps:reconfigure -- --name CEDIS --env dev --allowed-doctypes FACTURA_HONORARIOS_XML
  *   pnpm apps:grant -- --name CEDIS --env dev --doctype PEDIMENTO_ADUANAL   (agrega SIN pisar lo existente)
  *   pnpm apps:deny -- --name CEDIS --env dev --field-search                (quita SOLO ese permiso)
@@ -42,13 +43,13 @@
  *     acciones más difíciles/imposibles de deshacer) antes de confirmar.
  *
  * Permisos por app (ver documentacion/AMBIENTES_Y_SEGURIDAD.md → "Acceso por
- * app" — los aplica query-lambda en cada GET /documents*). Dos formas de
+ * app" — los aplica query-lambda en GET /documents* y PATCH metadata). Dos formas de
  * tocarlos, según si quieres REEMPLAZAR todo o solo AJUSTAR un permiso:
  *   - `register`/`reconfigure --allowed-doctypes A,B`: fija la lista EXACTA
  *     (pisa lo que hubiera). Para quitar la restricción: `--allowed-doctypes none`.
  *   - `grant`/`deny --doctype A,B`: suma/resta esos tipos a la lista actual
  *     SIN tocar el resto — no hace falta saber/retipear los que ya tenía.
- * En ambos casos, los mismos tres permisos:
+ * En ambos casos, los mismos cuatro permisos:
  *   --access-scope own|all   own (default en register) = solo ve documentos
  *                             que ELLA subió (tracking.appOrigin); all = sin restricción.
  *   --allowed-doctypes A,B   (solo register/reconfigure) — ver arriba.
@@ -59,6 +60,10 @@
  *                             (default false — la ruta más cara y abusable).
  *   --field-search            (grant/deny) mismo permiso, ya con el sentido
  *                             de "otorgar"/"quitar" fijado por el comando.
+ *   --allow-metadata-write /
+ *   --disallow-metadata-write (register/reconfigure) permite/quita
+ *                             PATCH /documents/{id}/metadata (default false).
+ *   --metadata-write          (grant/deny) otorga/quita ese mismo permiso.
  *
  * Opciones comunes:
  *   --env dev|prod     Ambiente (default: dev, igual que el deploy)
@@ -180,7 +185,8 @@ function unmarshal(item) {
 /**
  * Parsea los flags de permisos por app (compartidos por `register` y
  * `reconfigure`): --access-scope own|all, --allowed-doctypes A,B (o "none"
- * para quitar la restricción), --allow-field-search/--disallow-field-search.
+ * para quitar la restricción), --allow-field-search/--disallow-field-search
+ * y --allow-metadata-write/--disallow-metadata-write.
  * `setAttrs` va directo a un put-item/update-item SET; `removeAttrs` son
  * nombres de atributo para un REMOVE (DynamoDB no permite un String Set
  * vacío, así que "quitar" AllowedDocTypes es un REMOVE, no un SS: []).
@@ -204,6 +210,8 @@ function parsePermissionFlags(args) {
   }
   if (args["allow-field-search"]) setAttrs.AllowFieldSearch = { BOOL: true };
   if (args["disallow-field-search"]) setAttrs.AllowFieldSearch = { BOOL: false };
+  if (args["allow-metadata-write"]) setAttrs.AllowMetadataWrite = { BOOL: true };
+  if (args["disallow-metadata-write"]) setAttrs.AllowMetadataWrite = { BOOL: false };
   return { setAttrs, removeAttrs };
 }
 
@@ -436,7 +444,7 @@ async function cmdRegister(args) {
   });
 
   // Secure by default: AccessScope="own" (solo ve lo que ella subió) y
-  // AllowFieldSearch=false (sin el Scan caro) salvo que se pida lo contrario
+  // AllowFieldSearch=false y AllowMetadataWrite=false salvo que se pidan
   // explícitamente — ver documentacion/AMBIENTES_Y_SEGURIDAD.md.
   ddbPutItem(
     table,
@@ -452,6 +460,7 @@ async function cmdRegister(args) {
       CreatedAt: { S: new Date().toISOString() },
       AccessScope: perms.setAttrs.AccessScope || { S: "own" },
       AllowFieldSearch: perms.setAttrs.AllowFieldSearch || { BOOL: false },
+      AllowMetadataWrite: perms.setAttrs.AllowMetadataWrite || { BOOL: false },
       ...(perms.setAttrs.AllowedDocTypes ? { AllowedDocTypes: perms.setAttrs.AllowedDocTypes } : {}),
     },
     region
@@ -460,7 +469,8 @@ async function cmdRegister(args) {
   console.log(`\n✅ App '${args.name}' registrada.`);
   printNewKey({ name: args.name, apiKeyId, apiKeyValue, usagePlanId, rateLimit, burstLimit, quotaPerDay, region });
   const scope = perms.setAttrs.AccessScope?.S || "own";
-  console.log(`   Permisos: accessScope=${scope}, allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? false}` +
+  console.log(`   Permisos: accessScope=${scope}, allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? false}, ` +
+    `allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? false}` +
     (perms.setAttrs.AllowedDocTypes ? `, allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : ""));
 }
 
@@ -525,6 +535,10 @@ async function cmdRotate(args) {
       Environment: { S: envLabel },
       CreatedAt: { S: new Date().toISOString() },
       RotatedFrom: { S: old.ApiKeyId },
+      AccessScope: { S: old.AccessScope || "own" },
+      AllowFieldSearch: { BOOL: old.AllowFieldSearch ?? false },
+      AllowMetadataWrite: { BOOL: old.AllowMetadataWrite ?? false },
+      ...(old.AllowedDocTypes ? { AllowedDocTypes: { SS: old.AllowedDocTypes } } : {}),
     },
     region
   );
@@ -620,7 +634,8 @@ async function cmdReconfigure(args) {
   if (rateLimit === null && burstLimit === null && quotaPerDay === null && !hasPermChanges) {
     fail(
       "Falta al menos uno de --rate-limit/--burst-limit/--quota-per-day/--access-scope/" +
-        "--allowed-doctypes/--allow-field-search (esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
+        "--allowed-doctypes/--allow-field-search/--allow-metadata-write " +
+        "(esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
     );
   }
 
@@ -634,7 +649,7 @@ async function cmdReconfigure(args) {
 
   // Los límites (throttle/quota) viven en el usage plan de API Gateway y
   // necesitan UsagePlanId; los permisos (AccessScope/AllowedDocTypes/
-  // AllowFieldSearch) son solo atributos en DynamoDB — no dependen de él, así
+  // AllowFieldSearch/AllowMetadataWrite) son solo atributos en DynamoDB — no dependen de él, así
   // que una app adoptada sin UsagePlanId conocido igual puede reconfigurar sus
   // permisos, solo no sus límites.
   const wantsLimitChange = rateLimit !== null || burstLimit !== null || quotaPerDay !== null;
@@ -676,6 +691,7 @@ async function cmdReconfigure(args) {
     console.log(
       `   accessScope=${perms.setAttrs.AccessScope?.S ?? app.AccessScope ?? "own"} ` +
         `allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? app.AllowFieldSearch ?? false}` +
+        ` allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? app.AllowMetadataWrite ?? false}` +
         (perms.setAttrs.AllowedDocTypes ? ` allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : "") +
         (perms.removeAttrs.includes("AllowedDocTypes") ? " allowedDocTypes=(quitado, ve todos los tipos permitidos por su scope)" : "")
     );
@@ -725,6 +741,7 @@ async function promptGrantDeny(args, verb) {
     console.log(
       `\nPermisos actuales de '${args.name}': accessScope=${app.AccessScope ?? "own"} ` +
         `allowFieldSearch=${app.AllowFieldSearch ?? false}` +
+        ` allowMetadataWrite=${app.AllowMetadataWrite ?? false}` +
         (app.AllowedDocTypes ? ` allowedDocTypes=${app.AllowedDocTypes.join(",")}` : "")
     );
     return { args, app };
@@ -773,8 +790,12 @@ async function cmdGrant(args) {
     updates.AllowFieldSearch = { BOOL: true };
     notes.push("allowFieldSearch=true");
   }
+  if (args["metadata-write"]) {
+    updates.AllowMetadataWrite = { BOOL: true };
+    notes.push("allowMetadataWrite=true");
+  }
   if (!notes.length) {
-    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, y/o --field-search.");
+    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, --field-search y/o --metadata-write.");
   }
 
   await confirmGrantDeny(args, "grant", notes);
@@ -814,8 +835,12 @@ async function cmdDeny(args) {
     updates.AllowFieldSearch = { BOOL: false };
     notes.push("allowFieldSearch=false");
   }
+  if (args["metadata-write"]) {
+    updates.AllowMetadataWrite = { BOOL: false };
+    notes.push("allowMetadataWrite=false");
+  }
   if (!notes.length) {
-    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, y/o --field-search.");
+    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, --field-search y/o --metadata-write.");
   }
 
   await confirmGrantDeny(args, "deny", notes);
@@ -844,6 +869,7 @@ function cmdList(args) {
     );
     console.log(
       `     accessScope=${it.AccessScope ?? "own"} allowFieldSearch=${it.AllowFieldSearch ?? false}` +
+        ` allowMetadataWrite=${it.AllowMetadataWrite ?? false}` +
         (it.AllowedDocTypes ? ` allowedDocTypes=${it.AllowedDocTypes.join(",")}` : "")
     );
     // RevokedAt no se borra al hacer `enable` (queda como historial de
@@ -1051,6 +1077,9 @@ async function cmdAdopt(args) {
       ...(quotaPerDay != null ? { QuotaPerDay: { N: String(quotaPerDay) } } : {}),
       Environment: { S: envLabel },
       CreatedAt: { S: new Date().toISOString() },
+      AccessScope: { S: "own" },
+      AllowFieldSearch: { BOOL: false },
+      AllowMetadataWrite: { BOOL: false },
     },
     region
   );
@@ -1065,14 +1094,15 @@ Uso: pnpm apps:<comando> -- [opciones]
 Comandos (todos interactivos en una terminal real si falta algo — siempre
 piden confirmación S/n antes de tocar AWS, salvo --yes o sin TTY):
   register     --name X [--rate-limit 20] [--burst-limit 40] [--quota-per-day 5000] [--force]
-               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search]
+               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search] [--allow-metadata-write]
   rotate       --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]
   reconfigure  --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]
                [--access-scope own|all] [--allowed-doctypes A,B|none]
                [--allow-field-search] [--disallow-field-search]
-  grant        --name X [--doctype A,B] [--access-scope all] [--field-search]
+               [--allow-metadata-write] [--disallow-metadata-write]
+  grant        --name X [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write]
                (agrega/otorga SIN pisar lo que ya tenía — ver reconfigure para reemplazar todo)
-  deny         --name X [--doctype A,B] [--access-scope own] [--field-search]
+  deny         --name X [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write]
                (quita SOLO lo pedido — inverso de grant)
   disable      --name X                          (deshabilita la key, no la borra)
   enable       --name X                          (reactiva una app deshabilitada)
