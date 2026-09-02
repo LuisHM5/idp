@@ -580,8 +580,14 @@
       "num_acuse_valor": {
         "type": "string",
         "required": false,
-        "hint": "Texto COMPLETO de la columna NUMERO DE ACUSE DE VALOR de esa misma fila, tal como está impreso: 'COVE2689JP013 / 35079805' cuando trae el número de factura al lado, o solo 'COVE26871ECA1' cuando la tabla lista únicamente acuses. Dejarlo vacío si el encabezado de esa columna es NUM. FACTURA: ese pedimento no declara acuse de valor.",
-        "validation": []
+        "hint": "Texto COMPLETO de la columna NUMERO DE ACUSE DE VALOR, la PRIMERA columna de la tabla que va debajo del bloque DATOS DEL PROVEEDOR O COMPRADOR, en la misma fila que FECHA, INCOTERM, MONEDA FACT, VAL.MON.FACT, FACTOR MON FACT y VAL. DOLARES. Es TEXTO, no un número: copiarlo carácter por carácter tal como está impreso, conservando el prefijo COVE, la diagonal y sus espacios — 'COVE2689JP013 / 35079805' cuando la celda trae el acuse y el número de factura juntos, o solo 'COVE26871ECA1' cuando la tabla lista únicamente acuses. NUNCA quitarle el COVE, NUNCA dejar solo los dígitos y NUNCA convertirlo a número: '35079805' y '268901335079805' están mal; el número suelto va en Factura, aquí va la cadena completa. En el texto extraído la celda suele quedar pegada a la FECHA de la misma fila ('COVE2689JP013 / 35079805 24/08/2026'): el acuse termina antes de la fecha. Dejarlo vacío si el encabezado de esa columna es NUM. FACTURA: ese pedimento no declara acuse de valor.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "(?i)^COVE[A-Z0-9]+(\\s*/\\s*[A-Z0-9._-]+)?$",
+            "message": "El acuse de valor debe copiarse completo empezando por COVE (ej. 'COVE2689JP013 / 35079805'), no como número ni como el puro número de factura"
+          }
+        ]
       },
       "Fecha_Factura": {
         "type": "date",

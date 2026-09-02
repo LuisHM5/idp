@@ -578,6 +578,13 @@ Para el DSL field-centric:
 1. `_field_tree_tool_schema()` transforma recursivamente el catálogo en JSON
    Schema y omite campos `computed`.
 2. `_call_model_field_tree()` llama `converse_structured()` con tool choice.
+   El prefijo que arma `_build_field_tree_prompts()` (bloque `CAMPOS:` con el
+   `hint` de cada campo + `REGLAS ESTRICTAS`) viaja en **todas** las llamadas:
+   como `system` normal cuando hay un solo chunk, y como `cache_system` (con
+   `cachePoint`) cuando hay varios y el prefijo se va a reusar. Antes solo
+   viajaba en `cache_system`, así que un documento de un chunk se extraía sin
+   hints ni reglas — el modelo veía el texto y los nombres de campo del tool
+   schema, y adivinaba por el nombre.
 3. Si la salida termina por `max_tokens`, divide el conjunto de páginas a la
    mitad y reintenta recursivamente. Ese split es secuencial para no multiplicar
    la concurrencia del pool externo.
@@ -607,7 +614,14 @@ Field-centric:
    `source=NORMALIZED`; de lo contrario conserva el source de extracción.
 3. Fallas de fórmulas propagan warnings a operandos relacionados.
 4. Confianza inferior a `min_confidence` genera un check real y puede afectar
-   el status del documento.
+   el status del documento (el valor se conserva). Por debajo de
+   `discard_below_confidence` (0.50 por default) el valor **no se entrega**:
+   `value: null`, `valid: false` y un check `discard_low_confidence`
+   (warning). `confidence` nunca sale `null`: un campo sin medición propia
+   hereda la del segmento leído (`default_confidence`), un campo calculado el
+   promedio de las celdas que sumó, y un campo ausente reporta `0.0` sin
+   descartarse. Contrato completo en `catalogs/README.md` → "El contrato de
+   `confidence`", implementado en `pipeline/confidence.py`.
 5. `document_status_from_checks()` (`engine.py:909`) devuelve:
    - hard failures → `PARTIALLY_APPROVED` o `REJECTED`;
    - warning fallido → `REVIEW_REQUIRED`;
@@ -1365,7 +1379,7 @@ Archivo: `pipeline/text_extractor.py`.
 | `_field_tree_tool_props()` (`:319`) | árbol | convierte fields/object/array en props JSON Schema | dict props → tool schema | recursión por `FieldSpec` |
 | `_field_tree_tool_schema()` (`:347`) | árbol | envuelve props con object root/required | schema → Converse tool | helper anterior |
 | `_build_field_tree_prompts()` (`:351`) | entry + páginas | construye contrato anti-invención + fuente | `(system,prompt)` → modelo | schema block, pages block |
-| `_parse_field_tree_response()` (`:371`) | tool input + spec | acepta shape esperado, separa values/confidences y limpia extras | entidades/confidences → chunk result | árbol catálogo |
+| `_parse_field_tree_response()` (`:371`) | tool input + spec | acepta shape esperado, separa values/confidences (incluida la confianza por CELDA de cada fila de array, indexada por contenido de fila) y limpia extras | entidades/confidences/row_confidences → chunk result | árbol catálogo |
 | `_merge_field_tree_entities()` (`:421`) | base/extra entities+confidence | une recursivamente escalares/object/arrays conservando orden/confidence | acumulado → documento | regla determinista |
 | `_call_model_field_tree()` (`:446`) | entry + chunk | resuelve modelo, arma tool schema/prompts, llama structured y parsea | parcial field-centric + meta | Bedrock, parsers anteriores |
 | `_extract_document_field_tree()` (`:481`) | entry + páginas | divide chunks, ejecuta workers y fusiona resultados ordenados | `ExtractionResult` → expediente | `_chunk_pages`, pool `CHUNK_WORKERS`, merge field tree |

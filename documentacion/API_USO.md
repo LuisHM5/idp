@@ -489,6 +489,31 @@ documento detectado dentro del PDF. Para un pedimento declarado será uno solo:
 }
 ```
 
+### `confidence`: siempre un número, nunca `null`
+
+Cada campo escalar trae un `confidence` entre 0 y 1 — **incluidos los
+calculados** (`LIQUIDACION_NORMALIZADA.*`, campos `derived`) y los que el
+documento no traía. Cómo se decide:
+
+| Caso | `confidence` |
+|---|---|
+| Campo leído del documento | Lo que reportó el modelo × qué tan bien se leyó la página. |
+| Campo calculado de varias celdas (un total del cuadro de liquidación) | El **promedio** de las celdas que sumó. |
+| Fila de un array | La de **esa** fila, no la del array completo. |
+| Campo que el documento no traía | `0.0` — "no lo sé" (con `value: null`; si era obligatorio, el `reason` lo dice). |
+
+Y dos umbrales distintos, ambos por tipo en el catálogo:
+
+- **`min_confidence`** (0.70 por default, 0.80 en `PEDIMENTO_ERP`) → el campo
+  sale `valid: false` con `reason`, **pero conserva el valor** para que
+  alguien lo revise.
+- **`discard_below_confidence`** (0.50 por default) → el valor **no se
+  entrega**: `value: null`, `valid: false` y
+  `reason: "value discarded: confidence 0.31 below discard floor 0.5"`. La
+  confianza baja se conserva: es la que explica por qué no hay valor. El
+  documento cae a `REQUIERE_REVISION` (no a rechazo) por el check
+  `discard_low_confidence`.
+
 ---
 
 ## 1. `POST /documents` — Registrar el documento y obtener la URL de subida

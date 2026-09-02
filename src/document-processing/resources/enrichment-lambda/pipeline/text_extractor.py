@@ -235,6 +235,14 @@ def _call_model(
         tool_name="extract_document_fields",
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
         model_id=model_id or resolve_model("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
+        # The prefix (schema + hints + strict rules) goes on EVERY call;
+        # `cache` only decides whether it's also marked as cacheable. It used
+        # to travel exclusively as `cache_system`, so a document that fit in
+        # ONE chunk was extracted with no hints and no rules at all — the model
+        # saw the raw page text plus bare field names, and filled them by
+        # guessing what the names meant (the acuse "COVE2689JP013 / 35079805"
+        # landed in `Factura`, the pesos value in `Valor_ComercialDol`).
+        system=None if cache else cache_prefix,
         cache_system=cache_prefix if cache else None,
         stage="extractor",
     )
@@ -483,6 +491,14 @@ def _call_model_field_tree(
         tool_name="extract_document_fields",
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
         model_id=model_id or resolve_model("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
+        # The prefix (schema + hints + strict rules) goes on EVERY call;
+        # `cache` only decides whether it's also marked as cacheable. It used
+        # to travel exclusively as `cache_system`, so a document that fit in
+        # ONE chunk was extracted with no hints and no rules at all — the model
+        # saw the raw page text plus bare field names, and filled them by
+        # guessing what the names meant (the acuse "COVE2689JP013 / 35079805"
+        # landed in `Factura`, the pesos value in `Valor_ComercialDol`).
+        system=None if cache else cache_prefix,
         cache_system=cache_prefix if cache else None,
         stage="extractor",
     )

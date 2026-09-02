@@ -270,14 +270,31 @@ def looks_like_pedimento_field(field_name: str) -> bool:
     return "PEDIMENTO" in name and bool(_PEDIMENTO_NUMBER_TOKEN_RE.search(name))
 
 
-def normalize_field(field_name: str, value: Any) -> Any:
-    """Best-effort normalization keyed on field-name conventions.
+def normalize_field(field_name: str, value: Any, declared_type: Optional[str] = None) -> Any:
+    """Best-effort normalization keyed on the field's DECLARED type first, and
+    on field-name conventions only when there is no declared type.
 
     Amount-like names -> float, date-like names -> ISO date, pedimento
     references -> digit string, RFC/UUID -> canonical casing. Anything else
     returns a stripped string (or the value untouched for lists/dicts).
+
+    `declared_type` is the catalog `type` of the field (field-centric DSL).
+    The name heuristics alone cannot tell a number from a string that merely
+    MENTIONS one: `num_acuse_valor` contains "VALOR", so the acuse
+    "COVE2689JP013 / 35079805" was parsed as an amount and handed on as
+    268901335079805.0 -- every letter and the diagonal gone, tagged
+    NORMALIZED and valid. The same trap catches ENTIDAD_FEDERAT-IVA-,
+    TIPO_SEGURO and VALOR_LITERAL. It cuts the other way too:
+    `FACTOR_MONEDA_FACTURA` matches no amount token, so a `number` column came
+    back as the string "1.0". The declared type settles both cases; where
+    there is none (legacy DSL, or a scalar inside an array, which declares no
+    per-item type) the heuristics behave exactly as before.
     """
     if value is None or isinstance(value, (list, dict)):
+        return value
+    if declared_type == "boolean":
+        # Never stringify a boolean into "True", and never invent a parser for
+        # whatever else landed here: leave the value for the rules to judge.
         return value
     name = field_name.upper()
 
@@ -287,10 +304,10 @@ def normalize_field(field_name: str, value: Any) -> Any:
         return normalize_rfc(value) or str(value).strip().upper()
     if name == "UUID" or name.endswith("_UUID"):
         return normalize_uuid(value) or str(value).strip().upper()
-    if _looks_like_date_field(name):
+    if _wants_date(name, declared_type):
         parsed = parse_date_iso(value)
         return parsed if parsed is not None else str(value).strip()
-    if _looks_like_amount_field(name):
+    if _wants_amount(name, declared_type):
         parsed = parse_amount(value)
         return parsed if parsed is not None else str(value).strip()
     return str(value).strip()
@@ -314,3 +331,26 @@ def _looks_like_amount_field(name: str) -> bool:
 
 def _looks_like_date_field(name: str) -> bool:
     return "FECHA" in name or name.endswith("_DATE") or name.startswith("DATE_") or name in {"PICKUP_DATE", "DELIVERY_DATE", "DUE_DATE"}
+
+
+# Declared types that a name heuristic must never turn into a number. "date"
+# is here too: a date field goes through parse_date_iso, never parse_amount.
+_NON_NUMERIC_TYPES = frozenset({"string", "date", "boolean"})
+
+
+def _wants_amount(name: str, declared_type: Optional[str]) -> bool:
+    """Should this value be parsed into a float? The catalog decides when it
+    declared a type; the name heuristics only fill in for what didn't."""
+    if declared_type == "number":
+        return True
+    if declared_type in _NON_NUMERIC_TYPES:
+        return False
+    return _looks_like_amount_field(name)
+
+
+def _wants_date(name: str, declared_type: Optional[str]) -> bool:
+    if declared_type == "date":
+        return True
+    if declared_type == "number":
+        return False
+    return _looks_like_date_field(name)

@@ -885,7 +885,10 @@ def resolve_field_tree(
             return True, None
         return False, "; ".join(c.message for c in failed)
 
-    def resolve_leaf(leaf_name: str, value: Any, computed: bool, path: Optional[str] = None) -> Tuple[Any, str]:
+    def resolve_leaf(
+        leaf_name: str, value: Any, computed: bool, path: Optional[str] = None,
+        declared_type: Optional[str] = None,
+    ) -> Tuple[Any, str]:
         """Resolve a scalar leaf's OUTPUT value together with its source tag.
 
         Previously this only decided the tag (`source_for`) while the caller
@@ -894,13 +897,21 @@ def resolve_field_tree(
         dirty original (e.g. NUMERO_PEDIMENTO with spaces, tagged NORMALIZED,
         `value` still "26 07 0823 6001630" instead of the digit-only form).
         The tag must describe what's actually in `value`.
+
+        `declared_type` is the field's catalog `type`, passed so normalization
+        obeys what the catalog declared instead of guessing from the field
+        NAME — a `string` field is never parsed into a number just because its
+        name contains "VALOR" (see `pipeline.normalize.normalize_field`).
+        An array of plain scalars passes its `item_type` ("string" unless the
+        catalog says otherwise); the cells of an array of ROWS pass their own
+        subfield type, like any other scalar.
         """
         if computed:
             resolved, label = value, "NORMALIZED"
         else:
             resolved, label = value, default_source
             if value is not None:
-                normalized = normalize_field(leaf_name, value)
+                normalized = normalize_field(leaf_name, value, declared_type)
                 if normalized != value:
                     resolved, label = normalized, "NORMALIZED"
         # An override only replaces the LABEL — WHERE the value came from —
@@ -948,7 +959,7 @@ def resolve_field_tree(
                 return {"items": rendered}
             rendered_items = []
             for v in items:
-                resolved_v, source = resolve_leaf(spec.name, v, computed)
+                resolved_v, source = resolve_leaf(spec.name, v, computed, declared_type=spec.item_type)
                 rendered_items.append({
                     "value": resolved_v,
                     "confidence": conf_policy.clamp(
@@ -960,7 +971,7 @@ def resolve_field_tree(
             return {"items": rendered_items}
         # scalar
         valid, reason = valid_reason(path)
-        resolved_value, source = resolve_leaf(spec.name, value, computed, path)
+        resolved_value, source = resolve_leaf(spec.name, value, computed, path, spec.type)
         raw_confidence = confidences.get(path, fallback_conf)
         if raw_confidence is None:
             raw_confidence = default_confidence

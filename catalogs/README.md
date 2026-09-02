@@ -106,7 +106,8 @@ como en el DSL viejo.
 | `fields` | sí | El árbol de campos — ver abajo. Su sola presencia es lo que activa el DSL field-centric (`document_catalog.py: if "fields" in data`). |
 | `display_name` | sí | Nombre legible (`"Pedimento Aduanal"`). Se guarda en `DocumentTypeName` y el API lo acepta en `?docType=`. Si falta, se deriva del `TYPE_ID`. |
 | `aliases` | sí | Otros nombres que el API acepta en `?docType=` (`["pedimento", "pedimento de importación"]`). |
-| `min_confidence` | sí | Umbral 0-1: un campo escalar con confianza por debajo se marca inválido (`confidence {x} below minimum {min}`). Default 0.70. |
+| `min_confidence` | sí | Umbral 0-1: un campo escalar con confianza por debajo se marca inválido (`confidence {x} below minimum {min}`) **pero conserva su valor**, para que una persona lo juzgue. Default 0.70. |
+| `discard_below_confidence` | sí | Piso 0-1 por debajo del cual el valor **no se entrega**: sale `value: null`, `valid: false` y un `reason` que lo dice, conservando la confianza baja que lo explica. Más estricto que `min_confidence` (que solo señala): un número en el que nadie confía pero que *parece* dato es peor aguas abajo que un blanco explícito. Default 0.50 (`pipeline/confidence.py`). Solo aplica a campos **con** valor: un campo opcional ausente no está "descartado", nunca estuvo. |
 | `schema_version` | solo informativo | Se registra en `tracking.schema.typeVersions` de cada resultado para saber qué versión de schema procesó el documento. **No cambia ningún comportamiento del código** — no hay ningún `if schema_version == ...` en el pipeline. Súbelo cuando quieras dejar rastro de un cambio relevante, no por obligación. |
 | `pipeline: "expediente"` | sí, pero opcional | Ver [`pipeline: expediente`](#pipeline-expediente-qué-controla-realmente) abajo — **ya no es requisito para que se extraigan los campos.** |
 | `model_id` | sí, opcional | ID de modelo Bedrock (o ARN de inference-profile) que extrae específicamente ESTE tipo — pisa `BEDROCK_EXTRACTOR_MODEL_ID`/`BEDROCK_MODEL_ID` configurados por variable de entorno. Aplica a cualquier fase que corra para este tipo (`extractor`, y `recovery` si el tipo declara `extraction_strategy`) salvo que esa fase tenga su propia entrada en `model_ids`. Ausente o `null` → hereda lo configurado. |
@@ -160,6 +161,20 @@ como en el DSL viejo.
 
 - **Escalar** (`string`/`number`/`boolean`/`date`) → sale como
   `{value, confidence, valid, reason, source}`.
+  `confidence` **siempre es un número 0-1, nunca `null`** (ver
+  [El contrato de `confidence`](#el-contrato-de-confidence)).
+- **`type` no es decorativo: decide cómo se normaliza el valor.** Un campo
+  `string` nunca se convierte en número aunque su nombre suene a importe —
+  `num_acuse_valor` contiene "VALOR", y por eso el acuse
+  `COVE2689JP013 / 35079805` salía como `268901335079805.0`, sin COVE y sin
+  diagonal, marcado `NORMALIZED` y válido; lo mismo le pasaba a
+  `ENTIDAD_FEDERAT`**IVA**. Y al revés: un campo `number` sí se parsea aunque
+  su nombre no dispare ninguna heurística (`FACTOR_MONEDA_FACTURA` salía como
+  el string `"1.0"`). `date` → ISO `YYYY-MM-DD`; `boolean` se deja intacto.
+  Las convenciones de NOMBRE de `pipeline/normalize.py` (`TOTAL`/`IMPORTE`/
+  `VALOR` = importe, `FECHA` = fecha, `RFC`/`UUID`, número de pedimento) solo
+  deciden donde no hay tipo declarado: el DSL legacy. Un array de escalares
+  usa su `item_type`.
 - **Objeto** (`type: "object"`) → sale como
   `{valid, reason, fields: {SUBCAMPO: {...recursivo...}}}`. Su propio
   `validation` corre a nivel del objeto completo (ej. una suma que cruza dos
@@ -730,6 +745,34 @@ expediente real recortó solo el 67 % de los tokens, porque las páginas que se
 conservan son las densas en texto. Detalle y validación en
 `documentacion/COSTOS.md` §0-bis.
 
+### El contrato de `confidence`
+
+Todo escalar resuelto reporta un `confidence` **numérico entre 0 y 1, nunca
+`null`** — antes un campo que nadie había medido (los subcampos de
+`LIQUIDACION_NORMALIZADA`, un campo `derived` que cayó a su `default`, un
+campo que el documento no traía) salía con `confidence: null` y obligaba a
+todo consumidor a tratar la ausencia de número antes de poder compararlo
+contra nada. Las reglas, todas en `pipeline/confidence.py`:
+
+| Situación | Qué reporta |
+|---|---|
+| El extractor midió el campo | Su número (self-report del modelo × confianza OCR de la página). |
+| Celda de una fila de array | La de **esa fila**, no la del array entero (antes todas las filas compartían el mismo número). |
+| Campo calculado de varias celdas | El **promedio** de las celdas que lo alimentaron: un total vale lo que valen los renglones que sumó. |
+| Campo `derived` | La del campo que leyó — incluido cuando cayó al `default`: nada matcheó *esa* entrada, así que el fallback es tan confiable como la entrada para la que se eligió. |
+| Valor sin medición propia | Qué tan bien se leyó la **fuente** (confianza OCR del segmento; 1.0 en los pipelines deterministas XML/tabular). Así un hueco del pipeline no borra dato bueno. |
+| Campo vacío / ausente | `0.0` — "no lo sé". No entra al promedio del documento (no describe nada leído) y **no** se marca como descartado: no estaba, no se perdió. |
+
+Y dos umbrales que **no** son lo mismo:
+
+- `min_confidence` (default 0.70) **señala**: `valid: false` con `reason`,
+  el valor se conserva para que alguien lo juzgue.
+- `discard_below_confidence` (default 0.50) **borra**: `value: null`,
+  `valid: false`, `reason: "value discarded: confidence ... below discard
+  floor ..."` y un check `discard_low_confidence` (severidad `warning`, así
+  que el documento cae a revisión, no a rechazo). La confianza baja se
+  conserva en el nodo: es la que explica por qué no hay valor.
+
 ### Reglas de validación soportadas (`rule_type`)
 
 Van dentro de `fields[NOMBRE].validation` (sin `"field"`, es implícito por
@@ -822,6 +865,16 @@ Llaves reconocidas por subcampo: `concept_aliases` (implica
 escalar plano), `value_field` (default `"IMPORTE"`), `filters` (dict —
 soporta `TASA` con tolerancia numérica y `TASA_NOT_IN` con una lista), y
 `default`.
+
+**Confianza de una columna calculada**: no es un número inventado ni un
+`null`. Una columna que sumó celdas hereda el **promedio** de la confianza de
+esas celdas (`pipeline/confidence.py::combine`); un concepto que simplemente
+no está en el cuadro hereda la confianza del cuadro en el que se buscó
+("se leyó bien y ahí no está" es un 0.00 medido); y si nadie midió la tabla
+de la que sale (un `source` que el tipo ni declara), la columna no reporta
+nada propio y cae a qué tan bien se leyó el documento. Registrar 0.0 ahí
+borraría ceros legítimos — un pedimento sin partidas de IEPS tiene `IEPS_8 =
+0` por buena razón, y el piso de descarte lo volvería `null`.
 
 Esto es una **convención de nombre**, no un mecanismo genérico para
 cualquier objeto computado: solo el campo literalmente llamado
@@ -1033,6 +1086,10 @@ cualquier catálogo sin tocar nada más.
   (severity warning) — no falla el documento ni te avisa fuerte. Revisa
   `checks`/`crossDocumentChecks` del resultado si una validación "no hace
   nada".
+- **Un `type` mal declarado se ve en el valor, no en un error.** Si una
+  columna numérica sale entrecomillada en el resultado, o un texto sale como
+  número gigante, revisa el `type` del campo antes que el hint: es lo que
+  gobierna la normalización (ver la sección del shape de un campo).
 - **`field_sets` es del DSL viejo únicamente** — en un tipo con `fields` no
   tiene ningún efecto, aunque `_TEMPLATE.json` todavía lo liste (es un
   remanente, seguro dejarlo en `[]` o quitarlo).

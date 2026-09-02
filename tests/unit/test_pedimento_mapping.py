@@ -456,6 +456,61 @@ def test_la_factura_rechaza_el_acuse_completo(valor, valida):
     assert tree["Factura"]["valid"] is valida, tree["Factura"]["reason"]
 
 
+@pytest.mark.parametrize(
+    "valor, valida",
+    [
+        ("COVE2689JP013 / 35079805", True),   # la fila real del pedimento de TYSON FOODS
+        ("COVE26871ECA1", True),              # tabla que solo lista acuses, sin factura
+        ("COVE2689JP013/35079805", True),     # sin espacios alrededor de la diagonal
+        ("35079805", False),                  # solo el número: eso es Factura, no el acuse
+        ("268901335079805", False),           # el acuse leído como si fuera un importe
+        ("24/08/2026", False),                # la FECHA de la columna de al lado
+    ],
+)
+def test_el_acuse_se_copia_completo_o_no_pasa(valor, valida):
+    """El acuse es el COVE COMPLETO. Un valor sin COVE — el número suelto, o la
+    cadena convertida a número — no es un acuse a medias: es otro dato."""
+    entry = cargar("PEDIMENTO_ERP")
+    tree, _, _ = resolve_field_tree(
+        {"num_acuse_valor": valor}, {}, entry, default_confidence=CONFIANZA_OCR
+    )
+
+    assert tree["num_acuse_valor"]["valid"] is valida, tree["num_acuse_valor"]["reason"]
+
+
+def test_el_acuse_llega_al_erp_tal_como_esta_impreso():
+    """El bug real: `num_acuse_valor` contiene "VALOR", así que la
+    normalización por nombre lo parseaba como importe y entregaba
+    268901335079805.0 — sin COVE, sin diagonal, marcado NORMALIZED y válido.
+    El tipo declarado (`string`) manda sobre la heurística del nombre."""
+    entry = cargar("PEDIMENTO_ERP")
+    tree, _, _ = resolve_field_tree(
+        {"num_acuse_valor": "COVE2689JP013 / 35079805", "Factura": "35079805"},
+        {}, entry, default_confidence=CONFIANZA_OCR,
+    )
+
+    assert tree["num_acuse_valor"]["value"] == "COVE2689JP013 / 35079805"
+    assert tree["num_acuse_valor"]["source"] == "MODEL_EXTRACTION"  # nadie lo tocó
+    assert tree["Factura"]["value"] == "35079805"                   # el número, aparte
+
+
+def test_las_columnas_numericas_llegan_como_numero():
+    """La otra cara del mismo contrato: un campo declarado `number` cuyo nombre
+    no dispara ninguna heurística de importe (FACTOR_MONEDA_FACTURA, GI_Otros)
+    entraba al ERP como texto ("1.0"), no como número."""
+    entry = cargar("PEDIMENTO_ERP")
+    tree, _, _ = resolve_field_tree(
+        {"FACTOR_MONEDA_FACTURA": "1.00000", "GI_Otros": "11,027"},
+        {}, entry, default_confidence=CONFIANZA_OCR,
+    )
+
+    assert tree["FACTOR_MONEDA_FACTURA"]["value"] == 1.0
+    assert tree["GI_Otros"]["value"] == 11027.0
+    assert all(
+        isinstance(tree[c]["value"], float) for c in ("FACTOR_MONEDA_FACTURA", "GI_Otros")
+    )
+
+
 def test_el_incoterm_debe_ser_de_tres_letras():
     entry = cargar("PEDIMENTO_ERP")
     tree, _, _ = resolve_field_tree(
