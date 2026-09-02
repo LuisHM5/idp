@@ -83,8 +83,9 @@ Guía paso a paso completa (primer deploy, verificación, prod con dominio propi
 pnpm build                            # catalogs/ → config/catalogs.json + patch + tsc
 pnpm run deploy / deploy:dev / deploy:prod
 pnpm run diff                         # cambios pendientes vs. lo desplegado
-pnpm sync                             # sube TODA la carpeta catalogs/ a DynamoDB (hot-reload)
-pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo (--dry-run para validar)
+pnpm sync                             # sube TODA la carpeta catalogs/ a DynamoDB DEV (hot-reload)
+pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo a dev (--dry-run para validar)
+pnpm sync:prod / sync:one:prod        # lo mismo contra la tabla de catálogo de PROD
 pnpm procesar -- mi_doc.pdf           # procesa localmente sin pasar por el stack (tus credenciales AWS)
 pnpm enviar mi_doc.pdf PEDIMENTO_ERP          # sube al stack desplegado
 pnpm resultado -- --id <documentId>   # trae y formatea el resultado

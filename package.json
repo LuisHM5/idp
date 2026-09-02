@@ -11,6 +11,8 @@
     "build": "node scripts/sync-catalogs.mjs && node scripts/patch-construct.mjs && tsc",
     "sync": "node scripts/sync-schema.mjs",
     "sync:one": "node scripts/sync-schema.mjs --one",
+    "sync:prod": "node scripts/sync-schema.mjs --env prod",
+    "sync:one:prod": "node scripts/sync-schema.mjs --one --env prod",
     "setup:python": "python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt",
     "test:unit": ".venv/bin/pytest tests/unit -q && node --test \"tests/unit/node/*.test.mjs\"",
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",

@@ -28,7 +28,13 @@ pnpm sync:one -- --type INE             # por TYPE_ID exacto
 pnpm sync:one -- --file catalogs/X.json # por archivo
 ```
 
-Opciones: `--dry-run` (no escribe), `--table`, `--region`.
+Opciones: `--dry-run` (no escribe), `--env dev|prod`, `--table`, `--region`.
+
+**Ambiente:** cada ambiente tiene su propia tabla de catálogo
+(`document-validation-catalog-dev` / `document-validation-catalog`). Igual que
+`deploy`, el default es **dev**; para producción usa `pnpm sync:prod` /
+`pnpm sync:one:prod` (o `--env prod`). El comando imprime `[env=…]` y la tabla
+destino antes de escribir.
 
 `sync`/`sync:one` escriben a **DynamoDB** → efecto **inmediato, sin redeploy**
 (siempre que el stack tenga `enableDynamoCatalog: true`, que es el caso hoy —

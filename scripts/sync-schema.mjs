@@ -9,6 +9,12 @@
  * Two commands (see package.json):
  *   pnpm sync                      → sync ALL types in catalogs/ to DynamoDB
  *   pnpm sync:one -- <selector>    → sync ONE type
+ *
+ * Environment: dev and prod have SEPARATE catalog tables
+ * (document-validation-catalog-dev / document-validation-catalog). Like
+ * `cdk deploy`, the default here is DEV, so a bare `pnpm sync` never touches
+ * prod; use `pnpm sync:prod` (--env prod) for production. The table name comes
+ * from CATALOG_TABLE in .env.dev / .env.production.
  *       <selector> can be:
  *         --file catalogs/PEDIMENTO_ADUANAL.json   (exact path)
  *         --type PEDIMENTO_ADUANAL                 (catalogs/<TYPE>.json)
@@ -16,7 +22,8 @@
  *
  * Options:
  *   --dry-run   Show what would be uploaded without writing
- *   --table     DynamoDB table (default: CATALOG_TABLE env or "document-validation-catalog")
+ *   --env       dev | prod (default: dev) — carga .env.dev / .env.production
+ *   --table     DynamoDB table (default: CATALOG_TABLE del entorno)
  *   --region    AWS region (default: AWS_REGION env or "us-east-1")
  */
 
@@ -150,9 +157,36 @@ function putType(typeId, config, table, region, dryRun) {
   }
 }
 
+/** Carga .env.dev / .env.production SIN pisar variables ya exportadas —
+ * mismo comportamiento que bin/app.ts, para que el nombre de tabla salga de
+ * una sola fuente (CATALOG_TABLE) en los dos caminos: deploy y sync. */
+function loadEnvFile(environment) {
+  const file = resolve(
+    __dirname,
+    environment === "prod" ? "../.env.production" : "../.env.dev"
+  );
+  if (!existsSync(file)) return;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
+
 function main() {
   const { opts, positional } = parseArgs(process.argv.slice(2));
-  const table = opts.table || process.env.CATALOG_TABLE || "document-validation-catalog";
+  // Default dev (igual que `cdk deploy`): un `pnpm sync` a secas nunca escribe
+  // en el catálogo de producción.
+  const environment = String(opts.env || "dev") === "prod" ? "prod" : "dev";
+  loadEnvFile(environment);
+  const table =
+    opts.table ||
+    process.env.CATALOG_TABLE ||
+    `document-validation-catalog${environment === "prod" ? "" : "-dev"}`;
   const region = opts.region || process.env.AWS_REGION || "us-east-1";
   const dryRun = !!opts["dry-run"];
   const one = !!(opts.one || opts.file || opts.type || opts.name || positional.length);
@@ -169,7 +203,7 @@ function main() {
     files = typeFiles().map((f) => join(CATALOGS_DIR, f));
   }
 
-  console.log(`\n📤 Sincronizando ${files.length} tipo(s) a DynamoDB (${table} @ ${region})${dryRun ? " [dry-run]" : ""}...\n`);
+  console.log(`\n📤 Sincronizando ${files.length} tipo(s) a DynamoDB [env=${environment}] (${table} @ ${region})${dryRun ? " [dry-run]" : ""}...\n`);
 
   let ok = 0, fail = 0;
   for (const file of files) {

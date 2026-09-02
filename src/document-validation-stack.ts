@@ -172,7 +172,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // Uses existing table if it already exists (RETAIN policy = never deleted on stack destroy)
     let catalogTable: dynamodb.ITable | undefined;
     if (enableDynamo) {
-      const tableName = "document-validation-catalog";
+      // Cada entorno usa su propia tabla: prod conserva el nombre original y
+      // dev apunta a `document-validation-catalog-dev`, para que editar el
+      // catálogo en dev (pnpm sync) nunca toque el catálogo de producción.
+      // `CATALOG_TABLE` de .env.dev / .env.production (cargado en bin/app.ts)
+      // manda; el sufijo es solo el default si no está definido.
+      const tableName =
+        process.env.CATALOG_TABLE || `document-validation-catalog${envSuffix}`;
 
       // Import existing table to avoid "already exists" errors on redeploy
       // The table persists independently of the stack lifecycle
@@ -269,7 +275,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       description:
         "Config-driven document validation (JSON + DynamoDB + custom Node.js)",
       environment: {
-        ...(catalogTable && { CATALOG_TABLE: "document-validation-catalog" }),
+        ...(catalogTable && { CATALOG_TABLE: catalogTable.tableName }),
         CATALOG_FORCE_RELOAD: forceReload ? "true" : "false",
         // Base model for the enrichment pipeline's own steps. All three are
         // text-only (they run on Textract OCR / native PDF text, never on
@@ -685,7 +691,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         DOCUMENT_TYPE_INDEX,
         // Resuelve nombres/alias de tipo ("pedimento aduanal") al TYPE_ID
         // canónico usando el catálogo hot-reload cuando está habilitado.
-        ...(catalogTable && { CATALOG_TABLE: "document-validation-catalog" }),
+        ...(catalogTable && { CATALOG_TABLE: catalogTable.tableName }),
       },
     });
     // GetItem + Query/Scan on the tracking table and its GSI (and KMS decrypt
@@ -873,7 +879,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     if (catalogTable) {
       new cdk.CfnOutput(this, "CatalogTableName", {
-        value: "document-validation-catalog",
+        value: catalogTable.tableName,
         description:
           "DynamoDB table for runtime document type catalog (hot-reload)",
       });

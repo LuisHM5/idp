@@ -9,8 +9,8 @@ Guía operativa completa: subir, actualizar, eliminar (total o parcial), gestion
 > | Desplegar todo por primera vez                          | `pnpm install && pnpm build && pnpm run deploy`             |
 > | Actualizar código o catálogo (con redeploy)             | `pnpm build && pnpm run deploy`                             |
 > | Ver qué cambiaría antes de desplegar                    | `pnpm build && pnpm run diff`                               |
-> | Actualizar TODO el catálogo SIN redeploy (hot-reload)   | `pnpm sync`                                                 |
-> | Actualizar UN tipo SIN redeploy                         | `pnpm sync:one -- --type MI_TIPO`                           |
+> | Actualizar TODO el catálogo SIN redeploy (hot-reload)   | `pnpm sync` (dev) · `pnpm sync:prod` (prod)                 |
+> | Actualizar UN tipo SIN redeploy                         | `pnpm sync:one -- --type MI_TIPO` (dev) · `pnpm sync:one:prod -- --type MI_TIPO` |
 > | Validar el sync sin escribir                            | `pnpm sync -- --dry-run`                                    |
 > | Eliminar el stack (conserva tabla DynamoDB)             | `pnpm run destroy`                                          |
 > | Eliminar TODO (stack + tabla)                           | `pnpm run destroy:full`                                     |
@@ -56,7 +56,7 @@ cp .env.example .env.production   # si no existe; revisa BEDROCK_MODEL_ID
 | `BEDROCK_EXTRACTOR_MODEL_ID`                 | Modelo del pipeline de pedimentos/re-extracción (permite usar uno más fuerte solo ahí) | igual a `BEDROCK_MODEL_ID`                    |
 | `MODEL_FALLBACK_MAX_RETRIES`                 | Cuántas veces puede cambiar de modelo una sola llamada Bedrock cuando el modelo pedido no está disponible, antes de rendirse (ver §5.6) | `4`                            |
 | `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION` | Cuenta/región destino                                                                  | región `us-east-1`                            |
-| `CATALOG_TABLE`                              | Nombre de la tabla DynamoDB del catálogo                                               | `document-validation-catalog`                 |
+| `CATALOG_TABLE`                              | Nombre de la tabla DynamoDB del catálogo (**una por ambiente**)                        | `document-validation-catalog` en prod, `document-validation-catalog-dev` en dev |
 | `FALLBACK_MODELS_TABLE`                      | Nombre de la tabla DynamoDB de modelos de fallback ordenados (ver §5.6)                | `document-validation-fallback-models`         |
 
 ## 3. Primer despliegue
@@ -77,15 +77,25 @@ Al terminar, la salida muestra:
 - **`ApiEndpoint`** — URL del API de subida de documentos.
 - **`CatalogTableName`** — tabla DynamoDB del catálogo hot-reload.
 
-**Importante (primera vez con DynamoDB):** el stack _importa_ la tabla `document-validation-catalog` (no la crea, para que sobreviva a los destroys). Si no existe aún:
+**Importante (primera vez con DynamoDB):** el stack _importa_ la tabla del catálogo (no la crea, para que sobreviva a los destroys), y **cada ambiente usa la suya**: `document-validation-catalog` en prod y `document-validation-catalog-dev` en dev (el nombre sale de `CATALOG_TABLE` en `.env.production` / `.env.dev`). Si no existe aún:
 
 ```bash
+# prod
 aws dynamodb create-table \
   --table-name document-validation-catalog \
   --attribute-definitions AttributeName=type_id,AttributeType=S \
   --key-schema AttributeName=type_id,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST --region us-east-1
+
+# dev (mismo esquema, tabla aparte)
+aws dynamodb create-table \
+  --table-name document-validation-catalog-dev \
+  --attribute-definitions AttributeName=type_id,AttributeType=S \
+  --key-schema AttributeName=type_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST --region us-east-1
 ```
+
+Después de crearla, llénala con el contenido de `catalogs/`: `pnpm sync` (dev) o `pnpm sync:prod` (prod).
 
 Lo mismo aplica a la tabla de modelos de fallback (§5.6) — también importada, no creada, y opcional: si no existe, el pipeline simplemente usa su orden por default en código.
 
@@ -197,10 +207,13 @@ segmentador encontró varios tipos en un mismo PDF). Dentro de esa carpeta:
 En la carpeta **`catalogs/`** — **un archivo por tipo** (`PEDIMENTO_ADUANAL.json`, etc.), más `catalogs/_shared.json` (field_sets + reglas cross-documento). Es la única fuente de verdad. Guía completa en `catalogs/README.md`.
 
 ```bash
-pnpm sync                          # sube TODA la carpeta a DynamoDB (hot-reload, sin redeploy)
-pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo
+pnpm sync                          # sube TODA la carpeta a DynamoDB DEV (hot-reload, sin redeploy)
+pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo a dev
 pnpm sync -- --dry-run             # valida el marshalling sin subir nada
+pnpm sync:prod                     # lo mismo contra la tabla de PROD (explícito, igual que deploy:prod)
 ```
+
+> **Ambiente:** igual que `deploy`, el default de `sync`/`sync:one` es **dev** (tabla `document-validation-catalog-dev`), para que un sync a secas nunca toque el catálogo de producción. Prod es explícito: `pnpm sync:prod` / `pnpm sync:one:prod` (o `--env prod`). El banner del comando siempre imprime `[env=…]` y la tabla destino.
 
 No es obligatorio: la Lambda ya trae el catálogo empaquetado (`config/catalogs.json`, generado por `pnpm build` desde `catalogs/`). DynamoDB solo sirve para **cambiar reglas al vuelo sin redeploy**; DynamoDB gana sobre lo empaquetado en runtime.
 
@@ -292,8 +305,10 @@ Edita el archivo del tipo en **`catalogs/`** (p. ej. `catalogs/PEDIMENTO_ADUANAL
 pnpm build && pnpm run deploy
 
 # Opción B — hot-reload SIN redeploy (efecto inmediato):
-pnpm sync                              # toda la carpeta
-pnpm sync:one -- --type PEDIMENTO_ERP       # un solo tipo
+pnpm sync                              # toda la carpeta → tabla de DEV
+pnpm sync:one -- --type PEDIMENTO_ERP       # un solo tipo → tabla de DEV
+pnpm sync:prod                         # toda la carpeta → tabla de PROD
+pnpm sync:one:prod -- --type PEDIMENTO_ERP  # un solo tipo → tabla de PROD
 ```
 
 > El sync a DynamoDB expande automáticamente los `field_sets` (p.ej. `COMMON_CFDI_FIELDS`, definidos en `catalogs/_shared.json`) y conserva todos los parámetros de reglas (`formula`, `tolerance`, `source`, `keywords`, `repeatable_fields`, …). Las `cross_document_validation_rules` (en `_shared.json`) solo viven en el JSON empaquetado: cambios en ellas requieren la Opción A.
@@ -507,6 +522,7 @@ Para **deshabilitar** un tipo sin borrarlo, pon `"enabled": false` en su archivo
 
 Para eliminar un tipo **definitivamente**: borra `catalogs/MI_TIPO.json`, corre `pnpm run build && pnpm run deploy`, y quítalo de DynamoDB con:
 ```bash
+# ...y de la tabla del ambiente correspondiente (dev: document-validation-catalog-dev)
 aws dynamodb delete-item --table-name document-validation-catalog \
   --key '{"type_id":{"S":"MI_TIPO"}}' --region us-east-1
 ```
@@ -521,7 +537,7 @@ pnpm run destroy:full   # elimina stack + tabla DynamoDB (pide confirmación)
 Notas:
 
 - El bucket S3 de documentos lo gestiona el blueprint; si un destroy falla por bucket no vacío, vaciarlo primero (`aws s3 rm s3://<bucket> --recursive`).
-- `pnpm run destroy:full` es **irreversible** para los tipos que solo existían en DynamoDB: exporta antes con `aws dynamodb scan --table-name document-validation-catalog --region us-east-1 > catalogo-backup.json` (no hay comando `pnpm` dedicado para esto).
+- `pnpm run destroy:full` es **irreversible** para los tipos que solo existían en DynamoDB: exporta antes con `aws dynamodb scan --table-name document-validation-catalog --region us-east-1 > catalogo-backup.json` (no hay comando `pnpm` dedicado para esto). Ojo: `destroy:full` **borra la tabla de prod por default** — para el catálogo de dev pásale `--table document-validation-catalog-dev`.
 
 ## 7. Pruebas
 

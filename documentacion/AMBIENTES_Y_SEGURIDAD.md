@@ -11,11 +11,18 @@ API keys); `dev` queda abierto en el URL random de Amazon para probar fácil.
 | Rate limit / anti-DDoS | no (WAF no aplica en dev); throttle ciego a nivel de stage | **WAF** (rate-based + managed rules) + usage plan por app |
 | TLS | sí (execute-api) | sí (cert propio, TLS 1.2+) |
 | Recursos globales | sufijo `-dev` (`idp-broker-dev`); **sin CMK propia** | nombres base (`idp-broker`, alias KMS `…/pipeline`) |
+| Catálogo (DynamoDB) | `document-validation-catalog-dev` | `document-validation-catalog` |
 
 Cada ambiente es un **stack aislado y completo** (sus propias Lambdas, Step
-Functions, S3, tabla DynamoDB de tracking y EventBus). Comparten solo la
-**tabla de catálogo** `document-validation-catalog` (importada por nombre, no se
-crea). Por eso dev es un espejo funcional para probar sin tocar prod.
+Functions, S3, tabla DynamoDB de tracking y EventBus), **incluida la tabla de
+catálogo**: dev usa `document-validation-catalog-dev` y prod
+`document-validation-catalog` (ambas importadas por nombre desde
+`CATALOG_TABLE`, no las crea el stack). Por eso dev es un espejo funcional para
+probar sin tocar prod: editar el catálogo en dev (`pnpm sync`) no puede afectar
+a producción, y las Lambdas de dev ni siquiera tienen permiso IAM sobre la
+tabla de prod. Lo que sí sigue compartido es
+`document-validation-fallback-models` (lista de modelos de fallback, sin datos
+por ambiente).
 
 > **Estado actual:** dev **ya está desplegado** — su URL sale del output
 > `ApiEndpoint` del stack `DocumentValidationStack-Dev`
