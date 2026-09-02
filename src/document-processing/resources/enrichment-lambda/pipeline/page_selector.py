@@ -351,6 +351,93 @@ def _spans_from_boundaries(
     return keep
 
 
+# --- repeated copies of the SAME document ----------------------------------
+#
+# A real bundle prints the same pedimento more than once (agent's copy,
+# importer's copy, the one-page simplified form). Measured on
+# test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf': the selection
+# keeps pages 3-53, which are FOUR renderings of pedimento 260734356041353
+# (3-19, 20-36, 37-52, and the 1-page FORMA SIMPLIFICADA on 53). All four were
+# extracted — 7 Bedrock chunks — and the row merge then deduplicated the
+# identical invoice rows: paying three times to throw two away.
+#
+# A type opts in by declaring `duplicate_key_pattern`: a regex whose first
+# group captures the identity printed on the document (the pedimento number).
+# Copies sharing an identity collapse to ONE. Fail-open like everything else
+# here: a span whose identity can't be read is always kept, and so is every
+# span when no pattern is declared.
+
+
+def _copy_spans(kept: Sequence[int], texts: Dict[int, str], bounds: Dict[str, Any]) -> List[List[int]]:
+    """Split the kept pages into the individual documents they make up.
+
+    A new document starts where its own first page does — a "Página 1 de N"
+    label, or a declared `start_marker`. Pages before the first such signal
+    form a span of their own rather than being attached to the next document.
+    """
+    page_of_re = _compile((bounds["page_of"],))[0][1] if bounds.get("page_of") else None
+    start_res = [r for _, r in _compile(tuple(bounds.get("start") or ()))]
+
+    spans: List[List[int]] = []
+    for number in kept:
+        text = texts.get(number, "")
+        page_of = _page_of(text, page_of_re) if page_of_re else None
+        opens = (page_of is not None and page_of[0] == 1) or any(r.search(text) for r in start_res)
+        if opens or not spans:
+            spans.append([number])
+        else:
+            spans[-1].append(number)
+    return spans
+
+
+def _drop_duplicate_copies(
+    keep: Set[int], texts: Dict[int, str], bounds: Dict[str, Any], pattern: str
+) -> Tuple[Set[int], int]:
+    """Collapse spans that are copies of the same document, keeping the
+    LONGEST one per identity (ties: the earliest).
+
+    Longest, not first, on purpose: a one-page summary form of the same
+    pedimento can legitimately come before the full print, and keeping it
+    while dropping the full document would lose real content — the exact
+    failure this function must not cause.
+    """
+    try:
+        identity = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        logger.warning("page_selector: invalid duplicate_key_pattern %r: %s", pattern, e)
+        return keep, 0
+
+    def key_of(span: List[int]) -> Optional[str]:
+        for number in span:
+            m = identity.search(texts.get(number, ""))
+            if m and m.groups():
+                digits = re.sub(r"\D", "", m.group(1))
+                if digits:
+                    return digits
+        return None
+
+    spans = _copy_spans(sorted(keep), texts, bounds)
+    winners: Dict[str, List[int]] = {}
+    result: Set[int] = set()
+    dropped = 0
+    for span in spans:
+        key = key_of(span)
+        if key is None:  # identity unreadable — never drop it
+            result |= set(span)
+            continue
+        previous = winners.get(key)
+        if previous is None:
+            winners[key] = span
+        elif len(span) > len(previous):
+            winners[key] = span
+            dropped += 1
+        else:
+            dropped += 1
+    for span in winners.values():
+        result |= set(span)
+    return result, dropped
+
+
 def _expected_max_pages(expected: Any) -> Optional[int]:
     """Upper bound of a type's declared `expected_pages`, or None.
 
@@ -426,6 +513,11 @@ def select(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> Selection:
         texts = {getattr(pg, "number", 0): (getattr(pg, "text", "") or "") for pg in pages}
         keep = _spans_from_boundaries(anchors, texts, bounds, len(all_numbers))
         strategy = "límites declarados (inicio/fin/página X de N)"
+        duplicate_key = (spec or {}).get("duplicate_key_pattern")
+        if duplicate_key:
+            keep, duplicates = _drop_duplicate_copies(keep, texts, bounds, duplicate_key)
+            if duplicates:
+                strategy += f", {duplicates} copia(s) del mismo documento descartada(s)"
     else:
         # Carry along each anchor's continuation pages: a document's fields
         # spill onto pages whose own header markers may be absent (a clean

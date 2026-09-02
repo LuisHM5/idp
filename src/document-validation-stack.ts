@@ -306,6 +306,24 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         ...(process.env.MODEL_FALLBACK_MAX_RETRIES && {
           MODEL_FALLBACK_MAX_RETRIES: process.env.MODEL_FALLBACK_MAX_RETRIES,
         }),
+        // Wall-clock knobs of the expediente pipeline. They were code-only
+        // defaults (pdf_pages.py / text_extractor.py / expediente.py), so the
+        // deployed Lambda could never be tuned without editing Python:
+        //   TEXTRACT_WORKERS — scanned pages OCR'd in parallel. Every page is
+        //     OCR'd before page selection can score it (scoring needs text),
+        //     so a 31-page scan pays 31 Textract calls even when 3 pages end
+        //     up going to the model — measured 47s end to end at 4 workers.
+        //   CHUNK_WORKERS — Bedrock extraction chunks of ONE document run in
+        //     parallel. A 51-page selection is 7 chunks; at 2 workers that is
+        //     4 sequential waves (measured 425s).
+        //   EXTRACT_WORKERS — segments (documents) of an expediente in parallel.
+        // Raise carefully: the ceiling is Bedrock/Textract throttling, which
+        // is why these are env vars and not constants.
+        TEXTRACT_WORKERS: process.env.TEXTRACT_WORKERS || "8",
+        CHUNK_WORKERS: process.env.CHUNK_WORKERS || "4",
+        ...(process.env.EXTRACT_WORKERS && {
+          EXTRACT_WORKERS: process.env.EXTRACT_WORKERS,
+        }),
         // Dev only: let an upload pick the model for its own request (via
         // `pnpm enviar ... --model <id>`), so trying a model doesn't need a
         // redeploy. Never set in prod — the value comes from whoever uploaded

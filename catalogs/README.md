@@ -608,6 +608,8 @@ páginas que sí importan para ESTE tipo, y el pipeline extrae solo ésas
   "max_ratio": 0.6,                // arriba de esto se procesa TODO (fail-open)
   "min_pages": 5,                  // <= esto: ni se intenta filtrar
   "expected_pages": 6,             // tamaño de UN documento de este tipo (o [3, 6])
+  "duplicate_key_pattern":         // opcional: identidad impresa del documento
+    "NUM\\.?\\s*PEDIMENTO[:\\s]*(\\d{2}\\s*\\d{2}\\s*\\d{4}\\s*\\d{7})",
   "markers": [                     // regex, case-insensitive
     "NUM\\.?\\s*PEDIMENTO",
     "CVE\\.?\\s*PEDIM"
@@ -631,6 +633,32 @@ rápidas — en ambas se procesa el documento completo:
 
 Ninguna de las dos cuenta como fail-open: no es que el selector fallara, es
 que decidió no meterse. `pnpm paginas` las muestra como `SIN FILTRAR → ...`.
+
+**Copias del MISMO documento: `duplicate_key_pattern`.** Un expediente real
+imprime el mismo pedimento varias veces (copia del agente, copia del
+importador, la forma simplificada de una página). Medido en
+`test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf'`: la selección
+se quedaba con 51 páginas que eran **cuatro renderizados del mismo
+pedimento** — se extraían los cuatro (7 chunks de Bedrock, 425 s) y el merge
+deduplicaba las filas idénticas al final. Se pagaba tres veces para tirar dos.
+
+Declarando un regex cuyo **primer grupo** captura la identidad impresa del
+documento, el selector parte las páginas elegidas en los documentos que
+forman (abre uno nuevo una "Página 1 de N" o un `start_marker`), lee esa
+identidad en cada uno y conserva **el tramo más largo por identidad**:
+51 páginas → 17, y de 7 chunks a ~2.
+
+- **Más largo, no el primero**: la forma simplificada de 1 página trae el
+  mismo número que el pedimento completo y puede venir antes. Quedarse con la
+  primera perdería el documento entero.
+- **Dos documentos DISTINTOS se conservan los dos** — tienen identidades
+  distintas. Esto es lo que lo separa de un "cortar tras el primero", que sí
+  perdería un segundo pedimento en el mismo PDF.
+- **Fail-open** como todo el selector: un tramo cuya identidad no se puede
+  leer nunca se descarta, un regex inválido se ignora con un warning, y sin
+  declarar la llave el comportamiento es idéntico al de antes.
+- Cuántas copias se descartaron sale en el `reason` del bloque
+  `pageSelection` del resultado.
 
 **Si el tamaño es demasiado variable: `expected_pages: "auto"`.** Hay tipos
 para los que cualquier rango sería mentira. Declarar `"auto"` (o `"variable"`)
@@ -773,7 +801,7 @@ contra nada. Las reglas, todas en `pipeline/confidence.py`:
 | Situación | Qué reporta |
 |---|---|
 | El extractor midió el campo | Su número (self-report del modelo × confianza OCR de la página). |
-| Celda de una fila de array | La de **esa fila**, no la del array entero (antes todas las filas compartían el mismo número). |
+| Celda de una fila de array | La de **esa fila**, no la del array entero (antes todas las filas compartían el mismo número). Al modelo se le pide **UNA** confianza por fila, no una por celda: medido sobre un expediente real, el `confidence` por celda era el 44 % de todo lo que emitía el modelo (16,662 tokens de salida → ~9,465 sin él), y una fila se lee bien o mal como unidad. Una fila que no reporte número no inventa ninguno: sus celdas caen a la confianza OCR del segmento. |
 | Campo calculado de varias celdas | El **promedio** de las celdas que lo alimentaron: un total vale lo que valen los renglones que sumó. |
 | Campo `derived` | La del campo que leyó — incluido cuando cayó al `default`: nada matcheó *esa* entrada, así que el fallback es tan confiable como la entrada para la que se eligió. |
 | Valor sin medición propia | Qué tan bien se leyó la **fuente** (confianza OCR del segmento; 1.0 en los pipelines deterministas XML/tabular). Así un hueco del pipeline no borra dato bueno. |

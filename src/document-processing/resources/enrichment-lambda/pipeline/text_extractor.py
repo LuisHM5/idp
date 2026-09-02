@@ -18,6 +18,7 @@ Anti-hallucination contract enforced in the prompt:
 from __future__ import annotations
 
 import logging
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -332,31 +333,56 @@ def _field_tree_schema_block(field_tree: Dict[str, FieldSpec]) -> str:
     return "CAMPOS:\n" + "\n".join(_field_tree_schema_lines(field_tree))
 
 
-def _field_tree_tool_props(tree: Dict[str, FieldSpec]) -> Dict[str, Any]:
+# The key a row uses to report how well IT was read (see `_field_tree_tool_props`).
+ROW_CONFIDENCE_KEY = "confidence"
+
+
+def _field_tree_tool_props(tree: Dict[str, FieldSpec], in_row: bool = False) -> Dict[str, Any]:
     """Recursive tool-schema properties from a field_tree — real support for
     arbitrarily nested objects/arrays, which the legacy `_tool_schema` (flat
     scalars + one level of arrays) cannot express. `computed` fields (e.g.
     LIQUIDACION_NORMALIZADA) are omitted: a deterministic post-extraction step
     fills them, so asking the model for a value that gets overwritten anyway
-    would just be wasted output tokens."""
+    would just be wasted output tokens.
+
+    `in_row` marks the cells of an array row: they are asked for as bare
+    values plus ONE `confidence` for the whole row, instead of the
+    `{value, confidence}` pair every top-level scalar uses. Measured on a real
+    139-page expediente, the per-CELL confidence was 44% of everything the
+    model emitted (16,662 output tokens -> ~9,465 without it) — and output is
+    both the slow half of a Bedrock call and the expensive one (5x input).
+    A row is the unit that gets read well or badly anyway: cells inherit
+    their row's number (`_parse_field_tree_response`)."""
     props: Dict[str, Any] = {}
     for name, spec in tree.items():
         if spec.computed:
             continue
         if spec.type == "object":
-            props[name] = {"type": "object", "properties": _field_tree_tool_props(spec.fields)}
+            props[name] = {
+                "type": "object",
+                "properties": _field_tree_tool_props(spec.fields, in_row),
+            }
         elif spec.type == "array":
             if spec.item_fields:
-                item_schema = {"type": "object", "properties": _field_tree_tool_props(spec.item_fields)}
+                item_schema = {
+                    "type": "object",
+                    "properties": {
+                        **_field_tree_tool_props(spec.item_fields, in_row=True),
+                        ROW_CONFIDENCE_KEY: {"type": "number"},
+                    },
+                }
             else:
                 item_schema = {"type": _JSON_TYPE_MAP.get(spec.item_type or "string", "string")}
             props[name] = {"type": "array", "items": item_schema}
         else:
             json_type = _JSON_TYPE_MAP.get(spec.type, "string")
-            props[name] = {
-                "type": "object",
-                "properties": {"value": {"type": [json_type, "null"]}, "confidence": {"type": "number"}},
-            }
+            if in_row:
+                props[name] = {"type": [json_type, "null"]}
+            else:
+                props[name] = {
+                    "type": "object",
+                    "properties": {"value": {"type": [json_type, "null"]}, "confidence": {"type": "number"}},
+                }
     return props
 
 
@@ -375,17 +401,21 @@ def _build_field_tree_prompts(type_entry: TypeRegistryEntry, pages: List[PageTex
         "- No calcules ni derives valores que no esten impresos.\n"
         "- En los campos tipo lista extrae TODAS las filas visibles en estas paginas; una fila por objeto.\n"
         "- Reporta confidence 0.0-1.0 por campo escalar: 1.0 = el dato es textual e inequivoco; "
-        "baja el valor si el OCR se ve corrupto o hay ambiguedad.\n\n"
+        "baja el valor si el OCR se ve corrupto o hay ambiguedad.\n"
+        "- En las filas de una lista NO pongas confidence en cada celda: una sola confidence "
+        "por fila, que describe que tan bien se leyo ESA fila completa.\n\n"
         "FORMATO DE RESPUESTA (solo JSON, sin markdown), siguiendo exactamente la forma del schema: "
         "escalares como {\"value\": ...|null, \"confidence\": 0.95}, objetos con sus subcampos anidados, "
-        "listas como arreglo de objetos con sus subcampos anidados."
+        "listas como arreglo de objetos cuyos subcampos son el valor directo (sin {value,...}) "
+        "mas una sola \"confidence\" para toda la fila."
     )
     user_text = "TEXTO DEL DOCUMENTO:\n\n" + _pages_block(pages)
     return cache_prefix, user_text
 
 
 def _parse_field_tree_response(
-    raw: Any, tree: Dict[str, FieldSpec], seg_conf: float, prefix: str = ""
+    raw: Any, tree: Dict[str, FieldSpec], seg_conf: float, prefix: str = "",
+    in_row: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]]]:
     """Recursively turn one tool-call response (or one array row) into a
     nested plain-value entity dict, a flat {dotted.path: confidence} map, and
@@ -411,7 +441,9 @@ def _parse_field_tree_response(
             continue
         node = raw.get(name)
         if spec.type == "object":
-            sub_entity, sub_conf, sub_rows = _parse_field_tree_response(node, spec.fields, seg_conf, path + ".")
+            sub_entity, sub_conf, sub_rows = _parse_field_tree_response(
+                node, spec.fields, seg_conf, path + ".", in_row
+            )
             entity[name] = sub_entity
             confidences.update(sub_conf)
             row_confidences.update(sub_rows)
@@ -421,10 +453,21 @@ def _parse_field_tree_response(
                 rows = []
                 for item in items:
                     row_entity, row_conf, nested_rows = _parse_field_tree_response(
-                        item, spec.item_fields, seg_conf
+                        item, spec.item_fields, seg_conf, in_row=True
                     )
                     rows.append(row_entity)
                     row_confidences.update(nested_rows)
+                    # The row reports ONE confidence for itself (see
+                    # `_field_tree_tool_props`); every cell of that row
+                    # inherits it, which is the shape `resolve_field_tree`
+                    # already consumes. A row that reported none keeps
+                    # whatever its cells said individually — older responses,
+                    # and any model that answers with the per-cell shape
+                    # anyway, still work unchanged.
+                    declared = item.get(ROW_CONFIDENCE_KEY) if isinstance(item, dict) else None
+                    inherited = _row_confidence(declared, seg_conf)
+                    if inherited is not None:
+                        row_conf = {name: inherited for name in row_entity}
                     if row_conf:
                         row_confidences[row_key(row_entity)] = row_conf
                 entity[name] = rows
@@ -441,12 +484,41 @@ def _parse_field_tree_response(
                 entity[name] = None
                 continue
             entity[name] = str(value).strip() if spec.type in ("string", "date") else value
+            if llm_conf is None and in_row:
+                # A cell inside a row is asked for as a bare value: its row
+                # reports ONE confidence for all of them (see
+                # `_field_tree_tool_props`). Defaulting to 0.85 here would
+                # fabricate a per-cell number nobody measured AND outrank the
+                # row's own. Recording nothing lets `resolve_field_tree` fall
+                # back to the segment's real OCR number.
+                continue
             try:
                 llm_conf = float(llm_conf) if llm_conf is not None else 0.85
             except (TypeError, ValueError):
                 llm_conf = 0.85
+            if not math.isfinite(llm_conf):
+                llm_conf = 0.85
             confidences[path] = round(max(0.0, min(1.0, llm_conf)) * seg_conf, 4)
     return entity, confidences, row_confidences
+
+
+def _row_confidence(declared: Any, seg_conf: float) -> Optional[float]:
+    """One row's self-reported confidence, combined with how well the page was
+    read — the same product `_parse_field_tree_response` applies to a scalar's
+    own number. Returns None when the row reported nothing usable, so the
+    caller leaves the per-cell numbers alone instead of inventing one."""
+    if declared is None:
+        return None
+    try:
+        value = float(declared)
+    except (TypeError, ValueError):
+        return None
+    # NaN/inf would survive the clamp below as a fabricated number: every
+    # comparison against NaN is False, so `max(0.0, min(1.0, nan))` returns
+    # 1.0 — a perfect confidence nobody reported.
+    if not math.isfinite(value):
+        return None
+    return round(max(0.0, min(1.0, value)) * seg_conf, 4)
 
 
 def _merge_field_tree_entities(

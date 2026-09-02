@@ -47,6 +47,8 @@
         "FIN\\s+DE\\s+PEDIMENTO",
         "NUM\\.?\\s*TOTAL\\s+DE\\s+PARTIDAS"
       ],
+      "__COMENTARIO_copias__": "Un expediente real imprime el MISMO pedimento varias veces (copia del agente, copia del importador, la forma simplificada de 1 página). Con `duplicate_key_pattern` el selector se queda con UNA sola: parte las páginas elegidas en los documentos que forman (una \"Página 1 de N\" o un start_marker abre uno nuevo), lee esta identidad en cada uno y conserva el tramo MÁS LARGO por identidad — el más largo y no el primero porque la forma simplificada de 1 página puede venir antes que el pedimento completo. Medido en test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf': 51 páginas seleccionadas -> 17, de 7 chunks de Bedrock a ~2. Dos pedimentos DISTINTOS tienen números distintos, así que los dos se conservan; un tramo cuya identidad no se puede leer nunca se descarta (fail-open, como todo el selector).",
+      "duplicate_key_pattern": "NUM\\.?\\s*PEDIMENTO[:\\s]*(\\d{2}\\s*\\d{2}\\s*\\d{4}\\s*\\d{7})",
       "page_of_pattern": "P[áa]gina\\s+(\\d+)\\s+de\\s*:?\\s*(\\d+)",
       "markers": [
         "NUM\\.?\\s*PEDIMENTO",

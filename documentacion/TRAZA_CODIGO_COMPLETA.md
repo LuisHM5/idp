@@ -589,7 +589,10 @@ Para el DSL field-centric:
    mitad y reintenta recursivamente. Ese split es secuencial para no multiplicar
    la concurrencia del pool externo.
 4. `_parse_field_tree_response()` produce valores anidados y combina confianza
-   del modelo con confianza OCR/segmento.
+   del modelo con confianza OCR/segmento. Las celdas de una fila de array se
+   piden como valor pelón y la fila reporta **una sola** `confidence` que
+   heredan todas (el `confidence` por celda era el 44% de la salida del
+   modelo); una fila que no reporte número no inventa ninguno.
 5. `_merge_field_tree_entities()` conserva el primer scalar no nulo, concatena
    arrays sin duplicados exactos y recorre objetos.
 6. Acumula tokens y metadatos (`chunks`, páginas, `segmentConfidence`).

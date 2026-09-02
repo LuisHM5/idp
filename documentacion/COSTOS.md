@@ -433,6 +433,31 @@ Precios on-demand reales, us-east-1, Regional, por 1M tokens:
 
 Mismo volumen de tokens, Sonnet 4.5 ≈ 3x el costo/página; Opus ≈ 5x.
 
+### 3.1 Latencia por modelo (medida, no estimada)
+
+El costo no es lo único que cambia al cambiar de modelo: **la latencia la manda
+la SALIDA**, que se genera token a token. Mismo PDF
+(`test-docs/pedimentos-screens/2607-0973-6100971_P.PDF-1.pdf`, 2 páginas
+nativas), mismo catálogo `PEDIMENTO_ERP`, mismo código, 2026-09-02:
+
+| Modelo | Duración | Tokens entrada | Tokens salida | Extracción |
+| --- | --- | --- | --- | --- |
+| `moonshotai.kimi-k2.5` | **7.0 s** | 7,735 | **667** | correcta |
+| `us.anthropic.claude-haiku-4-5-...` | **10.6 s** | 9,353 | 1,237 | correcta |
+| `minimax.minimax-m2.5` | **58.5 s** | 7,610 | 1,616 | correcta |
+
+Los tres sacaron la misma factura (`35079805`, acuse `COVE2689JP013 / 35079805`,
+21,178.80). minimax además es **errático**: 14.6 s, 17 s, 27 s y 58.5 s sobre la
+MISMA entrada en corridas distintas del mismo día. Y no soporta prompt caching
+(ni kimi), así que en un documento multi-chunk cada llamada paga el prefijo de
+schema+hints completo sin descuento — Haiku 4.5 es el único de los tres que lo
+aprovecha, y el único con tarifa verificada en `pipeline/pricing.py` (por eso
+todo costo calculado con los otros dos sale marcado ⚠ "tarifa aproximada").
+
+Se fija por tipo en el catálogo (`model_ids: {"extractor": "..."}`) o global con
+`BEDROCK_MODEL_ID` / `BEDROCK_EXTRACTOR_MODEL_ID` — ver
+`pipeline/bedrock.py::_model_candidates` para el orden de precedencia.
+
 ## 4. Infraestructura de soporte (medida, mismo periodo, dev)
 
 > **Corte histórico, no usar como piso fijo actual.** Cost Explorer mezclaba

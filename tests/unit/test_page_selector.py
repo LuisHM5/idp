@@ -442,3 +442,87 @@ def test_the_real_catalog_declares_usable_boundaries():
     import re
     assert re.search(spec["page_of_pattern"], "26-1248  ANEXO DEL PEDIMENTO    Página 2 de 5")
     assert re.search(spec["end_markers"][0], "FIN DE PEDIMENTO", re.I)
+
+
+# --- copias repetidas del MISMO documento ---------------------------------
+#
+# Un expediente real imprime el mismo pedimento varias veces (copia del
+# agente, copia del importador, la forma simplificada de 1 página). Medido en
+# test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf': la selección
+# se queda con 51 páginas que son CUATRO renderizados del mismo pedimento, se
+# extraen los cuatro (7 chunks de Bedrock) y el merge deduplica las filas
+# idénticas al final — se paga tres veces para tirar dos.
+
+DUP = {**BOUNDS, "duplicate_key_pattern": r"NUM\. PEDIMENTO[:\s]*(\d{2}\s*\d{2}\s*\d{4}\s*\d{7})"}
+
+
+def _copia(inicio, largo, numero, total=None):
+    """Un documento completo de `largo` páginas que declara `numero`."""
+    total = total or largo
+    return [
+        _page(inicio + i, f"{HIT} NUM. PEDIMENTO: {numero} Página {i + 1} de {total}"
+                          + (" FIN DE PEDIMENTO" if i == largo - 1 else ""))
+        for i in range(largo)
+    ]
+
+
+def test_tres_copias_del_mismo_pedimento_se_vuelven_una():
+    pages = _copia(1, 5, "26 07 3435 6041353") + _copia(6, 5, "26 07 3435 6041353") \
+        + _copia(11, 5, "26 07 3435 6041353")
+    selection = page_selector.select(pages, DUP)
+
+    assert selection.selected == [1, 2, 3, 4, 5]
+    assert "2 copia(s) del mismo documento descartada(s)" in selection.reason
+
+
+def test_dos_pedimentos_distintos_se_conservan_los_dos():
+    """La diferencia con 'cortar tras el primero': un SEGUNDO pedimento, con
+    su propio número, no es una copia y no se puede perder."""
+    pages = _copia(1, 5, "26 07 3435 6041353") + _copia(6, 5, "26 07 3435 6041354")
+    selection = page_selector.select(pages, DUP)
+
+    assert selection.selected == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert "copia" not in selection.reason
+
+
+def test_gana_la_copia_mas_larga_no_la_primera():
+    """La forma simplificada de 1 página trae el mismo número que el pedimento
+    completo. Quedarse con la PRIMERA perdería el documento entero."""
+    pages = _copia(1, 1, "26 07 3435 6041353") + _copia(2, 6, "26 07 3435 6041353")
+    pages += [_page(n, "otro documento") for n in range(8, 21)]  # que 6/20 no dispare max_ratio
+    selection = page_selector.select(pages, DUP)
+
+    assert selection.selected == [2, 3, 4, 5, 6, 7]
+
+
+def test_sin_el_patron_declarado_no_cambia_nada():
+    pages = _copia(1, 5, "26 07 3435 6041353") + _copia(6, 5, "26 07 3435 6041353")
+    selection = page_selector.select(pages, BOUNDS)
+
+    assert selection.selected == list(range(1, 11))
+
+
+def test_un_tramo_sin_identidad_legible_nunca_se_descarta():
+    """Fail-open, igual que el resto del selector: si no se puede leer de qué
+    documento es un tramo, se procesa."""
+    pages = _copia(1, 5, "26 07 3435 6041353")
+    pages += [_page(6, f"{HIT} Página 1 de 2"), _page(7, f"{HIT} Página 2 de 2 FIN DE PEDIMENTO")]
+    selection = page_selector.select(pages, DUP)
+
+    assert selection.selected == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_un_patron_invalido_no_truena_la_seleccion():
+    pages = _copia(1, 5, "26 07 3435 6041353") + _copia(6, 5, "26 07 3435 6041353")
+    selection = page_selector.select(pages, {**BOUNDS, "duplicate_key_pattern": "(sin cerrar"})
+
+    assert selection.selected == list(range(1, 11))
+
+
+def test_los_dos_catalogos_de_pedimento_declaran_la_identidad():
+    import re
+    for type_id in ("PEDIMENTO_ADUANAL", "PEDIMENTO_ERP"):
+        catalog = json.loads((REPO_ROOT / "catalogs" / f"{type_id}.json").read_text())
+        pattern = catalog[type_id]["page_selection"]["duplicate_key_pattern"]
+        m = re.search(pattern, "NUM. PEDIMENTO:26  07  3435  6041353    T.OPER    IMP")
+        assert m and re.sub(r"\D", "", m.group(1)) == "260734356041353", type_id
