@@ -42,6 +42,25 @@ export function compare(actual, expected, op) {
 }
 
 /**
+ * The comparable content of a field-tree node.
+ *
+ * A field-centric-DSL (schema_version 4.x) result wraps every scalar as
+ * `{value, confidence, valid, reason, source}`, so the raw node is an object
+ * and comparing it stringifies to "[object Object]" — it never matches. Only
+ * fields that ALSO appear as plain scalars in the compact per-document map
+ * were findable, which excludes anything inside an array row: once
+ * PEDIMENTO_ERP moved its provider/invoice data into `FACTURAS[]`, the
+ * documented `?field=PROVEEDOR_NOMBRE&value=...` search stopped matching.
+ * Unwrapping here restores it for any nested field, however deep.
+ */
+function comparable(node) {
+  if (node && typeof node === "object" && !Array.isArray(node) && "value" in node) {
+    return node.value;
+  }
+  return node;
+}
+
+/**
  * Deep search: does any key named `leaf` anywhere in `obj` match `value`?
  * Returns the first matching value, or undefined.
  */
@@ -53,7 +72,12 @@ export function deepFind(obj, leaf, expected, op) {
       for (const el of cur) if (el && typeof el === "object") stack.push(el);
     } else if (cur && typeof cur === "object") {
       for (const [k, v] of Object.entries(cur)) {
-        if (k === leaf && compare(v, expected, op)) return v;
+        if (k === leaf) {
+          const candidate = comparable(v);
+          if (candidate !== null && typeof candidate !== "object" && compare(candidate, expected, op)) {
+            return candidate;
+          }
+        }
         if (v && typeof v === "object") stack.push(v);
       }
     }
@@ -63,8 +87,8 @@ export function deepFind(obj, leaf, expected, op) {
 
 /** Try exact dot-path first, then a deep search by the leaf key. */
 export function matchField(envelope, path, value, op) {
-  const direct = resolvePath(envelope, path);
-  if (direct !== undefined && typeof direct !== "object") {
+  const direct = comparable(resolvePath(envelope, path));
+  if (direct !== undefined && direct !== null && typeof direct !== "object") {
     if (compare(direct, value, op)) return { matched: true, value: direct, where: path };
     return { matched: false };
   }

@@ -24,7 +24,7 @@ from __future__ import annotations
 import ast
 import operator
 import re
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -702,8 +702,9 @@ def resolve_fields(
 def _flatten_field_tree_rules(field_tree: Dict[str, Any]) -> Tuple[List[ValidationRule], List[str]]:
     """Collect every field's own `validation` rules + required-field paths,
     recursively, from a field-centric DSL field_tree. Array `item_fields` are
-    NOT included here — a row's rules are evaluated per-row inside
-    `resolve_field_tree` (a flat `NAME` would otherwise collide across rows)."""
+    NOT included here — a flat `NAME` would collide across rows; they are
+    evaluated per-row by `resolve_field_tree`'s `evaluate_row_rules`, under an
+    indexed path (`FACTURAS[0].Factura`)."""
     rules: List[ValidationRule] = []
     required: List[str] = []
 
@@ -885,6 +886,63 @@ def resolve_field_tree(
             return True, None
         return False, "; ".join(c.message for c in failed)
 
+    def record(check: RuleCheck) -> RuleCheck:
+        """Add a check discovered DURING the walk (a row's own rules).
+
+        `checks_by_field` is built once, above, from the flat pass — so a
+        check appended only to `checks` would never reach `valid_reason` and
+        the node it belongs to would still render as valid.
+        """
+        checks.append(check)
+        if not check.skipped:
+            checks_by_field.setdefault(check.field, []).append(check)
+        return check
+
+    def evaluate_row_rules(
+        item_fields: Dict[str, Any], row: Dict[str, Any], row_path: str
+    ) -> List[RuleCheck]:
+        """Evaluate ONE array row against the rules its `item_fields` declare.
+
+        `_flatten_field_tree_rules` deliberately leaves `item_fields` out — a
+        flat `Factura` check would collide across rows — and until this
+        existed nothing evaluated them anywhere: a row could carry the whole
+        COVE in `Factura`, or no `Factura` at all despite `required: true`,
+        and still come back `valid: true`. The only check a repeatable group
+        ever produced was the array's own presence.
+
+        Each rule runs with the ROW as its `entity_map`, so a rule that
+        crosses columns of the same row (a formula over its own cells) reads
+        the right values — and is recorded under an indexed path
+        (`FACTURAS[0].Factura`) so every row reports its own result.
+
+        Nested `object` subfields recurse here (the flat pass doesn't reach
+        inside a row either); nested `array` subfields do NOT — `walk_node`
+        calls this itself for each of their rows when it renders them.
+        """
+        recorded: List[RuleCheck] = []
+        for sub_name, sub_spec in item_fields.items():
+            sub_path = f"{row_path}.{sub_name}"
+            value = row.get(sub_name)
+            if sub_spec.type == "object":
+                recorded.extend(evaluate_row_rules(
+                    sub_spec.fields, value if isinstance(value, dict) else {}, sub_path
+                ))
+                continue
+            if sub_spec.type == "array":
+                continue
+            if sub_spec.required and not sub_spec.computed:
+                present = not _is_empty(value)
+                recorded.append(record(RuleCheck(
+                    sub_path, "presence", present,
+                    f"required field '{sub_path}' present" if present
+                    else f"required field '{sub_path}' missing or empty",
+                )))
+            for rule in sub_spec.validation:
+                result = _dispatch_rule(rule, value, row, ctx)
+                if result is not None:
+                    recorded.append(record(replace(result, field=sub_path)))
+        return recorded
+
     def resolve_leaf(
         leaf_name: str, value: Any, computed: bool, path: Optional[str] = None,
         declared_type: Optional[str] = None,
@@ -938,19 +996,28 @@ def resolve_field_tree(
             array_conf = confidences.get(path, fallback_conf)
             if spec.item_fields:
                 rendered = []
-                for row in items:
+                for index, row in enumerate(items):
                     row = row if isinstance(row, dict) else {}
                     # Each cell falls back to what the extractor measured for
                     # THIS row (pipeline.confidence), then to the array's own
                     # number. Without the per-row map every cell of every row
                     # reported the same segment-level OCR score.
                     row_conf = row_confidences.get(conf_policy.row_key(row), {})
+                    # The row's own rules, under a path that identifies THIS
+                    # row — cells are rendered under it too, so each one
+                    # resolves its own result instead of every row sharing
+                    # `FACTURAS.Factura`. Safe for `confidences`: an array
+                    # cell is never keyed by that path (its confidence comes
+                    # from `row_confidences`, keyed by row content).
+                    row_path = f"{path}[{index}]"
+                    row_checks = evaluate_row_rules(spec.item_fields, row, row_path)
+                    failed = [c for c in row_checks if not c.valid and not c.skipped]
                     rendered.append({
-                        "valid": True,
-                        "reason": None,
+                        "valid": not failed,
+                        "reason": "; ".join(c.message for c in failed) or None,
                         "fields": {
                             sub_name: walk_node(
-                                sub_spec, f"{path}.{sub_name}", row.get(sub_name), computed,
+                                sub_spec, f"{row_path}.{sub_name}", row.get(sub_name), computed,
                                 row_conf.get(sub_name, array_conf),
                             )
                             for sub_name, sub_spec in spec.item_fields.items()

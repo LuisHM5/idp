@@ -220,3 +220,69 @@ test("basta el nombre del campo: cae a búsqueda profunda y lo marca con *.", ()
   assert.equal(m.matched, true);
   assert.equal(m.where, "*.PATENTE");
 });
+
+// --- DSL field-centric: el valor va envuelto en {value, confidence, ...} ----
+
+// Un resultado field-centric (schema_version 4.x) no guarda escalares pelones:
+// cada campo es {value, confidence, valid, reason, source}. Comparar el nodo
+// entero da "[object Object]" y nunca matchea, así que hay que desenvolverlo.
+const ENVELOPE_ARBOL = {
+  extractedEntities: {
+    Cve_Pedimento: { value: "A1", confidence: 0.91 },
+    FACTURAS: {
+      items: [
+        { valid: true, fields: {
+            PROVEEDOR_NOMBRE: { value: "MNG DISTRIBUTOR LLC", confidence: 0.95 },
+            Factura: { value: "4099", confidence: 0.95 } } },
+        { valid: true, fields: {
+            PROVEEDOR_NOMBRE: { value: "TRADE FOOD LLC", confidence: 0.95 },
+            Factura: { value: "1671", confidence: 0.95 } } },
+      ],
+    },
+  },
+  // el mapa compacto por documento solo lleva escalares de primer nivel
+  expediente: { documents: [{ extractedEntities: { Cve_Pedimento: "A1" }, arrayCounts: { FACTURAS: 2 } }] },
+};
+
+test("un escalar envuelto se encuentra por su valor, no por el nodo", () => {
+  const m = matchField(ENVELOPE_ARBOL, "Cve_Pedimento", "A1", "eq");
+  assert.equal(m.matched, true);
+  assert.equal(m.value, "A1");
+});
+
+test("un campo dentro de una fila de array también se encuentra", () => {
+  // PEDIMENTO_ERP movió proveedor y factura a FACTURAS[]: sin desenvolver,
+  // el ?field=PROVEEDOR_NOMBRE&value=... documentado dejaría de matchear.
+  for (const [campo, valor] of [
+    ["PROVEEDOR_NOMBRE", "MNG DISTRIBUTOR LLC"],
+    ["PROVEEDOR_NOMBRE", "TRADE FOOD LLC"],
+    ["Factura", "4099"],
+    ["Factura", "1671"],
+  ]) {
+    const m = matchField(ENVELOPE_ARBOL, campo, valor, "eq");
+    assert.equal(m.matched, true, `${campo}=${valor}`);
+    assert.equal(m.value, valor);
+  }
+});
+
+test("contains sigue aplicando sobre el valor desenvuelto", () => {
+  const m = matchField(ENVELOPE_ARBOL, "PROVEEDOR_NOMBRE", "trade", "contains");
+  assert.equal(m.matched, true);
+  assert.equal(m.value, "TRADE FOOD LLC");
+});
+
+test("un valor que no está en ninguna fila no matchea", () => {
+  assert.equal(matchField(ENVELOPE_ARBOL, "Factura", "9999", "eq").matched, false);
+  assert.equal(matchField(ENVELOPE_ARBOL, "PROVEEDOR_NOMBRE", "TYSON", "eq").matched, false);
+});
+
+test("un dot-path exacto a un nodo envuelto compara su value", () => {
+  const m = matchField(ENVELOPE_ARBOL, "extractedEntities.Cve_Pedimento", "A1", "eq");
+  assert.equal(m.matched, true);
+  assert.equal(m.where, "extractedEntities.Cve_Pedimento");
+});
+
+test("un campo vacío no matchea un valor cualquiera", () => {
+  const envelope = { extractedEntities: { Factura: { value: null, confidence: 0 } } };
+  assert.equal(matchField(envelope, "Factura", "4099", "eq").matched, false);
+});

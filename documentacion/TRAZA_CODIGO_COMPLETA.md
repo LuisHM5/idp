@@ -1533,8 +1533,9 @@ Archivo: `validators/engine.py`.
 | `_dispatch_rule()` (`:539`) | una `ValidationRule`, map y contexto | llama `_check_*`; desconocida → skipped warning | único registro real de `rule_type` |
 | `run_rules()` (`:587`) | entry, entity map y contexto | `RuleCheck[]` | recorre reglas entry y dispatch |
 | `resolve_fields()` (`:615`) | entry legacy, entidades/confidences/checks | mapa por campo `{value,normalizedValue,confidence,valid,reason,source}` | `normalize_field`, checks agrupados |
-| `_flatten_field_tree_rules()` (`:685`) | field tree | reglas con paths + required paths | `resolve_field_tree`; `walk()` local recursivo |
-| `resolve_field_tree()` (`:706`) | entry nuevo, árbol extraído, confidences, checks | árbol recursivo de escalares/object/array con provenance/validity | helpers locales `valid_reason`, `resolve_leaf`, `walk_node` |
+| `_flatten_field_tree_rules()` (`:685`) | field tree | reglas con paths + required paths, SIN los `item_fields` | `resolve_field_tree`; `walk()` local recursivo |
+| `evaluate_row_rules()` (local de `resolve_field_tree`) | `item_fields` + una fila + su path | checks de ESA fila, bajo `CAMPO[i].SUBCAMPO` | `_dispatch_rule` con la fila como `entity_map`; `record()` los inyecta en `checks`/`checks_by_field` |
+| `resolve_field_tree()` (`:706`) | entry nuevo, árbol extraído, confidences, checks | árbol recursivo de escalares/object/array con provenance/validity | helpers locales `valid_reason`, `record`, `evaluate_row_rules`, `resolve_leaf`, `walk_node` |
 | `document_status_from_checks()` (`:909`) | checks | status documental | severity/skipped/valid |
 | `document_status()` (`:922`) | entry + resolved fields + checks | status final | combina required missing, field validity y checks |
 

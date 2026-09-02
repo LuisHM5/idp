@@ -480,8 +480,16 @@ documento detectado dentro del PDF. Para un pedimento declarado será uno solo:
         "pageStart": 3, "pageEnd": 18,
         "status": "APPROVED",
         "extractedEntities": {
-          "No_Pedimento": { "value": "26 07 3435 6041248", "confidence": 0.98, "valid": true },
-          "PROVEEDOR_ID_FISCAL": { "value": "OFU910626UQ0", "confidence": 0.99, "valid": true }
+          "No_Pedimento": { "value": "260734356041248", "confidence": 0.98, "valid": true },
+          "FACTURAS": { "items": [
+            { "valid": true, "reason": null, "fields": {
+                "PROVEEDOR_ID_FISCAL": { "value": "334274279", "confidence": 0.95, "valid": true },
+                "PROVEEDOR_NOMBRE": { "value": "MNG DISTRIBUTOR LLC", "confidence": 0.95, "valid": true },
+                "Factura": { "value": "4099", "confidence": 0.95, "valid": true },
+                "Fecha_Factura": { "value": "2026-07-03", "confidence": 0.95, "valid": true },
+                "Total_factura": { "value": 155.00, "confidence": 0.95, "valid": true }
+            } }
+          ] }
         }
       }
     ]
@@ -1183,7 +1191,7 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
 | `system` | sí\* | — | Qué **sistema** subió el documento: se compara contra `tracking.appOrigin`, que sale de la **API key** del `POST /documents`. Varios separados por coma o repitiendo el param (OR). Alias: `appOrigin`, `sistema`. |
 | `meta.<clave>` | sí\* | — | **Familia de params**, no uno literal: `meta.lote=A123`, `meta.sucursal=CHIH`... Filtra por la `metadata` del `POST /documents` (§1). Claves en minúsculas. Claves distintas = AND; repetir una clave o separar por coma = OR. |
 | `metaOp` | no | `eq` | Cómo comparan **todos** los `meta.<clave>`: `eq` o `contains`. Independiente de `op`. |
-| `field` | sí\* | — | Dot-path del campo, p. ej. `extractedEntities.No_Pedimento`. Si no resuelve en la raíz, hace **búsqueda profunda** por la última clave del path (encuentra el campo aunque esté anidado en cualquier documento). **Se puede repetir** para exigir varios campos (AND). |
+| `field` | sí\* | — | Dot-path del campo, p. ej. `extractedEntities.No_Pedimento`. Si no resuelve en la raíz, hace **búsqueda profunda** por la última clave del path (encuentra el campo aunque esté anidado en cualquier documento, **incluido dentro de una fila de un array** — `field=Factura&value=4099` encuentra la factura sin importar en qué renglón de `FACTURAS` esté). **Se puede repetir** para exigir varios campos (AND). |
 | `value` | con `field` | — | Valor a comparar (case-insensitive, se recortan espacios). Uno por cada `field`, **en el mismo orden**: se emparejan por posición. |
 | `op` | no | `eq` | `eq` (igualdad exacta) o `contains` (subcadena) para los `field`/`value`. Una vez (aplica a todos) o una vez por filtro. |
 | `status` | no | — | Filtra por estado de validación: `APROBADO`, `RECHAZADO`, `REQUIERE_REVISION`. Se aplica en DynamoDB (solo con `docType`). |

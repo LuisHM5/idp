@@ -182,6 +182,16 @@ como en el DSL viejo.
   específico, ver `CUADRO_LIQUIDACION` en `PEDIMENTO_ADUANAL.json`).
 - **Array** (`type: "array"`) → sale como `{items: [ {...recursivo...} ]}`,
   una entrada por fila detectada.
+- **Las reglas dentro de `item_fields` corren FILA POR FILA** (y sus
+  `required` también). Se reportan con el índice de la fila —
+  `FACTURAS[0].Factura` — así una fila mala no contamina a las buenas: esa
+  fila sale `valid: false` con su `reason`, las demás siguen válidas, y el
+  documento lo refleja. Cada regla se evalúa con **la fila** como su
+  `entity_map`, así que una fórmula que cruza columnas lee las de SU fila; una
+  que necesite un campo de nivel de documento no lo encuentra ahí (lo cuenta
+  como 0, ver `details.assumptions`) — esa va en `cross_field_validation`.
+  Antes del 2026-09-02 estas reglas no se evaluaban en ningún lado: se
+  escribían y no hacían nada.
 - **`$common`** en `item_fields` inyecta subcampos definidos una sola vez en
   `_shared.json` → `_common_item_fields` (hoy: `PAGINA`, `ORDEN`, `CONFIANZA`,
   `VALOR_CRUDO`) — evita repetir el mismo hint/validation en cada grupo

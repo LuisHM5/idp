@@ -181,6 +181,14 @@ INSUMOS_ERP = {
     "ANIO_PEDIMENTO", "ADUANA_DESPACHO", "NUMERO_CONSECUTIVO",
     "QR_PEDIMENTO", "DEPOSITO_REFERENCIADO_QR_VALIDO",
     "CUADRO_LIQUIDACION", "LIQUIDACION_NORMALIZADA",
+    # Las facturas viven en su propio array (una fila = un registro de
+    # C_ENC_FACTURA); ACUSES_VALOR son los COVE que el pedimento lista sueltos.
+    "FACTURAS", "ACUSES_VALOR",
+}
+# Columnas de una fila de FACTURAS que NO son columna de C_ENC_FACTURA: el ERP
+# resuelve sus códigos internos Proveedor/prov desde el ID fiscal, y el resto
+# describe la factura sin tener dónde guardarse.
+INSUMOS_FACTURA = {
     "PROVEEDOR_ID_FISCAL", "PROVEEDOR_NOMBRE", "PROVEEDOR_DOMICILIO",
     "PROVEEDOR_VINCULACION", "num_acuse_valor", "INCOTERM", "MONEDA_FACTURA",
     "FACTOR_MONEDA_FACTURA", "FACTURA_VALOR_DOLARES",
@@ -189,11 +197,15 @@ INSUMOS_ERP = {
 
 def test_pedimento_erp_solo_declara_columnas_del_erp():
     entry = cargar("PEDIMENTO_ERP")
-    sobran = set(entry.field_tree) - COLUMNAS_ERP - COLUMNAS_C_ENC_FACTURA - INSUMOS_ERP
+    sobran = set(entry.field_tree) - COLUMNAS_ERP - INSUMOS_ERP
     assert not sobran, f"campos que no son columna del ERP ni insumo declarado: {sorted(sobran)}"
 
     cl = set(entry.field_tree["LIQUIDACION_NORMALIZADA"].fields)
     assert cl <= COLUMNAS_ERP, f"subcampos que no son columna del ERP: {sorted(cl - COLUMNAS_ERP)}"
+
+    fila = set(entry.field_tree["FACTURAS"].item_fields)
+    sobran_fila = fila - COLUMNAS_C_ENC_FACTURA - INSUMOS_FACTURA
+    assert not sobran_fila, f"columnas de factura no declaradas: {sorted(sobran_fila)}"
 
 
 # QR real de ese pedimento (test-docs/full-dataset-pedimentos/normal_pend.pdf).
@@ -390,11 +402,52 @@ def test_pedimento_aduanal_no_cambia():
     assert json.dumps(entities, sort_keys=True) == antes
 
 
-# ---------------------------------------------------------------- proveedor
+# ------------------------------------------------------- facturas (N filas)
 
-# Fila real de test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf':
-# "334274279 NO" bajo VINCULACION, y la tabla de facturas debajo.
-PROVEEDOR_ESPERADO = {
+# Bloque real de test-docs/full-dataset-pedimentos/'26 07 3435 6041353 CG.pdf'
+# (pág. 4): DOS proveedores, con 8 y 1 facturas, y debajo una tabla APARTE con
+# 9 acuses sueltos. Es el caso que la forma plana anterior no podía representar:
+# reportaba solo la primera fila y perdía las otras 8.
+MNG = {
+    "PROVEEDOR_ID_FISCAL": "334274279",
+    "PROVEEDOR_NOMBRE": "MNG DISTRIBUTOR LLC",
+    "PROVEEDOR_DOMICILIO": "FLORA VISTA AVE 13724 79928 HORIZON CITY TEXAS, ESTADOS UNIDOS DE AMERICA",
+    "PROVEEDOR_VINCULACION": "NO",
+}
+TRADE_FOOD = {
+    "PROVEEDOR_ID_FISCAL": "320713796",
+    "PROVEEDOR_NOMBRE": "TRADE FOOD LLC",
+    "PROVEEDOR_DOMICILIO": "BLUE LAGOON DR 5805 STE.200 33126 MIAMI FLORIDA, ESTADOS UNIDOS DE AMERICA",
+    "PROVEEDOR_VINCULACION": "NO",
+}
+COMUN = {"Fecha_Factura": "03/07/2026", "INCOTERM": "DAP", "MONEDA_FACTURA": "USD",
+         "FACTOR_MONEDA_FACTURA": "1.00000000"}
+IMPORTES_MNG = [("4099", "155.00"), ("4100", "124.00"), ("4101", "2,569.00"),
+                ("4102", "4,017.50"), ("4103", "5,115.07"), ("4104", "5,143.44"),
+                ("4105", "686.99"), ("4106", "685.96")]
+FACTURAS_CG = (
+    [{**MNG, **COMUN, "Factura": n, "Total_factura": v, "FACTURA_VALOR_DOLARES": v}
+     for n, v in IMPORTES_MNG]
+    + [{**TRADE_FOOD, **COMUN, "Factura": "1671", "Total_factura": "2,944.32",
+        "FACTURA_VALOR_DOLARES": "2,944.32"}]
+)
+ACUSES_CG = ["COVE26871ECA1", "COVE26871ECE6", "COVE26871ECF2", "COVE26871ECK4",
+             "COVE26871ECN7", "COVE26871ECO8", "COVE26871ECP2", "COVE26871ECT5",
+             "COVE26871ECU3"]
+
+# Fila real de test-docs/pedimentos-screens/2607-0973-6100971_P.PDF-1.pdf: un
+# solo proveedor y una sola factura, con el acuse y el número en la misma celda.
+FACTURA_TYSON = {
+    "PROVEEDOR_ID_FISCAL": "71-0225165", "PROVEEDOR_NOMBRE": "TYSON FOODS INC.",
+    "PROVEEDOR_DOMICILIO": "2200 W DON TYSON PARKWAY SPRINGDALE, SPRINGDALE, ARKANSAS 72762 USA",
+    "PROVEEDOR_VINCULACION": "NO", "Factura": "35079805",
+    "num_acuse_valor": "COVE2689JP013 / 35079805", "Fecha_Factura": "24/08/2026",
+    "INCOTERM": "CPT", "MONEDA_FACTURA": "USD", "Total_factura": "21,178.80",
+    "FACTOR_MONEDA_FACTURA": "1.00000", "FACTURA_VALOR_DOLARES": "21,178.80",
+}
+
+# Tipo que el ERP espera de cada columna de una fila de factura.
+FACTURA_ESPERADA = {
     "PROVEEDOR_ID_FISCAL": "string",
     "PROVEEDOR_NOMBRE": "string",
     "PROVEEDOR_DOMICILIO": "string",
@@ -410,17 +463,75 @@ PROVEEDOR_ESPERADO = {
 }
 
 
-def test_los_datos_del_proveedor_estan_declarados_con_su_tipo():
+def filas(entities):
+    """Las filas de FACTURAS ya resueltas, como dict campo -> valor."""
+    entry = cargar("PEDIMENTO_ERP")
+    tree, checks, _ = resolve_field_tree(
+        entities, {}, entry, default_confidence=CONFIANZA_OCR
+    )
+    items = tree["FACTURAS"]["items"]
+    return [{n: c["value"] for n, c in item["fields"].items()} for item in items], tree, checks
+
+
+def test_cada_factura_es_una_fila_con_su_proveedor():
+    """El contrato con el ERP: una fila del array = un insert en
+    Costos.dbo.C_ENC_FACTURA. Nueve facturas de dos proveedores son NUEVE
+    filas, cada una con el proveedor al que pertenece — antes, con los campos
+    planos, solo llegaba la primera y las otras ocho se perdían."""
+    filas_resueltas, _, _ = filas({"FACTURAS": FACTURAS_CG})
+
+    assert len(filas_resueltas) == 9
+    assert [f["Factura"] for f in filas_resueltas] == [n for n, _ in IMPORTES_MNG] + ["1671"]
+    assert [f["PROVEEDOR_NOMBRE"] for f in filas_resueltas] == ["MNG DISTRIBUTOR LLC"] * 8 + ["TRADE FOOD LLC"]
+    assert filas_resueltas[-1]["PROVEEDOR_ID_FISCAL"] == "320713796"
+    # cada fila trae su propio importe, no el del primer renglón
+    assert [f["Total_factura"] for f in filas_resueltas][:3] == [155.0, 124.0, 2569.0]
+
+
+def test_los_acuses_sueltos_no_se_cuelan_como_facturas():
+    """La tercera tabla de ese pedimento lista 9 COVE sin fecha ni importe.
+    Meterlos en FACTURAS serían 9 registros basura en C_ENC_FACTURA, y
+    emparejarlos por posición con las facturas de arriba sería inventar una
+    correspondencia que el pedimento no imprime."""
+    filas_resueltas, tree, _ = filas({"FACTURAS": FACTURAS_CG, "ACUSES_VALOR": ACUSES_CG})
+
+    assert len(filas_resueltas) == 9
+    assert [i["value"] for i in tree["ACUSES_VALOR"]["items"]] == ACUSES_CG
+    assert all(f["num_acuse_valor"] is None for f in filas_resueltas)
+
+
+def test_un_acuse_que_no_es_cove_no_pasa():
+    entry = cargar("PEDIMENTO_ERP")
+    _, checks, _ = resolve_field_tree(
+        {"ACUSES_VALOR": ACUSES_CG[:2] + ["4099"]}, {}, entry, default_confidence=CONFIANZA_OCR
+    )
+    fallidos = [c for c in checks if c.field == "ACUSES_VALOR" and not c.valid and not c.skipped]
+    assert fallidos, "regex_each debería rechazar un valor que no es un COVE"
+
+
+def test_cada_columna_de_la_fila_esta_declarada_con_su_tipo():
     """El bloque DATOS DEL PROVEEDOR O COMPRADOR completo, con el tipo que
     espera el ERP: la fecha como date y los importes como number, no como
     texto que alguien tenga que convertir del otro lado."""
+    item_fields = cargar("PEDIMENTO_ERP").field_tree["FACTURAS"].item_fields
+
+    for nombre, tipo in FACTURA_ESPERADA.items():
+        assert nombre in item_fields, f"falta {nombre}"
+        assert item_fields[nombre].type == tipo, (
+            f"{nombre} es {item_fields[nombre].type}, se esperaba {tipo}"
+        )
+
+
+def test_ninguna_columna_de_la_fila_es_obligatoria():
+    """Un pedimento puede imprimir la tabla con NUM. FACTURA (sin acuse) o con
+    NUMERO DE ACUSE DE VALOR (sin número suelto), y la tabla de acuses sueltos
+    no trae ni ID fiscal ni nombre. Exigir cualquiera de esas columnas por fila
+    mandaría a revisión pedimentos correctos: lo obligatorio es el array."""
     entry = cargar("PEDIMENTO_ERP")
 
-    for nombre, tipo in PROVEEDOR_ESPERADO.items():
-        assert nombre in entry.field_tree, f"falta {nombre}"
-        assert entry.field_tree[nombre].type == tipo, (
-            f"{nombre} es {entry.field_tree[nombre].type}, se esperaba {tipo}"
-        )
+    assert entry.field_tree["FACTURAS"].required is True
+    for nombre, spec in entry.field_tree["FACTURAS"].item_fields.items():
+        assert spec.required is False, f"{nombre} no puede ser obligatorio por fila"
 
 
 def test_ninguno_de_esos_campos_se_le_pide_dos_veces_al_modelo():
@@ -429,10 +540,14 @@ def test_ninguno_de_esos_campos_se_le_pide_dos_veces_al_modelo():
     Valor_ComercialDol (suma de todas las facturas) se llenaría con el importe
     de una sola."""
     entry = cargar("PEDIMENTO_ERP")
+    fila = entry.field_tree["FACTURAS"].item_fields
 
     assert "Valor_ComercialDol" in entry.field_tree
-    assert "FACTURA_VALOR_DOLARES" in entry.field_tree
-    assert entry.field_tree["Valor_ComercialDol"].hint != entry.field_tree["FACTURA_VALOR_DOLARES"].hint
+    assert "FACTURA_VALOR_DOLARES" in fila
+    assert entry.field_tree["Valor_ComercialDol"].hint != fila["FACTURA_VALOR_DOLARES"].hint
+    # y los planos ya no existen: una sola fuente de verdad
+    for plano in FACTURA_ESPERADA:
+        assert plano not in entry.field_tree, f"{plano} quedó también como campo plano"
 
 
 @pytest.mark.parametrize(
@@ -447,13 +562,14 @@ def test_ninguno_de_esos_campos_se_le_pide_dos_veces_al_modelo():
 )
 def test_la_factura_rechaza_el_acuse_completo(valor, valida):
     """La regla que el usuario fijó — en Factura va SOLO el número — es una
-    regla real, no un hint: el pedimento con el COVE pegado sale inválido."""
-    entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree(
-        {"Factura": valor}, {}, entry, default_confidence=CONFIANZA_OCR
-    )
+    regla real, no un hint, y corre FILA POR FILA: la fila con el COVE pegado
+    sale inválida aunque las demás estén bien."""
+    _, tree, _ = filas({"FACTURAS": [{"Factura": "4099"}, {"Factura": valor}]})
 
-    assert tree["Factura"]["valid"] is valida, tree["Factura"]["reason"]
+    assert tree["FACTURAS"]["items"][0]["valid"] is True
+    fila = tree["FACTURAS"]["items"][1]
+    assert fila["fields"]["Factura"]["valid"] is valida, fila["reason"]
+    assert fila["valid"] is valida
 
 
 @pytest.mark.parametrize(
@@ -470,12 +586,10 @@ def test_la_factura_rechaza_el_acuse_completo(valor, valida):
 def test_el_acuse_se_copia_completo_o_no_pasa(valor, valida):
     """El acuse es el COVE COMPLETO. Un valor sin COVE — el número suelto, o la
     cadena convertida a número — no es un acuse a medias: es otro dato."""
-    entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree(
-        {"num_acuse_valor": valor}, {}, entry, default_confidence=CONFIANZA_OCR
-    )
+    _, tree, _ = filas({"FACTURAS": [{"num_acuse_valor": valor}]})
 
-    assert tree["num_acuse_valor"]["valid"] is valida, tree["num_acuse_valor"]["reason"]
+    fila = tree["FACTURAS"]["items"][0]
+    assert fila["fields"]["num_acuse_valor"]["valid"] is valida, fila["reason"]
 
 
 def test_el_acuse_llega_al_erp_tal_como_esta_impreso():
@@ -483,42 +597,34 @@ def test_el_acuse_llega_al_erp_tal_como_esta_impreso():
     normalización por nombre lo parseaba como importe y entregaba
     268901335079805.0 — sin COVE, sin diagonal, marcado NORMALIZED y válido.
     El tipo declarado (`string`) manda sobre la heurística del nombre."""
-    entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree(
-        {"num_acuse_valor": "COVE2689JP013 / 35079805", "Factura": "35079805"},
-        {}, entry, default_confidence=CONFIANZA_OCR,
-    )
+    filas_resueltas, tree, _ = filas({"FACTURAS": [FACTURA_TYSON]})
 
-    assert tree["num_acuse_valor"]["value"] == "COVE2689JP013 / 35079805"
-    assert tree["num_acuse_valor"]["source"] == "MODEL_EXTRACTION"  # nadie lo tocó
-    assert tree["Factura"]["value"] == "35079805"                   # el número, aparte
+    fila = filas_resueltas[0]
+    assert fila["num_acuse_valor"] == "COVE2689JP013 / 35079805"
+    assert fila["Factura"] == "35079805"                  # el número, aparte
+    celda = tree["FACTURAS"]["items"][0]["fields"]["num_acuse_valor"]
+    assert celda["source"] == "MODEL_EXTRACTION"          # nadie lo tocó
 
 
 def test_las_columnas_numericas_llegan_como_numero():
     """La otra cara del mismo contrato: un campo declarado `number` cuyo nombre
     no dispara ninguna heurística de importe (FACTOR_MONEDA_FACTURA, GI_Otros)
     entraba al ERP como texto ("1.0"), no como número."""
-    entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree(
-        {"FACTOR_MONEDA_FACTURA": "1.00000", "GI_Otros": "11,027"},
-        {}, entry, default_confidence=CONFIANZA_OCR,
+    filas_resueltas, tree, _ = filas(
+        {"FACTURAS": [FACTURA_TYSON], "GI_Otros": "11,027"}
     )
 
-    assert tree["FACTOR_MONEDA_FACTURA"]["value"] == 1.0
+    fila = filas_resueltas[0]
+    assert fila["FACTOR_MONEDA_FACTURA"] == 1.0
+    assert fila["Total_factura"] == 21178.8
     assert tree["GI_Otros"]["value"] == 11027.0
-    assert all(
-        isinstance(tree[c]["value"], float) for c in ("FACTOR_MONEDA_FACTURA", "GI_Otros")
-    )
+    assert isinstance(fila["FACTOR_MONEDA_FACTURA"], float)
+    assert isinstance(tree["GI_Otros"]["value"], float)
+    assert fila["Fecha_Factura"] == "2026-08-24"
 
 
 def test_el_incoterm_debe_ser_de_tres_letras():
-    entry = cargar("PEDIMENTO_ERP")
-    tree, _, _ = resolve_field_tree(
-        {"INCOTERM": "CPT"}, {}, entry, default_confidence=CONFIANZA_OCR
-    )
-    assert tree["INCOTERM"]["valid"] is True
+    _, tree, _ = filas({"FACTURAS": [{"INCOTERM": "CPT"}, {"INCOTERM": "CPT USD 21,178.80"}]})
 
-    tree, _, _ = resolve_field_tree(
-        {"INCOTERM": "CPT USD 21,178.80"}, {}, entry, default_confidence=CONFIANZA_OCR
-    )
-    assert tree["INCOTERM"]["valid"] is False
+    assert tree["FACTURAS"]["items"][0]["fields"]["INCOTERM"]["valid"] is True
+    assert tree["FACTURAS"]["items"][1]["fields"]["INCOTERM"]["valid"] is False
