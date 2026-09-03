@@ -184,13 +184,17 @@ function printResult(result) {
   console.log(`   Clasificación:  ${result.documentClassification}`);
   console.log(`   Procesado:      ${result.processedAt}`);
 
-  console.log(`\n   Entidades extraídas:`);
-  for (const [k, v] of Object.entries(result.extractedEntities || {})) {
-    console.log(`     ${k}: ${v}`);
+  for (const doc of result.documents || []) {
+    const pages = doc.pageStart ? `  p${doc.pageStart}-${doc.pageEnd}` : "";
+    console.log(`\n   Documento ${doc.index} — ${doc.documentType}${pages}  [${doc.status}]`);
+    for (const [k, node] of Object.entries(doc.fields || {})) {
+      if (node && Array.isArray(node.items)) console.log(`     ${k}: ${node.items.length} renglón(es)`);
+      else if (node && "value" in node) console.log(`     ${k}: ${node.value}`);
+    }
   }
 
-  console.log(`\n   Validaciones (${result.validation?.checks?.length || 0}):`);
-  for (const check of result.validation?.checks || []) {
+  console.log(`\n   Validaciones (${result.checks?.length || 0}):`);
+  for (const check of result.checks || []) {
     const ci = check.valid ? "✓" : "✗";
     console.log(`     ${ci} [${check.rule}] ${check.field}: ${check.message}`);
   }

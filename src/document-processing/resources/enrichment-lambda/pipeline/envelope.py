@@ -1,0 +1,430 @@
+"""Envelope v2: un documento = un elemento de `documents[]`.
+
+El envelope es lo que la Lambda devuelve a Step Functions, lo que se guarda en
+DynamoDB (`EnrichmentResult`), lo que se publica en EventBridge y lo que
+`GET /documents/{id}` regresa como `result`. Antes de v2 tenía el mismo dato
+hasta tres veces y, con varios documentos en un archivo, mentía:
+
+- `extractedEntities` de la raíz era el árbol completo del PRIMER documento
+  principal, presentado como si fuera "el documento". Un PDF con dos facturas
+  contestaba con el número de la primera y nada decía que hubiera una segunda.
+- `expediente.documents[].extractedEntities` repetía esos mismos valores como
+  escalares pelones, con otra forma.
+- Los renglones (CONCEPTOS, PARTIDAS) solo viajaban para el primer documento;
+  para el resto quedaban en `arrayCounts`.
+
+v2 tiene un solo lugar para cada dato: `documents[i].fields`. Ese arreglo
+existe SIEMPRE, con uno o con N documentos — quien consume no puede saber de
+antemano cuántos trae un PDF, así que una forma que dependa del resultado
+obliga a escribir dos caminos y a equivocarse el día que llegan dos.
+
+La raíz espeja la raíz del resultado completo de S3 (`results/{id}.json`), que
+ya tiene `documents`/`crossDocumentChecks`/`pages` arriba: `result` y
+`fullResult` dejan de ser dos estructuras distintas y pasan a ser la misma, una
+más profunda que la otra.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple
+
+ENVELOPE_VERSION = 2
+
+# Tipo con el que se etiqueta un archivo que trae documentos de tipos DISTINTOS.
+# Cuando todos son del mismo tipo, el envelope reporta ese tipo (ver
+# `classification_of`).
+CONTAINER_TYPE = "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
+
+# Vocabulario del pipeline -> vocabulario del API.
+STATUS_MAP = {
+    "APPROVED": "APROBADO",
+    "REJECTED": "RECHAZADO",
+    "PARTIALLY_APPROVED": "REQUIERE_REVISION",
+    "REVIEW_REQUIRED": "REQUIERE_REVISION",
+    "PROCESSING_ERROR": "REQUIERE_REVISION",
+}
+
+# El flujo estándar solo conoce el vocabulario del API; sus documentos se
+# reportan con el del pipeline para que `documents[i].status` signifique lo
+# mismo venga de donde venga.
+STATUS_MAP_REVERSE = {
+    "APROBADO": "APPROVED",
+    "RECHAZADO": "REJECTED",
+    "REQUIERE_REVISION": "REVIEW_REQUIRED",
+}
+
+# Presupuesto de bytes del envelope serializado. El límite que manda NO es
+# DynamoDB (400 KB por item) sino Step Functions (256 KB de payload de estado):
+# el envelope es el valor de retorno de la Lambda y viaja por el state machine
+# hasta el DynamoUpdateItem que escribe `EnrichmentResult`. 180 KB deja aire
+# para el resto del estado y para las otras columnas del item.
+BUDGET_BYTES = int(os.environ.get("ENVELOPE_BUDGET_BYTES", "180000"))
+
+
+def _size(obj: Any) -> int:
+    """Bytes UTF-8 del objeto serializado. UTF-8 y no `len()` de la cadena:
+    los acentos ocupan dos bytes y son justo lo que abunda en estos documentos."""
+    return len(json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+# --------------------------------------------------------------- campos
+
+def compact_node(node: Any) -> Optional[Dict[str, Any]]:
+    """Un campo resuelto en su forma mínima, o None si no hay nada que decir.
+
+    Escalar -> {value, confidence, valid} + `reason` solo si `valid` es falso
+    + `source` solo si NO es MODEL_EXTRACTION (o sea, solo cuando algo
+    interesante pasó: normalizado, recuperado del QR, derivado).
+    Objeto   -> {fields: {...}}   Arreglo -> {items: [{fields: {...}}]}
+
+    **Regla de omisión: un campo se omite si NO tiene valor Y `valid` es true.**
+    Eso significa exactamente "el documento no lo traía y nadie lo exigía". Un
+    obligatorio ausente conserva su `valid: false` y su `reason`; un valor
+    descartado por confianza baja también (`value: null` más el `reason` que lo
+    explica). No se pierde nada informativo — se va el ruido de
+    `{"value": null, "confidence": 0.0, "valid": true, "reason": null,
+    "source": "MODEL_EXTRACTION"}`, que en un tipo con 66 campos era el 20% de
+    la respuesta.
+    """
+    if not isinstance(node, dict):
+        return None
+
+    if isinstance(node.get("items"), list):
+        # Las filas NUNCA se descartan: `len(items)` es la señal de cuántos
+        # renglones traía el documento, y perderla es peor que un objeto vacío.
+        return {"items": [_compact_row(row) for row in node["items"]]}
+
+    if isinstance(node.get("fields"), dict):
+        sub = compact_fields(node["fields"])
+        valid = node.get("valid", True)
+        if not sub and valid:
+            return None
+        out: Dict[str, Any] = {"fields": sub}
+        if not valid:
+            out["valid"] = False
+            if node.get("reason"):
+                out["reason"] = node["reason"]
+        return out
+
+    if "value" not in node:
+        return None
+
+    value = node.get("value")
+    valid = node.get("valid", True)
+    if value in (None, "", []) and valid:
+        return None
+    out = {"value": value}
+    # `confidence` es siempre un número en el pipeline de expedientes; el flujo
+    # estándar no calcula ninguno, y ahí se omite en vez de inventarlo.
+    if node.get("confidence") is not None:
+        out["confidence"] = node["confidence"]
+    out["valid"] = valid
+    if not valid and node.get("reason"):
+        out["reason"] = node["reason"]
+    source = node.get("source")
+    if source and source != "MODEL_EXTRACTION":
+        out["source"] = source
+    return out
+
+
+def _compact_row(row: Any) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        return {"fields": {}}
+    out: Dict[str, Any] = {"fields": compact_fields(row.get("fields") or {})}
+    if not row.get("valid", True):
+        out["valid"] = False
+        if row.get("reason"):
+            out["reason"] = row["reason"]
+    return out
+
+
+def compact_fields(tree: Dict[str, Any]) -> Dict[str, Any]:
+    """`compact_node` sobre cada campo, tirando los que no dicen nada."""
+    out: Dict[str, Any] = {}
+    for name, node in (tree or {}).items():
+        compact = compact_node(node)
+        if compact is not None:
+            out[name] = compact
+    return out
+
+
+def _legacy_fields(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Campos de un documento del DSL legado, en la MISMA forma que los del
+    field-centric. `resolve_fields` ya emite {value, confidence, valid, reason}
+    (más detalle que aquí no cabe y vive en S3), así que `compact_node` sirve
+    tal cual; los arreglos, que ahí son listas de valores crudos, se envuelven
+    para que `fields.X.items[].fields` signifique lo mismo bajo los dos DSL."""
+    fields = compact_fields(doc.get("fields") or {})
+    for name, value in (doc.get("extractedEntities") or {}).items():
+        if not isinstance(value, list) or name in fields:
+            continue
+        fields[name] = {
+            "items": [
+                {"fields": {k: {"value": v} for k, v in row.items()}}
+                if isinstance(row, dict)
+                else {"fields": {}}
+                for row in value
+            ]
+        }
+    return fields
+
+
+# ------------------------------------------------------------ documentos
+
+def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
+    """Un elemento de `documents[]`.
+
+    Las llaves del envelope van primero y `fields` al final a propósito: es lo
+    más grande, y así los datos de identificación se leen sin desplazarse.
+    """
+    if doc.get("fieldTreeShape"):
+        fields = compact_fields(doc.get("extractedEntities") or {})
+    else:
+        fields = _legacy_fields(doc)
+
+    view: Dict[str, Any] = {"index": index, "documentType": doc.get("documentType")}
+    if doc.get("documentSubtype"):
+        view["documentSubtype"] = doc["documentSubtype"]
+    if doc.get("businessDestination"):
+        view["businessDestination"] = doc["businessDestination"]
+    view["pageStart"] = doc.get("pageStart")
+    view["pageEnd"] = doc.get("pageEnd")
+    view["status"] = doc.get("status")
+    view["confidence"] = doc.get("confidence")
+    if doc.get("error"):
+        view["error"] = doc["error"]
+        if doc.get("errorType"):
+            view["errorType"] = doc["errorType"]
+    if doc.get("recoveredFields"):
+        view["recoveredFields"] = doc["recoveredFields"]
+    if doc.get("liquidacionNormalizada"):
+        view["liquidacionNormalizada"] = doc["liquidacionNormalizada"]
+    view["fields"] = fields
+    return view
+
+
+def classification_of(documents: List[Dict[str, Any]], fallback: str) -> str:
+    """El tipo con el que se etiqueta TODO el archivo.
+
+    Si todos los documentos principales son del mismo tipo, ese es el tipo —
+    aunque sean varios. Un PDF con dos facturas extranjeras es un archivo de
+    facturas extranjeras, no un contenedor genérico: etiquetarlo
+    `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` lo escondía de
+    `GET /documents?docType=FACTURA_...` (que solo lo encontraba por el rodeo de
+    `ContainedDocumentTypes`) y de una app restringida a ese tipo por
+    `AllowedDocTypes`. El contenedor queda para paquetes genuinamente mixtos.
+    """
+    main = [d for d in documents if d.get("documentType") != "OTRO"]
+    if not main:
+        return fallback
+    types = {d.get("documentType") for d in main}
+    if len(types) == 1:
+        return next(iter(types))
+    return CONTAINER_TYPE
+
+
+def _summary(counts: Counter) -> str:
+    total = sum(counts.values())
+    if not total:
+        return "sin documentos"
+    detail = ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
+    return f"{total} documento(s) — {detail}"
+
+
+# -------------------------------------------------------- presupuesto
+
+def _array_nodes(env: Dict[str, Any]):
+    """(contenedor, llave, ruta, bytes) de cada campo tipo arreglo, a cualquier
+    profundidad, para poder soltar el más grande primero."""
+    def walk(fields: Dict[str, Any], path: str):
+        for name, node in (fields or {}).items():
+            if not isinstance(node, dict):
+                continue
+            here = f"{path}.{name}"
+            if isinstance(node.get("items"), list):
+                yield fields, name, here, _size(node)
+            elif isinstance(node.get("fields"), dict):
+                yield from walk(node["fields"], here)
+
+    for i, doc in enumerate(env.get("documents") or []):
+        yield from walk(doc.get("fields") or {}, f"documents[{i}].fields")
+
+
+def fit_to_budget(
+    env: Dict[str, Any], limit: Optional[int] = None
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Recorta el envelope hasta que quepa, de forma determinista y anunciada.
+
+    Suelta primero el arreglo MÁS GRANDE de todos los documentos, no los del
+    último: así una factura con tres conceptos nunca pierde sus renglones por
+    culpa de un pedimento con cuatrocientas partidas. Si aun soltándolos todos
+    no cabe, se van los campos del documento más pesado.
+
+    Nada se pierde de verdad: el resultado completo ya está en S3 ANTES de este
+    recorte (`handler.py` escribe `results/{id}.json` primero), así que
+    `resultLocation` y `?full=1` siempre tienen todo. Y nunca es silencioso: lo
+    que se soltó queda listado en `omitted`.
+    """
+    limit = limit or BUDGET_BYTES
+    size = _size(env)
+    if size <= limit:
+        return env, None
+
+    dropped: List[str] = []
+    while size > limit:
+        candidates = list(_array_nodes(env))
+        if not candidates:
+            break
+        container, name, path, _bytes = max(candidates, key=lambda c: c[3])
+        rows = container[name].get("items") or []
+        container[name] = {"count": len(rows), "omitted": "size"}
+        dropped.append(path)
+        size = _size(env)
+
+    report: Dict[str, Any] = {"reason": "size", "limitBytes": limit, "fields": dropped}
+    if size > limit:
+        # Último recurso: los campos del documento más pesado, empezando por
+        # ese. Se conserva el encabezado (tipo, páginas, status) para que el
+        # documento siga siendo visible y localizable en S3.
+        for doc in sorted(env.get("documents") or [], key=lambda d: -_size(d)):
+            if size <= limit:
+                break
+            if doc.get("fields"):
+                doc["fields"] = {}
+                doc["fieldsOmitted"] = "size"
+                dropped.append(f"documents[{doc.get('index', 0) - 1}].fields")
+                size = _size(env)
+    report["bytes"] = size
+    return env, report
+
+
+# ---------------------------------------------------------------- build
+
+def build(
+    *,
+    document_id: str,
+    result: Dict[str, Any],
+    tracking: Dict[str, Any],
+    metadata: Optional[Dict[str, str]],
+    result_location: Optional[Dict[str, str]],
+    fallback_classification: str,
+) -> Dict[str, Any]:
+    """Envelope v2 para los pipelines multi-documento (expediente/XML/tabular)."""
+    documents = result.get("documents") or []
+    views = [document_view(d, i) for i, d in enumerate(documents, 1)]
+    main = [d for d in documents if d.get("documentType") != "OTRO"]
+    counts = Counter(d.get("status") for d in main if d.get("status"))
+
+    env: Dict[str, Any] = {
+        "documentId": document_id,
+        "envelopeVersion": ENVELOPE_VERSION,
+        "documentClassification": classification_of(documents, fallback_classification),
+        "documentCount": len(main),
+        "tracking": tracking,
+        **({"metadata": metadata} if metadata else {}),
+        "validation": {
+            "status": STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
+            "reviewRequired": bool(result.get("reviewRequired")),
+            "summary": _summary(counts),
+            "counts": dict(counts),
+        },
+        "documents": views,
+    }
+    if result.get("crossDocumentChecks"):
+        # Un solo nombre para "verificaciones de nivel documento" en los dos
+        # flujos: aquí son las reglas entre documentos, en el estándar son las
+        # reglas del documento único. En `fullResult` la misma lista sigue
+        # llamándose `crossDocumentChecks`, que es su nombre en el pipeline.
+        env["checks"] = result["crossDocumentChecks"]
+    if result.get("warnings"):
+        env["warnings"] = result["warnings"]
+    if result.get("error"):
+        # El archivo entero falló (ni se pudo leer): bloque estructurado para
+        # triage, sin tener que parsear el mensaje libre de `warnings`.
+        env["error"] = result["error"]
+    for key in ("processingId", "sourceFile", "sourceFormat", "pages", "usage", "truncated"):
+        if result.get(key) is not None:
+            env[key] = result[key]
+    env["resultLocation"] = result_location
+    env["processedAt"] = result.get("processedAt")
+
+    env, omitted = fit_to_budget(env)
+    if omitted:
+        env["omitted"] = omitted
+        # El reporte se mide antes de adjuntarlo, así que sin esto `bytes`
+        # subestimaría el payload real por el tamaño del propio bloque.
+        env["omitted"]["bytes"] = _size(env)
+    return env
+
+
+def build_standard(
+    *,
+    document_id: str,
+    classification: str,
+    entity_map: Dict[str, Any],
+    checks: List[Any],
+    status: str,
+    tracking: Dict[str, Any],
+    metadata: Optional[Dict[str, str]],
+    summary: str,
+) -> Dict[str, Any]:
+    """Misma forma para el flujo estándar (un documento, DSL legado).
+
+    Emite `documents[]` con un elemento en vez de un `extractedEntities` plano,
+    para que un consumidor tenga UN solo parser para todo el sistema. Ese flujo
+    no calcula confianza por campo, así que los nodos salen sin `confidence`:
+    inventar un número sería peor que no darlo.
+    """
+    failures: Dict[str, Any] = {}
+    for c in checks:
+        if not getattr(c, "valid", True) and getattr(c, "field", None):
+            failures.setdefault(c.field, getattr(c, "message", None))
+
+    fields: Dict[str, Any] = {}
+    for name, value in (entity_map or {}).items():
+        node = {"value": value, "valid": name not in failures}
+        if name in failures and failures[name]:
+            node["reason"] = failures[name]
+        compact = compact_node(node)
+        if compact is not None:
+            fields[name] = compact
+
+    doc_status = STATUS_MAP_REVERSE.get(status, "REVIEW_REQUIRED")
+    return {
+        "documentId": document_id,
+        "envelopeVersion": ENVELOPE_VERSION,
+        "documentClassification": classification,
+        "documentCount": 1,
+        "tracking": tracking,
+        **({"metadata": metadata} if metadata else {}),
+        "validation": {
+            "status": status,
+            "reviewRequired": status != "APROBADO",
+            "summary": summary,
+            "counts": {doc_status: 1},
+        },
+        "documents": [
+            {
+                "index": 1,
+                "documentType": classification,
+                "pageStart": 1,
+                "pageEnd": 1,
+                "status": doc_status,
+                "confidence": None,
+                "fields": fields,
+            }
+        ],
+        "checks": [
+            {
+                "field": getattr(c, "field", None),
+                "rule": getattr(c, "rule", None),
+                "valid": getattr(c, "valid", True),
+                "message": getattr(c, "message", None),
+            }
+            for c in checks
+        ],
+        "processedAt": tracking.get("createdAt"),
+    }

@@ -22,6 +22,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _envelope_shape import array_counts, documents_of, field_confidence, field_value  # noqa: E402
+
 GREEN, RED, YELLOW, CYAN, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[36m", "\033[2m", "\033[0m"
 DEV_STACK = "DocumentValidationStack-Dev"
 PROD_STACK = "DocumentValidationStack"
@@ -125,16 +128,14 @@ def print_document(doc: dict) -> None:
     ds = doc.get("status", "-")
     print(f"\n   📄 p{doc.get('pageStart')}-{doc.get('pageEnd')}  "
           f"{doc.get('documentType')}  →  {STATUS_COLOR.get(ds, '')}{ds}{RESET}")
-    entities = doc.get("extractedEntities", {})
-    fields = doc.get("fields") or {}
     for name in KEY_FIELDS:
-        slot = fields.get(name) or {}
-        value = slot.get("normalizedValue") or slot.get("extractedValue") or entities.get(name)
+        value = field_value(doc, name)
         if value not in (None, "", []):
-            conf = slot.get("confidence")
+            conf = field_confidence(doc, name)
             conf_s = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
-            print(f"      {name} = {value}  {DIM}{slot.get('status', '')}{conf_s}{RESET}")
-    arrays = {k: len(v) for k, v in entities.items() if isinstance(v, list) and v}
+            status = ((doc.get("fields") or {}).get(name) or {}).get("status", "")
+            print(f"      {name} = {value}  {DIM}{status}{conf_s}{RESET}")
+    arrays = {k: n for k, n in array_counts(doc).items() if n}
     if arrays:
         print(f"      {DIM}arrays: " + ", ".join(f"{k}×{n}" for k, n in arrays.items()) + RESET)
     for c in [c for c in doc.get("checks", []) if not c.get("valid") and not c.get("skipped")][:5]:
@@ -199,17 +200,20 @@ def main() -> int:
             )
             if body.returncode == 0 and body.stdout.strip():
                 full = json.loads(body.stdout)
-                out = {**out, "expediente": full}
+                # El resultado completo de S3 tiene la MISMA raíz que el
+                # envelope v2 (documents/crossDocumentChecks/pages), solo que
+                # más profunda: se puede usar tal cual en lugar del envelope.
+                out = {**out, **full}
                 print(f"{DIM}Detalle completo desde s3://{loc['bucket']}/{loc['key']}{RESET}")
         except Exception as e:
             print(f"{YELLOW}⚠ No pude leer el detalle de S3 ({e}); muestro el resumen compacto.{RESET}")
 
-    exp = deep_find(out, "expediente")
+    exp = out if documents_of(out) else deep_find(out, "expediente")
     val = deep_find(out, "validation") or {}
     vs = val.get("status", "?")
     print(f"\nResultado: {STATUS_COLOR.get(vs, '')}{vs}{RESET}  {DIM}| {val.get('summary', '')}{RESET}")
 
-    if exp:
+    if exp and documents_of(exp):
         pages = exp.get("pages", {})
         # processingSeconds rounds to 2 decimals and reads as a flat "0.0s"
         # for anything under ~5ms (routine for the XML pipeline, which never
@@ -229,10 +233,10 @@ def main() -> int:
         )
         print(f"Expediente: {STATUS_COLOR.get(exp.get('status'), '')}{exp.get('status')}{RESET}  "
               f"| {source_note} | {duration}")
-        for doc in exp.get("documents", []):
+        for doc in documents_of(exp):
             print_document(doc)
         print()
-        for c in exp.get("crossDocumentChecks", []):
+        for c in exp.get("crossDocumentChecks") or exp.get("checks") or []:
             if c.get("skipped"):
                 continue
             mark = f"{GREEN}✓" if c.get("valid") else (f"{YELLOW}!" if c.get("severity") == "warning" else f"{RED}✗")
@@ -240,9 +244,8 @@ def main() -> int:
         for w in exp.get("warnings", []):
             print(f"  {YELLOW}⚠ {w}{RESET}")
     else:
-        entities = deep_find(out, "extractedEntities") or {}
-        for k, v in entities.items():
-            print(f"   {k} = {v}")
+        for doc in documents_of(out):
+            print_document(doc)
         for c in (val.get("checks") or []):
             mark = f"{GREEN}✓" if c.get("valid") else f"{RED}✗"
             print(f"  {mark} {c.get('field')} [{c.get('rule')}]: {c.get('message')}{RESET}")

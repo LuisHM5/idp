@@ -309,7 +309,7 @@ paths:
             done
 
             jq '.validation.status' result.json
-            jq '.expediente.documents[] | {documentType, pageStart, pageEnd, extractedEntities}' result.json
+            jq '.documents[] | {index, documentType, pageStart, pageEnd, fields}' result.json
         - lang: JavaScript
           label: Node.js 18+
           source: |
@@ -325,10 +325,13 @@ paths:
             }
 
             console.log(doc.validation.status);            // APROBADO | REQUIERE_REVISION | RECHAZADO
-            for (const d of doc.expediente.documents) {
-              console.log(d.documentType, `págs ${d.pageStart}-${d.pageEnd}`);
-              for (const [campo, v] of Object.entries(d.extractedEntities ?? {}))
-                console.log("  ", campo, "=", v.value, `(conf ${v.confidence}, valid ${v.valid})`);
+            // `documents` siempre está, traiga el PDF uno o veinte.
+            for (const d of doc.documents) {
+              console.log(`#${d.index}`, d.documentType, `págs ${d.pageStart}-${d.pageEnd}`);
+              for (const [campo, v] of Object.entries(d.fields ?? {})) {
+                if (v.items) console.log("  ", campo, `= ${v.items.length} renglón(es)`);
+                else console.log("  ", campo, "=", v.value, `(conf ${v.confidence}, valid ${v.valid})`);
+              }
             }
         - lang: Python
           label: Python 3 (requests)
@@ -348,10 +351,14 @@ paths:
                 time.sleep(5)
 
             print(doc["validation"]["status"])   # APROBADO | REQUIERE_REVISION | RECHAZADO
-            for d in doc["expediente"]["documents"]:
-                print(d["documentType"], f"págs {d['pageStart']}-{d['pageEnd']}")
-                for campo, v in (d.get("extractedEntities") or {}).items():
-                    print("  ", campo, "=", v["value"], f"(conf {v['confidence']}, valid {v['valid']})")
+            # `documents` siempre está, traiga el PDF uno o veinte.
+            for d in doc["documents"]:
+                print(f"#{d['index']}", d["documentType"], f"págs {d['pageStart']}-{d['pageEnd']}")
+                for campo, v in (d.get("fields") or {}).items():
+                    if "items" in v:
+                        print("  ", campo, f"= {len(v['items'])} renglón(es)")
+                    else:
+                        print("  ", campo, "=", v["value"], f"(conf {v.get('confidence')}, valid {v['valid']})")
         - lang: C#
           label: .NET 6+
           source: |
@@ -373,12 +380,16 @@ paths:
 
             // APROBADO | REQUIERE_REVISION | RECHAZADO
             Console.WriteLine(doc.GetProperty("validation").GetProperty("status"));
-            foreach (var d in doc.GetProperty("expediente").GetProperty("documents").EnumerateArray())
+            // `documents` siempre está, traiga el PDF uno o veinte.
+            foreach (var d in doc.GetProperty("documents").EnumerateArray())
             {
                 var tipo  = d.GetProperty("documentType");
                 var desde = d.GetProperty("pageStart");
                 var hasta = d.GetProperty("pageEnd");
                 Console.WriteLine($"{tipo} págs {desde}-{hasta}");
+                foreach (var campo in d.GetProperty("fields").EnumerateObject())
+                    if (campo.Value.TryGetProperty("value", out var v))
+                        Console.WriteLine($"   {campo.Name} = {v}");
             }
       tags: [Consultar documentos]
       summary: "Paso 3 de 4: consultar el resultado del documento"
@@ -1110,7 +1121,8 @@ paths:
           in: query
           description: >
             Dot-path del campo extraído, p. ej.
-            `extractedEntities.No_Pedimento`. Si no resuelve
+            `No_Pedimento` (basta el nombre; también se acepta un
+            dot-path). Si no resuelve
             en la raíz, hace búsqueda profunda por la última clave del path.
             Cuando es la `unique_key` declarada por el tipo (con `docType` y
             `op=eq`) se resuelve por la tabla de lookup en una sola Query.
@@ -1397,28 +1409,67 @@ components:
         result:
           type: object
           description: >
-            Envelope completo. `extractedEntities`/`expediente` varían según
-            el catálogo del tipo de documento — ver
-            documentacion/API_USO.md §2 para un ejemplo anotado completo.
+            Envelope completo. Los datos extraídos viven en `documents[]`, un
+            elemento por documento encontrado en el archivo — siempre un
+            arreglo, con uno o con varios. Los campos de cada documento
+            dependen del catálogo de su tipo. Ver documentacion/API_USO.md §2
+            para un ejemplo anotado completo.
           properties:
             documentId: { type: string }
-            documentClassification: { type: string }
+            envelopeVersion:
+              type: integer
+              description: >
+                `2` = envelope plano (`documents[]` en la raíz). Ausente = un
+                resultado guardado con la forma anterior, que el API devuelve tal
+                cual se guardó: `extractedEntities` en la raíz (el árbol del
+                PRIMER documento solamente) y `expediente.documents[]`. Checa
+                este campo antes de asumir `documents[]` en documentos
+                históricos.
+            documentClassification:
+              type: string
+              description: >
+                Cuando TODOS los documentos del archivo son del mismo tipo, ese
+                es el tipo. EXPEDIENTE_ADUANAL_MULTIDOCUMENTO queda para paquetes
+                de tipos mixtos.
+            documentCount:
+              type: integer
+              description: Documentos principales encontrados (excluye los OTRO).
             tracking: { $ref: "#/components/schemas/Tracking" }
-            extractedEntities:
-              type: object
-              description: Escalares del documento principal.
-              additionalProperties: true
             validation:
               type: object
               properties:
                 status: { type: string, enum: [APROBADO, RECHAZADO, REQUIERE_REVISION] }
+                reviewRequired: { type: boolean }
                 summary: { type: string }
-            expediente:
+                counts:
+                  type: object
+                  description: Cuántos documentos quedaron en cada status.
+                  additionalProperties: { type: integer }
+            documents:
+              type: array
+              description: >
+                Un elemento por documento encontrado en el archivo — SIEMPRE un
+                arreglo, con uno o con veinte. Es el único lugar donde viven los
+                datos extraídos.
+              items: { $ref: "#/components/schemas/ExtractedDocument" }
+            checks:
+              type: array
+              description: >
+                Verificaciones de nivel documento (entre documentos en el pipeline
+                de expedientes). Las de POR CAMPO están en
+                `documents[i].fields[*].valid`/`reason`.
+              items: { type: object, additionalProperties: true }
+            warnings: { type: array, items: { type: string } }
+            sourceFile: { type: string }
+            sourceFormat: { type: string }
+            pages: { type: object, additionalProperties: true }
+            usage: { type: object, additionalProperties: true }
+            omitted:
               type: object
               description: >
-                Presente solo para el flujo de expedientes/pedimentos
-                multi-documento (pipeline: "expediente"). Incluye
-                status/sourceFormat/pages/documents[]/crossDocumentChecks/tracking.
+                Presente solo si el envelope no cabía en el presupuesto de bytes:
+                lista qué arreglos se cambiaron por su conteo. El contenido
+                completo sigue en S3 (`?full=1`).
               additionalProperties: true
             fullResult:
               type: object
@@ -1429,6 +1480,33 @@ components:
               properties:
                 bucket: { type: string }
                 key: { type: string }
+    ExtractedDocument:
+      type: object
+      description: Un documento encontrado dentro del archivo.
+      properties:
+        index: { type: integer, description: "Posición dentro de documents[], base 1." }
+        documentType: { type: string }
+        documentSubtype: { type: string, nullable: true }
+        businessDestination: { type: string }
+        pageStart: { type: integer }
+        pageEnd: { type: integer }
+        status:
+          type: string
+          enum: [APPROVED, PARTIALLY_APPROVED, REVIEW_REQUIRED, REJECTED, PROCESSING_ERROR]
+        confidence: { type: number, nullable: true }
+        error: { type: string, description: "Presente solo si falló ESTE documento." }
+        errorType: { type: string }
+        liquidacionNormalizada: { type: object, additionalProperties: true }
+        fields:
+          type: object
+          description: >
+            Los campos del documento. Escalar -> `{value, confidence, valid}`
+            (+ `reason` solo si `valid` es falso, + `source` solo si NO es
+            MODEL_EXTRACTION). Objeto -> `{fields: {...}}`. Arreglo ->
+            `{items: [{fields: {...}}]}`. **Un campo se omite solo cuando el
+            documento no lo traía Y no era obligatorio**: todo lo demás viaja con
+            su `reason`.
+          additionalProperties: true
     FileDownloadResponse:
       type: object
       properties:

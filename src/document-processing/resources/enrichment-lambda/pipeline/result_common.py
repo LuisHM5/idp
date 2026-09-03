@@ -25,6 +25,7 @@ def build_tracking(
     started_monotonic: float,
     model_id: Optional[str],
     doc_types: Optional[List[str]] = None,
+    timings: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Provenance for a result: created/updated, processing window, schema/version.
 
@@ -61,6 +62,9 @@ def build_tracking(
     # exactly that case, without dropping the existing seconds field anyone
     # already reads.
     elapsed = time.time() - started_monotonic
+    # `timings` (ms por etapa: pageLoad/segmentation/extraction/validation) solo
+    # aparece cuando el pipeline lo midió. Es lo que permite responder "¿en qué
+    # se fueron los 56 segundos?" sin volver a correr el documento con logs.
     return {
         "createdAt": now.isoformat(),
         "updatedAt": now.isoformat(),
@@ -68,6 +72,7 @@ def build_tracking(
         "processingCompletedAt": now.isoformat(),
         "processingSeconds": round(elapsed, 2),
         "processingMs": round(elapsed * 1000, 2),
+        **({"timings": timings} if timings else {}),
         "schema": schema,
     }
 

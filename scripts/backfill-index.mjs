@@ -22,6 +22,7 @@
 
 import { readFileSync, writeFileSync, unlinkSync } from "fs";
 import { execSync } from "child_process";
+import { readDocuments } from "../src/document-processing/resources/query-lambda/envelope-shape.mjs";
 
 const STACK = process.env.STACK_NAME || "DocumentValidationStack";
 
@@ -141,15 +142,17 @@ function trackingAttribute(envelope) {
 /** Same derivation as enrichment-lambda/indexing.py, from a stored envelope. */
 function deriveAttributes(envelope) {
   const type = String(envelope.documentClassification || "OTRO").trim().toUpperCase();
+  // Relee envelopes de CUALQUIER edad: v2 los trae en la raíz, v1 dentro de
+  // `expediente` (ver query-lambda/envelope-shape.mjs).
   const expediente = envelope.expediente || {};
   const contained = new Set([type]);
-  for (const doc of expediente.documents || []) {
+  for (const doc of readDocuments(envelope)) {
     const t = String(doc.documentType || "").trim().toUpperCase();
     if (t) contained.add(t);
   }
   const processedAt =
     envelope.processedAt || expediente.processedAt || new Date(0).toISOString();
-  const name = String(expediente.sourceFile || "").split("/").pop();
+  const name = String(envelope.sourceFile || expediente.sourceFile || "").split("/").pop();
 
   const attrs = {
     DocumentType: { S: type },

@@ -11,7 +11,12 @@ mantener tres copias de la misma lógica de normalización que puedan divergir.
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _envelope_shape import documents_of  # noqa: E402
 
 GREEN, RED, YELLOW, CYAN, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[36m", "\033[2m", "\033[0m"
 
@@ -201,23 +206,29 @@ def normalize_cost_item(it: Dict[str, Any]) -> Dict[str, Any]:
 # Normalización — tabla de tracking de documentos
 # ---------------------------------------------------------------------------
 
-def _doc_confidences(expediente: Dict[str, Any]) -> List[float]:
+def _doc_confidences(envelope: Dict[str, Any]) -> List[float]:
     out = []
-    for d in expediente.get("documents", []) or []:
+    for d in documents_of(envelope):
         c = d.get("confidence")
         if isinstance(c, (int, float)):
             out.append(float(c))
     return out
 
 
-def _field_stats(expediente: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
-    """Agrega fieldsValidity de cada documento del expediente. Cobertura
-    parcial en expedientes field-centric multi-documento: el detalle completo
-    de cada documento interno solo vive en `results/{id}.json`, no en esta
-    tabla — este reporte solo ve lo que el envelope compacto trae."""
+def _field_stats(envelope: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """Válidos/total por campo, sumando TODOS los documentos del archivo.
+
+    Desde el envelope v2 cada documento trae sus campos completos, así que esto
+    ya cubre un expediente multi-documento entero; antes solo veía el
+    `fieldsValidity` del envelope compacto, que en los tipos field-centric
+    venía vacío. Los resultados guardados en la forma vieja se siguen leyendo
+    por ese camino."""
     stats: Dict[str, Dict[str, int]] = {}
-    for d in expediente.get("documents", []) or []:
-        for name, f in (d.get("fieldsValidity") or {}).items():
+    for d in documents_of(envelope):
+        slots = d.get("fields") or d.get("fieldsValidity") or {}
+        for name, f in slots.items():
+            if not isinstance(f, dict) or "valid" not in f:
+                continue
             s = stats.setdefault(name, {"ok": 0, "total": 0})
             s["total"] += 1
             if f.get("valid"):
@@ -251,9 +262,7 @@ def normalize_doc_item(it: Dict[str, Any]) -> Dict[str, Any]:
             envelope = json.loads(raw)
         except (ValueError, TypeError):
             envelope = {}
-    expediente = envelope.get("expediente") or {}
-
-    confidences = _doc_confidences(expediente)
+    confidences = _doc_confidences(envelope)
     avg_conf = (sum(confidences) / len(confidences)) if confidences else None
 
     processing_seconds = tracking.get("ProcessingSeconds")
@@ -271,9 +280,9 @@ def normalize_doc_item(it: Dict[str, Any]) -> Dict[str, Any]:
         "model": str(model),
         "processing_seconds": processing_seconds,
         "avg_confidence": avg_conf,
-        "warnings": expediente.get("warnings") or [],
-        "field_stats": _field_stats(expediente),
-        "sub_document_count": len(expediente.get("documents") or []),
+        "warnings": envelope.get("warnings") or (envelope.get("expediente") or {}).get("warnings") or [],
+        "field_stats": _field_stats(envelope),
+        "sub_document_count": len(documents_of(envelope)),
     }
 
 

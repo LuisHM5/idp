@@ -152,14 +152,21 @@ until curl -sS -f "$API/documents/$DOC_ID" -H "x-api-key: $KEY" -o result.json; 
 done
 
 jq '.validation.status' result.json
-jq '.expediente.documents[] | {documentType, pageStart, pageEnd}' result.json
+# `documents` siempre está, traiga el PDF uno o varios documentos.
+jq '.documents[] | {index, documentType, pageStart, pageEnd}' result.json
 ```
 
-Los campos extraídos:
+Los campos extraídos, por documento:
 
 ```bash
-jq '.expediente.documents[].extractedEntities' result.json
+jq '.documents[].fields' result.json
+
+# Solo el valor de cada campo, sin confianza ni validez:
+jq '.documents[] | .fields | map_values(.value // (.items | length))' result.json
 ```
+
+Un campo que **no aparece** significa que el documento no lo traía y no era
+obligatorio. Todo lo demás viaja con su `valid: false` y su `reason`.
 
 Qué hacer con cada estado:
 
@@ -167,7 +174,7 @@ Qué hacer con cada estado:
 |---|---|---|
 | `APROBADO` | Todas las reglas pasaron | Consumir los campos |
 | `REQUIERE_REVISION` | Confianza baja, campo no encontrado o documento truncado | Revisión humana: mira `warnings` y los campos con `valid: false` |
-| `RECHAZADO` | Falló una regla dura | No consumir; revisar `crossDocumentChecks` |
+| `RECHAZADO` | Falló una regla dura | No consumir; revisar `checks` |
 
 ---
 

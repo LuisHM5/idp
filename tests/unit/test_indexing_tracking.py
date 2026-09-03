@@ -82,3 +82,27 @@ def test_derive_index_attributes_includes_tracking():
 
 def test_index_column_names_lists_tracking():
     assert "Tracking" in indexing.index_column_names()
+
+
+def test_los_tiempos_por_etapa_llegan_a_la_columna_indexada():
+    """`tracking.timings` es lo que permite responder "¿en qué se fueron los 56
+    segundos?" desde el item mismo, sin desempacar el JSON del envelope. Sus
+    valores son floats, que boto3 rechaza si no pasan por _decimalize."""
+    attr = indexing._tracking_attribute(
+        {"tracking": {"createdAt": "2026-09-03T00:00:00Z",
+                      "timings": {"pageLoad": 3120.4, "extraction": 41200.1}}}
+    )
+    assert set(attr["Timings"]) == {"pageLoad", "extraction"}
+    assert not any(isinstance(v, float) for v in attr["Timings"].values())
+
+
+def test_build_tracking_solo_reporta_timings_cuando_los_hay():
+    """Un pipeline que no los mide no debe emitir una llave vacía."""
+    import time
+    from datetime import datetime, timezone
+
+    from pipeline.result_common import build_tracking
+
+    now, mono = datetime.now(timezone.utc), time.time()
+    assert "timings" not in build_tracking(now, mono, None)
+    assert build_tracking(now, mono, None, timings={"pageLoad": 1.0})["timings"] == {"pageLoad": 1.0}

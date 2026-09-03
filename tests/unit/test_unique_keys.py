@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 LAMBDA_DIR = REPO / "src/document-processing/resources/enrichment-lambda"
 sys.path.insert(0, str(LAMBDA_DIR))
@@ -161,7 +163,34 @@ def test_python_and_javascript_normalizers_are_the_same_rules():
 # ------------------------------------------------------------- derivation
 
 
+def _v2_result():
+    """Envelope v2: `documents[]` en la raíz, campos en forma de nodo."""
+    return {
+        "documentId": "doc-1",
+        "envelopeVersion": 2,
+        "documentClassification": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",
+        "processedAt": "2026-08-31T00:00:00Z",
+        "validation": {"status": "APROBADO"},
+        "sourceFile": "processed/doc-1/expediente.pdf",
+        "documents": [
+            {
+                "index": 1,
+                "documentType": "PEDIMENTO_ADUANAL",
+                "fields": {
+                    "NUMERO_PEDIMENTO": {"value": "26 07 0823 6001630", "valid": True},
+                    "NUMERO_PEDIMENTO_NORMALIZADO": {"value": "260708236001630", "valid": True},
+                    # Un arreglo no es una unique key: se ignora sin estorbar.
+                    "PARTIDAS": {"items": [{"fields": {"DESC": {"value": "algo"}}}]},
+                },
+            },
+            {"index": 2, "documentType": "OTRO", "fields": {}},
+        ],
+    }
+
+
 def _expediente_result():
+    """Envelope v1 tal como quedó GUARDADO en DynamoDB antes de v2. Se sigue
+    leyendo: `pnpm backfill:keys` recorre resultados de cualquier edad."""
     return {
         "documentId": "doc-1",
         "documentClassification": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",
@@ -183,10 +212,11 @@ def _expediente_result():
     }
 
 
-def test_a_document_inside_an_expediente_is_keyed_by_its_own_type():
+@pytest.mark.parametrize("result", [_v2_result(), _expediente_result()], ids=["v2", "v1-guardado"])
+def test_a_document_inside_an_expediente_is_keyed_by_its_own_type(result):
     """Not by the container's: the searchable identity is the pedimento's,
     and the container type is only recorded as provenance."""
-    rows = unique_keys.derive_unique_keys(_expediente_result())
+    rows = unique_keys.derive_unique_keys(result)
     assert len(rows) == 1
     row = rows[0]
     assert row["UniqueKey"] == "PEDIMENTO_ADUANAL#260708236001630"
@@ -282,3 +312,28 @@ def test_the_cap_stops_writing_instead_of_failing(monkeypatch):
 def test_write_is_a_no_op_without_a_table(monkeypatch):
     monkeypatch.setattr(unique_keys, "_UNIQUE_KEY_TABLE", None)
     assert unique_keys.write_unique_keys(_expediente_result()) == []
+
+
+def test_v2_varias_facturas_del_mismo_tipo_no_reportan_contenedor():
+    """Un archivo con dos facturas del mismo tipo se clasifica con ESE tipo
+    (ver pipeline/envelope.py::classification_of), así que no hay contenedor
+    del cual venir: cada factura escribe su propia fila."""
+    rows = unique_keys.derive_unique_keys(
+        {
+            "documentId": "doc-9",
+            "envelopeVersion": 2,
+            "documentClassification": "PEDIMENTO_ADUANAL",
+            "validation": {"status": "APROBADO"},
+            "documents": [
+                {"index": 1, "documentType": "PEDIMENTO_ADUANAL",
+                 "fields": {"NUMERO_PEDIMENTO_NORMALIZADO": {"value": "260708236001630"}}},
+                {"index": 2, "documentType": "PEDIMENTO_ADUANAL",
+                 "fields": {"NUMERO_PEDIMENTO_NORMALIZADO": {"value": "260708236001631"}}},
+            ],
+        }
+    )
+    assert [r["UniqueKey"] for r in rows] == [
+        "PEDIMENTO_ADUANAL#260708236001630",
+        "PEDIMENTO_ADUANAL#260708236001631",
+    ]
+    assert all("ContainerType" not in r for r in rows)

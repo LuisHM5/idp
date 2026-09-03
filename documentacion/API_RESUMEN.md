@@ -109,8 +109,9 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 | `documentId` · `workflowStatus` · `documentType` · `documentTypeName` | wrapper de la API |
 | `result.documentId` · `result.documentClassification` | envelope persistido |
 | `result.validation.status` | `APROBADO` `REQUIERE_REVISION` `RECHAZADO` |
-| `result.expediente.documents[]` | `documentType` `pageStart` `pageEnd` `status` `extractedEntities` |
-| `result.tracking` · `result.metadata` · `result.warnings` · `result.expediente.crossDocumentChecks` | contexto y detalle |
+| `result.documents[]` | **siempre un arreglo**, con 1 o con N: `index` `documentType` `pageStart` `pageEnd` `status` `fields` |
+| `result.documentCount` · `result.envelopeVersion` | cuántos documentos trae · `2` (ausente = resultado guardado con la forma anterior) |
+| `result.tracking` · `result.metadata` · `result.warnings` · `result.checks` | contexto y detalle |
 | `fullResult` | solo con `full=1`; resultado profundo desde S3 con la metadata vigente superpuesta |
 
 `404` — no existe **o todavía procesando**. Reintenta.

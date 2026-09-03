@@ -241,51 +241,53 @@ O con el atajo del repo, que hace los dos pasos: `pnpm enviar expediente.pdf EXP
 
 ### Estructura del resultado (tipos aduanales)
 
-Los tipos del catálogo de pedimentos pasan por el pipeline de expedientes. El evento conserva el sobre clásico (`validation.status`: `APROBADO`/`RECHAZADO`/`REQUIERE_REVISION`) y agrega el detalle completo en `expediente`:
+Los tipos del catálogo de pedimentos pasan por el pipeline de expedientes. El
+evento trae `validation.status` (`APROBADO`/`RECHAZADO`/`REQUIERE_REVISION`) y
+**`documents[]` en la raíz: un elemento por documento encontrado, con uno o con
+veinte.** Ese arreglo es el único lugar donde viven los datos extraídos.
 
 ```jsonc
 {
   "documentId": "…",
+  "envelopeVersion": 2,
+  // Si TODOS los documentos son del mismo tipo, ese es el tipo; el contenedor
+  // queda para paquetes de tipos mixtos.
   "documentClassification": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",
+  "documentCount": 23,
   "validation": {
     "status": "REQUIERE_REVISION",
-    "summary": "expediente: REVIEW_REQUIRED (23 documents)",
+    "reviewRequired": true,
+    "summary": "23 documento(s) — 21 APPROVED, 2 REVIEW_REQUIRED",
+    "counts": { "APPROVED": 21, "REVIEW_REQUIRED": 2 },
   },
-  "expediente": {
-    "status": "REVIEW_REQUIRED", // APPROVED | REJECTED | PARTIALLY_APPROVED | REVIEW_REQUIRED | PROCESSING_ERROR
-    "pages": { "totalPages": 86, "nativePages": 68, "ocrPages": 18 },
-    "documents": [
-      {
-        "documentType": "PEDIMENTO_ERP",
-        "pageStart": 3,
-        "pageEnd": 7,
-        "status": "APPROVED",
-        "confidence": 0.96,
-        "fields": {
-          "No_Pedimento": {
-            "extractedValue": "26 07 3435 6041248", // SIEMPRE el texto original
-            "normalizedValue": "260734356041248", // normalización determinística
-            "confidence": 0.95,
-            "status": "VALIDATED", // VALIDATED | INVALID | LOW_CONFIDENCE | NOT_FOUND | NOT_APPLICABLE | REVIEW_REQUIRED
-            "checks": [{ "rule": "regex", "valid": true, "message": "…" }],
-          },
-        },
-        "recoveredFields": { "PEDIMENTO_REFERENCE": "P0823 6001187" }, // recuperaciones regex auditables
+  "documents": [
+    {
+      "index": 1,
+      "documentType": "PEDIMENTO_ERP",
+      "pageStart": 3,
+      "pageEnd": 7,
+      "status": "APPROVED", // APPROVED | REJECTED | PARTIALLY_APPROVED | REVIEW_REQUIRED | PROCESSING_ERROR
+      "confidence": 0.96,
+      "fields": {
+        "No_Pedimento": { "value": "260734356041248", "confidence": 0.95, "valid": true },
+        // Un campo que no aparece = el documento no lo traía y no era
+        // obligatorio. Si falló algo, viaja con "valid": false y su "reason".
+        "PARTIDAS": { "items": [{ "fields": { "DESCRIPCION": { "value": "…", "confidence": 0.9, "valid": true } } }] },
       },
-    ],
-    "crossDocumentChecks": [
-      {
-        "rule": "same_pedimento",
-        "valid": true,
-        "message": "all documents reference pedimento consecutivo 6041248",
-      },
-    ],
-    "warnings": [],
-  },
+      "recoveredFields": { "PEDIMENTO_REFERENCE": "P0823 6001187" }, // recuperaciones regex auditables
+    },
+  ],
+  // Reglas de nivel documento. Las de POR CAMPO están en fields[*].valid/reason.
+  "checks": [
+    { "rule": "same_pedimento", "valid": true, "message": "all documents reference pedimento consecutivo 6041248" },
+  ],
+  "warnings": [],
+  "pages": { "totalPages": 86, "nativePages": 68, "ocrPages": 18 },
+  "resultLocation": { "bucket": "…", "key": "results/{id}.json" },
 }
 ```
 
-Política anti-invención: `extractedValue` nunca se sustituye; si un dato no está en el documento, es `null` con estado `NOT_FOUND` — jamás un valor inventado.
+Política anti-invención: el valor leído nunca se sustituye; si un dato no está en el documento, no se inventa. El detalle profundo por campo (`extractedValue` textual, `normalizedValue`, `status`, `checks`) vive en `results/{id}.json` — ver `resultLocation` o `GET /documents/{id}?full=1`.
 
 ## 5. Actualizar
 

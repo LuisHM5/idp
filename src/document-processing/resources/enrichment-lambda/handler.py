@@ -43,6 +43,7 @@ from cost_audit import write_cost_record
 from extractors import get_extractor
 from indexing import write_index_attributes
 from unique_keys import write_unique_keys
+from pipeline import envelope
 from pipeline.bedrock import fallback_events, reset_used_models, set_model_override, used_models
 from pipeline.model_fallback import reload_fallback_models
 
@@ -155,8 +156,7 @@ def build_canonical_result(
     # pipeline.result_common's build_tracking(), so both flows expose the
     # same `tracking.*` fields even though the standard flow doesn't compute
     # the richer schema/processing-window info the expediente pipeline does.
-    processed_at = datetime.now(timezone.utc).isoformat()
-    tracking: Dict[str, Any] = {"createdAt": processed_at}
+    tracking: Dict[str, Any] = {"createdAt": datetime.now(timezone.utc).isoformat()}
     if model_ids:
         tracking["modelIds"] = model_ids
     if app_origin:
@@ -164,32 +164,23 @@ def build_canonical_result(
     if model_fallbacks:
         tracking["modelFallbacks"] = model_fallbacks
 
-    return {
-        "documentId": document_id,
-        "documentClassification": classification,
-        "tracking": tracking,
-        # The caller's own context from `POST /documents` (`metadata`), carried
-        # here verbatim and never interpreted — see _upload_metadata. Kept OUT
-        # of `tracking`, which is this system's provenance: these two have
-        # different owners, different trust levels, and only this one is
-        # filterable with `GET /documents?meta.<key>=<value>`.
-        **({"metadata": upload_metadata} if upload_metadata else {}),
-        "extractedEntities": entity_map,
-        "validation": {
-            "status": status,
-            "checks": [
-                {
-                    "field": c.field,
-                    "rule": c.rule,
-                    "valid": c.valid,
-                    "message": c.message,
-                }
-                for c in checks
-            ],
-            "summary": summary,
-        },
-        "processedAt": processed_at,
-    }
+    # Misma forma que el flujo expediente: `documents[]` en la raíz, con un
+    # elemento. Ver pipeline/envelope.py — el objetivo es que un consumidor
+    # tenga UN parser, no uno por flujo.
+    # El `metadata` del caller viaja verbatim y nunca se interpreta (ver
+    # _upload_metadata), fuera de `tracking`: son de dueños distintos, con
+    # niveles de confianza distintos, y solo este es filtrable con
+    # `GET /documents?meta.<clave>=<valor>`.
+    return envelope.build_standard(
+        document_id=document_id,
+        classification=classification,
+        entity_map=entity_map,
+        checks=checks,
+        status=status,
+        tracking=tracking,
+        metadata=upload_metadata,
+        summary=summary,
+    )
 
 
 def run_python_validation(
@@ -468,15 +459,6 @@ process.stdout.write(JSON.stringify(result));
         ]
 
 
-_EXPEDIENTE_STATUS_MAP = {
-    "APPROVED": "APROBADO",
-    "REJECTED": "RECHAZADO",
-    "PARTIALLY_APPROVED": "REQUIERE_REVISION",
-    "REVIEW_REQUIRED": "REQUIERE_REVISION",
-    "PROCESSING_ERROR": "REQUIERE_REVISION",
-}
-
-
 def _run_expediente(
     event: Dict[str, Any], document_id: str, classification: str
 ) -> Optional[Dict[str, Any]]:
@@ -572,24 +554,15 @@ def _run_expediente(
     except Exception as e:
         logger.error("failed to persist full result to s3://%s/%s: %s", bucket, result_key, e)
 
-    # Legacy-compatible envelope so EventBridge consumers keep working,
-    # with a compact expediente summary attached.
-    main_docs = [d for d in result.get("documents", []) if d.get("documentType") != "OTRO"]
-    main = main_docs[0] if main_docs else None
-    # Report what the segmenter actually found, not the upstream vision guess
-    if len(main_docs) == 1:
-        final_classification = main["documentType"]
-    elif len(main_docs) > 1:
-        final_classification = "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
-    else:
-        final_classification = classification
-    # Same top-level `tracking` shape build_canonical_result uses for the
-    # standard flow — here it starts from the pipeline's own build_tracking()
-    # (createdAt/updatedAt/processingStartedAt/processingCompletedAt/
-    # processingSeconds/processingMs/schema, set by every pipeline branch:
-    # expediente.py, xml_document.py, tabular_document.py) and adds
-    # modelIds/appOrigin/modelFallbacks on top, instead of those living as
-    # separate loose top-level envelope keys.
+    # Envelope v2: `documents[]` en la raíz, un elemento por documento
+    # encontrado, sea uno o veinte. Ver pipeline/envelope.py.
+    #
+    # `tracking` es la misma forma que arma build_canonical_result para el flujo
+    # estándar: arranca del build_tracking() del pipeline (createdAt/updatedAt/
+    # processingStartedAt/processingCompletedAt/processingSeconds/processingMs/
+    # schema/timings, que ponen todas las ramas — expediente.py, xml_document.py,
+    # tabular_document.py) y le agrega modelIds/appOrigin/modelFallbacks encima,
+    # en vez de que esos vivan como llaves sueltas del envelope.
     tracking = {
         **(result.get("tracking") or {}),
         "modelIds": _model_ids(event),
@@ -597,167 +570,16 @@ def _run_expediente(
         **({"modelFallbacks": fallback_events()} if fallback_events() else {}),
     }
 
-    return {
-        "documentId": document_id,
-        "documentClassification": final_classification,
-        "tracking": tracking,
-        **(
-            {"metadata": _upload_metadata(event)}
-            if _upload_metadata(event)
-            else {}
-        ),
-        "extractedEntities": _entities_for_envelope(main or {}),
-        "validation": {
-            "status": _EXPEDIENTE_STATUS_MAP.get(result.get("status"), "REQUIERE_REVISION"),
-            "summary": f"expediente: {result.get('status')} ({len(result.get('documents', []))} documents)",
-            "checks": [],
-        },
-        "expediente": _compact_expediente(result),
-        "resultLocation": result_location,
-        "processedAt": result.get("processedAt"),
-    }
-
-
-def _scalar_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
-    """Entity map without repeatable arrays (kept small for the envelope)."""
-    return {k: v for k, v in entities.items() if not isinstance(v, (list, dict))}
-
-
-def _scalar_entities_from_field_tree(entities: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact scalar-only projection of a field-centric-DSL `extractedEntities`
-    tree ({value, confidence, valid, reason, source} per field), for the
-    per-document view inside the compact `expedient` envelope. Repeating the
-    FULL recursive structure there (as well as at the top level) roughly
-    doubled the response for a single-document expediente — the top-level
-    `extractedEntities` already carries the full detail (and the S3 result
-    has it too, see `resultLocation`), so this one only needs `value`, same
-    as the legacy `_scalar_entities` it parallels."""
-    return {
-        name: node.get("value")
-        for name, node in entities.items()
-        if isinstance(node, dict) and "value" in node and node.get("value") not in (None, "", [])
-    }
-
-
-def _array_counts_from_field_tree(entities: Dict[str, Any]) -> Dict[str, int]:
-    """`{field: row count}` for every array field in a field-centric-DSL
-    `extractedEntities` tree — the field-tree equivalent of the legacy
-    `arrayCounts` (arrays become counts in the compact envelope, full rows
-    stay in the top-level `extractedEntities`/S3 result)."""
-    return {
-        name: len(node["items"])
-        for name, node in entities.items()
-        if isinstance(node, dict) and isinstance(node.get("items"), list) and node["items"]
-    }
-
-
-def _entities_for_envelope(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Top-level `extractedEntities` for the returned envelope.
-
-    Field-centric DSL documents (schema_version 4.x, `doc["fieldTreeShape"]`
-    set by `pipeline/expediente.py`) already carry the full recursive
-    {value|fields|items, confidence, valid, reason, source} structure from
-    `engine.resolve_field_tree` for every field, arrays and nested objects
-    included — passed through as-is. Legacy-DSL documents keep the historical
-    scalars-only raw-value view (`_scalar_entities`), since their per-field
-    valid/reason detail lives separately in `expediente.fieldsValidity`.
-    """
-    entities = doc.get("extractedEntities", {})
-    if doc.get("fieldTreeShape"):
-        return entities
-    return _scalar_entities(entities)
-
-
-def _fields_validity(fields: Dict[str, Any]) -> Dict[str, Any]:
-    """Condensed value/confidence/valid/reason per scalar field, for the
-    compact envelope (the one that lands in DynamoDB — see
-    `_compact_expediente`). `fields` is `resolve_fields()`'s output, which
-    also has the full `status`/`checks`/`extractedValue`/`normalizedValue`
-    detail; that stays S3-only (see `resultLocation`) to keep this envelope
-    small. Repeatable/array fields are skipped here (already summarized via
-    `arrayCounts`) — this covers the same fields as `extractedEntities`.
-    """
-    return {
-        name: {
-            "value": f.get("value"),
-            "confidence": f.get("confidence"),
-            "valid": f.get("valid"),
-            "reason": f.get("reason"),
-        }
-        for name, f in fields.items()
-        if not isinstance(f.get("extractedValue"), (list, dict))
-    }
-
-
-def _compact_expediente(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Summary of the expediente result that fits Step Functions payloads.
-
-    Per document: type, pages, status, confidence, scalar entities (plain
-    values, for search/backward-compat) and `fieldsValidity` (value +
-    confidence + valid + reason per scalar field). Arrays become item
-    counts and the full per-field detail (status enum + individual rule
-    checks) stays in the full S3 result (see `resultLocation`).
-    """
-    docs = []
-    for d in result.get("documents", []):
-        entities = d.get("extractedEntities", {})
-        if d.get("fieldTreeShape"):
-            # Field-centric DSL: the FULL recursive value/confidence/valid/
-            # reason/source structure already lives at the top-level
-            # `extractedEntities` (see `_entities_for_envelope`) and in the
-            # S3 full result — this compact per-document view only needs
-            # scalar values + array row counts, same budget as the legacy
-            # fieldsValidity/arrayCounts split (Step Functions payload limit).
-            per_doc_entities = _scalar_entities_from_field_tree(entities)
-            fields_validity = {}
-            array_counts = _array_counts_from_field_tree(entities)
-        else:
-            per_doc_entities = _scalar_entities(entities)
-            fields_validity = _fields_validity(d.get("fields") or {})
-            array_counts = {k: len(v) for k, v in entities.items() if isinstance(v, list)}
-        docs.append(
-            {
-                "documentType": d.get("documentType"),
-                "documentSubtype": d.get("documentSubtype"),
-                "pageStart": d.get("pageStart"),
-                "pageEnd": d.get("pageEnd"),
-                "status": d.get("status"),
-                "confidence": d.get("confidence"),
-                "businessDestination": d.get("businessDestination"),
-                "extractedEntities": per_doc_entities,
-                **({"fieldsValidity": fields_validity} if fields_validity else {}),
-                **({"arrayCounts": array_counts} if array_counts else {}),
-                **({"recoveredFields": d["recoveredFields"]} if d.get("recoveredFields") else {}),
-                **({"liquidacionNormalizada": d["liquidacionNormalizada"]} if d.get("liquidacionNormalizada") else {}),
-            }
-        )
-    return {
-        "processingId": result.get("processingId"),
-        "sourceFile": result.get("sourceFile"),
-        "processedAt": result.get("processedAt"),
-        "processingSeconds": result.get("processingSeconds"),
-        "processingMs": result.get("processingMs"),
-        # Kept here too (not just at the envelope's top-level `tracking`,
-        # see _run_expediente): this is the per-expediente detail — which
-        # schema/type versions actually processed THIS expediente, its own
-        # processing window — useful on its own even without reading the
-        # top-level summary, and existing consumers already read it from here.
-        "tracking": result.get("tracking"),
-        "sourceFormat": result.get("sourceFormat"),
-        "pages": result.get("pages"),
-        "status": result.get("status"),
-        "reviewRequired": result.get("reviewRequired"),
-        "documents": docs,
-        "crossDocumentChecks": result.get("crossDocumentChecks", []),
-        "warnings": result.get("warnings", []),
-        **({"truncated": result["truncated"]} if result.get("truncated") else {}),
-        # Bedrock token usage (segmentation + extraction), passed through
-        # unchanged from process_pdf's own aggregate (pipeline/expediente.py)
-        # so cost_audit.py can price this expediente without re-reading the
-        # full S3 result. Absent for the XML/tabular pipelines (genuinely
-        # zero Bedrock cost — no `usage` key to pass through).
-        **({"usage": result["usage"]} if result.get("usage") else {}),
-    }
+    return envelope.build(
+        document_id=document_id,
+        result=result,
+        tracking=tracking,
+        metadata=_upload_metadata(event),
+        result_location=result_location,
+        # Solo se usa si el archivo no produjo ningún documento principal: sin
+        # documentos que mirar, la única señal de tipo es la de clasificación.
+        fallback_classification=classification,
+    )
 
 
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:

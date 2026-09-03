@@ -313,6 +313,11 @@ dotnet run -- /ruta/al/pedimento.pdf
 - app-origin y model-id son claves reservadas.
 - estado_externo es un estado libre del ERP; nunca sustituye
   result.validation.status.
+- Los datos extraídos viven en result.documents[], un elemento por documento
+  encontrado dentro del archivo. Ese arreglo SIEMPRE está, traiga el PDF uno o
+  varios: un PDF puede llegar con dos facturas y el ERP tiene que verlas las
+  dos. Los campos de cada uno están en documents[i].fields, y un campo que no
+  aparece significa que el documento no lo traía y no era obligatorio.
 - El PATCH necesita AllowMetadataWrite=true y sigue respetando el alcance y
   los tipos autorizados de la app.
 - Un 404 al consultar inmediatamente después del PUT normalmente indica que

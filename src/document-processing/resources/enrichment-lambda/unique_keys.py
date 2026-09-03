@@ -127,14 +127,13 @@ def unique_key_specs(type_id: str) -> List[Dict[str, Any]]:
 
 
 def _values(entities: Dict[str, Any]) -> Dict[str, Any]:
-    """Flat `{FIELD: value}` from either `extractedEntities` shape.
+    """Flat `{FIELD: value}` desde `documents[i].fields`.
 
-    The envelope carries two: the field-centric tree at the top level
-    (`{value, confidence, valid, ...}` per field, see
-    `handler._entities_for_envelope`) and the already-flattened scalar map
-    per document inside `expediente.documents[]`
-    (`handler._scalar_entities_from_field_tree`). Reading both here means the
-    caller never has to care which pipeline produced the result.
+    Un nodo escalar es `{value, confidence, valid, ...}`; los objetos
+    (`{fields: ...}`) y los arreglos (`{items: [...]}`) se ignoran a propósito:
+    una unique key es siempre un escalar de primer nivel. También acepta un
+    valor pelón, que es como los emitía el envelope v1 por documento — así
+    `pnpm backfill:keys` puede releer resultados guardados de antes.
     """
     out: Dict[str, Any] = {}
     for name, node in (entities or {}).items():
@@ -151,14 +150,16 @@ def _document_sources(
 ) -> List[Tuple[str, Dict[str, Any], Optional[str]]]:
     """`(document_type, values, container_type)` per document in the result.
 
-    A single-document result yields one entry with no container. An
-    expediente yields one per document it contains, each carrying the
-    container's own classification so a hit can say where it was found.
+    Cada documento del archivo produce una entrada, sean uno o veinte. El
+    `container` solo se llena cuando la clasificación del archivo NO es la del
+    documento — o sea, en un paquete de tipos mixtos: un archivo con dos
+    facturas del mismo tipo se clasifica con ese tipo y no hay contenedor que
+    reportar.
     """
     classification = str(
         result.get("documentClassification") or _DEFAULT_TYPE
     ).strip().upper() or _DEFAULT_TYPE
-    documents = (result.get("expediente") or {}).get("documents") or []
+    documents = result.get("documents") or (result.get("expediente") or {}).get("documents") or []
     if not documents:
         return [(classification, _values(result.get("extractedEntities")), None)]
 
@@ -168,7 +169,9 @@ def _document_sources(
         if not doc_type or doc_type == "OTRO":
             continue
         container = classification if classification != doc_type else None
-        sources.append((doc_type, _values(doc.get("extractedEntities")), container))
+        # v2: `fields`. v1 (resultados ya guardados): `extractedEntities`.
+        entities = doc.get("fields") if doc.get("fields") is not None else doc.get("extractedEntities")
+        sources.append((doc_type, _values(entities), container))
     return sources
 
 
@@ -187,13 +190,13 @@ def derive_unique_keys(
     if not document_id or document_id == "unknown":
         return []
 
-    expediente = result.get("expediente") or {}
+    legacy = result.get("expediente") or {}
     processed_at = str(
-        result.get("processedAt") or expediente.get("processedAt") or _now()
+        result.get("processedAt") or legacy.get("processedAt") or _now()
     )
     status = str((result.get("validation") or {}).get("status") or _DEFAULT_STATUS)
     document_name = str(
-        source_key or expediente.get("sourceFile") or ""
+        source_key or result.get("sourceFile") or legacy.get("sourceFile") or ""
     ).rsplit("/", 1)[-1]
     indexed_at = _now()
 

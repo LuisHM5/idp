@@ -86,7 +86,7 @@ handler()  handler.py:715
 6. **Ensamblado + `tracking`** (versión, tiempos, esquema).
 7. **Persistencia**: escribe el resultado **completo** a `results/{id}.json` en S3
    (`handler.py:514-530`) y devuelve un **envelope compacto**
-   (`_compact_expediente`) para caber en el payload de Step Functions.
+   (`pipeline/envelope.py::build`, con presupuesto de bytes) para caber en el payload de Step Functions.
 
 #### CAMINO B — Clásico (DSL legacy; sus catálogos están aparcados)
 Un solo documento; **reutiliza** la extracción de `ProcessingStep`:

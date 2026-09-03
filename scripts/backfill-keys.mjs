@@ -33,6 +33,7 @@
 import { readFileSync, writeFileSync, unlinkSync } from "fs";
 import { execSync } from "child_process";
 import { buildUniqueKey } from "./_unique_keys.mjs";
+import { readDocuments } from "../src/document-processing/resources/query-lambda/envelope-shape.mjs";
 
 const STACK = process.env.STACK_NAME || "DocumentValidationStack";
 /** DynamoDB caps a BatchWriteItem at 25 requests. */
@@ -99,7 +100,8 @@ function uniqueKeysByType() {
   return byType;
 }
 
-/** Flat {FIELD: value} from either `extractedEntities` shape — mirror of
+/** Flat {FIELD: value} de un mapa de campos, en cualquiera de sus formas
+ * (nodo `{value, ...}` de v2, o valor pelón de v1) — espejo de
  * `enrichment-lambda/unique_keys.py::_values`. */
 function values(entities) {
   const out = {};
@@ -121,12 +123,14 @@ function deriveRows(envelope, specsByType, indexedAt) {
 
   const classification = String(envelope.documentClassification || "OTRO").trim().toUpperCase();
   const expediente = envelope.expediente || {};
-  const docs = expediente.documents || [];
+  // Este script relee envelopes guardados de CUALQUIER edad, así que pasa por
+  // el normalizador en vez de conocer una sola forma (ver envelope-shape.mjs).
+  const docs = readDocuments(envelope);
   const sources = docs.length
     ? docs
         .map((d) => ({
           type: String(d.documentType || "").trim().toUpperCase(),
-          values: values(d.extractedEntities),
+          values: values(d.fields),
         }))
         .filter((sourceDoc) => sourceDoc.type && sourceDoc.type !== "OTRO")
         .map((sourceDoc) => ({
@@ -137,7 +141,7 @@ function deriveRows(envelope, specsByType, indexedAt) {
 
   const processedAt = String(envelope.processedAt || expediente.processedAt || "");
   const status = String((envelope.validation || {}).status || "REQUIERE_REVISION");
-  const documentName = String(expediente.sourceFile || "").split("/").pop();
+  const documentName = String(envelope.sourceFile || expediente.sourceFile || "").split("/").pop();
 
   const rows = [];
   const seen = new Set();

@@ -10,7 +10,7 @@ run a DynamoDB Query against the `DocumentTypeIndex` GSI:
     ProcessedAt             (S)  ISO-8601 timestamp, GSI sort key
     DocumentTypeName        (S)  human-readable name ("Pedimento Aduanal")
     ValidationStatus        (S)  APROBADO | RECHAZADO | REQUIERE_REVISION
-    ContainedDocumentTypes  (SS) every type found inside an expediente
+    ContainedDocumentTypes  (SS) every type found inside the file
     DocumentName            (S)  source file name, when known
     IndexedAt               (S)  when these columns were written
     Metadata                (M)  the caller's own `metadata` from
@@ -68,24 +68,24 @@ def display_name_for(type_id: str) -> str:
     return " ".join(part.capitalize() for part in type_id.split("_") if part)
 
 
-def _document_name(
-    result: Dict[str, Any], expediente: Dict[str, Any], source_key: Optional[str]
-) -> str:
-    """Original file name: the S3 key's basename, or the expediente source."""
-    source = source_key or expediente.get("sourceFile") or ""
+def _document_name(result: Dict[str, Any], source_key: Optional[str]) -> str:
+    """Original file name: the S3 key's basename, or the envelope's source."""
+    source = source_key or result.get("sourceFile") or ""
     return str(source).rsplit("/", 1)[-1]
 
 
-def _contained_types(classification: str, expediente: Dict[str, Any]) -> Set[str]:
+def _contained_types(classification: str, result: Dict[str, Any]) -> Set[str]:
     """Every document type present in the result, including the top-level one.
 
-    For a multi-document expediente the top-level type is
-    EXPEDIENTE_ADUANAL_MULTIDOCUMENTO, so searching for PEDIMENTO_ADUANAL would
-    otherwise miss the pedimento inside it. This set is filterable server-side
-    from the GSI (`contains(ContainedDocumentTypes, :t)`).
+    Un archivo con documentos de tipos DISTINTOS se etiqueta
+    EXPEDIENTE_ADUANAL_MULTIDOCUMENTO, así que buscar PEDIMENTO_ADUANAL se
+    perdería el pedimento de adentro sin este conjunto, filtrable del lado del
+    GSI (`contains(ContainedDocumentTypes, :t)`). Cuando todos los documentos
+    son del mismo tipo, ese tipo YA es la clasificación (ver
+    `pipeline/envelope.py::classification_of`) y esto solo lo confirma.
     """
     types: Set[str] = {classification}
-    for doc in expediente.get("documents", []) or []:
+    for doc in result.get("documents", []) or []:
         doc_type = str(doc.get("documentType") or "").strip().upper()
         if doc_type:
             types.add(doc_type)
@@ -110,8 +110,8 @@ def _decimalize(value: Any) -> Any:
 # camelCase (envelope's `tracking`) -> PascalCase (this module's DynamoDB
 # column naming convention) — every field build_tracking() sets (see
 # pipeline/result_common.py) plus modelIds/appOrigin/modelFallbacks, so this
-# column never lags behind what the nested `expediente.tracking` already
-# carries. modelFallbacks (pipeline/bedrock.py::fallback_events) is present
+# column never lags behind el `tracking` del envelope (que a partir de v2 es
+# uno solo, ya no duplicado dentro de `expediente`). modelFallbacks (pipeline/bedrock.py::fallback_events) is present
 # only for stages that actually switched models this run — expected vs.
 # actual model and retry count, see catalogs/README.md's fallback section.
 _TRACKING_FIELD_MAP = {
@@ -121,6 +121,7 @@ _TRACKING_FIELD_MAP = {
     "processingCompletedAt": "ProcessingCompletedAt",
     "processingSeconds": "ProcessingSeconds",
     "processingMs": "ProcessingTime",
+    "timings": "Timings",
     "schema": "Schema",
     "appOrigin": "AppOrigin",
     "modelIds": "ModelIds",
@@ -153,20 +154,17 @@ def derive_index_attributes(
     classification = str(
         result.get("documentClassification") or _DEFAULT_TYPE
     ).strip().upper() or _DEFAULT_TYPE
-    expediente = result.get("expediente") or {}
     validation = result.get("validation") or {}
 
     attributes: Dict[str, Any] = {
         "DocumentType": classification,
         "DocumentTypeName": display_name_for(classification),
-        "ProcessedAt": str(
-            result.get("processedAt") or expediente.get("processedAt") or _now()
-        ),
+        "ProcessedAt": str(result.get("processedAt") or _now()),
         "ValidationStatus": str(validation.get("status") or _DEFAULT_STATUS),
-        "ContainedDocumentTypes": _contained_types(classification, expediente),
+        "ContainedDocumentTypes": _contained_types(classification, result),
         "IndexedAt": _now(),
     }
-    name = _document_name(result, expediente, source_key)
+    name = _document_name(result, source_key)
     if name:
         attributes["DocumentName"] = name
     tracking_attr = _tracking_attribute(result)

@@ -486,7 +486,7 @@ Archivo: `handler.py:437`.
    - varios: `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`;
    - ninguno: conserva la clasificación upstream.
 9. Agrega `tracking.modelIds`, `appOrigin` y `modelFallbacks`.
-10. `_compact_expediente()` crea el resumen que cabe en el estado de Step
+10. `pipeline/envelope.py::build()` arma el envelope v2 que cabe en el estado de Step
     Functions y retorna el envelope canónico.
 
 ## 12. Camino PDF o imagen, función por función
@@ -743,13 +743,15 @@ Este camino no escribe `results/{id}.json`; el envelope devuelto se almacena en
 ## 16. Compactación del resultado nuevo
 
 El resultado profundo puede exceder el límite de 256 KB del estado de Step
-Functions. `_compact_expediente()` (`handler.py:644`) crea otra representación:
+Functions. `pipeline/envelope.py::build()` crea otra representación:
 
 - conserva metadatos, tracking, páginas, status, warnings, cross checks y uso;
 - por documento conserva tipo, páginas, status, confianza y destino;
-- para field-centric, el `extractedEntities` superior conserva el árbol completo,
-  mientras el documento interno conserva scalars y `arrayCounts`;
-- para legacy dentro del pipeline nuevo, agrega `fieldsValidity` y cuenta arrays;
+- `documents[]` en la raíz, un elemento por documento, cada uno con SUS campos y
+  SUS renglones — ya no hay un `extractedEntities` superior con el árbol del
+  primer documento ni un mapa de scalars repetido por documento;
+- los dos DSL (field-centric y legacy) producen la misma forma de nodo
+  (`{value, confidence, valid}`), y un campo vacío y válido simplemente se omite;
 - conserva `recoveredFields` y `liquidacionNormalizada` cuando existen.
 
 Por eso hay dos niveles deliberados:
@@ -994,7 +996,7 @@ Para un `documentId`:
 - Cambiar un `rule_type`: `validators/engine.py::_dispatch_rule`.
 - Cambiar una regla entre documentos: `_shared.json` y
   `expediente.py::_run_cross_document_rules`.
-- Cambiar la forma consultable: `handler.py::_compact_expediente`,
+- Cambiar la forma consultable: `pipeline/envelope.py::build`,
   `indexing.py` y `query-lambda`.
 - Recordar siempre que la Lambda retorna primero; Step Functions escribe
   `EnrichmentResult`, mueve el archivo y publica el evento después.
@@ -1061,7 +1063,7 @@ idea debe entrar y qué contrato podría afectar.
 | Detectar `documentType` inexistente antes de subir bytes | `upload-lambda/index.mjs:72-110` y una lectura del catálogo | XML/XLSX/CSV siguen requiriendo tipo; decidir qué hacer si DynamoDB está caído |
 | Reducir riesgo de throttling por concurrencia anidada | `pdf_pages.py:165-194`, `expediente.py:174-371`, `text_extractor.py:514-672` | `OCR_WORKERS`, `EXTRACT_WORKERS`, `CHUNK_WORKERS`, reintentos y tiempo máximo de 15 min |
 | Volver coherentes las cuatro escrituras finales | `handler.py:715-740`, `handler.py:514-530`, `indexing.py:170-206`, `unique_keys.py:234-262`, estados posteriores de Step Functions | tolerancia best-effort actual, reintentos idempotentes y recuperación tras una escritura parcial |
-| Dar el mismo contrato de resultado al flujo legacy y al nuevo | `_process()` en `handler.py:743-855`, `_compact_expediente()` y `query-lambda.fetchFullResult()` | clientes existentes, `API_USO.md` y tamaño del estado de Step Functions |
+| Dar el mismo contrato de resultado al flujo legacy y al nuevo | `_process()` en `handler.py`, `pipeline/envelope.py::build`/`build_standard` y `query-lambda.fetchFullResult()` | clientes existentes, `API_USO.md` y tamaño del estado de Step Functions |
 | Publicar más contexto en EventBridge | estado terminal del blueprint/construct y consumidores externos | no exceder tamaño del evento; evitar duplicar el resultado completo o filtrar datos sensibles |
 | Mejorar observabilidad por fase | `tracking` en `pipeline/result_common.py`, registry de `pipeline/bedrock.py`, `indexing.py` y `cost_audit.py` | mantener paridad camelCase/PascalCase y serialización Decimal compatible con DynamoDB |
 | Procesar expedientes que excedan 15 minutos | frontera `_run_expediente()` → `process_pdf()` y definición de la Task | cambiar a fan-out/asíncrono altera idempotencia, shape del estado y momento de mover `raw/` |
@@ -1109,7 +1111,7 @@ función dueña porque no son invocables desde fuera de ella.
 | `ExtractionResult` | text extractor/extractor legacy | expediente/handler | entidades, confidence, usage, warnings |
 | `RuleCheck` | engine | resolver, status, result builders | field, rule, valid, severity, message, skipped |
 | `DeepResult` | `process_pdf/xml/tabular` | `_run_expediente` | documentos, checks, tracking, usage, status |
-| `Envelope` | `_run_expediente` o legacy handler | index, cost audit, Step Functions | classification, validation, extractedEntities, expediente?, tracking |
+| `Envelope` (v2) | `_run_expediente` o flujo estándar, vía `pipeline/envelope.py` | index, cost audit, Step Functions | envelopeVersion, classification, documentCount, validation, **documents[]**, checks, pages/usage, tracking |
 | `DocumentItem` | Step Functions + indexing | Query Lambda | WorkflowStatus, EnrichmentResult string, índices, Tracking map |
 
 ### 27.3 Infraestructura que define el camino, pero no corre por documento
@@ -1225,9 +1227,9 @@ Archivo: `src/document-processing/resources/enrichment-lambda/handler.py`.
 | `_scalar_entities()` (`:573`) | entidades legacy anidadas | elimina arrays/objetos y conserva escalares | resumen escalar → documento compacto |
 | `_scalar_entities_from_field_tree()` (`:578`) | árbol resuelto field-centric | recorre leaves, toma `value` y omite arrays | resumen escalar → documento compacto |
 | `_array_counts_from_field_tree()` (`:594`) | árbol resuelto | cuenta `items` en arrays, recursivo | `{path:count}` → documento compacto |
-| `_entities_for_envelope()` (`:606`) | documento profundo | elige árbol completo/entidades públicas según DSL | `extractedEntities` superior del Envelope |
+| `envelope.document_view()` | documento profundo | compacta los campos a `{value, confidence, valid}` y omite los vacíos-y-válidos | un elemento de `documents[]` |
 | `_fields_validity()` (`:623`) | fields resueltos | aplana estado/validez/reason por path | resumen legacy/compatibilidad → compacto |
-| `_compact_expediente()` (`:644`) | DeepResult | reduce documentos/arrays conservando tracking, checks y resúmenes | expediente compacto → Envelope/Step Functions |
+| `envelope.build()` | DeepResult | arma el envelope plano y lo ajusta al presupuesto de bytes (`fit_to_budget`) | Envelope v2 → Step Functions/DynamoDB |
 | `handler()` (`:715`) | WorkflowEvent + context | resetea modelos, mide, llama `_process`, luego index y cost audit best-effort | Envelope → Step Functions; DDB documents/costs como side effects |
 | `_process()` (`:743`) | WorkflowEvent | recarga catálogo/fallback; resuelve tipo; decide pipeline nuevo o legacy; captura excepción final | Envelope → `handler` |
 
@@ -1239,7 +1241,7 @@ handler(event)
   → _process
       → reload_catalog / reload_fallback_models
       → get_type_entry
-      ├─ nuevo → _run_expediente → process_* → S3 results → _compact_expediente
+      ├─ nuevo → _run_expediente → process_* → S3 results → envelope.build
       └─ legacy → entities_to_map → _run_validation
                      → [_try_reextract] → [_run_validation]
                      → [run_custom_node_validator]
@@ -1810,7 +1812,7 @@ GET /documents?field=... sin docType
 | estructura `fields` del catálogo | catalog parsers | tool schema/prompt, XML/tabular extraction, engine resolver, liquidación, indexing display |
 | nuevo `rule_type` | catálogo | `_dispatch_rule`, status/resolvers, unit tests y catálogo README |
 | shape de `ExtractionResult` | text/legacy extractors | `_extract_segment`, usage merge, recovery y cost audit |
-| shape de `DeepResult` | `process_pdf/xml/tabular` | `_run_expediente`, S3 `results/`, `_compact_expediente`, Query `fullResult` |
+| shape de `DeepResult` | `process_pdf/xml/tabular` | `_run_expediente`, S3 `results/`, `pipeline/envelope.py`, Query `fullResult` |
 | shape de `Envelope` | handler builders | indexing, cost audit, Step Functions `EnrichmentResult`, Query parse/auth/filter, API docs |
 | nombre/status indexado | `derive_index_attributes` | GSI schema, queryByType, backfill y Apps AllowedDocTypes |
 | `tracking` | result builders | `_tracking_attribute`, CostTable, authorization `appOrigin`, API consumers |

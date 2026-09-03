@@ -65,8 +65,8 @@ def _upstream_bedrock_cost(event: Dict[str, Any], key: str) -> Dict[str, Any]:
     return bedrock_cost(phase.get("usage"), phase.get("modelId"))
 
 
-def _expediente_pages(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    pages = (result.get("expediente") or {}).get("pages")
+def _page_counts(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    pages = result.get("pages")
     if not isinstance(pages, dict) or not pages.get("totalPages"):
         return None
     return {
@@ -81,11 +81,11 @@ def build_cost_breakdown(
     result: Dict[str, Any], event: Dict[str, Any], duration_ms: float
 ) -> Dict[str, Any]:
     """Full per-service $ breakdown for one enrichment Lambda invocation."""
-    usage = (result.get("expediente") or {}).get("usage") or {}
+    usage = result.get("usage") or {}
     segmentation = usage.get("segmentation") or {}
     extraction = usage.get("extraction") or {}
     locator = usage.get("pageLocator") or {}
-    pages = _expediente_pages(result)
+    pages = _page_counts(result)
     ocr_pages = pages["Ocr"] if pages else 0
 
     services = {

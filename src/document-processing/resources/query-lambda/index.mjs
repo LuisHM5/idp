@@ -129,6 +129,7 @@ import {
   paramList,
   splitList,
 } from "./search-filters.mjs";
+import { readDocuments, arrayCounts } from "./envelope-shape.mjs";
 import { parseMetadataPatch } from "./metadata-rules.mjs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -253,16 +254,19 @@ function canSeeDocument(caller, envelope) {
 
 /** Compact one document result for list/search responses.
  *
- * Includes the primary document's arrayCounts and liquidacionNormalizada so the
- * summary is useful on its own; the full per-field detail + array contents live
- * in S3 (results/{id}.json) — request them with `full=1` or GET /documents/{id}.
+ * Trae `documentCount` y los campos del PRIMER documento, para que el resumen
+ * se entienda solo; el resto de los documentos y el detalle por campo están en
+ * `GET /documents/{id}`, y las filas completas en S3 (results/{id}.json) con
+ * `full=1`. Lee las dos versiones de envelope (ver envelope-shape.mjs).
  */
 function summarize(envelope) {
+  const docs = readDocuments(envelope);
+  const primary = docs[0] || {};
   const exp = envelope.expediente || {};
-  const primary = (exp.documents || [])[0] || {};
   return {
     documentId: envelope.documentId,
     documentClassification: envelope.documentClassification,
+    documentCount: envelope.documentCount !== undefined ? envelope.documentCount : docs.length,
     status: (envelope.validation && envelope.validation.status) || exp.status,
     processedAt: envelope.processedAt,
     // The two filterable axes that are NOT extracted from the document:
@@ -271,8 +275,8 @@ function summarize(envelope) {
     // response can be read back without a second call to confirm what matched.
     ...(documentAppOrigin(envelope) && { appOrigin: documentAppOrigin(envelope) }),
     ...(envelope.metadata && { metadata: envelope.metadata }),
-    extractedEntities: envelope.extractedEntities || {},
-    arrayCounts: primary.arrayCounts || {},
+    fields: primary.fields || {},
+    arrayCounts: arrayCounts(primary),
     liquidacionNormalizada: primary.liquidacionNormalizada,
   };
 }

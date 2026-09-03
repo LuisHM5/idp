@@ -305,6 +305,18 @@ def process_pdf(
             stage=stage, exception=exception, source_format=source_format,
         )
 
+    # Cronómetro por etapa. Sin esto, "tardó 56 segundos" no se puede desglosar
+    # en OCR / segmentación / extracción / validación, y cualquier optimización
+    # se evalúa a ciegas. Sale en `tracking.timings` del envelope.
+    timings: Dict[str, float] = {}
+    stage_started = time.time()
+
+    def _mark(stage: str) -> None:
+        nonlocal stage_started
+        now = time.time()
+        timings[stage] = round((now - stage_started) * 1000, 1)
+        stage_started = now
+
     original_page_count: Optional[int] = None
     page_cap = _MAX_PAGES
     selection_drives_cap = False
@@ -331,8 +343,10 @@ def process_pdf(
 
     if not pages:
         return _fail(f"{source_format} document has no pages", stage="page_load")
+    _mark("pageLoad")
 
     segments, segmentation_usage = segment_pages(pages, declared_type=declared_type, model_id=model_id)
+    _mark("segmentation")
 
     if not is_image:
         # Shared reader for QR-recovery rasterization only (see qr_recovery.py) —
@@ -360,6 +374,7 @@ def process_pdf(
         documents: List[Dict[str, Any]] = list(
             pool.map(lambda seg: _extract_segment(seg, pages, model_id, qr_reader), segments)
         )
+    _mark("extraction")
 
     # ---- validation pass (with sibling context)
     siblings = [
@@ -432,6 +447,8 @@ def process_pdf(
             ]
             doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else 0.0
 
+    _mark("validation")
+
     # ---- expediente-level cross-document rules
     cross_checks = _run_cross_document_rules(documents, expected_values)
 
@@ -456,6 +473,7 @@ def process_pdf(
     tracking = build_tracking(
         started_at, started, model_id,
         doc_types=[d["documentType"] for d in documents],
+        timings=timings,
     )
     warnings = [c["message"] for c in cross_checks if not c["valid"]]
     truncated = original_page_count is not None

@@ -52,18 +52,17 @@ DOC = {
 
 
 def _breakdown(documents):
+    # Envelope v2: `usage`/`pages` viven en la raíz, ya no dentro de `expediente`.
     result = {
         "documentId": "doc-1",
-        "expediente": {
-            "usage": {
-                "extraction": {
-                    "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-                    "usage": {"inputTokens": 18719, "outputTokens": 1800},
-                },
-                "pageSelection": _page_selection_summary(documents),
+        "usage": {
+            "extraction": {
+                "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "usage": {"inputTokens": 18719, "outputTokens": 1800},
             },
-            "pages": {"totalPages": 86, "nativePages": 67, "ocrPages": 19, "emptyPages": 0},
+            "pageSelection": _page_selection_summary(documents),
         },
+        "pages": {"totalPages": 86, "nativePages": 67, "ocrPages": 19, "emptyPages": 0},
     }
     return cost_audit.build_cost_breakdown(result, {}, 12000.0)
 
