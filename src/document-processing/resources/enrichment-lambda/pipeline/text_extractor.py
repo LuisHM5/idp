@@ -9,7 +9,7 @@ Long documents are chunked by pages; scalars merge with first-non-null-wins
 (higher confidence preferred) and arrays are concatenated in page order.
 
 Anti-hallucination contract enforced in the prompt:
-- value null when the data is not on the document (never invented)
+- absent keys when the data is not on the document (never invented)
 - values verbatim as printed (normalization happens deterministically later)
 - per-field confidence 0-1 reported by the model, then combined with the
   OCR confidence of the source pages.
@@ -22,7 +22,7 @@ import logging
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import FieldSpec, TypeRegistryEntry
@@ -53,6 +53,12 @@ _MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "32000"))
 # clients are thread-safe (pipeline.bedrock.client() is an lru_cache
 # singleton, already relied on by the segment-level pool).
 _CHUNK_WORKERS = int(os.environ.get("CHUNK_WORKERS", "2"))
+# A large field-centric schema with repeatable rows is harder for slower
+# models to finish reliably in one tool call. Above this static-schema size,
+# split non-repeatable fields and arrays into two independent calls. They use
+# the same bounded pool as page chunks, so one-page documents run both calls
+# concurrently without multiplying the existing concurrency ceiling.
+_FIELD_TREE_SPLIT_SCHEMA_CHARS = int(os.environ.get("FIELD_TREE_SPLIT_SCHEMA_CHARS", "10000"))
 
 
 @dataclass
@@ -334,6 +340,48 @@ def _field_tree_schema_block(field_tree: Dict[str, FieldSpec]) -> str:
     return "CAMPOS:\n" + "\n".join(_field_tree_schema_lines(field_tree))
 
 
+def _partition_field_tree(
+    tree: Dict[str, FieldSpec],
+) -> Tuple[Dict[str, FieldSpec], Dict[str, FieldSpec]]:
+    """Split a schema into non-repeatable and repeatable branches.
+
+    Objects are retained in both branches when necessary so nested arrays such
+    as ``CUADRO_LIQUIDACION.CONCEPTOS`` keep their original path. The split is
+    based exclusively on DSL shape, never on a document type or field name.
+    """
+    non_arrays: Dict[str, FieldSpec] = {}
+    arrays: Dict[str, FieldSpec] = {}
+    for name, spec in tree.items():
+        if spec.computed:
+            continue
+        if spec.type == "array":
+            arrays[name] = spec
+        elif spec.type == "object":
+            child_non_arrays, child_arrays = _partition_field_tree(spec.fields)
+            if child_non_arrays:
+                non_arrays[name] = replace(spec, fields=child_non_arrays)
+            if child_arrays:
+                arrays[name] = replace(spec, fields=child_arrays)
+        else:
+            non_arrays[name] = spec
+    return non_arrays, arrays
+
+
+def _field_tree_call_partitions(
+    tree: Dict[str, FieldSpec],
+) -> List[Tuple[str, Dict[str, FieldSpec]]]:
+    """Return one full-schema call or two bounded calls for a large schema."""
+    non_arrays, arrays = _partition_field_tree(tree)
+    should_split = (
+        bool(non_arrays)
+        and bool(arrays)
+        and len(_field_tree_schema_block(tree)) >= _FIELD_TREE_SPLIT_SCHEMA_CHARS
+    )
+    if should_split:
+        return [("non_arrays", non_arrays), ("arrays", arrays)]
+    return [("all", tree)]
+
+
 # The key a row uses to report how well IT was read (see `_field_tree_tool_props`).
 ROW_CONFIDENCE_KEY = "confidence"
 
@@ -391,13 +439,24 @@ def _field_tree_tool_schema(field_tree: Dict[str, FieldSpec]) -> Dict[str, Any]:
     return {"type": "object", "properties": _field_tree_tool_props(field_tree)}
 
 
-def _build_field_tree_prompts(type_entry: TypeRegistryEntry, pages: List[PageText]) -> Tuple[str, str]:
+def _build_field_tree_prompts(
+    type_entry: TypeRegistryEntry,
+    pages: List[PageText],
+    field_tree: Optional[Dict[str, FieldSpec]] = None,
+    scope: str = "all",
+) -> Tuple[str, str]:
+    selected_tree = type_entry.field_tree if field_tree is None else field_tree
+    task = {
+        "non_arrays": "Extrae UNICAMENTE los campos escalares y objetos no repetibles del schema.",
+        "arrays": "Extrae UNICAMENTE los campos tipo lista del schema.",
+    }.get(scope, "Extrae los campos del schema.")
     cache_prefix = (
         f"Documento clasificado como {type_entry.type_id}. {type_entry.description}\n\n"
-        "Extrae los campos del schema.\n\n"
-        f"{_field_tree_schema_block(type_entry.field_tree)}\n\n"
+        f"{task}\n\n"
+        f"{_field_tree_schema_block(selected_tree)}\n\n"
         "REGLAS ESTRICTAS:\n"
-        "- NUNCA inventes un valor. Si el dato no aparece en el texto, usa null.\n"
+        "- NUNCA inventes un valor. Si un dato no aparece en el texto, OMITE esa llave por completo; "
+        "no emitas null ni objetos vacios como relleno.\n"
         "- Copia los valores tal cual aparecen impresos (montos con comas, fechas en su formato original).\n"
         "- No calcules ni derives valores que no esten impresos.\n"
         "- En los campos tipo lista extrae TODAS las filas visibles en estas paginas; una fila por objeto.\n"
@@ -405,10 +464,10 @@ def _build_field_tree_prompts(type_entry: TypeRegistryEntry, pages: List[PageTex
         "baja el valor si el OCR se ve corrupto o hay ambiguedad.\n"
         "- En las filas de una lista NO pongas confidence en cada celda: una sola confidence "
         "por fila, que describe que tan bien se leyo ESA fila completa.\n\n"
-        "FORMATO DE RESPUESTA (solo JSON, sin markdown), siguiendo exactamente la forma del schema: "
-        "escalares como {\"value\": ...|null, \"confidence\": 0.95}, objetos con sus subcampos anidados, "
+        "FORMATO DE RESPUESTA (solo JSON, sin markdown), usando exclusivamente llaves presentes en el schema: "
+        "escalares encontrados como {\"value\": ..., \"confidence\": 0.95}, objetos con sus subcampos anidados, "
         "listas como arreglo de objetos cuyos subcampos son el valor directo (sin {value,...}) "
-        "mas una sola \"confidence\" para toda la fila."
+        "mas una sola \"confidence\" para toda la fila. Omite campos, subcampos, objetos y listas sin datos."
     )
     user_text = "TEXTO DEL DOCUMENTO:\n\n" + _pages_block(pages)
     return cache_prefix, user_text
@@ -588,12 +647,15 @@ def _call_model_field_tree(
     pages: List[PageText],
     model_id: Optional[str],
     cache: bool = False,
+    field_tree: Optional[Dict[str, FieldSpec]] = None,
+    scope: str = "all",
 ) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int]]:
     """Field-tree equivalent of `_call_model` — same overflow split-in-half
     retry on `max_tokens`, same caching rule, but a genuinely nested response
     shape (objects/arrays nest for real, not via a flat dotted-key convention)."""
-    cache_prefix, user_text = _build_field_tree_prompts(type_entry, pages)
-    schema = _field_tree_tool_schema(type_entry.field_tree)
+    selected_tree = type_entry.field_tree if field_tree is None else field_tree
+    cache_prefix, user_text = _build_field_tree_prompts(type_entry, pages, selected_tree, scope)
+    schema = _field_tree_tool_schema(selected_tree)
     parsed, meta = converse_structured(
         user_text,
         tool_schema=schema,
@@ -615,9 +677,13 @@ def _call_model_field_tree(
 
     if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
         mid = len(pages) // 2
-        left_e, left_c, left_r, left_u = _call_model_field_tree(type_entry, pages[:mid], model_id, cache=True)
-        right_e, right_c, right_r, right_u = _call_model_field_tree(type_entry, pages[mid:], model_id, cache=True)
-        merged_entity = _merge_field_tree_entities(left_e, right_e, type_entry.field_tree)
+        left_e, left_c, left_r, left_u = _call_model_field_tree(
+            type_entry, pages[:mid], model_id, cache=True, field_tree=selected_tree, scope=scope
+        )
+        right_e, right_c, right_r, right_u = _call_model_field_tree(
+            type_entry, pages[mid:], model_id, cache=True, field_tree=selected_tree, scope=scope
+        )
+        merged_entity = _merge_field_tree_entities(left_e, right_e, selected_tree)
         merged_conf = {**left_c, **right_c}
         # Row confidences are keyed by row CONTENT, so the two halves merge
         # with a plain dict update no matter how the rows themselves were
@@ -627,7 +693,7 @@ def _call_model_field_tree(
 
     seg_conf = _segment_confidence(pages)
     entity, confidences, row_confidences = _parse_field_tree_response(
-        parsed or {}, type_entry.field_tree, seg_conf
+        parsed or {}, selected_tree, seg_conf
     )
     return entity, confidences, row_confidences, usage
 
@@ -636,12 +702,21 @@ def _extract_document_field_tree(
     pages: List[PageText], type_entry: TypeRegistryEntry, model_id: Optional[str] = None
 ) -> ExtractedDoc:
     chunks = _chunk_pages(pages)
+    partitions = _field_tree_call_partitions(type_entry.field_tree)
     use_cache = len(chunks) > 1
-    workers = min(_CHUNK_WORKERS, len(chunks)) or 1
+    calls = [(chunk, scope, tree) for chunk in chunks for scope, tree in partitions]
+    workers = min(_CHUNK_WORKERS, len(calls)) or 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(
-            lambda chunk: _call_model_field_tree(type_entry, chunk, model_id=model_id, cache=use_cache),
-            chunks,
+            lambda call: _call_model_field_tree(
+                type_entry,
+                call[0],
+                model_id=model_id,
+                cache=use_cache,
+                field_tree=call[2],
+                scope=call[1],
+            ),
+            calls,
         ))
 
     usage: Dict[str, int] = {}
@@ -661,6 +736,7 @@ def _extract_document_field_tree(
         row_confidences=row_confidences,
         meta={
             "chunks": len(chunks),
+            "schemaPartitions": len(partitions),
             "pages": [p.number for p in pages],
             "usage": usage,
             "segmentConfidence": round(seg_conf, 4),

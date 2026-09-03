@@ -316,3 +316,80 @@ def test_un_documento_del_dsl_legado_se_ve_igual_que_uno_field_centric():
     assert view["fields"]["FOLIO"] == {"value": "F1", "confidence": 0.9, "valid": True}
     assert "VACIO" not in view["fields"]
     assert view["fields"]["PARTIDAS"]["items"] == [{"fields": {"DESC": {"value": "algo"}}}]
+
+
+# ------------------------------------------- checks que sí corrieron
+
+def _check(rule, skipped):
+    return {"rule": rule, "valid": True, "skipped": skipped, "severity": "warning", "message": "..."}
+
+
+def test_las_reglas_que_no_corrieron_no_se_emiten():
+    """Una regla `skipped` es la AUSENCIA de información. En un archivo de
+    facturas extranjeras, 4 de las 5 reglas cruzadas del catálogo aduanal
+    salían skipped y ocupaban 628 de los 872 bytes del bloque sin decir nada.
+    Siguen completas en el resultado de S3 para auditar qué se evaluó."""
+    env = _build(_result([_doc()], crossDocumentChecks=[
+        _check("same_pedimento", True), _check("expected_importer_rfc", False),
+    ]))
+    assert [c["rule"] for c in env["checks"]] == ["expected_importer_rfc"]
+
+
+def test_si_ninguna_regla_corrio_la_llave_desaparece():
+    env = _build(_result([_doc()], crossDocumentChecks=[
+        _check("same_pedimento", True), _check("unique_cfdi_uuid", True),
+    ]))
+    assert "checks" not in env
+
+
+# ------------------------------------------------------ sourceFile
+
+def test_source_file_es_el_nombre_no_la_llave_de_s3():
+    """La llave apuntaba a `raw/{TIPO}/{id}/archivo.pdf`, donde el objeto vive
+    solo DURANTE el procesamiento: al terminar, el blueprint lo mueve a
+    `processed/{documentId}/`. Publicar ese path es publicar uno que ya no
+    resuelve cuando quien llama lee la respuesta."""
+    env = _build(_result([_doc()], sourceFile="raw/FACTURA_FLETE_EXTRANJERO/abc-123/factura.pdf"))
+    assert env["sourceFile"] == "factura.pdf"
+
+
+# ------------------------------------- confianza compartida del documento
+
+def test_la_confianza_compartida_sube_al_documento():
+    """El extractor reporta la MISMA confianza para casi todo lo que leyó de
+    una página: medido, 62 campos con 7 valores distintos. Repetirla en cada
+    campo esconde justo las excepciones, que son lo único que hay que mirar."""
+    env = _build(_result([_doc(extractedEntities={
+        "A": _node("a", confidence=0.98), "B": _node("b", confidence=0.98),
+        "C": _node("c", confidence=0.98), "D": _node("d", confidence=0.71),
+    })]))
+    doc = env["documents"][0]
+    assert doc["fieldConfidence"] == 0.98
+    assert "confidence" not in doc["fields"]["A"]
+    assert doc["fields"]["D"]["confidence"] == 0.71, "la excepción conserva la suya"
+
+
+def test_la_confianza_de_las_celdas_de_un_renglon_tambien_sube():
+    env = _build(_result([_doc(extractedEntities={
+        "CONCEPTOS": {"items": [
+            {"valid": True, "fields": {"A": _node(1, confidence=0.9), "B": _node(2, confidence=0.9)}},
+            {"valid": True, "fields": {"A": _node(3, confidence=0.9), "B": _node(4, confidence=0.5)}},
+        ]},
+    })]))
+    doc = env["documents"][0]
+    assert doc["fieldConfidence"] == 0.9
+    rows = doc["fields"]["CONCEPTOS"]["items"]
+    assert "confidence" not in rows[0]["fields"]["A"]
+    assert rows[1]["fields"]["B"]["confidence"] == 0.5
+
+
+def test_sin_valor_compartido_no_se_toca_nada():
+    """Con pocos campos, o todos distintos, no hay "línea base" que sacar —
+    inventar una haría que un campo sin `confidence` significara algo falso."""
+    env = _build(_result([_doc(extractedEntities={
+        "A": _node("a", confidence=0.91), "B": _node("b", confidence=0.72),
+        "C": _node("c", confidence=0.55), "D": _node("d", confidence=0.99),
+    })]))
+    doc = env["documents"][0]
+    assert "fieldConfidence" not in doc
+    assert all("confidence" in v for v in doc["fields"].values())

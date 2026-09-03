@@ -172,6 +172,62 @@ def _legacy_fields(doc: Dict[str, Any]) -> Dict[str, Any]:
     return fields
 
 
+def _confidences(fields: Dict[str, Any]) -> List[float]:
+    """Toda confianza del árbol de campos, a cualquier profundidad."""
+    out: List[float] = []
+    for node in (fields or {}).values():
+        if not isinstance(node, dict):
+            continue
+        if isinstance(node.get("items"), list):
+            for row in node["items"]:
+                out.extend(_confidences(row.get("fields") or {}))
+        elif isinstance(node.get("fields"), dict):
+            out.extend(_confidences(node["fields"]))
+        elif isinstance(node.get("confidence"), (int, float)):
+            out.append(node["confidence"])
+    return out
+
+
+def _strip(fields: Dict[str, Any], base: float) -> None:
+    for node in (fields or {}).values():
+        if not isinstance(node, dict):
+            continue
+        if isinstance(node.get("items"), list):
+            for row in node["items"]:
+                _strip(row.get("fields") or {}, base)
+        elif isinstance(node.get("fields"), dict):
+            _strip(node["fields"], base)
+        elif node.get("confidence") == base:
+            del node["confidence"]
+
+
+_MIN_SHARED = 3
+
+
+def lift_confidence(fields: Dict[str, Any]) -> Optional[float]:
+    """Saca a nivel documento la confianza que comparten casi todos los campos.
+
+    El extractor reporta la MISMA confianza para casi todo lo que leyó de una
+    página — medido sobre una respuesta real: 62 campos, 7 valores distintos,
+    26 de ellos con 0.9333 y 25 con 0.9826. Repetir ese número 51 veces no
+    informa de nada y esconde las excepciones, que son lo único que hay que
+    mirar.
+
+    Devuelve el valor compartido (que el documento publica como
+    `fieldConfidence`) y lo borra de los campos que lo tienen, así que **un
+    campo que conserva `confidence` propio es uno que se leyó distinto**.
+    Devuelve None —y no toca nada— cuando no hay tal valor compartido.
+    """
+    values = _confidences(fields)
+    if len(values) < _MIN_SHARED:
+        return None
+    base, shared = Counter(values).most_common(1)[0]
+    if shared < _MIN_SHARED:
+        return None
+    _strip(fields, base)
+    return base
+
+
 # ------------------------------------------------------------ documentos
 
 def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
@@ -202,6 +258,9 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
         view["recoveredFields"] = doc["recoveredFields"]
     if doc.get("liquidacionNormalizada"):
         view["liquidacionNormalizada"] = doc["liquidacionNormalizada"]
+    base = lift_confidence(fields)
+    if base is not None:
+        view["fieldConfidence"] = base
     view["fields"] = fields
     return view
 
@@ -333,19 +392,35 @@ def build(
         },
         "documents": views,
     }
-    if result.get("crossDocumentChecks"):
-        # Un solo nombre para "verificaciones de nivel documento" en los dos
-        # flujos: aquí son las reglas entre documentos, en el estándar son las
-        # reglas del documento único. En `fullResult` la misma lista sigue
-        # llamándose `crossDocumentChecks`, que es su nombre en el pipeline.
-        env["checks"] = result["crossDocumentChecks"]
+    # Solo las verificaciones que REALMENTE corrieron. Una regla `skipped` es
+    # la ausencia de información, no información: en un archivo de facturas
+    # extranjeras, 4 de las 5 reglas cruzadas del catálogo aduanal salían
+    # `skipped` y ocupaban 628 de los 872 bytes del bloque, sin decir nada.
+    # Siguen completas en `fullResult` (`crossDocumentChecks`) para auditar
+    # qué se evaluó y qué no.
+    #
+    # Un solo nombre para "verificaciones de nivel documento" en los dos
+    # flujos: aquí son las reglas entre documentos, en el estándar son las
+    # reglas del documento único.
+    ran = [c for c in (result.get("crossDocumentChecks") or []) if not c.get("skipped")]
+    if ran:
+        env["checks"] = ran
     if result.get("warnings"):
         env["warnings"] = result["warnings"]
     if result.get("error"):
         # El archivo entero falló (ni se pudo leer): bloque estructurado para
         # triage, sin tener que parsear el mensaje libre de `warnings`.
         env["error"] = result["error"]
-    for key in ("processingId", "sourceFile", "sourceFormat", "pages", "usage", "truncated"):
+    if result.get("sourceFile"):
+        # El NOMBRE del archivo, no la llave de S3. La llave apuntaba a
+        # `raw/{TIPO}/{id}/archivo.pdf`, que es donde el objeto vive DURANTE el
+        # procesamiento: al terminar la ejecución el blueprint lo mueve a
+        # `processed/{documentId}/` (o a `failed/`), así que para cuando quien
+        # llama lee esta respuesta ese path ya no resuelve. Los bytes se piden
+        # por `GET /documents/{id}/file`, que sí sabe dónde quedaron. La llave
+        # completa sigue en `fullResult` para forense.
+        env["sourceFile"] = str(result["sourceFile"]).rsplit("/", 1)[-1]
+    for key in ("processingId", "sourceFormat", "pages", "usage", "truncated"):
         if result.get(key) is not None:
             env[key] = result[key]
     env["resultLocation"] = result_location

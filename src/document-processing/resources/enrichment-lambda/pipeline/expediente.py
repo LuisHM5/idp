@@ -1059,9 +1059,20 @@ def _cross_importer_rfc(
     rule: Dict[str, Any], documents: List[Dict[str, Any]], expected_values: Dict[str, str]
 ) -> Dict[str, Any]:
     expected = expected_values.get("IMPORTER_RFC")
+    # Respeta `documents` como el resto de las reglas cruzadas. Sin este
+    # filtro corría sobre lo que hubiera en el archivo: dos facturas
+    # extranjeras del mismo proveedor daban "importer RFC consistent across
+    # documents" — comparar un dato contra sí mismo y reportar que coincide.
+    involved = _docs_of(documents, rule["documents"]) if rule.get("documents") else documents
+    if len(involved) < 2 and not expected:
+        # Sin expectativa configurada, esta regla solo puede medir
+        # CONSISTENCIA, y la consistencia de un solo documento no existe.
+        return {"rule": "expected_importer_rfc", "valid": True, "skipped": True, "severity": "warning",
+                "message": "fewer than two documents carry an importer RFC; consistency check skipped",
+                "details": {}}
     found: Dict[str, List[str]] = {}
     weak: Dict[str, List[str]] = {}
-    for d in documents:
+    for d in involved:
         entities = d.get("_entities") or d.get("extractedEntities") or {}
         rfc = _first_value(entities, _IMPORTER_RFC_FIELDS)
         if rfc and rfc.strip().upper() not in _GENERIC_RFCS:

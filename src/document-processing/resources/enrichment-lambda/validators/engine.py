@@ -62,7 +62,12 @@ class RuleCheck:
     rule: str
     valid: bool
     message: str
-    severity: str = "error"  # "error" | "warning"
+    # "error"   -> tumba el documento (RECHAZADO / PARCIAL)
+    # "warning" -> lo manda a revisión
+    # "info"    -> se reporta y se audita, pero NO cambia el status: para lo
+    #              que hay que saber sin que bloquee (un campo OPCIONAL leído
+    #              por debajo del umbral de confianza, p. ej.)
+    severity: str = "error"  # "error" | "warning" | "info"
     skipped: bool = False    # rule could not run (missing target doc, no expectation)
     details: Dict[str, Any] = dc_field(default_factory=dict)
 
@@ -1067,12 +1072,23 @@ def resolve_field_tree(
             checks.append(RuleCheck(path, "discard_low_confidence", False, discard_reason, severity="warning"))
         elif valid and confidence < type_entry.min_confidence:
             valid, reason = False, f"confidence {confidence} below minimum {type_entry.min_confidence}"
-            # Previously this only demoted the node's own valid/reason —
-            # document_status_from_checks (what every field-tree caller uses
-            # for the document-level status) reads `checks`, not the tree, so
-            # a below-threshold field never affected document status. Record
-            # it as a real check so it does.
-            checks.append(RuleCheck(path, "min_confidence", False, reason, severity="warning"))
+            # El campo SIEMPRE queda marcado (`valid: false` + `reason`): se
+            # leyó por debajo de la barra de confianza del tipo y quien
+            # consuma tiene que saberlo.
+            #
+            # Lo que depende de si el campo es OBLIGATORIO es si además tumba
+            # el documento entero a revisión. `document_status_from_checks`
+            # convierte cualquier `warning` en REVIEW_REQUIRED, y con eso un
+            # campo OPCIONAL bien leído — medido: TERMINOS_PAGO "NET 30" con
+            # 0.7861 contra un mínimo de 0.80 — mandaba a revisión un
+            # documento cuyos 33 campos restantes estaban perfectos. El status
+            # del documento tiene que reflejar si el dato que EXIGISTE es
+            # confiable; para lo opcional, marcar el campo es suficiente.
+            # `severity="info"` lo deja auditable en `checks` sin cambiar el
+            # status (ver `document_status_from_checks`, que solo mira
+            # "error" y "warning").
+            severity = "warning" if spec.required else "info"
+            checks.append(RuleCheck(path, "min_confidence", False, reason, severity=severity))
         elif not valid and type_entry.min_confidence > 0 and confidence >= type_entry.min_confidence:
             # This field is untrustworthy for a reason the raw model×OCR
             # number can't see (its own rule failed, or it's an implicated
@@ -1111,6 +1127,8 @@ def document_status_from_checks(checks: List[RuleCheck]) -> str:
     hard_failures = [c for c in checks if not c.valid and not c.skipped and c.severity == "error"]
     if hard_failures:
         return DOC_PARTIAL if len(hard_failures) < len(checks) else DOC_REJECTED
+    # "info" queda fuera a propósito: se reporta en el campo y en `checks`,
+    # pero no manda el documento a revisión (ver RuleCheck.severity).
     if any(not c.valid and c.severity == "warning" and not c.skipped for c in checks):
         return DOC_REVIEW
     return DOC_APPROVED

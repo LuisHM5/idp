@@ -184,7 +184,17 @@
         "IMPORTADOR_RFC",
         "RFC_PARA_CONSULTA"
       ],
-      "message": "Uno o más documentos no pertenecen al importador configurado"
+      "message": "Uno o más documentos no pertenecen al importador configurado",
+      "documents": [
+        "PEDIMENTO_ADUANAL",
+        "PEDIMENTO_ERP",
+        "FACTURA_HONORARIOS",
+        "FACTURA_AGENCIA_ADUANAL",
+        "CUENTA_GASTOS_AGENTE_ADUANAL",
+        "CFDI_GASTO_TERCERO",
+        "FACTURA_LOGISTICA",
+        "COMPROBANTE_PAGO_ADUANAL"
+      ]
     },
     {
       "rule_type": "unique_cfdi_uuid",

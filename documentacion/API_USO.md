@@ -745,13 +745,17 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
         "businessDestination": "PAGO_FLETE_AMERICANO",
         "pageStart": 1, "pageEnd": 1,
         "status": "APPROVED",             // APPROVED | PARTIALLY_APPROVED | REVIEW_REQUIRED | REJECTED | PROCESSING_ERROR
-        "confidence": 0.9229,
+        "confidence": 0.9229,             // qué tan bien se leyó ESTE documento (promedio)
+        // La confianza que comparten los campos que NO traen la suya. Un campo
+        // con `confidence` propio se leyó distinto — que es cuando hay que
+        // mirarlo. Ausente si no hay tal valor compartido.
+        "fieldConfidence": 0.9826,
         // Si SOLO este documento falló (el resto del archivo sigue):
         // "status": "PROCESSING_ERROR", "error": "mensaje truncado a 300 caracteres",
         // "errorType": "ValueError" (nombre de la excepción Python)
         "fields": {
-          "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.9826, "valid": true },
-          "TOTAL":          { "value": 14612.4, "confidence": 0.9335, "valid": true },
+          "NUMERO_FACTURA": { "value": "SJ191703", "valid": true },   // confianza = fieldConfidence
+          "TOTAL":          { "value": 14612.4, "confidence": 0.9335, "valid": true },  // excepción
           // Objeto anidado
           "DATOS_PAGO": { "fields": { "BANCO": { "value": "WELLS FARGO BANK, NA", "confidence": 0.93, "valid": true } } },
           // Arreglo: TODOS los renglones, de TODOS los documentos
@@ -764,15 +768,18 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
       { "index": 2, "documentType": "FACTURA_FLETE_EXTRANJERO", "pageStart": 2, "pageEnd": 2, "...": "..." }
     ],
 
-    // Reglas de nivel documento: entre documentos en el pipeline de expedientes,
-    // del documento único en el flujo estándar. Las reglas POR CAMPO viven en
-    // `documents[i].fields[*].valid`/`reason`, y completas en `fullResult`.
+    // Reglas de nivel documento que REALMENTE corrieron: entre documentos en el
+    // pipeline de expedientes, del documento único en el flujo estándar. Una
+    // regla que no aplicaba a este archivo no aparece — la llave completa
+    // (incluidas las saltadas) está en `fullResult.crossDocumentChecks`. Si no
+    // corrió ninguna, `checks` no viene. Las reglas POR CAMPO viven en
+    // `documents[i].fields[*].valid`/`reason`.
     "checks": [ { "rule": "expected_importer_rfc", "valid": true, "severity": "warning", "message": "..." } ],
     "warnings": [],
 
     // Datos del ARCHIVO
     "processingId": "890c9bb0-...",
-    "sourceFile": "raw/FACTURA_FLETE_EXTRANJERO/{id}/factura.pdf",
+    "sourceFile": "factura.pdf",          // el NOMBRE; los bytes con GET /documents/{id}/file
     "sourceFormat": "pdf",                // "pdf" | "jpg"/"jpeg"/"png" | "xml" | "xlsx" | "csv" — para xml/xlsx/csv, `pages` solo trae totalPages
     "pages": { "totalPages": 2, "nativePages": 0, "ocrPages": 2, "emptyPages": 0 },
     "usage": { "segmentation": null, "extraction": { "modelId": "...", "usage": { "inputTokens": 18697, "outputTokens": 3952 } } },
@@ -799,6 +806,22 @@ Cualquier otra cosa viaja, con su explicación:
 `reason` solo aparece cuando `valid` es falso, y `source` solo cuando **no** es
 `MODEL_EXTRACTION`: repetir el default en cada uno de 66 campos era el 20% de la
 respuesta.
+
+`confidence` sigue la misma lógica: el extractor reporta el **mismo** número para
+casi todo lo que leyó de una página (medido: 62 campos, 7 valores distintos), así
+que ese valor compartido sube a `documents[i].fieldConfidence` y solo las
+excepciones lo traen propio. **Si un campo trae `confidence`, se leyó distinto al
+resto** — que es justo cuando hay que mirarlo. Para el valor efectivo de un campo
+sin `confidence`, usa el `fieldConfidence` de su documento.
+
+### Confianza y status: qué manda a revisión
+
+Un campo por debajo de `min_confidence` **siempre** sale con `valid: false` y su
+`reason`. Que además mande el documento a `REQUIERE_REVISION` depende de si el
+campo era **obligatorio**: el status refleja si el dato que exigiste es confiable,
+y para un opcional bien leído marcar el campo es suficiente. Un valor por debajo
+del piso de descarte sí manda a revisión siempre — ahí no se marcó un dato dudoso,
+se tiró.
 
 ### Si la respuesta no cabe
 

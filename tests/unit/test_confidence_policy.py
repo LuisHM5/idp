@@ -171,3 +171,55 @@ def test_cada_fila_reporta_su_propia_confianza():
 )
 def test_el_promedio_ignora_lo_que_nadie_midio(valores, esperado):
     assert conf_policy.combine(valores) == esperado
+
+
+# --------------------------------------------------------------------------
+# Un campo bajo el umbral SIEMPRE se marca. Que además tumbe el documento
+# depende de si era obligatorio.
+# --------------------------------------------------------------------------
+
+def _resolve(campos, entities, confidences):
+    from validators.engine import document_status_from_checks
+    tree, checks, _ = resolve_field_tree(entities, confidences, entry_con(campos), None)
+    return tree, checks, document_status_from_checks(checks)
+
+
+def test_un_opcional_bajo_el_umbral_se_marca_pero_no_manda_a_revision():
+    """Medido en producción: TERMINOS_PAGO = "NET 30", leído correctamente, con
+    confianza 0.7861 contra un mínimo de 0.80, mandaba a REVIEW_REQUIRED un
+    documento cuyos otros 33 campos estaban perfectos. El status del documento
+    tiene que reflejar si el dato que EXIGISTE es confiable; para lo opcional,
+    marcar el campo es suficiente."""
+    campos = {"OBLIGATORIO": {"type": "string", "required": True},
+              "TERMINOS_PAGO": {"type": "string", "required": False}}
+    tree, checks, status = _resolve(
+        campos, {"OBLIGATORIO": "X", "TERMINOS_PAGO": "NET 30"},
+        {"OBLIGATORIO": 0.99, "TERMINOS_PAGO": 0.7861},
+    )
+    # El campo sí queda marcado: quien consuma tiene que saberlo.
+    assert tree["TERMINOS_PAGO"]["valid"] is False
+    assert "below minimum 0.8" in tree["TERMINOS_PAGO"]["reason"]
+    # Y el check queda auditable, con una severidad que no cambia el status.
+    marca = [c for c in checks if c.field == "TERMINOS_PAGO" and c.rule == "min_confidence"]
+    assert marca and marca[0].severity == "info"
+    assert status == "APPROVED"
+
+
+def test_un_obligatorio_bajo_el_umbral_si_manda_a_revision():
+    campos = {"OBLIGATORIO": {"type": "string", "required": True}}
+    tree, checks, status = _resolve(campos, {"OBLIGATORIO": "X"}, {"OBLIGATORIO": 0.6})
+    assert tree["OBLIGATORIO"]["valid"] is False
+    marca = [c for c in checks if c.rule == "min_confidence"]
+    assert marca and marca[0].severity == "warning"
+    assert status == "REVIEW_REQUIRED"
+
+
+def test_un_valor_descartado_manda_a_revision_aunque_sea_opcional():
+    """Bajo el piso de descarte no se marca un dato dudoso: se TIRA. Que el
+    pipeline haya tenido que tirar un valor dice algo del documento entero,
+    sea el campo obligatorio o no."""
+    campos = {"OPCIONAL": {"type": "string", "required": False}}
+    tree, checks, status = _resolve(campos, {"OPCIONAL": "ilegible"}, {"OPCIONAL": 0.31})
+    assert tree["OPCIONAL"]["value"] is None
+    assert [c.rule for c in checks if not c.valid] == ["discard_low_confidence"]
+    assert status == "REVIEW_REQUIRED"

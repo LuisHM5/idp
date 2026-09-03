@@ -23,7 +23,7 @@
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "pipeline": "expediente",
     "business_destination": "PAGO_FLETE_AMERICANO",
-    "min_confidence": 0.8,
+    "min_confidence": 0.7,
     "page_selection": {
       "__COMENTARIO__": "Doble propósito. (1) Costo: solo las páginas que puntúan min_score marcadores DISTINTOS se mandan a Bedrock — en un expediente de 31 páginas las facturas extranjeras son 3 o 4. (2) Límites: `start_markers`/`page_of_pattern` son lo que `multi_instance` usa para saber dónde empieza y termina CADA factura. Calibrado con `python scripts/analizar-seleccion-paginas.py --type FACTURA_FLETE_EXTRANJERO --ocr` sobre los tres expedientes de ejemplo (61 páginas OCR reales, NO texto nativo: estos documentos siempre llegan escaneados). min_score=4 sale de la medición: las 5 facturas reales puntúan entre 5 y 8, y lo más alto que alcanza algo que NO es factura es 3 — el packing list, que repite 'INVOICE NUMBER' y 'SHIPPER'. Con 3 se colaba; con 4 hay un hueco limpio por los dos lados. Volver a correr el calibrador antes de tocar `markers` o `min_score`.",
       "enabled": true,
@@ -392,11 +392,7 @@
           }
         ],
         "item_fields": {
-          "$common": [
-            "PAGINA",
-            "ORDEN",
-            "VALOR_CRUDO"
-          ],
+          "$common": ["PAGINA", "ORDEN", "VALOR_CRUDO"],
           "FECHA_SERVICIO": {
             "type": "date",
             "required": false,

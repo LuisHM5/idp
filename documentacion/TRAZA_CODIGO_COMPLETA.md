@@ -585,6 +585,14 @@ Para el DSL field-centric:
    viajaba en `cache_system`, así que un documento de un chunk se extraía sin
    hints ni reglas — el modelo veía el texto y los nombres de campo del tool
    schema, y adivinaba por el nombre.
+   El mismo contrato ordena omitir cualquier campo ausente en vez de gastar
+   salida rellenándolo con `null`; `_parse_field_tree_response()` ya interpreta
+   ambas formas de manera idéntica.
+   Si el bloque `CAMPOS:` mide al menos 10,000 caracteres y contiene campos no
+   repetibles y arrays, `_field_tree_call_partitions()` lo separa por forma del
+   DSL en dos llamadas dentro del mismo pool acotado. En un documento de un
+   chunk ambas corren en paralelo; el umbral se puede ajustar con
+   `FIELD_TREE_SPLIT_SCHEMA_CHARS`.
 3. Si la salida termina por `max_tokens`, divide el conjunto de páginas a la
    mitad y reintenta recursivamente. Ese split es secuencial para no multiplicar
    la concurrencia del pool externo.
@@ -1381,6 +1389,7 @@ Archivo: `pipeline/text_extractor.py`.
 | `_merge_arrays()` (`:280`) | arrays parciales | concatena listas por orden de chunk | arrays completos → resultado legacy | regla determinista |
 | `_field_tree_schema_lines()` (`:295`) | árbol + indent | describe recursivamente tipos/hints/required | líneas → schema block | `FieldSpec` recursion |
 | `_field_tree_schema_block()` (`:315`) | árbol | une líneas | texto cacheable → prompt | helper anterior |
+| `_partition_field_tree()` / `_field_tree_call_partitions()` | árbol | separa recursivamente escalares/objetos de arrays solo cuando el schema rebasa el umbral | una o dos particiones genéricas → extractor | forma `FieldSpec`, `FIELD_TREE_SPLIT_SCHEMA_CHARS` |
 | `_field_tree_tool_props()` (`:319`) | árbol | convierte fields/object/array en props JSON Schema | dict props → tool schema | recursión por `FieldSpec` |
 | `_field_tree_tool_schema()` (`:347`) | árbol | envuelve props con object root/required | schema → Converse tool | helper anterior |
 | `_build_field_tree_prompts()` (`:351`) | entry + páginas | construye contrato anti-invención + fuente | `(system,prompt)` → modelo | schema block, pages block |
