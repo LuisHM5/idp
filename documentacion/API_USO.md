@@ -720,7 +720,8 @@ pnpm enviar pedimento.pdf PEDIMENTO_ERP --env prod   # API key desde .env.produc
 
 Devuelve el resultado **completo** de un documento. `{id}` puede ser el id completo o un **prefijo** (gana el primer match).
 
-**Respuesta `200`** — `result` es el **envelope completo** (mismo que se guarda en DynamoDB y se publica en EventBridge).
+**Respuestas del `GET`** — cuando termina, `result` es el **envelope completo**
+(el mismo que se guarda en DynamoDB y se publica en EventBridge).
 
 > **Un documento = un elemento de `documents[]`, siempre.** Ese arreglo está
 > presente con uno o con veinte. No hay una forma "de un documento" y otra "de
@@ -728,6 +729,88 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 > respuesta que cambiara de forma según el resultado obligaría a escribir dos
 > caminos y a equivocarse el día que llegan dos. `documentCount` y
 > `documentClassification` en la raíz sirven para lo trivial sin abrir el arreglo.
+
+**Mientras procesa — `202`:**
+
+```json
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "PROCESSING",
+  "workflowStatus": "pending",
+  "documentType": "FACTURA_FLETE_EXTRANJERO",
+  "result": null,
+  "retryAfterSeconds": 5
+}
+```
+
+`processingStatus` también puede ser `AWAITING_UPLOAD` o `QUEUED`. El siguiente
+`GET` no debe hacerse antes de `Retry-After`.
+
+**Terminó correctamente — `200`:** este es el ejemplo corto recomendado para
+entender la estructura. Los textos, domicilios y arreglos largos están
+abreviados deliberadamente:
+
+```jsonc
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FINISHED",
+  "workflowStatus": "complete",             // interno; no usar para polling
+  "documentType": "FACTURA_FLETE_EXTRANJERO",
+  "result": {
+    "envelopeVersion": 2,
+    "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "documentCount": 1,
+    "validation": {
+      "status": "APROBADO",                 // o REQUIERE_REVISION / RECHAZADO
+      "reviewRequired": false
+    },
+    "documents": [
+      {
+        "index": 1,
+        "documentType": "FACTURA_FLETE_EXTRANJERO",
+        "pageStart": 9,
+        "pageEnd": 9,
+        "status": "APPROVED",
+        "confidence": 0.94,
+        "fields": {
+          "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+          "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true },
+          "CONCEPTOS": {
+            "items": [
+              { "fields": {
+                "DESCRIPCION": { "value": "CA Valencia...", "confidence": 0.93, "valid": true },
+                "IMPORTE": { "value": 14612.4, "confidence": 0.93, "valid": true }
+              } }
+            ]
+          }
+        }
+      }
+    ],
+    "tracking": { "processingSeconds": 60.71, "modelIds": { "extraction": "..." } },
+    "sourceFile": "factura.pdf",
+    "pages": { "totalPages": 1, "ocrPages": 1 }
+  }
+}
+```
+
+**Falla técnica terminal — `200`:** no confundir con una validación
+`RECHAZADO`. Aquí el pipeline no pudo producir el resultado:
+
+```json
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FAILED",
+  "workflowStatus": "enrichment-failure",
+  "documentType": "FACTURA_FLETE_EXTRANJERO",
+  "result": null
+}
+```
+
+<details>
+<summary><b>Ver ejemplo extendido con tracking, objetos y arreglos</b></summary>
+
+El siguiente JSON sigue abreviando valores de texto, pero enumera las secciones
+opcionales importantes del envelope:
 
 ```jsonc
 {
@@ -828,6 +911,8 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
   }
 }
 ```
+
+</details>
 
 ### Un campo que no aparece
 

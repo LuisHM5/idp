@@ -85,6 +85,44 @@ responde `200` con `FINISHED` o `FAILED`; `validation.status` sigue siendo un
 estado de negocio independiente. `404 NOT_FOUND` queda reservado para un id
 inexistente o no visible para la app.
 
+Formas abreviadas para implementar el cliente sin cargar ejemplos con todos
+los campos extraídos:
+
+```jsonc
+// 202: seguir esperando según Retry-After
+{ "documentId": "e18d014a-...", "processingStatus": "PROCESSING",
+  "result": null, "retryAfterSeconds": 5 }
+```
+
+```jsonc
+// 200: resultado disponible; documents siempre es arreglo
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FINISHED",
+  "workflowStatus": "complete",
+  "result": {
+    "envelopeVersion": 2,
+    "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "validation": { "status": "APROBADO", "reviewRequired": false },
+    "documents": [{
+      "index": 1,
+      "documentType": "FACTURA_FLETE_EXTRANJERO",
+      "status": "APPROVED",
+      "fields": {
+        "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+        "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true }
+      }
+    }]
+  }
+}
+```
+
+```jsonc
+// 200: el workflow falló técnicamente y no produjo result
+{ "documentId": "e18d014a-...", "processingStatus": "FAILED",
+  "workflowStatus": "enrichment-failure", "result": null }
+```
+
 ### 1.4 `GET /documents/{id}/file` — Descargar el archivo original
 
 Devuelve, en JSON, una **URL prefirmada de S3** (`downloadUrl`, no los bytes) para el archivo tal cual se subió — el PDF/imagen/XML/XLSX/CSV original, no el resultado de la extracción. `{id}` acepta id completo o prefijo, igual que 1.3.

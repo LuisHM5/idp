@@ -138,6 +138,31 @@ pnpm resultado -- --id <documentId> --wait     # espera si sigue procesando
 pnpm track --latest --follow                   # ver el avance en vivo
 ```
 
+La respuesta terminal tiene esta forma abreviada; `fields` normalmente contiene
+muchos más campos y puede incluir arreglos como `CONCEPTOS.items[]`:
+
+```jsonc
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FINISHED",
+  "workflowStatus": "complete",
+  "documentType": "FACTURA_FLETE_EXTRANJERO",
+  "result": {
+    "envelopeVersion": 2,
+    "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "validation": { "status": "APROBADO", "reviewRequired": false },
+    "documents": [{
+      "index": 1,
+      "status": "APPROVED",
+      "fields": {
+        "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+        "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true }
+      }
+    }]
+  }
+}
+```
+
 El resultado final también se publica en **EventBridge** (broker `idp-broker`,
 source `document-validation-pipeline`).
 

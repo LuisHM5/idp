@@ -157,18 +157,44 @@ while :; do
   delay=$((delay < 15 ? delay * 2 : 30))
 done
 
-jq '.validation.status' result.json
+jq '.result.validation.status' result.json
 # `documents` siempre está, traiga el PDF uno o varios documentos.
-jq '.documents[] | {index, documentType, pageStart, pageEnd}' result.json
+jq '.result.documents[] | {index, documentType, pageStart, pageEnd}' result.json
+```
+
+Respuesta final abreviada (los documentos reales pueden traer decenas de
+campos y renglones adicionales dentro de `fields`):
+
+```jsonc
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FINISHED",
+  "workflowStatus": "complete",
+  "documentType": "FACTURA_FLETE_EXTRANJERO",
+  "result": {
+    "envelopeVersion": 2,
+    "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "validation": { "status": "APROBADO", "reviewRequired": false },
+    "documents": [{
+      "index": 1,
+      "documentType": "FACTURA_FLETE_EXTRANJERO",
+      "status": "APPROVED",
+      "fields": {
+        "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+        "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true }
+      }
+    }]
+  }
+}
 ```
 
 Los campos extraídos, por documento:
 
 ```bash
-jq '.documents[].fields' result.json
+jq '.result.documents[].fields' result.json
 
 # Solo el valor de cada campo, sin confianza ni validez:
-jq '.documents[] | .fields | map_values(.value // (.items | length))' result.json
+jq '.result.documents[] | .fields | map_values(.value // (.items | length))' result.json
 ```
 
 Un campo que **no aparece** significa que el documento no lo traía y no era

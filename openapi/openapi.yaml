@@ -441,6 +441,34 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DocumentResult" }
+              examples:
+                finished:
+                  summary: Procesamiento terminado con resultado de negocio
+                  value:
+                    documentId: e18d014a-...
+                    processingStatus: FINISHED
+                    workflowStatus: complete
+                    documentType: FACTURA_FLETE_EXTRANJERO
+                    result:
+                      envelopeVersion: 2
+                      documentClassification: FACTURA_FLETE_EXTRANJERO
+                      documentCount: 1
+                      validation: { status: APROBADO, reviewRequired: false }
+                      documents:
+                        - index: 1
+                          documentType: FACTURA_FLETE_EXTRANJERO
+                          status: APPROVED
+                          fields:
+                            NUMERO_FACTURA: { value: SJ191703, confidence: 0.98, valid: true }
+                            TOTAL: { value: 14612.4, confidence: 0.93, valid: true }
+                technicalFailure:
+                  summary: Falla técnica terminal sin resultado
+                  value:
+                    documentId: e18d014a-...
+                    processingStatus: FAILED
+                    workflowStatus: enrichment-failure
+                    documentType: FACTURA_FLETE_EXTRANJERO
+                    result: null
         "202":
           description: >
             Trabajo conocido pero aún no terminal: `AWAITING_UPLOAD`, `QUEUED`
@@ -453,6 +481,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DocumentResult" }
+              examples:
+                processing:
+                  summary: Documento todavía en procesamiento
+                  value:
+                    documentId: e18d014a-...
+                    processingStatus: PROCESSING
+                    workflowStatus: pending
+                    documentType: FACTURA_FLETE_EXTRANJERO
+                    result: null
+                    retryAfterSeconds: 5
         "404":
           description: >
             `NOT_FOUND`: no hay documento con ese id/prefijo, o existe pero la
@@ -1463,6 +1501,12 @@ components:
         workflowStatus:
           type: string
           description: Estado interno heredado del blueprint; no usar para controlar el polling.
+        documentType:
+          type: string
+          description: Tipo solicitado/resuelto para el documento.
+        documentTypeName:
+          type: string
+          description: Nombre legible del tipo, cuando está disponible.
         retryAfterSeconds:
           type: integer
           minimum: 1
@@ -1535,15 +1579,15 @@ components:
                 lista qué arreglos se cambiaron por su conteo. El contenido
                 completo sigue en S3 (`?full=1`).
               additionalProperties: true
-            fullResult:
-              type: object
-              description: Solo con `?full=1` — detalle por-campo (fields[]) desde S3.
-              additionalProperties: true
             resultLocation:
               type: object
               properties:
                 bucket: { type: string }
                 key: { type: string }
+        fullResult:
+          type: object
+          description: Solo con `?full=1` — detalle por-campo (fields[]) desde S3.
+          additionalProperties: true
     ExtractedDocument:
       type: object
       description: Un documento encontrado dentro del archivo.

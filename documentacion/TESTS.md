@@ -128,6 +128,32 @@ pnpm --silent test-e2e -- ./ruta/factura.pdf FACTURA_FLETE_EXTRANJERO > resultad
 pnpm --silent test-e2e -- ./ruta/factura.pdf FACTURA_FLETE_EXTRANJERO | jq '.result.documents'
 ```
 
+La salida final conserva la respuesta del API completa; este ejemplo abrevia
+`fields` para mostrar solamente la estructura relevante:
+
+```jsonc
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FINISHED",
+  "workflowStatus": "complete",
+  "documentType": "FACTURA_FLETE_EXTRANJERO",
+  "result": {
+    "envelopeVersion": 2,
+    "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "validation": { "status": "APROBADO", "reviewRequired": false },
+    "documents": [{
+      "index": 1,
+      "documentType": "FACTURA_FLETE_EXTRANJERO",
+      "status": "APPROVED",
+      "fields": {
+        "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+        "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true }
+      }
+    }]
+  }
+}
+```
+
 `--full` agrega `?full=1` al polling y conserva también `fullResult` en la
 salida. Un resultado de negocio `RECHAZADO` sigue siendo una ejecución E2E
 correcta si el estado técnico es `FINISHED`; `FAILED`, timeout, `404` o cualquier

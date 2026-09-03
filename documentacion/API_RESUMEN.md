@@ -119,6 +119,52 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 
 `404` — no existe o la app no puede verlo. No es un estado transitorio.
 
+Formas mínimas de la respuesta:
+
+```jsonc
+// 202: todavía no hay resultado
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "PROCESSING",
+  "result": null,
+  "retryAfterSeconds": 5
+}
+```
+
+```jsonc
+// 200: terminó; fields puede contener muchos campos y aquí se abrevia
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FINISHED",
+  "workflowStatus": "complete",
+  "result": {
+    "envelopeVersion": 2,
+    "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "documentCount": 1,
+    "validation": { "status": "APROBADO", "reviewRequired": false },
+    "documents": [{
+      "index": 1,
+      "documentType": "FACTURA_FLETE_EXTRANJERO",
+      "status": "APPROVED",
+      "fields": {
+        "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+        "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true }
+      }
+    }]
+  }
+}
+```
+
+```jsonc
+// 200: falla técnica; no equivale a validation.status = RECHAZADO
+{
+  "documentId": "e18d014a-...",
+  "processingStatus": "FAILED",
+  "workflowStatus": "enrichment-failure",
+  "result": null
+}
+```
+
 ---
 
 ## 4. `PATCH /documents/{id}/metadata`
