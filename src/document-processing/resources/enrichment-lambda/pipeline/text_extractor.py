@@ -17,6 +17,7 @@ Anti-hallucination contract enforced in the prompt:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -413,6 +414,41 @@ def _build_field_tree_prompts(type_entry: TypeRegistryEntry, pages: List[PageTex
     return cache_prefix, user_text
 
 
+def _coerce_container(node: Any, expect: type) -> Any:
+    """A list/dict the model answered as a JSON STRING, parsed back.
+
+    Even with a tool schema declaring `"type": "array"`, a model occasionally
+    serializes the argument instead of emitting it. Measured on a real
+    2-invoice PDF: the same model, on the same run, returned CONCEPTOS as a
+    real array for one segment and, for the other, as a string holding the
+    array followed by a leaked tag for the NEXT argument —
+
+        '[{"DESCRIPCION": ...}]\n,<parameter name="MONEDA">{"value": "USD"}'
+
+    — so the whole array was silently dropped and that invoice came back with
+    zero line items, failing its own `minimum_items` rule.
+
+    `raw_decode` is what makes it recoverable: it reads the JSON value at the
+    START of the string and reports where it ended, so the leaked trailing
+    fragment is ignored rather than poisoning the parse. The spilled argument
+    itself stays lost — it is the model's mistake, not something to guess at.
+
+    Nothing here invents data: only a string whose leading value really is the
+    expected container is accepted. Anything else comes back untouched for the
+    caller's existing `isinstance` check to reject exactly as before.
+    """
+    if isinstance(node, expect) or not isinstance(node, str):
+        return node
+    text = node.strip()
+    if not text:
+        return node
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(text)
+    except (ValueError, TypeError):
+        return node
+    return parsed if isinstance(parsed, expect) else node
+
+
 def _parse_field_tree_response(
     raw: Any, tree: Dict[str, FieldSpec], seg_conf: float, prefix: str = "",
     in_row: bool = False,
@@ -442,12 +478,13 @@ def _parse_field_tree_response(
         node = raw.get(name)
         if spec.type == "object":
             sub_entity, sub_conf, sub_rows = _parse_field_tree_response(
-                node, spec.fields, seg_conf, path + ".", in_row
+                _coerce_container(node, dict), spec.fields, seg_conf, path + ".", in_row
             )
             entity[name] = sub_entity
             confidences.update(sub_conf)
             row_confidences.update(sub_rows)
         elif spec.type == "array":
+            node = _coerce_container(node, list)
             items = node if isinstance(node, list) else []
             if spec.item_fields:
                 rows = []

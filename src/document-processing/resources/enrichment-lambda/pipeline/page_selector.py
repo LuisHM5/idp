@@ -374,6 +374,12 @@ def _copy_spans(kept: Sequence[int], texts: Dict[int, str], bounds: Dict[str, An
     A new document starts where its own first page does — a "Página 1 de N"
     label, or a declared `start_marker`. Pages before the first such signal
     form a span of their own rather than being attached to the next document.
+
+    The page label WINS over the start markers when both are present: a page
+    that says "Page 2 of 2" is not the start of anything, however faithfully
+    it reprints its document's header. Without that precedence a vendor who
+    repeats "Invoice #" on every page would have each of them opened as its
+    own document.
     """
     page_of_re = _compile((bounds["page_of"],))[0][1] if bounds.get("page_of") else None
     start_res = [r for _, r in _compile(tuple(bounds.get("start") or ()))]
@@ -382,7 +388,10 @@ def _copy_spans(kept: Sequence[int], texts: Dict[int, str], bounds: Dict[str, An
     for number in kept:
         text = texts.get(number, "")
         page_of = _page_of(text, page_of_re) if page_of_re else None
-        opens = (page_of is not None and page_of[0] == 1) or any(r.search(text) for r in start_res)
+        if page_of is not None:
+            opens = page_of[0] == 1
+        else:
+            opens = any(r.search(text) for r in start_res)
         if opens or not spans:
             spans.append([number])
         else:
@@ -390,50 +399,95 @@ def _copy_spans(kept: Sequence[int], texts: Dict[int, str], bounds: Dict[str, An
     return spans
 
 
-def _drop_duplicate_copies(
-    keep: Set[int], texts: Dict[int, str], bounds: Dict[str, Any], pattern: str
-) -> Tuple[Set[int], int]:
+def _identity_patterns(pattern: Any) -> Tuple[Pattern[str], ...]:
+    """Compile `duplicate_key_pattern`, which is a regex OR a list of them.
+
+    A list rather than one alternation on purpose: with `(?:A(x)|B(y))` the
+    captured identity lands in group 1 only for the FIRST branch, so a single
+    regex cannot express "the invoice number, printed under any of these
+    labels". Each pattern is tried in order and the first one that captures
+    wins. An invalid pattern is skipped with a warning, never raised.
+    """
+    raw = pattern if isinstance(pattern, (list, tuple)) else [pattern]
+    compiled: List[Pattern[str]] = []
+    for p in raw:
+        if not isinstance(p, str) or not p:
+            continue
+        try:
+            compiled.append(re.compile(p, re.IGNORECASE))
+        except re.error as e:
+            logger.warning("page_selector: invalid duplicate_key_pattern %r: %s", p, e)
+    return tuple(compiled)
+
+
+def _identity_of(span: Sequence[int], texts: Dict[int, str], patterns: Tuple[Pattern[str], ...]) -> Optional[str]:
+    """The identity printed on this document, or None when unreadable.
+
+    Normalized to uppercase alphanumerics — NOT digits-only. For a pedimento
+    (whose pattern captures digits and spaces) the result is byte-identical to
+    the old `re.sub(r"\\D", "", ...)`, while an invoice number keeps the letters
+    that distinguish it: `SJ191703` stays `SJ191703` instead of collapsing to
+    `191703`, which another document could legitimately carry.
+    """
+    for number in span:
+        text = texts.get(number, "")
+        for identity in patterns:
+            m = identity.search(text)
+            if m and m.groups():
+                key = re.sub(r"[^A-Z0-9]", "", (m.group(1) or "").upper())
+                if key:
+                    return key
+    return None
+
+
+def _group_by_identity(
+    spans: List[List[int]], texts: Dict[int, str], patterns: Tuple[Pattern[str], ...]
+) -> Tuple[List[List[int]], int]:
     """Collapse spans that are copies of the same document, keeping the
     LONGEST one per identity (ties: the earliest).
 
     Longest, not first, on purpose: a one-page summary form of the same
     pedimento can legitimately come before the full print, and keeping it
     while dropping the full document would lose real content — the exact
-    failure this function must not cause.
+    failure this must not cause.
+
+    Returns `(surviving spans in page order, copies dropped)`. A span whose
+    identity can't be read is ALWAYS kept — fail-open, like the rest of this
+    module.
     """
-    try:
-        identity = re.compile(pattern, re.IGNORECASE)
-    except re.error as e:
-        logger.warning("page_selector: invalid duplicate_key_pattern %r: %s", pattern, e)
-        return keep, 0
-
-    def key_of(span: List[int]) -> Optional[str]:
-        for number in span:
-            m = identity.search(texts.get(number, ""))
-            if m and m.groups():
-                digits = re.sub(r"\D", "", m.group(1))
-                if digits:
-                    return digits
-        return None
-
-    spans = _copy_spans(sorted(keep), texts, bounds)
     winners: Dict[str, List[int]] = {}
-    result: Set[int] = set()
+    survivors: List[List[int]] = []
     dropped = 0
     for span in spans:
-        key = key_of(span)
+        key = _identity_of(span, texts, patterns)
         if key is None:  # identity unreadable — never drop it
-            result |= set(span)
+            survivors.append(span)
             continue
         previous = winners.get(key)
         if previous is None:
             winners[key] = span
+            survivors.append(span)
         elif len(span) > len(previous):
+            survivors[survivors.index(previous)] = span
             winners[key] = span
             dropped += 1
         else:
             dropped += 1
-    for span in winners.values():
+    survivors.sort(key=lambda s: s[0] if s else 0)
+    return survivors, dropped
+
+
+def _drop_duplicate_copies(
+    keep: Set[int], texts: Dict[int, str], bounds: Dict[str, Any], pattern: Any
+) -> Tuple[Set[int], int]:
+    """`_group_by_identity` over the kept pages, flattened back to a page set."""
+    patterns = _identity_patterns(pattern)
+    if not patterns:
+        return keep, 0
+    spans = _copy_spans(sorted(keep), texts, bounds)
+    survivors, dropped = _group_by_identity(spans, texts, patterns)
+    result: Set[int] = set()
+    for span in survivors:
         result |= set(span)
     return result, dropped
 
@@ -560,3 +614,187 @@ def filter_pages(pages: Sequence[Any], selection: Selection) -> List[Any]:
     """The `pages` whose numbers `selection` kept, in their original order."""
     keep = set(selection.selected)
     return [p for p in pages if p.number in keep]
+
+
+# --- N instances of the SAME type in one upload ----------------------------
+#
+# `select()` answers "which pages of this document are worth paying for" and
+# returns ONE set. That is the right question for a pedimento: an upload holds
+# one of them (plus reprints of it). It is the wrong question for a foreign
+# invoice, where one PDF routinely holds several DIFFERENT invoices — a
+# 2-page file that is two complete invoices, or an expediente carrying three
+# from three vendors. Collapsing those into one document loses every number
+# but the first.
+#
+# `split_instances` answers the other question: WHERE DOES EACH ONE START AND
+# END. It reuses the same declared boundaries (`start_markers`,
+# `page_of_pattern`) and the same identity (`duplicate_key_pattern`) the
+# selector already uses, so a type calibrates once. It is deterministic and
+# free — pure regex over text Textract/pypdf already produced, no model call.
+
+# Above this many instances the markers are not describing documents any more
+# (a generic marker matching every page would emit one segment per page, and
+# each segment is a real Bedrock call). Fail open instead.
+_DEFAULT_MAX_INSTANCES = 20
+
+
+@dataclass
+class InstanceSplit:
+    """Where each instance of a type lives inside one upload."""
+    spans: List[List[int]] = field(default_factory=list)  # page numbers, ascending
+    duplicates_dropped: int = 0
+    fail_open: bool = True    # True => "treat the whole file as one document"
+    reason: str = ""
+
+    @property
+    def ranges(self) -> List[Tuple[int, int]]:
+        """Each instance as an inclusive `(page_start, page_end)` pair."""
+        return [(s[0], s[-1]) for s in self.spans if s]
+
+
+def multi_instance_enabled(spec: Optional[Dict[str, Any]]) -> bool:
+    """Whether this type says one upload may hold several of it.
+
+    Opt-in and off by default: without `multi_instance` every type keeps
+    today's "the declared type is the whole file" behaviour exactly.
+    """
+    return bool((spec or {}).get("multi_instance"))
+
+
+def _multi_instance_options(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """`multi_instance` knobs. The flag is `true` (all defaults) or an object.
+
+    They live in their own block rather than alongside `min_score`/`max_ratio`
+    because `follow_pages` means something different here: in `select()` a
+    declared boundary REPLACES it, while an instance genuinely needs it to
+    reach a continuation page that carries neither a header marker nor a page
+    label.
+    """
+    options = spec.get("multi_instance")
+    return options if isinstance(options, dict) else {}
+
+
+def identity_in(texts: Dict[int, str], span: Sequence[int], spec: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The identity this type prints on the document covering `span`, or None.
+
+    The public door to `duplicate_key_pattern` for callers outside this module
+    (`segmenter._collapse_duplicate_segments` reads it off the segments the
+    classifier returned), so "what identifies one document of this type" has a
+    single implementation and a single normalization.
+    """
+    patterns = _identity_patterns((spec or {}).get("duplicate_key_pattern"))
+    if not patterns:
+        return None
+    return _identity_of(span, texts, patterns)
+
+
+def _extend_spans(spans: List[List[int]], all_numbers: List[int], follow: int) -> List[List[int]]:
+    """Carry each instance's continuation pages along, without crossing into
+    the next instance.
+
+    A second page that repeats no header and carries no "Page 2 of 2" label is
+    invisible to both scoring and boundaries, so it would be dropped — and a
+    dropped page is a lost line item. The hard stop is the next instance's own
+    first page: one instance must never swallow the one after it.
+    """
+    if follow <= 0 or not spans:
+        return spans
+    order = {n: i for i, n in enumerate(all_numbers)}
+    starts = [s[0] for s in spans]
+    extended: List[List[int]] = []
+    for i, span in enumerate(spans):
+        limit = order[starts[i + 1]] if i + 1 < len(spans) else len(all_numbers)
+        pages = set(span)
+        cursor = order[span[-1]] + 1
+        for _ in range(follow):
+            if cursor >= limit:
+                break
+            pages.add(all_numbers[cursor])
+            cursor += 1
+        extended.append(sorted(pages))
+    return extended
+
+
+def split_instances(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> InstanceSplit:
+    """Find each instance of the declared type inside `pages`.
+
+    Deliberately does NOT honour `min_pages`/`expected_pages`: those are cost
+    shortcuts that say "this file is small enough that filtering can only lose
+    pages", which has nothing to do with how many documents the file holds — a
+    2-page upload that is two complete invoices still has to split in two.
+    `max_ratio` is skipped for the same reason: a file that IS entirely
+    instances of this type is the normal case here, not a warning sign.
+
+    Fail-open, like everything in this module. Every "don't know" answer comes
+    back as `fail_open=True` with a single span covering every page, which is
+    byte-for-byte the behaviour of not calling this at all:
+
+    - the type declares no `markers`, or no boundary at all (`start_markers` /
+      `page_of_pattern`) — with nothing to open a document on, every page would
+      land in one span anyway;
+    - no page clears `min_score`;
+    - only one instance was found spanning everything;
+    - more than `max_instances` were found, i.e. the markers are matching
+      pages rather than documents.
+    """
+    all_numbers = [p.number for p in pages]
+    if not all_numbers:
+        return InstanceSplit([], 0, True, "documento sin páginas")
+
+    def _whole(reason: str) -> InstanceSplit:
+        return InstanceSplit([list(all_numbers)], 0, True, reason)
+
+    spec = spec or {}
+    markers = list(spec.get("markers") or [])
+    if not markers:
+        return _whole("el tipo no declara marcadores de página")
+
+    bounds = _boundaries(spec)
+    if not bounds.get("start") and not bounds.get("page_of"):
+        return _whole(
+            "el tipo no declara dónde empieza cada documento "
+            "(start_markers / page_of_pattern): no hay cómo separarlos"
+        )
+
+    min_score = int(spec.get("min_score", _DEFAULT_MIN_SCORE))
+    scores = score_pages(pages, markers)
+    anchors = [s for s in scores if s.score >= min_score]
+    if not anchors:
+        return _whole(f"ninguna página alcanzó min_score={min_score}")
+
+    options = _multi_instance_options(spec)
+    texts = {getattr(pg, "number", 0): (getattr(pg, "text", "") or "") for pg in pages}
+    keep = _spans_from_boundaries(anchors, texts, bounds, len(all_numbers))
+    spans = _copy_spans(sorted(keep), texts, bounds)
+
+    # Deduplicate BEFORE extending, never after: "longest span wins" has to
+    # compare the documents as the page markers found them. An annotated copy
+    # that happens to be followed by a blank page would otherwise outgrow the
+    # original by one continuation page and win, keeping the copy and dropping
+    # the document it copies.
+    dropped = 0
+    duplicate_key = spec.get("duplicate_key_pattern")
+    if duplicate_key:
+        patterns = _identity_patterns(duplicate_key)
+        if patterns:
+            spans, dropped = _group_by_identity(spans, texts, patterns)
+
+    if not spans:
+        return _whole("no se pudo delimitar ningún documento")
+
+    spans = _extend_spans(spans, all_numbers, max(0, int(options.get("follow_pages", 0))))
+
+    max_instances = int(options.get("max_instances", _DEFAULT_MAX_INSTANCES))
+    if len(spans) > max_instances:
+        return _whole(
+            f"{len(spans)} instancias detectadas (> max_instances={max_instances}): "
+            "los marcadores están señalando páginas, no documentos"
+        )
+
+    if len(spans) == 1 and len(spans[0]) == len(all_numbers):
+        return _whole("una sola instancia que ocupa todo el archivo")
+
+    reason = f"{len(spans)} instancia(s) delimitada(s) por marcadores de inicio"
+    if dropped:
+        reason += f", {dropped} copia(s) del mismo documento descartada(s)"
+    return InstanceSplit(spans, dropped, False, reason)

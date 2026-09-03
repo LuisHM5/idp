@@ -659,6 +659,16 @@ identidad en cada uno y conserva **el tramo más largo por identidad**:
   declarar la llave el comportamiento es idéntico al de antes.
 - Cuántas copias se descartaron sale en el `reason` del bloque
   `pageSelection` del resultado.
+- **Acepta un regex o una LISTA de regex**, y se prueban en orden hasta que
+  uno capture. Una lista y no una alternancia (`(?:A(x)|B(y))`) porque ahí el
+  grupo 1 solo existe en la primera rama: un tipo cuyo identificador aparece
+  bajo etiquetas distintas según el proveedor necesita un patrón por etiqueta.
+  Ver `FACTURA_FLETE_EXTRANJERO`, donde el número de factura se imprime como
+  `Invoice #:`, `INVOICE #`, `Invoice Number:` y —lo peor— dentro de una tabla
+  cuyo OCR mete texto de otra columna entre la etiqueta y el valor.
+- La identidad se normaliza a **alfanumérico en mayúsculas**, no a solo
+  dígitos: `SJ191703` no puede volverse `191703`, que otro documento podría
+  llevar legítimamente.
 
 **Si el tamaño es demasiado variable: `expected_pages: "auto"`.** Hay tipos
 para los que cualquier rango sería mentira. Declarar `"auto"` (o `"variable"`)
@@ -775,6 +785,25 @@ muchos documentos salen en fail-open, los marcadores están mal calibrados.
 **Las páginas escaneadas (sin capa de texto) siempre salen en fail-open**:
 el selector de texto no puede opinar sobre ellas.
 
+Para esos tipos —los que SIEMPRE llegan escaneados— el modo gratis no sirve
+para calibrar: todo saldría en fail-open y el reporte no diría nada. `--ocr`
+corre el mismo Textract que corre la Lambda y `--cache` guarda el texto por
+página, así que el OCR se paga UNA vez y luego se itera sobre los marcadores
+gratis:
+
+```bash
+python scripts/analizar-seleccion-paginas.py --type FACTURA_FLETE_EXTRANJERO \
+    --dir ~/docs/facturas --ocr --cache .cache-ocr --show-pages
+```
+
+Cuando el tipo declara `multi_instance`, el reporte añade en qué documentos se
+partiría cada archivo y cuántas copias se descartaron. Así se calibró
+`FACTURA_FLETE_EXTRANJERO`: sobre 61 páginas de OCR real las 5 facturas
+puntúan entre 5 y 8 y lo más alto que alcanza algo que NO es factura es 3 (el
+packing list, que repite "INVOICE NUMBER"), de donde sale `min_score: 4`. El
+`__COMENTARIO__` del tipo deja escrita esa medición; **rehazla antes de tocar
+`markers` o `min_score`**.
+
 Cada documento filtrado lleva un bloque `pageSelection` en el resultado
 (`pagesConsidered`, `selected`, `skipped`, `failOpen`, `reason`, `scores`)
 para auditar qué se descartó y por qué. Nada se descarta en silencio.
@@ -788,6 +817,82 @@ tokens no son el mismo número — descartar el 81 % de las páginas de un
 expediente real recortó solo el 67 % de los tokens, porque las páginas que se
 conservan son las densas en texto. Detalle y validación en
 `documentacion/COSTOS.md` §0-bis.
+
+### Varias instancias del MISMO tipo en un archivo (`multi_instance`)
+
+`page_selection` contesta *qué páginas de este documento vale la pena pagar*.
+Es la pregunta correcta para un pedimento: la subida trae **uno** (más sus
+reimpresiones). Es la pregunta equivocada para una factura extranjera, donde un
+PDF trae rutinariamente **varias facturas distintas** — un archivo de dos
+páginas que son dos facturas completas, o un expediente con tres de tres
+proveedores.
+
+Sin `multi_instance`, subir ese archivo declarando `documentType` produce **un
+solo documento**: `segment_pages` devuelve un segmento que cubre todo el
+fichero, así que las N facturas se extraen juntas y solo sobrevive un
+`NUMERO_FACTURA`, un `TOTAL` y un `pageStart/pageEnd`.
+
+```jsonc
+"page_selection": {
+  "multi_instance": { "follow_pages": 0, "max_instances": 25 },
+  "markers": ["..."],                      // confirma el TIPO de la página
+  "start_markers": ["INVOICE\\s*(?:#|NO\\.?|NUMBER)"],   // abre un documento
+  "page_of_pattern": "Page\\s+(\\d+)\\s+of\\s+(\\d+)",
+  "duplicate_key_pattern": ["..."]         // colapsa las copias
+}
+```
+
+`true` equivale a `{}` (todos los valores por defecto).
+
+**Es determinista y gratis**: puro regex sobre el texto que pypdf/Textract ya
+produjo. Cero llamadas al modelo — el partidor corre *en vez* de la
+clasificación, no además de ella.
+
+**Y sale más barato que no partir**: cada instancia es su propia llamada de
+extracción, pero con sus 1-2 páginas en vez del archivo completo. Medido sobre
+un expediente real de 30 páginas: 3 llamadas de una página contra una de 30.
+
+| Knob | Default | Para qué |
+|---|---|---|
+| `follow_pages` | `0` | Páginas de continuación por instancia. **Nunca cruza al documento siguiente.** Súbelo solo si un proveedor manda facturas de varias páginas SIN numerarlas: arrastrar una de más mete el documento vecino dentro de la factura. |
+| `max_instances` | `20` | Por encima de esto se procesa todo como un documento: los marcadores están señalando páginas, no documentos, y cada instancia es una llamada real a Bedrock. |
+
+**Qué ignora a propósito.** `min_pages` y `expected_pages` son atajos de
+*costo* ("este archivo es tan chico que filtrarlo solo puede perder páginas"),
+que no dicen nada sobre cuántos documentos trae: un archivo de 2 páginas que
+son dos facturas completas se tiene que partir igual. `max_ratio` se salta por
+lo mismo — que el archivo sea **todo** instancias de este tipo es el caso
+normal aquí, no una señal de alarma.
+
+**Fail-open, como todo el módulo.** Vuelve UN segmento que cubre el archivo
+entero —o sea, exactamente lo de antes— cuando: el tipo no declara `markers`;
+no declara ningún límite (`start_markers` ni `page_of_pattern`), y sin eso todo
+caería en un solo tramo de todas formas; ninguna página alcanza `min_score`;
+solo se encontró una instancia; o se encontraron más de `max_instances`.
+
+**Precedencia de los límites.** Una página que dice "Page 2 of 2" **no** abre
+un documento nuevo por mucho que reimprima el encabezado: la etiqueta de página
+gana sobre `start_markers`. Sin eso, un proveedor que repite "Invoice #" en
+cada página abriría una instancia falsa por página.
+
+**El orden importa**: las copias se colapsan **antes** de aplicar
+`follow_pages`, nunca después. "Gana el tramo más largo" tiene que comparar los
+documentos como los encontraron los marcadores; si no, una copia anotada
+seguida de una página en blanco le gana al original por una página de
+continuación y se conserva la copia en vez del documento que copia.
+
+**También aplica sin `documentType` declarado.** En esa ruta clasifica el
+modelo, y se le dice que una reimpresión es un documento aparte —correcto:
+desde el texto de una página no puede saberlo—. Después, `segmenter.
+_collapse_duplicate_segments` aplica la MISMA identidad a los segmentos del
+mismo tipo y marca las copias como `OTRO` con subtipo `COPIA_DUPLICADA`. No se
+borran: la cobertura de páginas queda completa y la copia sigue visible con su
+rango, solo que no se vuelve a extraer. Así un archivo se comporta igual lo
+declare el que sube o no.
+
+**Calibra con `--ocr` si tus documentos llegan escaneados.** `pnpm paginas` lee
+texto nativo, y un tipo cuyos PDF siempre vienen escaneados saldría entero en
+fail-open. Ver más abajo.
 
 ### El contrato de `confidence`
 

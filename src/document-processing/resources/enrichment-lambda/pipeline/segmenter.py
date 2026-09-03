@@ -14,8 +14,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from document_catalog import TypeRegistryEntry, get_all_types, is_customs_type
+from document_catalog import TypeRegistryEntry, get_all_types, get_type_entry, is_customs_type
 
+from . import page_selector
 from .bedrock import converse, parse_json_response, resolve_model
 from .pdf_pages import PageText
 
@@ -41,6 +42,10 @@ _PAGE_MARKERS = [
     ("MANIFESTACION_VALOR", re.compile(r"manifestaci[oó]n\s+de\s+valor", re.IGNORECASE)),
     ("HOJA_CALCULO", re.compile(r"hoja\s+de\s+c[aá]lculo.*valor\s+en\s+aduana", re.IGNORECASE)),
     ("TRANSPORTE", re.compile(r"bill\s+of\s+lading|air\s+waybill|carta\s+porte|packing\s+list|lista\s+de\s+empaque", re.IGNORECASE)),
+    # A foreign (typically US) invoice. Deliberately English-only phrases: the
+    # CFDIs in the same expediente are in Spanish and carry none of these, so
+    # this never competes with the CFDI marker above on the same page.
+    ("FACTURA_EXTRANJERA", re.compile(r"\bINVOICE\b|bill\s+to\b|sold\s+to\b|balance\s+due|remit\s+to|warehouse\s+receipt", re.IGNORECASE)),
     ("HONORARIOS_AGENCIA", re.compile(r"honorarios|caaarem|precinto|\bcove\b.*servicio|cuenta\s+de\s+terceros", re.IGNORECASE)),
     ("SERVICIOS_LOGISTICOS", re.compile(r"maniobras|almacenaje|muestreo|refrigerad|acceso\s+(por|de)\s+veh[ií]culo|flete", re.IGNORECASE)),
 ]
@@ -77,8 +82,12 @@ def _candidate_types() -> Dict[str, TypeRegistryEntry]:
 
 def _build_prompt(pages: List[PageText]) -> str:
     candidates = _candidate_types()
+    # 400, not 220: a type's description is where its discriminators live, and
+    # cutting mid-sentence threw away exactly the "...but NOT to be confused
+    # with X" half that resolves the hard cases. Candidate types number in the
+    # single digits, so the extra characters are noise against the page digests.
     type_lines = [
-        f"- {tid}: {entry.description[:220]}"
+        f"- {tid}: {entry.description[:400]}"
         for tid, entry in candidates.items()
         if tid != "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
     ]
@@ -117,6 +126,14 @@ def _build_prompt(pages: List[PageText]) -> str:
         "aunque mencione un pedimento.\n"
         "- CFDI_GASTO_TERCERO: CFDI de otros terceros ligados al pedimento "
         "(derechos, muestreo, inspeccion).\n"
+        "- Una factura EXTRANJERA (en ingles, emisor de EUA, con INVOICE / "
+        "Invoice # / Bill To / Sold To / Balance Due y SIN UUID ni sello CFDI) "
+        "es una factura de proveedor extranjero, cubra mercancia, flete o "
+        "servicios (almacenaje, maniobras, labels). NUNCA es un CFDI aunque "
+        "venga junto a uno, ni un packing list aunque describa la mercancia.\n"
+        "- Cada INVOICE con su PROPIO numero de factura es un documento "
+        "SEPARADO, aunque vayan en paginas consecutivas y sean del mismo "
+        "proveedor y del mismo pedimento. No las juntes en un solo rango.\n"
         "- El pedimento (PEDIMENTO_ADUANAL) tiene encabezado NUM. PEDIMENTO / "
         "T. OPER / CVE. PEDIM y cuadro de liquidacion; no tiene UUID.\n"
         "- COMPROBANTE_PAGO_ADUANAL requiere linea de captura, desglose de "
@@ -159,6 +176,129 @@ def _sanitize(segments: List[Segment], total_pages: int) -> List[Segment]:
     return result
 
 
+def _declared_segments(pages: List[PageText], declared_type: str, total: int) -> List[Segment]:
+    """Segments for an upload whose type the uploader declared.
+
+    Normally that is one segment covering the file: the uploader said what it
+    is, so there is nothing to classify. But some types legitimately arrive
+    several to a file — a PDF holding three foreign invoices from three
+    vendors is three documents, not one with three invoice numbers — and those
+    declare `page_selection.multi_instance`. For them the file is split
+    deterministically from the catalog's own boundaries: no Bedrock call, and
+    each resulting segment is extracted with only its own pages.
+
+    Detected by catalog SHAPE, never by TYPE_ID: any future type that declares
+    the flag gets this for free. Anything the splitter can't answer confidently
+    comes back as the single whole-file segment this always returned.
+    """
+    whole = [Segment(declared_type, 1, total, 1.0)]
+    try:
+        entry = get_type_entry(declared_type)
+    except Exception:  # unknown/unloadable type: behave exactly as before
+        return whole
+    if not page_selector.enabled_for(entry):
+        return whole
+    spec = page_selector.spec_for(entry)
+    if not page_selector.multi_instance_enabled(spec):
+        return whole
+
+    split = page_selector.split_instances(pages, spec)
+    if split.fail_open or len(split.spans) <= 1:
+        logger.info(
+            "segmenter: %s declarado, sin partir en instancias (%s)",
+            declared_type, split.reason,
+        )
+        return whole
+
+    logger.info(
+        "segmenter: %s declarado, %d instancias %s (%s)",
+        declared_type, len(split.spans), split.ranges, split.reason,
+    )
+    return [
+        Segment(declared_type, start, end, 1.0)
+        for start, end in split.ranges
+    ]
+
+
+def _collapse_duplicate_segments(
+    segments: List[Segment], pages: List[PageText]
+) -> List[Segment]:
+    """Mark repeated COPIES of the same document as OTRO, per type.
+
+    The classifier is told that a reprint is its own document, which is the
+    right instruction — it has no way to know whether two similar pages are
+    one document or two. Deciding which of them are the SAME document is a
+    deterministic question, answered by the identity printed on them, and a
+    type that declares `duplicate_key_pattern` has already said where to read
+    it. Measured on a real expediente: the invoice on page 8 is reprinted with
+    handwritten annotations on page 22, and without this the pipeline pays a
+    full extraction for the copy and reports the same invoice twice.
+
+    This is the same rule the declared-type path applies via
+    `page_selector.split_instances`, so an upload behaves the same whether or
+    not the uploader named its type.
+
+    A duplicate is RELABELLED `OTRO` (carrying the subtype `COPIA_DUPLICADA`),
+    never removed: page coverage stays complete and the copy is still visible
+    in the result with its page range — it just isn't extracted again.
+
+    Fail-open throughout: a type that declares no pattern, or a segment whose
+    identity can't be read, is left exactly as the classifier returned it.
+    """
+    texts = {p.number: (p.text or "") for p in pages}
+    seen: Dict[Tuple[str, str], Segment] = {}
+    result: List[Segment] = []
+    for seg in segments:
+        if seg.doc_type == "OTRO":
+            result.append(seg)
+            continue
+        try:
+            entry = get_type_entry(seg.doc_type)
+        except Exception:
+            result.append(seg)
+            continue
+        spec = page_selector.spec_for(entry)
+        if not page_selector.multi_instance_enabled(spec):
+            result.append(seg)
+            continue
+        span = list(range(seg.page_start, seg.page_end + 1))
+        identity = page_selector.identity_in(texts, span, spec)
+        # No pattern declared, or unreadable on these pages — never collapse it.
+        if identity is None:
+            result.append(seg)
+            continue
+        key = (seg.doc_type, identity)
+        previous = seen.get(key)
+        if previous is None:
+            seen[key] = seg
+            result.append(seg)
+            continue
+        # Longest wins, same reasoning as page_selector: a one-page summary of
+        # the same document can legitimately come first, and keeping it while
+        # dropping the full print would lose real content.
+        loser, winner = (previous, seg) if _span_len(seg) > _span_len(previous) else (seg, previous)
+        seen[key] = winner
+        logger.info(
+            "segmenter: %s págs %d-%d es copia de %d-%d (%s); no se extrae",
+            seg.doc_type, loser.page_start, loser.page_end,
+            winner.page_start, winner.page_end, identity,
+        )
+        result = [
+            Segment("OTRO", s.page_start, s.page_end, 0.0, "COPIA_DUPLICADA")
+            if s is loser else s
+            for s in result
+        ]
+        if seg is winner:
+            result.append(seg)
+        else:
+            result.append(Segment("OTRO", seg.page_start, seg.page_end, 0.0, "COPIA_DUPLICADA"))
+    return result
+
+
+def _span_len(seg: Segment) -> int:
+    return seg.page_end - seg.page_start + 1
+
+
 def segment_pages(
     pages: List[PageText],
     declared_type: Optional[str] = None,
@@ -167,7 +307,10 @@ def segment_pages(
     """Split pages into typed segments.
 
     When `declared_type` names a single known type (not the multi-document
-    expediente), the whole file is one segment and no model call is made.
+    expediente), no model call is made: the file is one segment, or — for a
+    type that declares `page_selection.multi_instance` — one segment per
+    instance found deterministically from its catalog boundaries. See
+    `_declared_segments`.
 
     Returns `(segments, usage_meta)` — `usage_meta` is `{}` whenever no
     Bedrock call was made (declared type, empty input), or
@@ -180,7 +323,7 @@ def segment_pages(
     if total == 0:
         return [], {}
     if declared_type and declared_type != "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO":
-        return [Segment(declared_type, 1, total, 1.0)], {}
+        return _declared_segments(pages, declared_type, total), {}
 
     prompt = _build_prompt(pages)
     used_model_id = model_id or resolve_model("segmenter")
@@ -216,7 +359,7 @@ def segment_pages(
 
     if not segments:
         return [Segment("OTRO", 1, total, 0.0)], usage_meta
-    result = _sanitize(segments, total)
+    result = _collapse_duplicate_segments(_sanitize(segments, total), pages)
     logger.info(
         "segmenter: %d segments over %d pages (usage=%s)",
         len(result), total, meta.get("usage"),
