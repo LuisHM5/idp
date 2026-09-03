@@ -62,17 +62,20 @@ sequenceDiagram
     participant D as DynamoDB documentos
     participant K as DynamoDB costos
     participant EB as EventBridge
+    participant ST as Status Lambda
 
     C->>A: POST /documents
     A->>U: evento proxy
     U->>U: valida request y genera documentId
+    U->>D: PutItem ProcessingStatus=AWAITING_UPLOAD
     U-->>C: documentId + URL PUT prefirmada
     C->>S: PUT raw/... (directo, sin API Gateway ni Lambda)
     S-->>Q: ObjectCreated en raw/
     Q->>SC: registro SQS
     SC->>S: HeadObject para app-origin
+    SC->>D: ProcessingStatus=QUEUED
     SC->>SF: StartExecution(name=documentId-execution)
-    SF->>D: PutItem WorkflowStatus=pending
+    SF->>D: PutItem WorkflowStatus=pending + ProcessingStatus=PROCESSING
     SF->>M: clasificación
     M-->>SF: classificationResult
     SF->>D: status=classification-complete
@@ -90,6 +93,8 @@ sequenceDiagram
     SF->>S: CopyObject raw → processed
     SF->>S: DeleteObject raw
     SF->>EB: document-processed-successful
+    EB->>ST: evento terminal
+    ST->>D: ProcessingStatus=FINISHED
 ```
 
 La escritura de `results/{id}.json` no ocurre en el flujo estándar legacy; en
@@ -220,9 +225,13 @@ Ruta: `POST /documents` → `upload-lambda/index.mjs:handler` (`:141`).
 
 ### 5.2 Modo prefirmado (el único)
 
-`handlePresigned()` firma un `PutObjectCommand` con `getSignedUrl` (15 min) y
-devuelve `uploadUrl`, `uploadMethod`, `uploadExpiresInSeconds` y
-`uploadExpiresAt`. Los bytes nunca tocan esta Lambda.
+`handlePresigned()` firma un `PutObjectCommand` con `getSignedUrl` (15 min),
+crea condicionalmente la fila ligera (`AWAITING_UPLOAD`, propietario, tipo
+declarado, timestamps y key de subida) y solo entonces devuelve `uploadUrl`,
+`statusUrl`, `processingStatus`, `retryAfterSeconds` y los campos de
+vencimiento. Si DynamoDB no puede reservar el id responde
+`500 JOB_REGISTRATION_FAILED`: nunca entrega un id que después parezca
+inexistente. Los bytes nunca tocan esta Lambda.
 
 **El cliente no reenvía ninguna cabecera.** `getSignedUrl` pasa la `Metadata`
 del `PutObjectCommand` por el hoisting de SigV4: las `x-amz-*` acaban en el
@@ -238,8 +247,8 @@ metadatos (`model-id`, `app-origin`) van en la `Metadata` del comando y SigV4
 los *hoistea* al query string de la URL, ya firmados — el cliente **no** repite
 ningún encabezado en el PUT. El archivo no atraviesa API Gateway ni la Lambda.
 
-La API solo reserva el `documentId`; el procesamiento empieza cuando el cliente
-hace el PUT real y S3 emite `ObjectCreated`.
+La API reserva el `documentId` y su estado consultable; el procesamiento empieza
+cuando el cliente hace el PUT real y S3 emite `ObjectCreated`.
 
 ## 6. S3 → SQS → `StartExecution`
 
@@ -258,9 +267,13 @@ Por cada mensaje y cada registro S3:
    no manda el mensaje al DLQ.
 4. Elimina el prefijo `raw/`, separa la ruta y toma `key_parts[-2]` como UUID.
 5. Normaliza ese valor para obtener `documentId` y extrae `filename`/`fileType`.
-6. Construye el evento de la sección 3.3.
-7. Usa el nombre determinista `{documentId}-execution`, truncado a 80 caracteres.
-8. Ejecuta `states:StartExecution`.
+6. Actualiza `ProcessingStatus=QUEUED` sin permitir que una entrega duplicada
+   haga retroceder un trabajo ya avanzado; la escritura es best-effort y no
+   bloquea el workflow.
+7. Construye el evento de la sección 3.3 con `jobOwner` y
+   `requestedDocumentType`, para que `InitMetadataEntry` preserve autorización.
+8. Usa el nombre determinista `{documentId}-execution`, truncado a 80 caracteres.
+9. Ejecuta `states:StartExecution`.
 
 SQS entrega al menos una vez. Si llega de nuevo el mismo objeto:
 
@@ -299,7 +312,7 @@ flowchart TD
 
 | Estado | Efecto |
 | --- | --- |
-| `InitMetadataEntry` | `PutItem` con `DocumentId`, `ContentType`, `Content`, `WorkflowStatus=pending` y `StateMachineExecId`. |
+| `InitMetadataEntry` | Reemplaza la fila ligera con `DocumentId`, contenido, `WorkflowStatus=pending`, `ProcessingStatus=PROCESSING`, propietario/tipo solicitado y `StateMachineExecId`. |
 | `MultiModelClassificationStep-0` | Invoca la Lambda Converse y guarda `documentClassification`/`modelId` en `classificationResult`. |
 | `ClassificationSuccessUpdate` | Escribe `WorkflowStatus=classification-complete` y serializa `ClassificationResult`. |
 | `MultiModelProcessingStep-0` | Invoca la extracción upstream y guarda clasificación, `result.entities` y `modelId`. |
@@ -312,6 +325,12 @@ flowchart TD
 | estados `*FailDDBUpdate` | Cambian el status a `classification-failure`, `processing-failure` o `enrichment-failure`. |
 | `CopyToFailed` + `DeleteFromRaw` | Mueven el original a `failed/{documentId}/{filename}`. |
 | evento fallido | Publica detail type `document-processing-failed`. |
+
+Una regla del mismo bus entrega ambos eventos terminales a
+`status-event-lambda/index.py`: el exitoso escribe `FINISHED` y el fallido
+`FAILED`, junto con `ProcessingCompletedAt`. Este ciclo es el contrato público;
+los valores de `WorkflowStatus` siguen siendo detalle interno del blueprint y
+`validation.status` sigue siendo el dictamen de negocio.
 
 Las tareas Lambda tienen retry de errores de servicio/SDK con backoff, hasta seis
 intentos. El workflow dura como máximo 16 minutos; la Lambda de enrichment dura
@@ -1771,7 +1790,7 @@ Archivo: `src/document-processing/resources/query-lambda/index.mjs`.
 | `knownTypes()` (`:298`) | cache + catálogo DDB | mezcla bundle y Scan paginado, construye alias index | registry → `resolveType` | DynamoDB `Scan`, cache warm |
 | `resolveType()` (`:347`) | tipo solicitado | busca exact/alias y distingue unknown/ambiguous | TYPE_ID o error → query |
 | `resolveItemById()` (`:378`) | id/prefix | `GetItem` exacto; si no existe `Scan begins_with` | fila/None → get routes |
-| `getById()` (`:401`) | id, params, caller | resuelve fila, parsea, autoriza; opcional `full=1` carga S3 | HTTP documento/fullResult → API |
+| `getById()` | id, params, caller | resuelve fila con lectura consistente; autoriza la fila ligera por propietario/tipo; proyecta el estado público; opcional `full=1` carga S3 | `202` + Retry-After mientras procesa; `200` terminal; `404` solo inexistente/no visible |
 | `fetchFullResult()` (`:431`) | documentId | `GetObject results/{id}.json`, parsea JSON | DeepResult/None → `getById` |
 | `findSourceObject()` (`:453`) | documentId | prueba prefijos processed/failed/raw con `ListObjectsV2` | bucket/key/location/metadata → file route |
 | `getFileById()` (`:477`) | id, params, caller | autoriza por fila, localiza original y firma `GetObject` | URL temporal + metadata → API |
@@ -1788,7 +1807,8 @@ Flujos de lectura separados:
 GET /documents/{id}
   → resolveCallerApp
   → resolveItemById → DDB GetItem [→ Scan prefix]
-  → parseEnrichment → canSeeDocument
+  → sin envelope: auth de fila ligera → 202 + Retry-After (o 200 FAILED)
+  → con envelope: parseEnrichment → canSeeDocument → FINISHED
   → [full=1 → fetchFullResult → S3 GetObject]
   → json
 

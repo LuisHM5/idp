@@ -1,7 +1,8 @@
 /**
  * UploadLambda - Document upload handler.
  *
- * ONE flow, always: `POST /upload` never carries the file. It validates the
+ * ONE flow, always: `POST /documents` never carries the file (`/upload` is a
+ * compatibility alias). It validates the
  * request, mints the documentId and S3 key, and returns a short-lived
  * presigned S3 `PUT` URL. The caller then uploads the bytes straight to S3,
  * and the pipeline starts when S3 receives the object.
@@ -22,13 +23,14 @@
 import { randomUUID } from "node:crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { parseBody, normalizeMetadata } from "./body-parser.mjs";
 
 const s3 = new S3Client({});
 const ddb = new DynamoDBClient({});
 const BUCKET = process.env.DOCUMENT_BUCKET;
 const APPS_TABLE = process.env.APPS_TABLE;
+const DOCUMENT_TABLE = process.env.DOCUMENT_TABLE;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
 // Extensions with no vision-based auto-classification at all: the enrichment
 // pipeline's xml/tabular extractors require a declared type to even parse the
@@ -202,7 +204,7 @@ export async function handler(event) {
         "for every file size."
     );
   }
-  return handlePresigned(documentId, key, manualType, objectMetadata);
+  return handlePresigned(documentId, key, manualType, objectMetadata, appOrigin);
 }
 
 /**
@@ -221,8 +223,12 @@ export async function handler(event) {
  * Content-Type, so leaving it unset keeps the PUT usable from any client with
  * zero header bookkeeping.
  */
-async function handlePresigned(documentId, key, manualType, objectMetadata = {}) {
+async function handlePresigned(documentId, key, manualType, objectMetadata = {}, appOrigin = null) {
   let uploadUrl;
+  const registeredAt = new Date().toISOString();
+  const uploadExpiresAt = new Date(
+    Date.parse(registeredAt) + PRESIGN_EXPIRY_SECONDS * 1000
+  ).toISOString();
   try {
     uploadUrl = await getSignedUrl(
       s3,
@@ -239,6 +245,37 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {})
   } catch (err) {
     console.error("Failed to generate presigned URL:", err);
     return errorResponse(500, "PRESIGN_FAILED", "Failed to generate upload URL");
+  }
+
+  // Reserve the id before returning it. This closes the old ambiguity where
+  // GET /documents/{id} returned 404 both for an unknown id and for a valid
+  // upload that had not reached Step Functions yet. The workflow later
+  // replaces this lightweight row with its normal tracking row.
+  try {
+    if (!DOCUMENT_TABLE) throw new Error("DOCUMENT_TABLE is not configured");
+    await ddb.send(
+      new PutItemCommand({
+        TableName: DOCUMENT_TABLE,
+        Item: {
+          DocumentId: { S: documentId },
+          ProcessingStatus: { S: "AWAITING_UPLOAD" },
+          ProcessingStatusUpdatedAt: { S: registeredAt },
+          RegisteredAt: { S: registeredAt },
+          UploadExpiresAt: { S: uploadExpiresAt },
+          UploadKey: { S: key },
+          JobOwner: { S: appOrigin || "dev-unrestricted" },
+          ...(manualType ? { RequestedDocumentType: { S: manualType } } : {}),
+        },
+        ConditionExpression: "attribute_not_exists(DocumentId)",
+      })
+    );
+  } catch (err) {
+    console.error("Failed to register pending document:", err);
+    return errorResponse(
+      500,
+      "JOB_REGISTRATION_FAILED",
+      "Failed to register document processing status"
+    );
   }
 
   return {
@@ -264,8 +301,12 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {})
       // Absolute deadline alongside the relative one: a client that queues the
       // upload can tell whether the URL is still good without having to know
       // when it asked for it.
-      uploadExpiresAt: new Date(Date.now() + PRESIGN_EXPIRY_SECONDS * 1000).toISOString(),
-      uploadedAt: new Date().toISOString(),
+      uploadExpiresAt,
+      uploadedAt: registeredAt,
+      registeredAt,
+      processingStatus: "AWAITING_UPLOAD",
+      statusUrl: `/documents/${documentId}`,
+      retryAfterSeconds: 5,
     }),
   };
 }

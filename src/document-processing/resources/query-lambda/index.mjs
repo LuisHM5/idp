@@ -1,13 +1,14 @@
 /**
- * QueryLambda - Read/search processed documents.
+ * QueryLambda - Read document-job status and search processed documents.
  *
  * Four endpoints (public like the upload API unless the stage
  * requires an API key — see AMBIENTES_Y_SEGURIDAD.md):
  *
  *   GET /documents/{id}
- *       Returns the full result for a document id. Reads the complete result
- *       from S3 (results/{id}.json) when available, else the compact envelope
- *       stored in DynamoDB. The id may be a prefix — the first match wins.
+ *       Returns 202 + Retry-After while the known job is pending, then the
+ *       final result. Reads the complete result from S3 (results/{id}.json)
+ *       when requested, else the compact envelope stored in DynamoDB. The id
+ *       may be a prefix — the first match wins.
  *
  *   GET /documents/{id}/file
  *       Returns a short-lived presigned S3 GET URL for the ORIGINAL uploaded
@@ -131,6 +132,11 @@ import {
 } from "./search-filters.mjs";
 import { readDocuments, arrayCounts } from "./envelope-shape.mjs";
 import { parseMetadataPatch } from "./metadata-rules.mjs";
+import {
+  canSeePendingDocument,
+  isPendingProcessingStatus,
+  processingStatusFor,
+} from "./processing-status.mjs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -149,9 +155,9 @@ const MAX_LIMIT = 100;
 // validation outcome — that's a business result, not an infra failure), or to
 // failed/{id}/{filename} only when the execution itself threw/timed out (see
 // AGENTS.md's architecture note and patches/default-sqs-consumer-index.py).
-// GET /documents/{id} only ever returns 200 for a document that has already
-// been indexed, i.e. already moved out of raw/ — so these two prefixes are
-// exhaustive for this endpoint; raw/ is deliberately not searched.
+// A result download only applies after the document has been indexed and moved
+// out of raw/. Pending GET /documents/{id} calls return status only and never
+// enter this source-object lookup.
 const SOURCE_PREFIXES = [
   { location: "processed", prefix: "processed/" },
   { location: "failed", prefix: "failed/" },
@@ -165,13 +171,24 @@ const CONTAINER_TYPES = ["EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"];
  * words not to be worth the gamble, and it is projected on every read because
  * it — not the snapshot inside EnrichmentResult — is the authoritative
  * metadata once an app has patched it (see applyCurrentMetadata). */
-const ITEM_PROJECTION = "DocumentId, WorkflowStatus, EnrichmentResult, #md";
+const ITEM_PROJECTION = [
+  "DocumentId",
+  "WorkflowStatus",
+  "ProcessingStatus",
+  "ProcessingStatusUpdatedAt",
+  "RegisteredAt",
+  "UploadExpiresAt",
+  "RequestedDocumentType",
+  "JobOwner",
+  "EnrichmentResult",
+  "#md",
+].join(", ");
 const ITEM_PROJECTION_NAMES = { "#md": "Metadata" };
 
-function json(statusCode, payload) {
+function json(statusCode, payload, extraHeaders = {}) {
   return {
     statusCode,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...extraHeaders },
     body: JSON.stringify(payload),
   };
 }
@@ -432,7 +449,7 @@ async function resolveType(raw) {
  */
 async function resolveItemById(id) {
   const exact = await ddb.send(
-    new GetCommand({ TableName: TABLE, Key: { DocumentId: id } })
+    new GetCommand({ TableName: TABLE, Key: { DocumentId: id }, ConsistentRead: true })
   );
   if (exact.Item) return exact.Item;
 
@@ -460,6 +477,40 @@ async function getById(id, params, caller) {
   if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
 
   const envelope = parseEnrichment(item);
+  const processingStatus = processingStatusFor(item, !!envelope);
+
+  if (!envelope) {
+    if (!canSeePendingDocument(caller, item)) {
+      return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+    }
+    const statusOnly = {
+      documentId: item.DocumentId,
+      processingStatus,
+      workflowStatus: item.WorkflowStatus,
+      result: null,
+      ...(item.RequestedDocumentType && item.RequestedDocumentType !== "AUTO" && {
+        documentType: item.RequestedDocumentType,
+      }),
+      ...(item.RegisteredAt && { registeredAt: item.RegisteredAt }),
+      ...(item.ProcessingStatusUpdatedAt && { updatedAt: item.ProcessingStatusUpdatedAt }),
+      ...(item.UploadExpiresAt && { uploadExpiresAt: item.UploadExpiresAt }),
+    };
+    if (isPendingProcessingStatus(processingStatus)) {
+      return json(
+        202,
+        { ...statusOnly, retryAfterSeconds: 5 },
+        {
+          "Retry-After": "5",
+          "Cache-Control": "no-store",
+          "Access-Control-Expose-Headers": "Retry-After",
+        }
+      );
+    }
+    // Technical failures are terminal too: return 200 so callers stop
+    // polling, while `processingStatus=FAILED` remains distinct from the
+    // business validation outcome (which does not exist on an infra failure).
+    return json(200, statusOnly);
+  }
   // 404, not 403: a document outside the caller's scope must not even be
   // confirmed to exist (see the module docstring's authorization model).
   if (!canSeeDocument(caller, envelope)) {
@@ -471,6 +522,7 @@ async function getById(id, params, caller) {
   // expediente.documents[...], tracking) — the same shape published downstream.
   const resp = {
     documentId,
+    processingStatus,
     workflowStatus: item.WorkflowStatus,
     documentType: item.DocumentType,
     documentTypeName: item.DocumentTypeName,

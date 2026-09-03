@@ -12,7 +12,7 @@ valores esperados vs. extraídos de un documento para decidir si hay un bug.
 | `pnpm test:pedimentos -- --file B2401416` | Igual a `pnpm comparar` pero sin el prompt de confirmación (útil en CI/scripts) | Sí                      | ~$0.02–0.35  |
 | `pnpm test:pedimentos -- --save /tmp/res` | Corre todo + guarda los JSON completos de resultado                            | Sí                      | —            |
 | `pnpm test-local --type INE`              | Motor de validación con entidades simuladas                                    | No                      | $0           |
-| `pnpm test-e2e --file doc.pdf`            | Pipeline desplegado end-to-end genérico (API → S3 → SFN → EventBridge), sin comparar contra ground truth | Sí (stack desplegado) | centavos     |
+| `pnpm test-e2e -- doc.pdf TIPO_DOCUMENTO` | Contrato público desplegado completo: `POST /documents` → `PUT` S3 → polling de `GET /documents/{id}` hasta `FINISHED`; imprime el JSON final | Sí (stack desplegado) | centavos     |
 | `pnpm test:e2e:pedimento -- --file normal_pend.pdf` | **E2E real de verdad**: sube por el stack desplegado (S3→SQS→SFN→Lambdas→DynamoDB/S3) Y compara contra el ground truth — ver [5](#5-e2e-real-contra-el-stack-desplegado) | Sí (stack desplegado) | ~$0.05–0.10 + minutos |
 | `pnpm schema:sensitivity -- --file normal_pend.pdf` | Experimento: qué tan preciso/impreciso se vuelve el resultado al cambiar el catálogo (hints, campos requeridos, tolerancias) — ver [6](#6-experimento-de-sensibilidad-del-schema) | Sí (parcial, ver abajo) | ~$0.05–0.15 |
 
@@ -93,6 +93,45 @@ fallando.
 3. Corre `pnpm test:unit` para validar que los nombres de campo existan en
    el catálogo antes de gastar dinero.
 4. Corre `pnpm comparar -- tu_archivo.pdf` para ver el resultado real.
+
+## 4. E2E genérico a través del API público
+
+Este es el smoke test para cualquier tipo y cualquier documento real, sin
+ground truth específico:
+
+```bash
+pnpm test-e2e -- ./ruta/factura.pdf FACTURA_FLETE_EXTRANJERO
+pnpm test-e2e -- ./ruta/pedimento.pdf PEDIMENTO_ADUANAL --env prod
+```
+
+El archivo y el tipo son los dos parámetros requeridos. También se aceptan
+como opciones (`--file` y `--type`/`--doc-type`). El ambiente por default es
+`dev`; `--stack NOMBRE` y `--endpoint URL` permiten apuntar a un destino
+explícito. `--timeout 1200` controla solamente el límite total de espera, no
+un tiempo fijo que el cliente deba adivinar.
+
+El test recorre exactamente el contrato que usaría una integración externa:
+
+1. registra el trabajo con `POST /documents`, incluyendo `documentType`;
+2. sube los bytes por el `PUT` prefirmado, sin `x-api-key`;
+3. consulta inmediatamente `GET /documents/{id}`;
+4. ante `202`, respeta `Retry-After` y aplica backoff exponencial con jitter;
+5. termina al recibir `200` y exige `processingStatus: "FINISHED"` más un
+   `result` no nulo.
+
+Los mensajes de avance se escriben en `stderr`. `stdout` contiene únicamente
+el cuerpo JSON del `GET` final, por lo que se puede guardar o procesar sin
+limpiarlo:
+
+```bash
+pnpm --silent test-e2e -- ./ruta/factura.pdf FACTURA_FLETE_EXTRANJERO > resultado.json
+pnpm --silent test-e2e -- ./ruta/factura.pdf FACTURA_FLETE_EXTRANJERO | jq '.result.documents'
+```
+
+`--full` agrega `?full=1` al polling y conserva también `fullResult` en la
+salida. Un resultado de negocio `RECHAZADO` sigue siendo una ejecución E2E
+correcta si el estado técnico es `FINISHED`; `FAILED`, timeout, `404` o cualquier
+respuesta distinta de `200`/`202` hacen fallar el comando.
 
 ## 5. E2E real contra el stack desplegado
 

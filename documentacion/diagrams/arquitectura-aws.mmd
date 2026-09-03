@@ -20,15 +20,18 @@ flowchart TB
     DDBT[("DynamoDB<br/>tracking")]:::database
     DDBC[("DynamoDB<br/>catálogo")]:::database
     EB["EventBridge<br/>idp-broker"]:::integration
+    STATUS["Status Lambda<br/>FINISHED · FAILED"]:::compute
     KMSN[("Cifrado<br/>CMK prod · default dev")]:::security
     QL["Query Lambda"]:::compute
 
     CLIENTE -->|"registra"| UP
+    UP -->|"AWAITING_UPLOAD"| DDBT
     CLIENTE --> RAW
     RAW --> SQS --> SFN --> LAMBDA
     LAMBDA --> RES
     LAMBDA --> DDBT
-    LAMBDA --> EB
+    SFN --> EB
+    EB --> STATUS --> DDBT
     LAMBDA -.-> TX
     DDBC -.->|"gana sobre bundle"| LAMBDA
     KMSN -.-> RAW

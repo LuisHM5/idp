@@ -1,32 +1,45 @@
 #!/usr/bin/env node
 /**
- * Test E2E: Sube un documento real al endpoint desplegado y muestra el resultado.
+ * E2E real del contrato público:
  *
- * Flujo completo: archivo local → base64 → POST /documents → espera procesamiento → consulta resultado
+ *   POST /documents -> PUT directo a S3 -> GET /documents/{id} hasta FINISHED
  *
- * Uso:
- *   pnpm test-e2e --file ./samples/ine_frente.pdf
- *   pnpm test-e2e --file ./samples/csf.pdf --endpoint https://xxx.execute-api.us-east-1.amazonaws.com/prod
- *   pnpm test-e2e --file ./samples/ine.jpg --wait 30
+ * Recibe un archivo real y el TYPE_ID declarado. Los mensajes de progreso van
+ * a stderr; stdout contiene exclusivamente el JSON final que devolvió el GET,
+ * de modo que el resultado se puede redirigir o encadenar a `jq`.
  *
- * Opciones:
- *   --file       (requerido) Ruta al documento a subir (jpg, jpeg, png, pdf)
- *   --endpoint   URL del API Gateway (default: lee de CloudFormation output)
- *   --stack      Nombre del stack CDK para obtener endpoint (default: "DocumentValidationStack")
- *   --wait       Segundos a esperar por el resultado (default: 20)
- *   --region     AWS region (default: AWS_REGION env o "us-east-1")
- *   --no-wait    No esperar resultado, solo subir
- *   --help       Mostrar ayuda
+ * Uso recomendado:
+ *   pnpm test-e2e -- ./documento.pdf FACTURA_FLETE_EXTRANJERO
+ *   pnpm test-e2e -- ./documento.pdf FACTURA_FLETE_EXTRANJERO --env prod
+ *   pnpm test-e2e -- --file ./documento.pdf --type FACTURA_FLETE_EXTRANJERO
  */
 
-import { readFileSync, existsSync } from "fs";
-import { basename, extname, join } from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { basename, extname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEV_STACK = "DocumentValidationStack-Dev";
+const PROD_STACK = "DocumentValidationStack";
+const DEFAULT_TIMEOUT_SECONDS = 20 * 60;
+const REQUEST_TIMEOUT_MS = 30_000;
+const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
+const DOCUMENT_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
+const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 
-/** Lee UNA variable de un archivo estilo dotenv sin cargarlo completo. */
-function readDotEnvVar(path, key) {
+export class E2EError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "E2EError";
+    Object.assign(this, details);
+  }
+}
+
+/** Lee una variable dotenv sin cargar ni alterar el entorno del proceso. */
+export function readDotEnvVar(path, key) {
   if (!existsSync(path)) return null;
   let value = null;
   for (const raw of readFileSync(path, "utf8").split("\n")) {
@@ -40,230 +53,428 @@ function readDotEnvVar(path, key) {
   return value;
 }
 
-/**
- * prod SIEMPRE requiere API_KEY explícito (nunca se autodetecta ahí, a
- * propósito). En dev (solo cuando --stack resuelve al stack de dev conocido
- * — este script no tiene --env), si no hay API_KEY ya exportado y .env.dev
- * tiene DEV_API_KEY_REQUIRED=true, usa automáticamente API_KEY_APP (de
- * .env.dev o ya exportado) — mismo criterio que scripts/enviar-documento.sh
- * y scripts/test-e2e-pedimento.py. Ver documentacion/AMBIENTES_Y_SEGURIDAD.md.
- */
-function resolveApiKey(stackName) {
-  if (process.env.API_KEY) return process.env.API_KEY;
-  if (stackName !== DEV_STACK) return null;
-  const dotenv = join(process.cwd(), ".env.dev");
-  const required = process.env.DEV_API_KEY_REQUIRED || readDotEnvVar(dotenv, "DEV_API_KEY_REQUIRED") || "";
-  if (required.trim().toLowerCase() !== "true") return null;
-  const key = process.env.API_KEY_APP || readDotEnvVar(dotenv, "API_KEY_APP");
-  if (key) {
-    console.log("DEV_API_KEY_REQUIRED=true detectado — usando API_KEY_APP automáticamente.");
-  } else {
-    console.warn("⚠️  DEV_API_KEY_REQUIRED=true pero no hay API_KEY_APP en .env.dev ni exportado — el upload probablemente reciba 403.");
-  }
-  return key;
-}
+export function parseArgs(argv) {
+  const options = { positionals: [], full: false };
+  const valueOptions = new Set([
+    "file", "type", "doc-type", "env", "endpoint", "stack", "region", "timeout", "wait",
+  ]);
 
-function parseArgs(args) {
-  const parsed = {};
-  for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith("--")) {
-      const key = args[i].slice(2);
-      if (key === "no-wait") { parsed.noWait = true; continue; }
-      if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
-        parsed[key] = true;
-      } else {
-        parsed[key] = args[i + 1];
-        i++;
-      }
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") continue;
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
     }
+    if (arg === "--full") {
+      options.full = true;
+      continue;
+    }
+    if (arg === "-f" || arg === "-t") {
+      const key = arg === "-f" ? "file" : "type";
+      if (!argv[i + 1] || argv[i + 1].startsWith("-")) {
+        throw new E2EError(`Falta el valor de ${arg}`);
+      }
+      options[key] = argv[++i];
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const key = arg.slice(2);
+      if (!valueOptions.has(key)) throw new E2EError(`Opción desconocida: ${arg}`);
+      if (!argv[i + 1] || argv[i + 1].startsWith("--")) {
+        throw new E2EError(`Falta el valor de ${arg}`);
+      }
+      options[key] = argv[++i];
+      continue;
+    }
+    options.positionals.push(arg);
   }
-  return parsed;
+
+  if (!options.file && options.positionals.length) options.file = options.positionals.shift();
+  if (!options.type && !options["doc-type"] && options.positionals.length) {
+    options.type = options.positionals.shift();
+  }
+  if (options.positionals.length) {
+    throw new E2EError(`Argumento inesperado: ${options.positionals[0]}`);
+  }
+  options.type = options.type || options["doc-type"];
+  options.timeout = options.timeout || options.wait;
+  return options;
 }
 
-function printHelp() {
-  console.log(`
-Uso: pnpm test-e2e --file <ruta_documento> [opciones]
+export function printHelp(stream = process.stdout) {
+  stream.write(`
+Uso:
+  pnpm test-e2e -- <documento> <TIPO_DOCUMENTO> [opciones]
+  pnpm test-e2e -- --file <documento> --type <TIPO_DOCUMENTO> [opciones]
 
-Sube un documento al endpoint desplegado y muestra el resultado del pipeline completo.
+Ejecuta el flujo real POST /documents -> PUT S3 -> GET /documents/{id} y
+escribe en stdout exactamente el JSON final devuelto por GET.
+
+Parámetros:
+  documento             Ruta al archivo real
+  TIPO_DOCUMENTO        TYPE_ID en UPPER_SNAKE_CASE
 
 Opciones:
-  --file       (requerido) Ruta al documento (jpg, jpeg, png, pdf)
-  --endpoint   URL del API Gateway (si no se da, se obtiene del stack CDK)
-  --stack      Nombre del stack CDK (default: "DocumentValidationStack")
-  --wait       Segundos a esperar resultado (default: 20)
-  --region     AWS region
-  --no-wait    Solo subir, no esperar resultado
-  --help       Mostrar ayuda
+  --env dev|prod        Ambiente (default: dev)
+  --endpoint URL        API explícita; evita consultar CloudFormation
+  --stack NOMBRE        Stack explícito; gana sobre --env
+  --region REGION       Región AWS (default: AWS_REGION o us-east-1)
+  --timeout SEGUNDOS    Espera máxima total (default: ${DEFAULT_TIMEOUT_SECONDS})
+  --full                Añade ?full=1 al GET final
+  --help                Muestra esta ayuda
 
 Ejemplos:
-  pnpm test-e2e --file ./samples/ine_frente.pdf
-  pnpm test-e2e --file ./samples/csf.jpg --wait 30
-  pnpm test-e2e --file ./samples/formato.pdf --endpoint https://abc123.execute-api.us-east-1.amazonaws.com/prod
+  pnpm test-e2e -- ./factura.pdf FACTURA_FLETE_EXTRANJERO
+  pnpm test-e2e -- ./pedimento.pdf PEDIMENTO_ADUANAL --env prod
+  pnpm --silent test-e2e -- ./factura.pdf FACTURA_FLETE_EXTRANJERO > resultado.json
 `);
 }
 
-function getEndpointFromStack(stackName, region) {
+export function getEndpointFromStack(stackName, region) {
   try {
-    const output = execSync(
-      `aws cloudformation describe-stacks --stack-name "${stackName}" --region ${region} --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text`,
-      { encoding: "utf8", timeout: 10000 }
+    const output = execFileSync(
+      "aws",
+      [
+        "cloudformation", "describe-stacks",
+        "--stack-name", stackName,
+        "--region", region,
+        "--query", "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue",
+        "--output", "text",
+      ],
+      { encoding: "utf8", timeout: REQUEST_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] }
     ).trim();
-    return output || null;
+    return output && output !== "None" ? output.replace(/\/+$/, "") : null;
   } catch {
     return null;
   }
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+/** Misma política de credenciales que `scripts/enviar-documento.sh`. */
+export function resolveApiKey(env, environment = process.env) {
+  if (environment.API_KEY) return environment.API_KEY;
+  const dotenv = join(REPO_ROOT, env === "prod" ? ".env.production" : ".env.dev");
+
+  if (env === "prod") {
+    return environment.API_KEY_APP
+      || readDotEnvVar(dotenv, "API_KEY")
+      || readDotEnvVar(dotenv, "API_KEY_APP");
+  }
+
+  const required = environment.DEV_API_KEY_REQUIRED
+    || readDotEnvVar(dotenv, "DEV_API_KEY_REQUIRED")
+    || "";
+  if (required.trim().toLowerCase() !== "true") return null;
+  return environment.API_KEY_APP || readDotEnvVar(dotenv, "API_KEY_APP");
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+function apiHeaders(apiKey, includeJson = false) {
+  return {
+    ...(includeJson && { "Content-Type": "application/json" }),
+    ...(apiKey && { "x-api-key": apiKey }),
+  };
+}
 
-  if (args.help) { printHelp(); process.exit(0); }
-
-  if (!args.file) {
-    console.error("❌ --file es requerido\n");
-    printHelp();
-    process.exit(1);
-  }
-
-  if (!existsSync(args.file)) {
-    console.error(`❌ Archivo no encontrado: ${args.file}`);
-    process.exit(1);
-  }
-
-  const region = args.region || process.env.AWS_REGION || "us-east-1";
-  const stackName = args.stack || "DocumentValidationStack";
-  const waitSeconds = parseInt(args.wait || "20", 10);
-
-  // Get endpoint
-  let endpoint = args.endpoint;
-  if (!endpoint) {
-    console.log(`\n🔍 Obteniendo endpoint del stack '${stackName}'...`);
-    endpoint = getEndpointFromStack(stackName, region);
-    if (!endpoint) {
-      console.error("❌ No se pudo obtener el endpoint. Usa --endpoint <url> o verifica el stack.");
-      process.exit(1);
-    }
-  }
-
-  // Ensure endpoint ends properly
-  const uploadUrl = endpoint.endsWith("/")
-    ? `${endpoint}upload`
-    : `${endpoint}/documents`;
-
-  // Read and encode file
-  const fileName = basename(args.file);
-  const ext = extname(fileName).slice(1).toLowerCase();
-  const allowedExts = ["jpg", "jpeg", "png", "pdf"];
-
-  if (!allowedExts.includes(ext)) {
-    console.error(`❌ Formato '${ext}' no soportado. Permitidos: ${allowedExts.join(", ")}`);
-    process.exit(1);
-  }
-
-  const fileBuffer = readFileSync(args.file);
-
-  console.log(`\n📄 Archivo:   ${fileName} (${(fileBuffer.length / 1024).toFixed(1)} KB)`);
-  console.log(`🌐 Endpoint:  ${uploadUrl}`);
-
-  // Paso 1 de 2: pedir la URL prefirmada. El POST solo lleva metadata — el
-  // archivo nunca pasa por API Gateway ni por el Lambda, sin importar su tamaño.
-  console.log(`\n⏳ Paso 1/2: pidiendo URL prefirmada...`);
-
-  const body = JSON.stringify({
-    fileName,
-    metadata: { source: "test-e2e", uploadedAt: new Date().toISOString() },
-  });
-
-  const apiKey = resolveApiKey(stackName);
-  const apiKeyHeader = apiKey ? `-H "x-api-key: ${apiKey}" ` : "";
-
+async function responseBody(response) {
+  const text = await response.text();
+  if (!text) return null;
   try {
-    const response = execSync(
-      `curl -s -w "\\n%{http_code}" -X POST "${uploadUrl}" -H "Content-Type: application/json" ${apiKeyHeader}-d @-`,
+    return JSON.parse(text);
+  } catch {
+    throw new E2EError(`La API devolvió un cuerpo que no es JSON (HTTP ${response.status})`, {
+      statusCode: response.status,
+      responseText: text,
+    });
+  }
+}
+
+async function apiFetch(url, options = {}, fetchImpl = fetch) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      ...options,
+      signal: options.signal || AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new E2EError(`No se pudo conectar a ${url}: ${error.message}`, { cause: error });
+  }
+  const body = await responseBody(response);
+  return { response, body };
+}
+
+export async function registerDocument({ endpoint, filePath, documentType, apiKey, metadata, fetchImpl }) {
+  const { response, body } = await apiFetch(`${endpoint}/documents`, {
+    method: "POST",
+    headers: apiHeaders(apiKey, true),
+    body: JSON.stringify({
+      fileName: basename(filePath),
+      documentType,
+      metadata: metadata || { source: "test-e2e" },
+    }),
+  }, fetchImpl);
+
+  if (response.status !== 200 || !body?.documentId || !body?.uploadUrl) {
+    throw new E2EError(`POST /documents falló (HTTP ${response.status}): ${JSON.stringify(body)}`, {
+      statusCode: response.status,
+      responseBody: body,
+    });
+  }
+  return body;
+}
+
+/** Sube en streaming: el documento no se carga completo en memoria. */
+export function putFile(uploadUrl, filePath) {
+  return new Promise((resolvePromise, reject) => {
+    const url = new URL(uploadUrl);
+    const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = request(
+      url,
       {
-        input: body,
-        encoding: "utf8",
-        timeout: 30000,
+        method: "PUT",
+        // Es una cabecera de transporte calculada por el cliente, no metadata
+        // x-amz. El PUT sigue sin reenviar x-api-key ni cabeceras del POST.
+        headers: { "Content-Length": statSync(filePath).size },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            resolvePromise();
+          } else {
+            reject(new E2EError(`PUT a S3 falló (HTTP ${response.statusCode}): ${body}`, {
+              statusCode: response.statusCode,
+              responseText: body,
+            }));
+          }
+        });
       }
     );
+    req.setTimeout(5 * 60_000, () => req.destroy(new Error("timeout del PUT a S3")));
+    req.on("error", (error) => reject(new E2EError(`No se pudo subir el archivo: ${error.message}`, { cause: error })));
+    const stream = createReadStream(filePath);
+    stream.on("error", (error) => req.destroy(error));
+    stream.pipe(req);
+  });
+}
 
-    const lines = response.trim().split("\n");
-    const httpCode = lines.pop();
-    const responseBody = lines.join("\n");
+function retryAfterMilliseconds(response, body) {
+  const raw = response.headers.get("retry-after");
+  if (raw !== null && /^\d+(?:\.\d+)?$/.test(raw.trim())) return Number(raw) * 1000;
+  if (raw) {
+    const date = Date.parse(raw);
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  }
+  const fromBody = Number(body?.retryAfterSeconds);
+  return Number.isFinite(fromBody) && fromBody >= 0 ? fromBody * 1000 : 5000;
+}
 
-    if (httpCode !== "200") {
-      console.error(`\n❌ Upload falló (HTTP ${httpCode}):`);
-      console.error(responseBody);
-      process.exit(1);
+export async function pollDocument({
+  endpoint,
+  documentId,
+  apiKey,
+  timeoutMs,
+  full = false,
+  sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
+  jitter = () => Math.random() * 1000,
+  onPoll = () => {},
+  fetchImpl,
+}) {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let backoffMs = 5000;
+  let attempt = 0;
+
+  while (Date.now() <= deadline) {
+    attempt++;
+    const suffix = full ? "?full=1" : "";
+    const { response, body } = await apiFetch(
+      `${endpoint}/documents/${encodeURIComponent(documentId)}${suffix}`,
+      { headers: apiHeaders(apiKey) },
+      fetchImpl
+    );
+
+    if (response.status === 200) {
+      onPoll({ attempt, statusCode: 200, processingStatus: body?.processingStatus, waitMs: 0 });
+      return body;
+    }
+    if (response.status !== 202) {
+      throw new E2EError(`GET /documents/${documentId} falló (HTTP ${response.status}): ${JSON.stringify(body)}`, {
+        statusCode: response.status,
+        responseBody: body,
+      });
     }
 
-    const uploadResult = JSON.parse(responseBody);
+    const minimumMs = retryAfterMilliseconds(response, body);
+    const waitMs = Math.max(backoffMs, minimumMs) + Math.max(0, jitter());
+    onPoll({ attempt, statusCode: 202, processingStatus: body?.processingStatus, waitMs });
+    if (Date.now() + waitMs > deadline) break;
+    await sleep(waitMs);
+    backoffMs = Math.min(backoffMs * 2, 30_000);
+  }
 
-    // Paso 2 de 2: PUT directo a S3, SIN ninguna cabecera extra. Al prefirmar,
-    // SigV4 hoistea los x-amz-* al query string: la metadata ya va dentro de la
-    // URL y firmada. Añadirla como header da 403 AccessDenied (headers not signed).
-    console.log(`⏳ Paso 2/2: subiendo el archivo a S3...`);
-    const putCode = execSync(
-      `curl -s -o /dev/null -w "%{http_code}" -X PUT --upload-file "${args.file}" "${uploadResult.uploadUrl}"`,
-      { encoding: "utf8", timeout: 300000 }
-    ).trim();
-    if (putCode !== "200") {
-      console.error(`\n❌ S3 rechazó el PUT (HTTP ${putCode})`);
-      process.exit(1);
-    }
+  throw new E2EError(
+    `Tiempo agotado después de ${Math.round((Date.now() - startedAt) / 1000)}s esperando ${documentId}`,
+    { documentId }
+  );
+}
 
-    console.log(`\n✅ Upload exitoso:`);
-    console.log(`   Document ID: ${uploadResult.documentId}`);
-    console.log(`   S3 Key:      ${uploadResult.key}`);
-    console.log(`   Timestamp:   ${uploadResult.uploadedAt}`);
+export async function runE2E({
+  endpoint,
+  filePath,
+  documentType,
+  apiKey = null,
+  timeoutMs = DEFAULT_TIMEOUT_SECONDS * 1000,
+  full = false,
+  log = () => {},
+  sleep,
+  jitter,
+  fetchImpl,
+  putFileImpl = putFile,
+}) {
+  log(`POST /documents · ${basename(filePath)} · ${documentType}`);
+  const registration = await registerDocument({ endpoint, filePath, documentType, apiKey, fetchImpl });
+  log(`Registrado ${registration.documentId} (${registration.processingStatus || "AWAITING_UPLOAD"})`);
 
-    if (args.noWait) {
-      console.log(`\n   (--no-wait: no se esperará el resultado del pipeline)\n`);
-      return;
-    }
+  log("PUT directo a S3");
+  await putFileImpl(registration.uploadUrl, filePath);
+  log("Archivo subido; comienza el polling del API");
 
-    // Wait for processing
-    console.log(`\n⏳ Esperando procesamiento (${waitSeconds}s)...`);
-    console.log(`   El pipeline ejecuta: Clasificación → Extracción → Validación`);
-
-    for (let i = 0; i < waitSeconds; i++) {
-      await sleep(1000);
-      process.stdout.write(`\r   ${i + 1}/${waitSeconds}s`);
-    }
-    console.log("\n");
-
-    // Try to get result from DynamoDB (the construct stores results there)
-    console.log(`🔍 Buscando resultado en DynamoDB...`);
-    try {
-      const scanResult = execSync(
-        `aws dynamodb scan --table-name "bedrock-document-processing" --region ${region} --filter-expression "documentId = :id" --expression-attribute-values '{":id":{"S":"${uploadResult.documentId}"}}' --output json 2>/dev/null`,
-        { encoding: "utf8", timeout: 10000 }
-      );
-      const data = JSON.parse(scanResult);
-      if (data.Items && data.Items.length > 0) {
-        console.log(`\n✅ Resultado encontrado:\n`);
-        console.log(JSON.stringify(data.Items[0], null, 2));
-      } else {
-        console.log(`\n⚠️  Resultado aún no disponible en DynamoDB.`);
-        console.log(`   El pipeline puede tardar más. Intenta con --wait ${waitSeconds + 20}`);
-        console.log(`   O revisa los logs de Step Functions en la consola AWS.`);
+  let lastStatus = null;
+  const finalResponse = await pollDocument({
+    endpoint,
+    documentId: registration.documentId,
+    apiKey,
+    timeoutMs,
+    full,
+    ...(sleep && { sleep }),
+    ...(jitter && { jitter }),
+    ...(fetchImpl && { fetchImpl }),
+    onPoll: ({ processingStatus, waitMs }) => {
+      if (processingStatus !== lastStatus) {
+        log(`${processingStatus || "ESTADO_DESCONOCIDO"}${waitMs ? ` · próximo GET en ${(waitMs / 1000).toFixed(1)}s` : ""}`);
+        lastStatus = processingStatus;
       }
-    } catch {
-      console.log(`\n⚠️  No se pudo consultar DynamoDB directamente.`);
-      console.log(`   Revisa el resultado en la consola AWS:`);
-      console.log(`   - Step Functions: busca la ejecución con documentId ${uploadResult.documentId}`);
-      console.log(`   - EventBridge: busca eventos de 'document-validation-pipeline'`);
-    }
+    },
+  });
 
-  } catch (e) {
-    console.error(`\n❌ Error en la petición:`);
-    console.error(e.message);
-    process.exit(1);
+  if (finalResponse?.documentId !== registration.documentId) {
+    throw new E2EError("El GET final devolvió un documentId distinto al registrado", {
+      expectedDocumentId: registration.documentId,
+      actualDocumentId: finalResponse?.documentId,
+    });
+  }
+  return finalResponse;
+}
+
+function resolveInputFile(rawPath, environment = process.env) {
+  if (!rawPath) return null;
+  if (isAbsolute(rawPath) || existsSync(rawPath)) return resolve(rawPath);
+  if (environment.INIT_CWD && existsSync(join(environment.INIT_CWD, rawPath))) {
+    return resolve(environment.INIT_CWD, rawPath);
+  }
+  return resolve(rawPath);
+}
+
+function validateOptions(options) {
+  if (!options.file) throw new E2EError("Falta el documento");
+  if (!options.type) throw new E2EError("Falta TIPO_DOCUMENTO");
+  if (!existsSync(options.file) || !statSync(options.file).isFile()) {
+    throw new E2EError(`No existe el archivo: ${options.file}`);
+  }
+  const extension = extname(options.file).slice(1).toLowerCase();
+  if (!ALLOWED_EXTENSIONS.has(extension)) {
+    throw new E2EError(`Formato no soportado: .${extension || "(sin extensión)"}`);
+  }
+  if (!DOCUMENT_TYPE_PATTERN.test(options.type)) {
+    throw new E2EError("TIPO_DOCUMENTO debe usar UPPER_SNAKE_CASE y tener máximo 64 caracteres");
+  }
+  if (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds <= 0) {
+    throw new E2EError("--timeout debe ser un número positivo de segundos");
   }
 }
 
-main();
+export async function main(argv = process.argv.slice(2), environment = process.env) {
+  const options = parseArgs(argv);
+  if (options.help) {
+    printHelp();
+    return 0;
+  }
+
+  const env = options.env || "dev";
+  if (!new Set(["dev", "prod"]).has(env)) throw new E2EError("--env debe ser dev o prod");
+  const region = options.region || environment.AWS_REGION || "us-east-1";
+  const stackName = options.stack || (env === "prod" ? PROD_STACK : DEV_STACK);
+  options.file = resolveInputFile(options.file, environment);
+  options.timeoutSeconds = Number(options.timeout || DEFAULT_TIMEOUT_SECONDS);
+  validateOptions(options);
+
+  const endpoint = (options.endpoint || environment.API_ENDPOINT || getEndpointFromStack(stackName, region))
+    ?.replace(/\/+$/, "");
+  if (!endpoint) {
+    throw new E2EError(
+      `No se pudo obtener ApiEndpoint de ${stackName}; usa --endpoint URL o autentica AWS CLI`
+    );
+  }
+  let parsedEndpoint;
+  try {
+    parsedEndpoint = new URL(endpoint);
+  } catch {
+    throw new E2EError(`Endpoint inválido: ${endpoint}`);
+  }
+  if (!new Set(["http:", "https:"]).has(parsedEndpoint.protocol)) {
+    throw new E2EError(`Endpoint inválido: ${endpoint}`);
+  }
+
+  const apiKey = resolveApiKey(env, environment);
+  if (env === "prod" && !apiKey) {
+    throw new E2EError("Producción requiere API_KEY o API_KEY_APP (shell o .env.production)");
+  }
+  if (env === "dev") {
+    const required = environment.DEV_API_KEY_REQUIRED
+      || readDotEnvVar(join(REPO_ROOT, ".env.dev"), "DEV_API_KEY_REQUIRED")
+      || "";
+    if (required.trim().toLowerCase() === "true" && !apiKey) {
+      throw new E2EError("Dev exige API key, pero no existe API_KEY/API_KEY_APP en el entorno ni en .env.dev");
+    }
+  }
+
+  const log = (message) => process.stderr.write(`[e2e] ${message}\n`);
+  log(`API ${endpoint} · timeout ${options.timeoutSeconds}s`);
+  const finalResponse = await runE2E({
+    endpoint,
+    filePath: options.file,
+    documentType: options.type,
+    apiKey,
+    timeoutMs: options.timeoutSeconds * 1000,
+    full: options.full,
+    log,
+  });
+
+  // stdout del script queda deliberadamente libre de logs. Al invocarlo con
+  // pnpm usa --silent para que el banner del package manager tampoco se mezcle
+  // con el JSON: `pnpm --silent test-e2e -- ... > resultado.json`.
+  process.stdout.write(`${JSON.stringify(finalResponse, null, 2)}\n`);
+  if (finalResponse?.processingStatus !== "FINISHED") {
+    process.stderr.write(`[e2e] Estado terminal inesperado: ${finalResponse?.processingStatus || "ausente"}\n`);
+    return 1;
+  }
+  if (!finalResponse.result) {
+    process.stderr.write("[e2e] FINISHED sin result\n");
+    return 1;
+  }
+  return 0;
+}
+
+const isDirectExecution = process.argv[1]
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isDirectExecution) {
+  main().then(
+    (exitCode) => { process.exitCode = exitCode; },
+    (error) => {
+      process.stderr.write(`[e2e] ERROR: ${error.message}\n`);
+      process.exitCode = 1;
+    }
+  );
+}

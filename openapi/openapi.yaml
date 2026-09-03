@@ -34,7 +34,7 @@ info:
     |---|---|---|---|---|
     | 1 | `POST /documents` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
     | 2 | `PUT {uploadUrl}` **(a S3)** | **ninguna** — firmada en la URL | los bytes crudos del archivo | `200` con **cuerpo vacío**; S3 no devuelve JSON |
-    | 3 | `GET /documents/{documentId}` | `x-api-key` | — | `200` con el resultado, o `404` mientras procesa |
+    | 3 | `GET /documents/{documentId}` | `x-api-key` | — | `202` mientras procesa; `200` al terminar |
     | 4 | `GET /documents/{documentId}/file` | `x-api-key` | — | `200` · URL prefirmada para bajar el original |
 
     Los pasos 1 y 2 **van siempre juntos**: subir un documento son dos
@@ -47,8 +47,9 @@ info:
     El paso 4 es opcional: solo si necesitas recuperar el archivo original.
 
     Entre el paso 2 y el 3 corre el pipeline solo, sin que haya que avisarle a
-    nada: `S3 → SQS → Step Functions → Textract/Bedrock → DynamoDB`. Por eso el
-    paso 3 responde `404` mientras tanto — es "todavía no", no "no existe".
+    nada: `S3 → SQS → Step Functions → Textract/Bedrock → DynamoDB`. El paso 3
+    responde `202` con `Retry-After` mientras trabaja; `404` sí significa que
+    el id no existe o no es visible para la app que consulta.
 
     ### Paso 2 — el `PUT` a S3 (no está en `paths`, va a otro host)
 
@@ -59,7 +60,6 @@ info:
     ```bash
     # $RESP es la respuesta del paso 1
     curl -X PUT \
-      -H "x-amz-meta-app-origin: CEDIS" \
       --upload-file pedimento.pdf \
       "$(echo "$RESP" | jq -r .uploadUrl)"
     ```
@@ -82,8 +82,9 @@ info:
     ### Paso 3 — leer el resultado
 
     El pipeline tarda segundos, no milisegundos. Mientras corre,
-    `GET /documents/{id}` responde `404`: es "todavía no", no "no existe".
-    Consulta cada pocos segundos hasta que traiga `validation.status`.
+    `GET /documents/{id}` responde `202` con `processingStatus` y
+    `Retry-After`. Respeta ese encabezado y aumenta gradualmente la espera
+    (con jitter, máximo recomendado 30 s) hasta recibir un estado terminal.
 
     ## Errores: qué significan de verdad
 
@@ -98,7 +99,8 @@ info:
     | `403 SignatureDoesNotMatch` (XML) | La `uploadUrl` se alteró, o ya expiró | Repite el paso 1; las URLs no se renuevan |
     | `400 INLINE_UPLOAD_REMOVED` | Mandaste el archivo en `contentBase64` | El modo inline ya no existe: usa los dos pasos |
     | `400 DOCUMENT_TYPE_REQUIRED` | Subiste `.xml`/`.xlsx`/`.csv` sin `documentType` | Esos formatos lo exigen: no hay clasificación automática sobre datos ya estructurados |
-    | `404` al consultar el resultado | **Todavía se está procesando** | Reintenta cada pocos segundos; no es "no existe" |
+    | `202` al consultar el resultado | Sigue en `AWAITING_UPLOAD`, `QUEUED` o `PROCESSING` | Respeta `Retry-After`; usa backoff con jitter |
+    | `404` al consultar el resultado | El id no existe o la app no puede verlo | No lo reintentes como si estuviera procesando |
 
     Dos reglas que se deducen de la tabla y conviene tener presentes:
 
@@ -303,9 +305,15 @@ paths:
         - lang: Shell
           label: curl
           source: |
-            # DOC_ID viene del paso 1. 404 = todavía procesando, no "no existe".
-            until curl -sS -f "$API/documents/$DOC_ID" -H "x-api-key: $KEY" -o result.json; do
-              echo "aún procesando..."; sleep 5
+            # 202 = sigue procesando; Retry-After marca la espera mínima.
+            delay=5
+            while :; do
+              code=$(curl -sS -o result.json -w '%{http_code}' \
+                "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
+              [ "$code" = 200 ] && break
+              [ "$code" = 202 ] || { cat result.json; exit 1; }
+              sleep $((delay + RANDOM % 3))
+              delay=$((delay < 15 ? delay * 2 : 30))
             done
 
             jq '.validation.status' result.json
@@ -313,20 +321,27 @@ paths:
         - lang: JavaScript
           label: Node.js 18+
           source: |
-            // documentId viene del paso 1. 404 = todavía procesando, no "no existe".
+            // 202 = trabajo conocido pero todavía no terminal.
             let doc;
+            let delayMs = 5000;
             for (let i = 0; i < 60; i++) {
               const r = await fetch(`${API}/documents/${documentId}`, {
                 headers: { "x-api-key": KEY },
               });
-              if (r.ok) { doc = await r.json(); break; }
-              if (r.status !== 404) throw new Error(`GET → ${r.status}: ${await r.text()}`);
-              await new Promise((s) => setTimeout(s, 5000));
+              const body = await r.json();
+              if (r.status === 200) { doc = body; break; }
+              if (r.status !== 202) throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
+              const minimum = Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
+              const jitter = Math.random() * 1000;
+              await new Promise((s) => setTimeout(s, Math.max(delayMs, minimum) + jitter));
+              delayMs = Math.min(delayMs * 2, 30000);
             }
 
-            console.log(doc.validation.status);            // APROBADO | REQUIERE_REVISION | RECHAZADO
+            if (doc.processingStatus === "FAILED") throw new Error("El procesamiento técnico falló");
+            const result = doc.result;
+            console.log(result.validation.status);         // APROBADO | REQUIERE_REVISION | RECHAZADO
             // `documents` siempre está, traiga el PDF uno o veinte.
-            for (const d of doc.documents) {
+            for (const d of result.documents) {
               console.log(`#${d.index}`, d.documentType, `págs ${d.pageStart}-${d.pageEnd}`);
               for (const [campo, v] of Object.entries(d.fields ?? {})) {
                 if (v.items) console.log("  ", campo, `= ${v.items.length} renglón(es)`);
@@ -336,23 +351,31 @@ paths:
         - lang: Python
           label: Python 3 (requests)
           source: |
+            import random
             import time
 
-            # document_id viene del paso 1. 404 = todavía procesando, no "no existe".
+            # 202 = trabajo conocido pero todavía no terminal.
             doc = None
+            delay = 5
             for _ in range(60):
                 r = requests.get(f"{API}/documents/{document_id}",
                                  headers={"x-api-key": KEY}, timeout=30)
-                if r.ok:
+                body = r.json()
+                if r.status_code == 200:
                     doc = r.json()
                     break
-                if r.status_code != 404:
+                if r.status_code != 202:
                     r.raise_for_status()
-                time.sleep(5)
+                minimum = int(r.headers.get("Retry-After", body.get("retryAfterSeconds", 5)))
+                time.sleep(max(delay, minimum) + random.random())
+                delay = min(delay * 2, 30)
 
-            print(doc["validation"]["status"])   # APROBADO | REQUIERE_REVISION | RECHAZADO
+            if doc["processingStatus"] == "FAILED":
+                raise RuntimeError("El procesamiento técnico falló")
+            result = doc["result"]
+            print(result["validation"]["status"]) # APROBADO | REQUIERE_REVISION | RECHAZADO
             # `documents` siempre está, traiga el PDF uno o veinte.
-            for d in doc["documents"]:
+            for d in result["documents"]:
                 print(f"#{d['index']}", d["documentType"], f"págs {d['pageStart']}-{d['pageEnd']}")
                 for campo, v in (d.get("fields") or {}).items():
                     if "items" in v:
@@ -364,24 +387,30 @@ paths:
           source: |
             using System.Net;
 
-            // documentId viene del paso 1. 404 = todavía procesando, no "no existe".
+            // 202 = trabajo conocido pero todavía no terminal.
             JsonElement doc = default;
+            var delay = TimeSpan.FromSeconds(5);
             for (var i = 0; i < 60; i++)
             {
                 var r = await http.GetAsync($"{api}/documents/{documentId}");
-                if (r.IsSuccessStatusCode)
+                var body = await r.Content.ReadFromJsonAsync<JsonElement>();
+                if (r.StatusCode == HttpStatusCode.OK)
                 {
-                    doc = await r.Content.ReadFromJsonAsync<JsonElement>();
+                    doc = body;
                     break;
                 }
-                if (r.StatusCode != HttpStatusCode.NotFound) r.EnsureSuccessStatusCode();
-                await Task.Delay(5000);
+                if (r.StatusCode != HttpStatusCode.Accepted) r.EnsureSuccessStatusCode();
+                await Task.Delay(delay + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)));
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
             }
 
+            if (doc.GetProperty("processingStatus").GetString() == "FAILED")
+                throw new Exception("El procesamiento técnico falló");
+            var result = doc.GetProperty("result");
             // APROBADO | REQUIERE_REVISION | RECHAZADO
-            Console.WriteLine(doc.GetProperty("validation").GetProperty("status"));
+            Console.WriteLine(result.GetProperty("validation").GetProperty("status"));
             // `documents` siempre está, traiga el PDF uno o veinte.
-            foreach (var d in doc.GetProperty("documents").EnumerateArray())
+            foreach (var d in result.GetProperty("documents").EnumerateArray())
             {
                 var tipo  = d.GetProperty("documentType");
                 var desde = d.GetProperty("pageStart");
@@ -408,25 +437,29 @@ paths:
           schema: { type: boolean, default: false }
       responses:
         "200":
-          description: Resultado del documento.
+          description: Estado terminal (`FINISHED` con resultado o `FAILED` técnico).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentResult" }
+        "202":
+          description: >
+            Trabajo conocido pero aún no terminal: `AWAITING_UPLOAD`, `QUEUED`
+            o `PROCESSING`. El cliente debe respetar `Retry-After` y aplicar
+            backoff con jitter; no necesita adivinar cuánto tardará.
+          headers:
+            Retry-After:
+              description: Mínimo de segundos antes del siguiente GET.
+              schema: { type: integer, minimum: 1 }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DocumentResult" }
         "404":
           description: >
-            `NOT_FOUND`. Tres causas, misma respuesta:
-
-
-            1. **Todavía se está procesando** — la causa más común justo
-            después de subir. El resultado se persiste al terminar el
-            pipeline, así que hasta entonces el id no resuelve. Trátalo como
-            "aún no", no como "no existe": haz *polling* cada pocos segundos.
-
-            2. No hay documento con ese id/prefijo.
-
-            3. Existe, pero la app que llama no tiene permiso de verlo — misma
+            `NOT_FOUND`: no hay documento con ese id/prefijo, o existe pero la
+            app que llama no tiene permiso de verlo. Es la misma
             respuesta a propósito, para no confirmar que un documento fuera de
-            tu alcance exista.
+            alcance exista. Un documento que todavía procesa devuelve `202`,
+            nunca `404`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -742,6 +775,10 @@ paths:
                     uploadExpiresInSeconds: 900
                     uploadExpiresAt: "2026-07-27T13:33:19.000Z"
                     uploadedAt: "2026-07-27T13:18:19.000Z"
+                    registeredAt: "2026-07-27T13:18:19.000Z"
+                    processingStatus: AWAITING_UPLOAD
+                    statusUrl: /documents/e18d014a-...
+                    retryAfterSeconds: 5
           links:
             # Encadenado formal de los pasos: los valores de ESTA respuesta
             # alimentan las operaciones siguientes, para no copiarlos a mano.
@@ -757,8 +794,9 @@ paths:
               operationId: getDocumentById
               description: >
                 **Paso 3.** Consulta el resultado con el `documentId` de esta
-                respuesta. Responde `404` hasta que el paso 2 se completó y el
-                pipeline terminó — reintenta cada pocos segundos.
+                respuesta. Responde `202` durante `AWAITING_UPLOAD`, `QUEUED`
+                y `PROCESSING`; respeta `Retry-After`. `404` significa que no
+                existe o que la app no puede verlo.
               parameters:
                 id: $response.body#/documentId
             descargarElOriginal:
@@ -799,9 +837,10 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
           description: >
-            `PRESIGN_FAILED` — no se pudo firmar la URL de subida. Es
-            reintentable: no se creó ningún objeto ni se consumió el
-            `documentId`, así que basta con repetir el `POST`.
+            `PRESIGN_FAILED` — no se pudo firmar la URL; o
+            `JOB_REGISTRATION_FAILED` — no se pudo reservar el estado inicial
+            en DynamoDB. Ambos son reintentables: no se devolvió una URL al
+            cliente, así que basta con repetir el `POST`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1259,7 +1298,8 @@ components:
             Código de error estable — programa contra este valor, no contra
             `message`. Upload: MISSING_FIELD, INVALID_FORMAT,
             DOCUMENT_TYPE_REQUIRED, INVALID_DOCUMENT_TYPE, INVALID_JSON,
-            INVALID_METADATA, INLINE_UPLOAD_REMOVED, PRESIGN_FAILED.
+            INVALID_METADATA, INLINE_UPLOAD_REMOVED, PRESIGN_FAILED,
+            JOB_REGISTRATION_FAILED.
             Consulta/escritura: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS,
             FORBIDDEN, EMPTY_PATCH, METADATA_CONFLICT.
         message: { type: string }
@@ -1359,8 +1399,18 @@ components:
         bucket: { type: string }
         key: { type: string }
         documentType: { type: string }
-        classificationMode: { type: string, enum: [manual, automatic] }
+        classificationMode: { type: string, enum: [manual, auto] }
         uploadedAt: { type: string, format: date-time }
+        registeredAt: { type: string, format: date-time }
+        processingStatus:
+          type: string
+          enum: [AWAITING_UPLOAD]
+        statusUrl:
+          type: string
+          description: Ruta relativa para consultar el trabajo.
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
         uploadUrl: { type: string, format: uri }
         uploadMethod: { type: string, enum: [PUT] }
         uploadExpiresInSeconds: { type: integer }
@@ -1401,13 +1451,27 @@ components:
                     error: { type: string }
     DocumentResult:
       type: object
+      required: [documentId, processingStatus]
       properties:
         documentId: { type: string }
+        processingStatus:
+          type: string
+          enum: [AWAITING_UPLOAD, QUEUED, PROCESSING, FINISHED, FAILED]
+          description: >
+            Ciclo técnico público y estable. Es independiente de
+            `result.validation.status`, que expresa el resultado de negocio.
         workflowStatus:
           type: string
-          description: Estado del pipeline en DynamoDB (p. ej. complete).
+          description: Estado interno heredado del blueprint; no usar para controlar el polling.
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
+          description: Presente en respuestas 202; espera mínima sugerida.
+        registeredAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        uploadExpiresAt: { type: string, format: date-time }
         result:
-          type: object
+          type: [object, "null"]
           description: >
             Envelope completo. Los datos extraídos viven en `documents[]`, un
             elemento por documento encontrado en el archivo — siempre un

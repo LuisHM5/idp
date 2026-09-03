@@ -1,7 +1,11 @@
 import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as lambda from "aws-cdk-lib/aws-lambda";
-import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
+import { JsonPath } from "aws-cdk-lib/aws-stepfunctions";
+import {
+  DynamoAttributeValue,
+  LambdaInvoke,
+} from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   BedrockDocumentProcessing,
   BedrockDocumentProcessingProps,
@@ -104,6 +108,30 @@ export class MultiModelDocumentProcessing extends BedrockDocumentProcessing {
       STATE.set(this, s);
     }
     return s;
+  }
+
+  /**
+   * Preserve the stable public job lifecycle when the blueprint replaces the
+   * lightweight AWAITING_UPLOAD row in InitMetadataEntry.
+   */
+  protected preprocessingMetadata(): Record<string, DynamoAttributeValue> {
+    return {
+      ...super.preprocessingMetadata(),
+      ProcessingStatus: DynamoAttributeValue.fromString("PROCESSING"),
+      ProcessingStatusUpdatedAt: DynamoAttributeValue.fromString(
+        JsonPath.stringAt("$.eventTime")
+      ),
+      JobOwner: DynamoAttributeValue.fromString(JsonPath.stringAt("$.jobOwner")),
+      RequestedDocumentType: DynamoAttributeValue.fromString(
+        JsonPath.stringAt("$.requestedDocumentType")
+      ),
+      RegisteredAt: DynamoAttributeValue.fromString(
+        JsonPath.stringAt("$.registeredAt")
+      ),
+      UploadExpiresAt: DynamoAttributeValue.fromString(
+        JsonPath.stringAt("$.uploadExpiresAt")
+      ),
+    };
   }
 
   /**

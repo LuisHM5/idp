@@ -143,12 +143,18 @@ En cuanto S3 recibe el archivo, el pipeline arranca solo
 ## 3. Consultar el resultado
 
 El procesamiento **no es instantáneo**: tarda segundos, y un expediente grande
-más. Mientras corre, la consulta responde `404` — es *"todavía no"*, no *"no
-existe"*.
+más. Mientras corre, la consulta responde `202` con `processingStatus` y
+`Retry-After`. `404` significa que el id no existe o la app no puede verlo.
 
 ```bash
-until curl -sS -f "$API/documents/$DOC_ID" -H "x-api-key: $KEY" -o result.json; do
-  echo "procesando..."; sleep 5
+delay=5
+while :; do
+  code=$(curl -sS -o result.json -w '%{http_code}' \
+    "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
+  [ "$code" = 200 ] && break
+  [ "$code" = 202 ] || { cat result.json; exit 1; }
+  sleep $((delay + RANDOM % 3))
+  delay=$((delay < 15 ? delay * 2 : 30))
 done
 
 jq '.validation.status' result.json
@@ -201,7 +207,8 @@ Los mensajes de API Gateway engañan. Esta tabla los traduce:
 | `403 SignatureDoesNotMatch` (XML) | La URL se alteró, o ya expiró | Repite el paso 1 |
 | `400 INLINE_UPLOAD_REMOVED` | Mandaste `contentBase64` | El modo inline ya no existe: usa los dos pasos |
 | `400 DOCUMENT_TYPE_REQUIRED` | Subiste `.xml`/`.xlsx`/`.csv` sin `documentType` | Esos formatos lo exigen: no hay clasificación automática |
-| `404` en el paso 3 | Todavía procesando | Reintenta cada pocos segundos |
+| `202` en el paso 3 | Todavía procesando | Respeta `Retry-After`; usa backoff con jitter |
+| `404` en el paso 3 | No existe o no es visible | No lo reintentes como estado pendiente |
 
 **El `/prod` de más es el error más común.** Con el dominio propio la ruta es
 `https://idp.alsuper.com/documents`; el `/prod` solo va en la URL cruda

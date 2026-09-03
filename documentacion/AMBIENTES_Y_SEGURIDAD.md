@@ -294,7 +294,7 @@ redeploy ni tocan la key), aplicados por `query-lambda` en cada
 
 | Flag | Default (app nueva) | Qué controla |
 |---|---|---|
-| `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma. `all`: sin restricción. |
+| `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma; mientras aún no existe el envelope se usa el `JobOwner` reservado por Upload. `all`: sin restricción. |
 | `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` al consultar, descargar o editar metadata de esos tipos. No bloquea el upload. `none` en `reconfigure` quita la restricción. |
 | `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}` — y `system=`/`meta.<clave>=`, que **no** están detrás de este permiso: leen una sola clave conocida del envelope en vez de recorrerlo entero, y no amplían lo que la app ya puede ver (con `AccessScope: own`, `system=` solo puede acotar más). |
 | `--allow-metadata-write` | `false` | Si puede usar `PATCH /documents/{id}/metadata` para estados transitorios/marcas propios. No permite cambiar `validation.status`; sigue limitado por scope y tipos. |
@@ -307,6 +307,11 @@ que una app pueda enumerar/inferir qué IDs son válidos aunque no pueda leerlos
 `matches`, sin marcar error. Un `docType=` o `field=` explícitamente prohibido
 sí devuelve `403 FORBIDDEN` con el motivo — ahí la app SÍ sabe qué pidió, así
 que ocultarlo no suma nada.
+
+La fila ligera creada por `POST /documents` guarda `JobOwner` y, cuando se
+declaró, `RequestedDocumentType`. Por eso el `202` de un trabajo pendiente
+respeta el mismo alcance que el resultado final sin depender todavía de
+`tracking.appOrigin`; `404` conserva exactamente la misma protección.
 
 **Apps ya registradas antes de esto** (como `CEDIS`/`idp-default`): quedan en
 `own` por default la próxima vez que se lean (no hay redeploy que las toque),

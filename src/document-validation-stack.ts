@@ -4,6 +4,8 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cwActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as events from "aws-cdk-lib/aws-events";
+import * as eventTargets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -448,6 +450,34 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
     documentTable.grantWriteData(enrichmentFn);
 
+    // The blueprint owns WorkflowStatus and exposes implementation-specific
+    // values. This projection creates the small, stable lifecycle clients use
+    // and marks the terminal state only after the file move and final event.
+    const statusEventFn = new lambda.Function(this, "ProcessingStatusEventLambda", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "document-processing/resources/status-event-lambda"),
+        { exclude: ["__pycache__", "**/__pycache__", "*.pyc"] }
+      ),
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 128,
+      description: "Projects terminal pipeline events to public processing status",
+      environment: { DOCUMENT_TABLE: documentTable.tableName },
+    });
+    documentTable.grant(statusEventFn, "dynamodb:UpdateItem");
+    new events.Rule(this, "ProcessingStatusTerminalRule", {
+      eventBus: broker.eventbus,
+      eventPattern: {
+        source: ["document-validation-pipeline"],
+        detailType: [
+          "document-processed-successful",
+          "document-processing-failed",
+        ],
+      },
+      targets: [new eventTargets.LambdaFunction(statusEventFn)],
+    });
+
     // Tabla de UNIQUE KEYS: TIPODOC#valor -> documento.
     //
     // Un tipo puede declarar en su schema (`catalogs/*.json`) el campo cuyo
@@ -594,6 +624,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       );
     }
     documentBucket.grantRead(sqsConsumerFn);
+    sqsConsumerFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
+    documentTable.grant(sqsConsumerFn, "dynamodb:UpdateItem");
 
     // Cost guardrail: catch a runaway enrichment Lambda (unexpected request
     // volume, or a single invocation crawling toward its 15-minute cap) fast,
@@ -687,10 +719,12 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       environment: {
         DOCUMENT_BUCKET: documentBucket.bucketName,
         APPS_TABLE: appsTable.tableName,
+        DOCUMENT_TABLE: documentTable.tableName,
       },
     });
     documentBucket.grantPut(uploadFn);
     appsTable.grantReadData(uploadFn);
+    documentTable.grant(uploadFn, "dynamodb:PutItem");
 
     // Query Lambda - read/search documents and patch caller-owned metadata.
     const queryFn = new lambda.Function(this, "QueryLambda", {

@@ -69,9 +69,10 @@ mismo nivel que `fileName`, no dentro de `metadata`.
 | `uploadUrl` | destino del paso 2 |
 | `uploadMethod` | `PUT` |
 | `uploadExpiresInSeconds` · `uploadExpiresAt` | 900 s |
-| `bucket` · `key` · `documentType` · `classificationMode` · `uploadedAt` | |
+| `processingStatus` · `statusUrl` · `retryAfterSeconds` | `AWAITING_UPLOAD` · ruta de consulta · 5 s |
+| `bucket` · `key` · `documentType` · `classificationMode` · `uploadedAt` · `registeredAt` | |
 
-`400` `MISSING_FIELD` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` `INVALID_DOCUMENT_TYPE` `INVALID_JSON` `INVALID_METADATA` `INLINE_UPLOAD_REMOVED` · `500` `PRESIGN_FAILED`
+`400` `MISSING_FIELD` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` `INVALID_DOCUMENT_TYPE` `INVALID_JSON` `INVALID_METADATA` `INLINE_UPLOAD_REMOVED` · `500` `PRESIGN_FAILED` `JOB_REGISTRATION_FAILED`
 
 ---
 
@@ -106,7 +107,7 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 
 | `200` | |
 |---|---|
-| `documentId` · `workflowStatus` · `documentType` · `documentTypeName` | wrapper de la API |
+| `documentId` · `processingStatus` · `workflowStatus` · `documentType` · `documentTypeName` | `FINISHED`/`FAILED`; `workflowStatus` es interno |
 | `result.documentId` · `result.documentClassification` | envelope persistido |
 | `result.validation.status` | `APROBADO` `REQUIERE_REVISION` `RECHAZADO` |
 | `result.documents[]` | **siempre un arreglo**, con 1 o con N: `index` `documentType` `pageStart` `pageEnd` `status` `fields` |
@@ -114,7 +115,9 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 | `result.tracking` · `result.metadata` · `result.warnings` · `result.checks` | contexto y detalle |
 | `fullResult` | solo con `full=1`; resultado profundo desde S3 con la metadata vigente superpuesta |
 
-`404` — no existe **o todavía procesando**. Reintenta.
+`202` — `AWAITING_UPLOAD` · `QUEUED` · `PROCESSING`; respeta `Retry-After` y usa backoff con jitter.
+
+`404` — no existe o la app no puede verlo. No es un estado transitorio.
 
 ---
 

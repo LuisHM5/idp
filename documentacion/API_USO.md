@@ -77,7 +77,7 @@ Un pedimento real, de la subida hasta tener los campos extraídos. Todo con
 |---|---|---|---|---|
 | 1 | `POST $API/upload` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
 | 2 | `PUT {uploadUrl}` | **ninguna** (firmada en la URL) | los bytes crudos del archivo | `200` con **cuerpo vacío** — S3 no devuelve JSON |
-| 3 | `GET $API/documents/{documentId}` | `x-api-key` | — | `200` con el resultado, o `404` mientras procesa |
+| 3 | `GET $API/documents/{documentId}` | `x-api-key` | — | `202` mientras procesa; `200` al terminar |
 | 4 | `GET $API/documents/{documentId}/file` | `x-api-key` | — | `200` · URL prefirmada para bajar el original |
 
 El **paso 2 es el único sin `x-api-key`**, y el único que no pasa por API
@@ -278,19 +278,28 @@ put.EnsureSuccessStatusCode();
 
 ### Paso 3 — `GET /documents/{id}`
 
-El resultado. Mientras el pipeline corre responde `404`: es *todavía no*, no *no existe*.
+El estado y, al terminar, el resultado. Mientras el pipeline corre responde
+`202 Accepted`, trae `processingStatus` y recomienda la siguiente consulta con
+`Retry-After`. `404` vuelve a significar solamente que el id no existe o no es
+visible para la app.
 
 <details open>
 <summary><b>curl</b></summary>
 
 ```bash
-# DOC_ID viene del paso 1. 404 = todavía procesando, no "no existe".
-until curl -sS -f "$API/documents/$DOC_ID" -H "x-api-key: $KEY" -o result.json; do
-  echo "aún procesando..."; sleep 5
+# 202 = trabajo conocido pero todavía no terminal.
+delay=5
+while :; do
+  code=$(curl -sS -o result.json -w '%{http_code}' \
+    "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
+  [ "$code" = 200 ] && break
+  [ "$code" = 202 ] || { cat result.json; exit 1; }
+  sleep $((delay + RANDOM % 3))
+  delay=$((delay < 15 ? delay * 2 : 30))
 done
 
-jq '.validation.status' result.json
-jq '.documents[] | {index, documentType, pageStart, pageEnd, fields}' result.json
+jq '.result.validation.status' result.json
+jq '.result.documents[] | {index, documentType, pageStart, pageEnd, fields}' result.json
 ```
 
 </details>
@@ -299,20 +308,26 @@ jq '.documents[] | {index, documentType, pageStart, pageEnd, fields}' result.jso
 <summary><b>Node.js 18+</b> · `fetch` nativo, sin dependencias</summary>
 
 ```javascript
-// documentId viene del paso 1. 404 = todavía procesando, no "no existe".
+// 202 = trabajo conocido pero todavía no terminal.
 let doc;
+let delayMs = 5000;
 for (let i = 0; i < 60; i++) {
   const r = await fetch(`${API}/documents/${documentId}`, {
     headers: { "x-api-key": KEY },
   });
-  if (r.ok) { doc = await r.json(); break; }
-  if (r.status !== 404) throw new Error(`GET → ${r.status}: ${await r.text()}`);
-  await new Promise((s) => setTimeout(s, 5000));
+  const body = await r.json();
+  if (r.status === 200) { doc = body; break; }
+  if (r.status !== 202) throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
+  const minimum = Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
+  await new Promise((s) => setTimeout(s, Math.max(delayMs, minimum) + Math.random() * 1000));
+  delayMs = Math.min(delayMs * 2, 30000);
 }
 
-console.log(doc.validation.status);            // APROBADO | REQUIERE_REVISION | RECHAZADO
+if (doc.processingStatus === "FAILED") throw new Error("El procesamiento técnico falló");
+const result = doc.result;
+console.log(result.validation.status);         // APROBADO | REQUIERE_REVISION | RECHAZADO
 // `documents` siempre está, traiga el PDF uno o veinte.
-for (const d of doc.documents) {
+for (const d of result.documents) {
   console.log(`#${d.index}`, d.documentType, `págs ${d.pageStart}-${d.pageEnd}`);
   for (const [campo, v] of Object.entries(d.fields ?? {})) {
     if (v.items) console.log("  ", campo, `= ${v.items.length} renglón(es)`);
@@ -327,23 +342,31 @@ for (const d of doc.documents) {
 <summary><b>Python 3</b> · requiere `requests`</summary>
 
 ```python
+import random
 import time
 
-# document_id viene del paso 1. 404 = todavía procesando, no "no existe".
+# 202 = trabajo conocido pero todavía no terminal.
 doc = None
+delay = 5
 for _ in range(60):
     r = requests.get(f"{API}/documents/{document_id}",
                      headers={"x-api-key": KEY}, timeout=30)
-    if r.ok:
-        doc = r.json()
+    body = r.json()
+    if r.status_code == 200:
+        doc = body
         break
-    if r.status_code != 404:
+    if r.status_code != 202:
         r.raise_for_status()
-    time.sleep(5)
+    minimum = int(r.headers.get("Retry-After", body.get("retryAfterSeconds", 5)))
+    time.sleep(max(delay, minimum) + random.random())
+    delay = min(delay * 2, 30)
 
-print(doc["validation"]["status"])   # APROBADO | REQUIERE_REVISION | RECHAZADO
+if doc["processingStatus"] == "FAILED":
+    raise RuntimeError("El procesamiento técnico falló")
+result = doc["result"]
+print(result["validation"]["status"]) # APROBADO | REQUIERE_REVISION | RECHAZADO
 # `documents` siempre está, traiga el PDF uno o veinte.
-for d in doc["documents"]:
+for d in result["documents"]:
     print(f"#{d['index']}", d["documentType"], f"págs {d['pageStart']}-{d['pageEnd']}")
     for campo, v in (d.get("fields") or {}).items():
         if "items" in v:
@@ -360,24 +383,30 @@ for d in doc["documents"]:
 ```csharp
 using System.Net;
 
-// documentId viene del paso 1. 404 = todavía procesando, no "no existe".
+// 202 = trabajo conocido pero todavía no terminal.
 JsonElement doc = default;
+var delay = TimeSpan.FromSeconds(5);
 for (var i = 0; i < 60; i++)
 {
     var r = await http.GetAsync($"{api}/documents/{documentId}");
-    if (r.IsSuccessStatusCode)
+    var body = await r.Content.ReadFromJsonAsync<JsonElement>();
+    if (r.StatusCode == HttpStatusCode.OK)
     {
-        doc = await r.Content.ReadFromJsonAsync<JsonElement>();
+        doc = body;
         break;
     }
-    if (r.StatusCode != HttpStatusCode.NotFound) r.EnsureSuccessStatusCode();
-    await Task.Delay(5000);
+    if (r.StatusCode != HttpStatusCode.Accepted) r.EnsureSuccessStatusCode();
+    await Task.Delay(delay + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)));
+    delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
 }
 
+if (doc.GetProperty("processingStatus").GetString() == "FAILED")
+    throw new Exception("El procesamiento técnico falló");
+var result = doc.GetProperty("result");
 // APROBADO | REQUIERE_REVISION | RECHAZADO
-Console.WriteLine(doc.GetProperty("validation").GetProperty("status"));
+Console.WriteLine(result.GetProperty("validation").GetProperty("status"));
 // `documents` siempre está, traiga el PDF uno o veinte.
-foreach (var d in doc.GetProperty("documents").EnumerateArray())
+foreach (var d in result.GetProperty("documents").EnumerateArray())
 {
     var tipo  = d.GetProperty("documentType");
     var desde = d.GetProperty("pageStart");
@@ -463,11 +492,18 @@ await File.WriteAllBytesAsync("pedimento-original.pdf",
 </details>
 
 
-**Qué esperar en el paso 3.** El procesamiento **no es instantáneo** — un
-pedimento de pocas páginas tarda segundos; un expediente grande, más. Mientras
-corre, `GET /documents/{id}` puede responder `404` (el resultado aún no se
-persiste). Trátalo como "todavía no", no como "no existe": haz *polling* cada
-pocos segundos, no un solo intento.
+**Qué esperar en el paso 3.** El ciclo técnico es
+`AWAITING_UPLOAD → QUEUED → PROCESSING → FINISHED`; un error de infraestructura
+termina en `FAILED`. Los tres primeros devuelven `202`, los dos terminales
+devuelven `200`. Respeta `Retry-After`, duplica gradualmente la espera hasta un
+máximo de 30 s y agrega un pequeño *jitter* cuando tengas muchos clientes.
+`404` ya no se usa como estado transitorio.
+
+Texto recomendado para una interfaz: **“Documento recibido y en
+procesamiento. Puedes cerrar esta pantalla; el resultado se actualizará
+automáticamente.”** No muestres una duración prometida: las páginas, OCR y
+modelo cambian mucho el tiempo real. Si la app puede consumir EventBridge,
+úsalo como señal *push* y conserva este polling espaciado solo como respaldo.
 
 **Los tres estados que te van a importar** (`validation.status`):
 
@@ -587,7 +623,11 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
   "uploadMethod": "PUT",
   "uploadExpiresInSeconds": 900,
   "uploadExpiresAt": "2026-07-27T13:33:19.000Z",
-  "uploadedAt": "2026-07-27T13:18:19.000Z"
+  "uploadedAt": "2026-07-27T13:18:19.000Z",
+  "registeredAt": "2026-07-27T13:18:19.000Z",
+  "processingStatus": "AWAITING_UPLOAD",
+  "statusUrl": "/documents/e18d014a-...",
+  "retryAfterSeconds": 5
 }
 ```
 
@@ -598,9 +638,7 @@ Guarda el `documentId`: es con lo que consultas el resultado después.
 Esta petición **no va a esta API**: va a S3, con la `uploadUrl` del paso 1.
 
 ```bash
-curl -X PUT --upload-file pedimento.pdf \
-  -H "x-amz-meta-app-origin: CEDIS" \
-  "$UPLOAD_URL"
+curl -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
 ```
 
 | | |
@@ -694,7 +732,8 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 ```jsonc
 {
   "documentId": "PEDIMENTO-ADUANAL-4ff224be-...",
-  "workflowStatus": "complete",           // estado del pipeline en DynamoDB
+  "processingStatus": "FINISHED",         // contrato técnico público
+  "workflowStatus": "complete",           // detalle interno; no usar para polling
   "result": {
     "documentId": "...",
     "envelopeVersion": 2,                 // ausente = envelope viejo (ver abajo)

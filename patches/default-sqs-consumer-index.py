@@ -23,8 +23,41 @@ def _create_boto3_client(service_name, *service_env_keys):
 
 sfn_client = _create_boto3_client('stepfunctions', 'AWS_ENDPOINT_URL_STEPFUNCTIONS')
 s3_client = _create_boto3_client('s3', 'AWS_ENDPOINT_URL_S3')
+ddb_client = _create_boto3_client('dynamodb', 'AWS_ENDPOINT_URL_DYNAMODB')
 metrics = Metrics()
 tracer = Tracer()
+
+
+def _mark_queued(document_id, event_time):
+    """Best-effort public lifecycle update; duplicate deliveries never regress it."""
+    table_name = os.getenv('DOCUMENT_TABLE')
+    if not table_name:
+        return {}
+    try:
+        response = ddb_client.update_item(
+            TableName=table_name,
+            Key={'DocumentId': {'S': document_id}},
+            UpdateExpression='SET #status = :queued, ProcessingStatusUpdatedAt = :updated',
+            ConditionExpression=(
+                'attribute_not_exists(#status) OR '
+                '#status IN (:awaiting, :queued)'
+            ),
+            ExpressionAttributeNames={'#status': 'ProcessingStatus'},
+            ExpressionAttributeValues={
+                ':awaiting': {'S': 'AWAITING_UPLOAD'},
+                ':queued': {'S': 'QUEUED'},
+                ':updated': {'S': event_time},
+            },
+            ReturnValues='ALL_NEW',
+        )
+        return response.get('Attributes') or {}
+    except ddb_client.exceptions.ConditionalCheckFailedException:
+        # A duplicate S3/SQS delivery arrived after processing advanced.
+        return {}
+    except Exception as error:
+        # Status reporting must never prevent the real workflow from starting.
+        print(f'Could not mark {document_id} as QUEUED: {error}')
+        return {}
 
 @metrics.log_metrics
 @tracer.capture_lambda_handler
@@ -125,6 +158,23 @@ def handler(event, context):
                     filename = key_parts[-1]  # bare original filename, e.g. "bad-pedimento.pdf"
 
                     document_id = re.sub(r'[^a-zA-Z0-9-]', '-', uuid_segment)
+                    queued_item = _mark_queued(document_id, event_time)
+                    requested_document_type = (
+                        key_parts[-3] if len(key_parts) >= 3 else 'AUTO'
+                    )
+                    job_owner = (
+                        app_origin
+                        or (queued_item.get('JobOwner') or {}).get('S')
+                        or 'dev-unrestricted'
+                    )
+                    registered_at = (
+                        (queued_item.get('RegisteredAt') or {}).get('S')
+                        or event_time
+                    )
+                    upload_expires_at = (
+                        (queued_item.get('UploadExpiresAt') or {}).get('S')
+                        or event_time
+                    )
 
                     # Explicit file type alongside location/bucket/key/filename,
                     # so downstream consumers (enrichment Lambda, model-invoke
@@ -146,6 +196,10 @@ def handler(event, context):
                         'eventTime': event_time,
                         'eventName': event_name,
                         'source': 'sqs-consumer',
+                        'jobOwner': job_owner,
+                        'requestedDocumentType': requested_document_type,
+                        'registeredAt': registered_at,
+                        'uploadExpiresAt': upload_expires_at,
                         **({'appOrigin': app_origin} if app_origin else {}),
                         **({'uploadMetadata': upload_metadata} if upload_metadata else {})
                     }

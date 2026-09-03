@@ -71,7 +71,7 @@ reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 }
 ```
 
-**Respuesta 200**: `{ "documentId", "bucket", "key", "documentType", "classificationMode", "uploadUrl"? }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3).
+**Respuesta 200**: `{ "documentId", "bucket", "key", "documentType", "classificationMode", "uploadUrl", "processingStatus": "AWAITING_UPLOAD", "statusUrl", "retryAfterSeconds" }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3). El registro ligero ya existe antes del PUT.
 
 `documentType` es opcional: si se omite, Bedrock clasifica automáticamente; si se envía, se salta la clasificación (más rápido/barato) **y se fuerza** ese tipo — útil cuando el sistema que integra ya sabe qué tipo de documento está mandando.
 
@@ -79,7 +79,11 @@ reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
 `{id}` acepta el id completo o un **prefijo** (gana el primer match). Devuelve el envelope completo: clasificación, `validation.status` (`APROBADO`/`RECHAZADO`/`REQUIERE_REVISION`), y para expedientes aduanales el detalle de cada documento detectado. Con `?full=1` agrega el detalle campo-por-campo (`extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`) que solo vive en S3.
 
-`404 NOT_FOUND` si no existe.
+Mientras trabaja responde `202` con `processingStatus` (`AWAITING_UPLOAD`,
+`QUEUED` o `PROCESSING`), `Retry-After` y `retryAfterSeconds`. Al terminar
+responde `200` con `FINISHED` o `FAILED`; `validation.status` sigue siendo un
+estado de negocio independiente. `404 NOT_FOUND` queda reservado para un id
+inexistente o no visible para la app.
 
 ### 1.4 `GET /documents/{id}/file` — Descargar el archivo original
 
@@ -196,12 +200,15 @@ Tres tablas distintas, mismo servicio:
 
 | Operación | Quién la llama | Tabla | Nota |
 |---|---|---|---|
+| `PutItem` condicional | `upload-lambda/index.mjs` | tracking | Reserva el id con `ProcessingStatus=AWAITING_UPLOAD` antes de entregar la URL; si falla, el POST responde `JOB_REGISTRATION_FAILED` |
 | `GetItem` | `query-lambda/index.mjs` | tracking | Lookup exacto por id |
 | `Scan` | `query-lambda/index.mjs` | tracking | Fallback por prefijo de id, y búsqueda sin `docType` |
 | `Query` | `query-lambda/index.mjs` | tracking | Vía GSI `DocumentTypeIndex` — la ruta indexada, sin `Scan` |
 | `BatchGetItem` | `query-lambda/index.mjs` | tracking | Trae el envelope completo de los ids que matchearon el índice |
 | `UpdateItem` condicional | `query-lambda/index.mjs` | tracking | `PATCH /documents/{id}/metadata`: actualiza `Metadata` y su versión/auditoría; no toca `EnrichmentResult` |
 | `UpdateItem` | `enrichment-lambda/indexing.py` | tracking | Promueve columnas indexadas al terminar de validar |
+| `UpdateItem` | SQS consumer (`patches/default-sqs-consumer-index.py`) | tracking | Marca `QUEUED` al recibir `ObjectCreated`, sin hacer retroceder entregas duplicadas |
+| `UpdateItem` | `status-event-lambda/index.py` | tracking | Proyecta eventos terminales a `FINISHED` o `FAILED` |
 | `Scan` | `enrichment-lambda/document_catalog.py` | catálogo | Carga tipos/reglas hot-reload al inicio de cada invocación |
 | `Scan` | `query-lambda/index.mjs` | catálogo | Resuelve nombre humano → `TYPE_ID` |
 | `PutItem` | `enrichment-lambda/cost_audit.py` | costos (`document-validation-costs[-dev]`) | Un item por documento procesado: $ desglosado por servicio (Bedrock segmentación/extracción/upstream, Textract, Lambda). Best-effort, tabla `RETAIN` separada de tracking — ver `COSTOS.md` §7 |
@@ -216,7 +223,7 @@ Tres tablas distintas, mismo servicio:
 
 ### 2.6 Amazon EventBridge — notificación del resultado final
 
-**No hay ninguna llamada directa a `PutEvents` en el código de este repo.** La publicación del evento final (`document-processed`, broker `idp-broker`) la resuelve el blueprint dentro de la definición de Step Functions — este repo solo configura el broker (`EventbridgeBroker` en `document-validation-stack.ts`) y diseña el *shape* del resultado para que sea consumible. Un sistema externo que quiera reaccionar al resultado final se suscribe a este bus/evento (dependencia externa AWS, no HTTP).
+**No hay ninguna llamada directa a `PutEvents` en el código de este repo.** La publicación de `document-processed-successful` / `document-processing-failed` la resuelve el blueprint dentro de Step Functions. Este repo configura una regla interna que entrega ambos a `status-event-lambda/index.py` para cerrar `ProcessingStatus` y el bus sigue disponible para consumidores externos AWS.
 
 ### 2.7 Amazon SQS — desacople S3 → Step Functions
 
@@ -252,7 +259,7 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 
 - **Autenticación**: en prod, todo consumidor externo del API interna necesita una `x-api-key` provisionada — pedirla con anticipación (no es self-service hoy).
 - **Tamaño de archivo (subida)**: siempre se implementa el flujo de dos pasos (pedir `uploadUrl`, luego `PUT` directo a S3); el modo inline ya no existe.
-- **Consumo del resultado**: dos formas — *pull* (`GET /documents/{id}` por polling) o *push* (suscribirse a EventBridge, requiere estar dentro de la cuenta/organización AWS o una regla de reenvío cross-account — a definir con el equipo de plataforma).
+- **Consumo del resultado**: dos formas — *pull* (`GET /documents/{id}`: `202` + `Retry-After`, backoff con jitter, máximo recomendado 30 s) o *push* (suscribirse a EventBridge, requiere estar dentro de la cuenta/organización AWS o una regla de reenvío cross-account). Un `404` no se reintenta como pendiente.
 - **Metadata externa**: si la integración necesita estados transitorios/marcas, otorgar `AllowMetadataWrite` y usar `PATCH /documents/{id}/metadata`; no reutilizar `validation.status`.
 - **Descarga del archivo original**: soportada vía `GET /documents/{id}/file` (URL prefirmada de S3, sin tope de tamaño real — ver 1.4). La API key aplica el alcance por app antes de emitirla; después, la URL misma es una credencial temporal y no debe compartirse.
 - **Dependencia de proveedor único**: todo el pipeline depende de AWS (Bedrock/Textract/S3/DynamoDB) — no hay abstracción multi-proveedor; cualquier cambio de proveedor de IA es un rediseño, no una config.

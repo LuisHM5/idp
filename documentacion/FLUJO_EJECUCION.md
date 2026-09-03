@@ -12,6 +12,7 @@ mejora del dataflow**.
 ```mermaid
 flowchart TD
     U[Cliente] -->|"POST /documents (solo metadata)"| UL[upload-lambda/index.mjs]
+    UL -->|"AWAITING_UPLOAD"| DDB
     U -->|"PUT a URL prefirmada"| S3RAW[("S3 raw/{TIPO?}/{uuid}/file")]
     S3RAW -->|"trigger prefijo raw/"| SFN
 
@@ -25,7 +26,9 @@ flowchart TD
 
     E -.->|"lee raw + escribe"| S3RES[("S3 results/{id}.json — COMPLETO")]
     E -.->|"escribe columnas"| DDB[("DynamoDB DocumentProcessingTable — COMPACTO")]
-    EB[EventBridge idp-broker] -->|"document-processed-successful"| CONS[Consumidores]
+    EB[EventBridge idp-broker] -->|"evento terminal"| ST[status-event-lambda]
+    ST -->|"FINISHED / FAILED"| DDB
+    EB -->|"document-processed-successful"| CONS[Consumidores]
 
     Q[Cliente] -->|"GET /documents* o PATCH metadata"| QL[query-lambda/index.mjs]
     QL --> DDB
@@ -47,10 +50,15 @@ Puntos clave:
   el cliente sube con `PUT` directo a esa URL. El archivo nunca pasa por API
   Gateway ni por la Lambda, así que no hay tope de tamaño real ni una rama por
   tamaño que se pueda equivocar. El modo inline (`contentBase64`) fue eliminado.
+- Antes de devolver la URL, Upload crea una fila ligera con
+  `ProcessingStatus=AWAITING_UPLOAD`; por eso consultar ese id ya no se confunde
+  con consultar un id inexistente.
 
 ### 2. Orquestación (blueprint, sin código nuestro)
-- Trigger S3 sobre `raw/` → Step Functions.
-- `InitMetadataEntry` → crea el registro en DynamoDB (`WorkflowStatus=pending`).
+- Trigger S3 sobre `raw/` → SQS Consumer marca `QUEUED` → Step Functions.
+- `InitMetadataEntry` reemplaza la fila ligera, conserva propietario/tipo y
+  marca el contrato público `ProcessingStatus=PROCESSING`; en paralelo mantiene
+  su `WorkflowStatus=pending` interno.
 - `ClassificationStep` → acepta el tipo declarado sin IA o usa Bedrock si debe clasificar.
 - `ProcessingStep` → extrae entidades legacy con Bedrock o hace bypass para tipos field-centric y documentos grandes.
 - Cada paso actualiza DynamoDB (`ClassificationResult`, `ProcessingResult`).
@@ -101,9 +109,14 @@ Un solo documento; **reutiliza** la extracción de `ProcessingStep`:
 - DynamoDB: envelope compacto en `EnrichmentResult`; `WorkflowStatus=complete`.
 - S3: resultado completo (`results/{id}.json`) para rutas field-centric/XML/tabular.
 - EventBridge: notificación `document-processed-successful` (broker `idp-broker`); el resultado se consulta por id.
+- `status-event-lambda`: proyecta el evento terminal a
+  `ProcessingStatus=FINISHED` o `FAILED`, separado de `validation.status`.
 
 ### 5. Consulta — `query-lambda/index.mjs`
-- `GET /documents/{id}` → envelope de DynamoDB (`+ fullResult` de S3 con `full=1`).
+- `GET /documents/{id}` → `202` + `Retry-After` durante
+  `AWAITING_UPLOAD/QUEUED/PROCESSING`; `200` en `FINISHED/FAILED`; `404` solo
+  para ids inexistentes o no visibles. En `FINISHED`, entrega el envelope de
+  DynamoDB (`+ fullResult` de S3 con `full=1`).
 - `GET /documents?docType=...` → Query al GSI; sin tipo, la búsqueda profunda puede caer en Scan.
 - `PATCH /documents/{id}/metadata` → merge patch en la columna `Metadata`
   con versión optimista. La API la superpone en GET/filtros, pero no cambia

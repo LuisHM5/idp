@@ -102,9 +102,9 @@ using (var uploadResponse = await s3Client.PutAsync(uploadUrl, uploadContent))
 Console.WriteLine("Archivo subido; el pipeline inició automáticamente.");
 
 // -------------------------------------------------------------------------
-// 3. Consultar hasta que exista el resultado.
-// Inmediatamente después del PUT, 404 normalmente significa que sigue
-// procesándose. Se limita la espera a 90 intentos de 5 segundos.
+// 3. Consultar hasta un estado terminal.
+// 202 significa que sigue procesándose; 404 sí significa que no existe/no se ve.
+// La espera crece hasta 30 s para no sobrecargar el GET.
 // -------------------------------------------------------------------------
 var result = await WaitForResult(
     apiClient,
@@ -262,15 +262,23 @@ static async Task<JsonElement> WaitForResult(
     {
         using var response = await apiClient.GetAsync(resultUrl);
 
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        var body = await ReadJson(response);
+        if (response.StatusCode == HttpStatusCode.Accepted)
         {
-            Console.WriteLine($"Procesando... intento {attempt}/{attempts}");
-            await Task.Delay(delay);
+            var status = body.GetProperty("processingStatus").GetString();
+            var retryAfter = response.Headers.RetryAfter?.Delta ?? delay;
+            Console.WriteLine($"{status}... intento {attempt}/{attempts}");
+            delay = retryAfter > delay ? retryAfter : delay;
+            await Task.Delay(
+                delay + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)));
+            delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
             continue;
         }
 
         await EnsureSuccess(response);
-        return await ReadJson(response);
+        if (body.GetProperty("processingStatus").GetString() == "FAILED")
+            throw new InvalidOperationException("El procesamiento técnico falló.");
+        return body;
     }
 
     throw new TimeoutException(
@@ -320,9 +328,10 @@ dotnet run -- /ruta/al/pedimento.pdf
   aparece significa que el documento no lo traía y no era obligatorio.
 - El PATCH necesita AllowMetadataWrite=true y sigue respetando el alcance y
   los tipos autorizados de la app.
-- Un 404 al consultar inmediatamente después del PUT normalmente indica que
-  el pipeline todavía está procesando. Un 404 permanente también puede
-  significar que el documento no existe o queda fuera del alcance de la app.
+- Un 202 indica `AWAITING_UPLOAD`, `QUEUED` o `PROCESSING`; respeta
+  `Retry-After` y aumenta la espera gradualmente, hasta 30 segundos.
+- Un 404 significa que el documento no existe o queda fuera del alcance de la
+  app. Ya no se usa para representar procesamiento pendiente.
 
 Referencia completa: [API_USO.md](API_USO.md). Resumen:
 [API_RESUMEN.md](API_RESUMEN.md). Contrato:

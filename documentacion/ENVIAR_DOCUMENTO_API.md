@@ -10,6 +10,15 @@ pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP --env prod
 # o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod]
 ```
 
+Para probar de una vez la subida, la espera eficiente por `202`/`Retry-After`
+y el `GET` final, usa el E2E genérico. Su `stdout` es exclusivamente el JSON
+final:
+
+```bash
+pnpm test-e2e -- archivo.pdf TIPO_DOCUMENTO
+pnpm --silent test-e2e -- archivo.pdf TIPO_DOCUMENTO > resultado.json
+```
+
 ### Probar otro modelo sin redeploy (solo dev)
 
 `--model` corre **ese documento** con el modelo que le indiques, sin cambiar
