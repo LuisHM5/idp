@@ -45,6 +45,7 @@ from .normalize import (
     parse_amount,
     pedimento_consecutivo,
 )
+from . import confidence as conf_policy
 from . import page_locator, page_selector
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import fallback_events, used_models
@@ -426,8 +427,10 @@ def process_pdf(
             # the output (never null — see pipeline.confidence), but averaging
             # those zeros in would sink the document's own number for fields
             # that were never on the page to begin with.
-            conf_values = [v for v in effective_confidences.values() if v is not None]
-            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else 0.0
+            confidence_summary = conf_policy.summarize(effective_confidences.values())
+            doc["confidence"] = confidence_summary.mean or 0.0
+            if confidence_summary.shared is not None:
+                doc["fieldConfidence"] = confidence_summary.shared
             # Persisted (not popped) — handler.py's envelope assembly needs to
             # know, per document, whether `extractedEntities` is already the
             # full recursive field-centric-DSL shape (pass through as-is) or
@@ -440,12 +443,14 @@ def process_pdf(
             doc["checks"] = checks_to_json(checks)
             doc["status"] = engine.document_status(resolved, checks, entry)
             doc["businessDestination"] = entry.business_destination or None
-            conf_values = [
+            confidence_summary = conf_policy.summarize(
                 f["confidence"] for f in resolved.values()
                 if f.get("confidence") is not None
                 and f.get("status") not in (engine.NOT_FOUND, engine.NOT_APPLICABLE)
-            ]
-            doc["confidence"] = round(sum(conf_values) / len(conf_values), 4) if conf_values else 0.0
+            )
+            doc["confidence"] = confidence_summary.mean or 0.0
+            if confidence_summary.shared is not None:
+                doc["fieldConfidence"] = confidence_summary.shared
 
     _mark("validation")
 
@@ -1185,5 +1190,4 @@ def _cross_pedimento_values(rule: Dict[str, Any], documents: List[Dict[str, Any]
             "message": "pedimento USD value consistent with foreign invoices" if ok
             else rule.get("message", "pedimento value does not match foreign invoices"),
             "details": {"pedimentoValorDolares": val_dolares, "foreignInvoicesTotal": inv_total}}
-
 

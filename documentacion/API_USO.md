@@ -746,15 +746,15 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
         "pageStart": 1, "pageEnd": 1,
         "status": "APPROVED",             // APPROVED | PARTIALLY_APPROVED | REVIEW_REQUIRED | REJECTED | PROCESSING_ERROR
         "confidence": 0.9229,             // qué tan bien se leyó ESTE documento (promedio)
-        // La confianza que comparten los campos que NO traen la suya. Un campo
-        // con `confidence` propio se leyó distinto — que es cuando hay que
-        // mirarlo. Ausente si no hay tal valor compartido.
+        // Resumen compatible: confianza más repetida entre los campos con
+        // valor. Cada campo conserva además su propia confidence; no se hereda.
+        // Ausente si ningún valor se repite al menos tres veces.
         "fieldConfidence": 0.9826,
         // Si SOLO este documento falló (el resto del archivo sigue):
         // "status": "PROCESSING_ERROR", "error": "mensaje truncado a 300 caracteres",
         // "errorType": "ValueError" (nombre de la excepción Python)
         "fields": {
-          "NUMERO_FACTURA": { "value": "SJ191703", "valid": true },   // confianza = fieldConfidence
+          "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.9826, "valid": true },
           "TOTAL":          { "value": 14612.4, "confidence": 0.9335, "valid": true },  // excepción
           // Objeto anidado
           "DATOS_PAGO": { "fields": { "BANCO": { "value": "WELLS FARGO BANK, NA", "confidence": 0.93, "valid": true } } },
@@ -807,12 +807,15 @@ Cualquier otra cosa viaja, con su explicación:
 `MODEL_EXTRACTION`: repetir el default en cada uno de 66 campos era el 20% de la
 respuesta.
 
-`confidence` sigue la misma lógica: el extractor reporta el **mismo** número para
-casi todo lo que leyó de una página (medido: 62 campos, 7 valores distintos), así
-que ese valor compartido sube a `documents[i].fieldConfidence` y solo las
-excepciones lo traen propio. **Si un campo trae `confidence`, se leyó distinto al
-resto** — que es justo cuando hay que mirarlo. Para el valor efectivo de un campo
-sin `confidence`, usa el `fieldConfidence` de su documento.
+`confidence` siempre viaja en cada escalar emitido, incluidas las celdas de
+arrays: el nodo es autocontenido y no necesita heredar nada del documento. El
+extractor suele reportar el mismo número para muchos campos de una página;
+`documents[i].fieldConfidence` conserva ese valor más repetido únicamente como
+resumen compatible. No sustituye ni modifica las confianzas individuales.
+
+El flujo estándar legado no mide confianza por campo; para esos valores emite
+`confidence: 0.0`, que significa explícitamente **no medido**, en vez de omitir
+la llave o inventar certeza.
 
 ### Confianza y status: qué manda a revisión
 

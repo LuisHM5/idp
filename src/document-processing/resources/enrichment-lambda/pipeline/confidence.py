@@ -31,7 +31,7 @@ row dict itself survives it unchanged.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, NamedTuple, Optional
 
 # Confidence reported for a field nobody could measure (absent value, no
 # extractor number, no source to inherit from). Not "we're 0% sure the value
@@ -40,6 +40,19 @@ UNKNOWN = 0.0
 
 # Below this, a value is discarded instead of returned (see rule 3 above).
 DISCARD_BELOW = 0.50
+
+# A document-level shared confidence is useful as a summary only when at least
+# this many populated leaves agree. It must never replace the confidence on
+# the leaves themselves: each field remains self-contained for API consumers.
+MIN_SHARED = 3
+
+
+class ConfidenceSummary(NamedTuple):
+    """One-pass aggregate over final, populated field confidences."""
+
+    mean: Optional[float]
+    shared: Optional[float]
+    count: int
 
 
 def clamp(value: Any) -> float:
@@ -61,6 +74,48 @@ def combine(values: Iterable[Optional[float]]) -> Optional[float]:
     if not numbers:
         return None
     return round(sum(numbers) / len(numbers), 4)
+
+
+def summarize(values: Iterable[Optional[float]]) -> ConfidenceSummary:
+    """Mean plus most-common confidence in one pass.
+
+    `shared` preserves the old envelope's `fieldConfidence` semantics: the
+    first confidence in traversal order wins a frequency tie, and the value
+    is only exposed when at least `MIN_SHARED` populated fields share it.
+    Callers can therefore compute the document average and compatibility
+    summary together, without traversing the rendered field tree afterward.
+    """
+    total = 0.0
+    count = 0
+    counts: Dict[float, int] = {}
+    first_seen: Dict[float, int] = {}
+    shared_value: Optional[float] = None
+    shared_count = 0
+
+    for raw in values:
+        if raw is None:
+            continue
+        value = float(raw)
+        if value not in first_seen:
+            first_seen[value] = count
+        count += 1
+        total += value
+        value_count = counts.get(value, 0) + 1
+        counts[value] = value_count
+        if (
+            value_count > shared_count
+            or (
+                value_count == shared_count
+                and shared_value is not None
+                and first_seen[value] < first_seen[shared_value]
+            )
+        ):
+            shared_value = value
+            shared_count = value_count
+
+    mean = round(total / count, 4) if count else None
+    shared = shared_value if shared_count >= MIN_SHARED else None
+    return ConfidenceSummary(mean=mean, shared=shared, count=count)
 
 
 def row_key(row: Mapping[str, Any]) -> str:

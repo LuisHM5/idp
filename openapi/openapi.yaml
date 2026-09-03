@@ -1494,6 +1494,13 @@ components:
           type: string
           enum: [APPROVED, PARTIALLY_APPROVED, REVIEW_REQUIRED, REJECTED, PROCESSING_ERROR]
         confidence: { type: number, nullable: true }
+        fieldConfidence:
+          type: number
+          description: >
+            Resumen compatible: confianza más repetida entre los campos con
+            valor, presente cuando al menos tres comparten el mismo número.
+            No se hereda: cada escalar dentro de `fields` conserva siempre su
+            propia `confidence`.
         error: { type: string, description: "Presente solo si falló ESTE documento." }
         errorType: { type: string }
         liquidacionNormalizada: { type: object, additionalProperties: true }
@@ -1505,7 +1512,7 @@ components:
             MODEL_EXTRACTION). Objeto -> `{fields: {...}}`. Arreglo ->
             `{items: [{fields: {...}}]}`. **Un campo se omite solo cuando el
             documento no lo traía Y no era obligatorio**: todo lo demás viaja con
-            su `reason`.
+            su `confidence`; si no hubo medición, vale `0.0`.
           additionalProperties: true
     FileDownloadResponse:
       type: object

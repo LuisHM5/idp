@@ -66,6 +66,21 @@ def paths_con_confianza(node, prefix=""):
     return salida
 
 
+def test_resumen_calcula_promedio_y_confianza_compartida_en_una_pasada():
+    summary = conf_policy.summarize([0.98, 0.71, 0.98, None, 0.98])
+
+    assert summary.mean == 0.9125
+    assert summary.shared == 0.98
+    assert summary.count == 4
+
+
+def test_resumen_conserva_el_primer_valor_cuando_hay_empate():
+    summary = conf_policy.summarize([0.9, 0.8, 0.8, 0.9, 0.8, 0.9])
+
+    assert summary.shared == 0.9
+    assert summary.mean == 0.85
+
+
 def test_ningun_campo_sale_con_confianza_null():
     """La queja original: campos con dato y campos sin dato, ninguno en null."""
     entities = {

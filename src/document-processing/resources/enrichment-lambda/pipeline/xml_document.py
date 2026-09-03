@@ -37,6 +37,7 @@ from document_catalog import FieldSpec, TypeRegistryEntry, get_type_entry
 from validators import engine
 from validators.engine import ValidationContext
 
+from . import confidence as conf_policy
 from .derived import apply_derived_fields
 from .liquidacion import apply_liquidacion_normalizada
 from .result_common import build_tracking, checks_to_json, error_result
@@ -233,12 +234,13 @@ def process_xml(
     derived = apply_derived_fields(entity_map, confidences, entry)
 
     ctx = ValidationContext(expected_values=expected_values, sibling_documents=[], document_text="")
-    resolved_tree, checks, _effective_confidences = engine.resolve_field_tree(
+    resolved_tree, checks, effective_confidences = engine.resolve_field_tree(
         entity_map, confidences, entry, ctx, default_source="XML_EXTRACTION",
         source_overrides=derived.sources, value_labels=derived.labels,
         default_confidence=_XML_CONFIDENCE,
     )
     status = engine.document_status_from_checks(checks)
+    confidence_summary = conf_policy.summarize(effective_confidences.values())
 
     doc: Dict[str, Any] = {
         "documentType": declared_type,
@@ -253,6 +255,10 @@ def process_xml(
         "businessDestination": entry.business_destination or None,
         "confidence": _XML_CONFIDENCE,
         "fieldTreeShape": True,
+        **(
+            {"fieldConfidence": confidence_summary.shared}
+            if confidence_summary.shared is not None else {}
+        ),
         **({"liquidacionNormalizada": liq} if liq is not None else {}),
     }
 

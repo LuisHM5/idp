@@ -291,12 +291,13 @@ def test_el_flujo_estandar_emite_la_misma_forma():
     doc = env["documents"][0]
     assert doc["documentType"] == "INE" and doc["status"] == "REJECTED"
     assert doc["fields"]["CURP"] == {
-        "value": "ABCD000000HDFXXX00", "valid": False, "reason": "no cumple el formato",
+        "value": "ABCD000000HDFXXX00", "confidence": 0.0,
+        "valid": False, "reason": "no cumple el formato",
     }
     # Vacío y sin queja: se omite, igual que en el otro flujo.
     assert "VIGENCIA" not in doc["fields"]
-    # Sin confianza inventada: ese flujo no calcula ninguna.
-    assert "confidence" not in doc["fields"]["CURP"]
+    # Sin confianza inventada: 0.0 dice explícitamente que nadie la midió.
+    assert doc["fields"]["CURP"]["confidence"] == 0.0
 
 
 # ------------------------------------------------ DSL legado
@@ -315,7 +316,9 @@ def test_un_documento_del_dsl_legado_se_ve_igual_que_uno_field_centric():
     view = envelope.document_view(doc, 1)
     assert view["fields"]["FOLIO"] == {"value": "F1", "confidence": 0.9, "valid": True}
     assert "VACIO" not in view["fields"]
-    assert view["fields"]["PARTIDAS"]["items"] == [{"fields": {"DESC": {"value": "algo"}}}]
+    assert view["fields"]["PARTIDAS"]["items"] == [
+        {"fields": {"DESC": {"value": "algo", "confidence": 0.0}}}
+    ]
 
 
 # ------------------------------------------- checks que sí corrieron
@@ -356,21 +359,19 @@ def test_source_file_es_el_nombre_no_la_llave_de_s3():
 # ------------------------------------- confianza compartida del documento
 
 def test_la_confianza_compartida_sube_al_documento():
-    """El extractor reporta la MISMA confianza para casi todo lo que leyó de
-    una página: medido, 62 campos con 7 valores distintos. Repetirla en cada
-    campo esconde justo las excepciones, que son lo único que hay que mirar."""
-    env = _build(_result([_doc(extractedEntities={
+    """`fieldConfidence` sigue como resumen compatible, sin vaciar los nodos."""
+    env = _build(_result([_doc(fieldConfidence=0.98, extractedEntities={
         "A": _node("a", confidence=0.98), "B": _node("b", confidence=0.98),
         "C": _node("c", confidence=0.98), "D": _node("d", confidence=0.71),
     })]))
     doc = env["documents"][0]
     assert doc["fieldConfidence"] == 0.98
-    assert "confidence" not in doc["fields"]["A"]
+    assert doc["fields"]["A"]["confidence"] == 0.98
     assert doc["fields"]["D"]["confidence"] == 0.71, "la excepción conserva la suya"
 
 
 def test_la_confianza_de_las_celdas_de_un_renglon_tambien_sube():
-    env = _build(_result([_doc(extractedEntities={
+    env = _build(_result([_doc(fieldConfidence=0.9, extractedEntities={
         "CONCEPTOS": {"items": [
             {"valid": True, "fields": {"A": _node(1, confidence=0.9), "B": _node(2, confidence=0.9)}},
             {"valid": True, "fields": {"A": _node(3, confidence=0.9), "B": _node(4, confidence=0.5)}},
@@ -379,13 +380,12 @@ def test_la_confianza_de_las_celdas_de_un_renglon_tambien_sube():
     doc = env["documents"][0]
     assert doc["fieldConfidence"] == 0.9
     rows = doc["fields"]["CONCEPTOS"]["items"]
-    assert "confidence" not in rows[0]["fields"]["A"]
+    assert rows[0]["fields"]["A"]["confidence"] == 0.9
     assert rows[1]["fields"]["B"]["confidence"] == 0.5
 
 
 def test_sin_valor_compartido_no_se_toca_nada():
-    """Con pocos campos, o todos distintos, no hay "línea base" que sacar —
-    inventar una haría que un campo sin `confidence` significara algo falso."""
+    """Si el pipeline no calculó resumen, el envelope no inventa uno."""
     env = _build(_result([_doc(extractedEntities={
         "A": _node("a", confidence=0.91), "B": _node("b", confidence=0.72),
         "C": _node("c", confidence=0.55), "D": _node("d", confidence=0.99),

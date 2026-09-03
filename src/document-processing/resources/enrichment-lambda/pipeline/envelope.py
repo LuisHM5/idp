@@ -116,11 +116,14 @@ def compact_node(node: Any) -> Optional[Dict[str, Any]]:
     valid = node.get("valid", True)
     if value in (None, "", []) and valid:
         return None
-    out = {"value": value}
-    # `confidence` es siempre un número en el pipeline de expedientes; el flujo
-    # estándar no calcula ninguno, y ahí se omite en vez de inventarlo.
-    if node.get("confidence") is not None:
-        out["confidence"] = node["confidence"]
+    # Every emitted scalar is self-contained. Pipelines that measured a value
+    # provide their final number; an older/standard path with no measurement
+    # says so explicitly with UNKNOWN (0.0), never through a missing key that
+    # forces consumers to invent inheritance rules.
+    out = {
+        "value": value,
+        "confidence": node.get("confidence") if node.get("confidence") is not None else 0.0,
+    }
     out["valid"] = valid
     if not valid and node.get("reason"):
         out["reason"] = node["reason"]
@@ -163,69 +166,13 @@ def _legacy_fields(doc: Dict[str, Any]) -> Dict[str, Any]:
             continue
         fields[name] = {
             "items": [
-                {"fields": {k: {"value": v} for k, v in row.items()}}
+                {"fields": {k: {"value": v, "confidence": 0.0} for k, v in row.items()}}
                 if isinstance(row, dict)
                 else {"fields": {}}
                 for row in value
             ]
         }
     return fields
-
-
-def _confidences(fields: Dict[str, Any]) -> List[float]:
-    """Toda confianza del árbol de campos, a cualquier profundidad."""
-    out: List[float] = []
-    for node in (fields or {}).values():
-        if not isinstance(node, dict):
-            continue
-        if isinstance(node.get("items"), list):
-            for row in node["items"]:
-                out.extend(_confidences(row.get("fields") or {}))
-        elif isinstance(node.get("fields"), dict):
-            out.extend(_confidences(node["fields"]))
-        elif isinstance(node.get("confidence"), (int, float)):
-            out.append(node["confidence"])
-    return out
-
-
-def _strip(fields: Dict[str, Any], base: float) -> None:
-    for node in (fields or {}).values():
-        if not isinstance(node, dict):
-            continue
-        if isinstance(node.get("items"), list):
-            for row in node["items"]:
-                _strip(row.get("fields") or {}, base)
-        elif isinstance(node.get("fields"), dict):
-            _strip(node["fields"], base)
-        elif node.get("confidence") == base:
-            del node["confidence"]
-
-
-_MIN_SHARED = 3
-
-
-def lift_confidence(fields: Dict[str, Any]) -> Optional[float]:
-    """Saca a nivel documento la confianza que comparten casi todos los campos.
-
-    El extractor reporta la MISMA confianza para casi todo lo que leyó de una
-    página — medido sobre una respuesta real: 62 campos, 7 valores distintos,
-    26 de ellos con 0.9333 y 25 con 0.9826. Repetir ese número 51 veces no
-    informa de nada y esconde las excepciones, que son lo único que hay que
-    mirar.
-
-    Devuelve el valor compartido (que el documento publica como
-    `fieldConfidence`) y lo borra de los campos que lo tienen, así que **un
-    campo que conserva `confidence` propio es uno que se leyó distinto**.
-    Devuelve None —y no toca nada— cuando no hay tal valor compartido.
-    """
-    values = _confidences(fields)
-    if len(values) < _MIN_SHARED:
-        return None
-    base, shared = Counter(values).most_common(1)[0]
-    if shared < _MIN_SHARED:
-        return None
-    _strip(fields, base)
-    return base
 
 
 # ------------------------------------------------------------ documentos
@@ -258,9 +205,11 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
         view["recoveredFields"] = doc["recoveredFields"]
     if doc.get("liquidacionNormalizada"):
         view["liquidacionNormalizada"] = doc["liquidacionNormalizada"]
-    base = lift_confidence(fields)
-    if base is not None:
-        view["fieldConfidence"] = base
+    # Calculated during validation, while those confidences are already being
+    # traversed for the document aggregate. Copying the summary here is O(1),
+    # and—critically—never removes `confidence` from an individual field.
+    if doc.get("fieldConfidence") is not None:
+        view["fieldConfidence"] = doc["fieldConfidence"]
     view["fields"] = fields
     return view
 
@@ -450,8 +399,8 @@ def build_standard(
 
     Emite `documents[]` con un elemento en vez de un `extractedEntities` plano,
     para que un consumidor tenga UN solo parser para todo el sistema. Ese flujo
-    no calcula confianza por campo, así que los nodos salen sin `confidence`:
-    inventar un número sería peor que no darlo.
+    no calcula confianza por campo, así que usa 0.0 (`UNKNOWN`): un número
+    explícito que significa "no medido", nunca una confianza inventada.
     """
     failures: Dict[str, Any] = {}
     for c in checks:
@@ -460,7 +409,7 @@ def build_standard(
 
     fields: Dict[str, Any] = {}
     for name, value in (entity_map or {}).items():
-        node = {"value": value, "valid": name not in failures}
+        node = {"value": value, "confidence": 0.0, "valid": name not in failures}
         if name in failures and failures[name]:
             node["reason"] = failures[name]
         compact = compact_node(node)

@@ -605,6 +605,11 @@ Para el DSL field-centric:
    arrays sin duplicados exactos y recorre objetos.
 6. Acumula tokens y metadatos (`chunks`, páginas, `segmentConfidence`).
 
+Al construir el envelope, cada escalar conserva su `confidence`; no existe una
+regla de herencia desde el documento. `fieldConfidence` es solo el valor más
+repetido como resumen compatible y se calcula junto con el promedio durante la
+validación, sin volver a recorrer ni mutar el árbol renderizado.
+
 La variante legacy hace lo mismo con `_call_model()`, `_merge_fields()` y
 `_merge_arrays()` sobre un schema plano.
 

@@ -32,8 +32,9 @@
     "enviar": "bash scripts/enviar-documento.sh",
     "synth": "npx cdk synth",
     "deploy": "npm run build && npm run deploy:fast",
+    "deploy:table": "node scripts/check-pending-tables.mjs --env dev",
     "deploy:fast": "node scripts/check-pending-tables.mjs --env dev && npx cdk deploy --require-approval never",
-    "deploy:dev": "npm run build && node scripts/check-pending-tables.mjs --env dev && npx cdk deploy DocumentValidationStack-Dev -c env=dev --require-approval never",
+    "deploy:dev": "npx cdk deploy DocumentValidationStack-Dev -c env=dev --require-approval never",
     "deploy:prod": "npm run build && node scripts/check-pending-tables.mjs --env prod && npx cdk deploy DocumentValidationStack -c env=prod",
     "diff": "npx cdk diff",
     "diff:dev": "npx cdk diff DocumentValidationStack-Dev -c env=dev",
@@ -62,7 +63,7 @@
     "doc:pdf": "bash scripts/doc-a-pdf.sh"
   },
   "keywords": [],
-  "author": "Luis Hern\u00e1ndez Mac\u00edas",
+  "author": "Luis Hernández Macías",
   "license": "ISC",
   "packageManager": "pnpm@10.20.0",
   "dependencies": {
