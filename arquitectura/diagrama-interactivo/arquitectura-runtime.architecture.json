@@ -6,6 +6,7 @@
     "locale": "en",
     "output": "arquitectura-runtime-interactiva.html",
     "quality_profile": "showcase",
+    "repository": {"provider": "gitlab", "url": "https://code.alsuper.com/Infraestructura/idp", "revision": "a1d4a176c647a74951d48c14e619b4ca65a5efcf"},
     "viewBox": [900, 500],
     "views": [
       {"id": "upload-processing", "label": "Upload and processing", "focus": ["client", "api-edge", "api-lambdas", "document-bucket", "ingest-queues", "workflow-lambdas", "orchestration", "enrichment"], "note": "Registration, direct S3 upload, asynchronous ingestion, orchestration, and enrichment."},
@@ -15,34 +16,44 @@
   },
   "components": [
     {
-      "id": "client", "type": "external", "label": "Client", "sublabel": "register • upload • poll • search", "pos": [10, 60], "size": [140, 72]
+      "id": "client", "type": "external", "label": "Client", "sublabel": "register • upload • poll • search", "pos": [10, 60], "size": [140, 72],
+      "sources": [{"path": "openapi/openapi.yaml", "line": 1, "label": "REST contract"}]
     },
     {
-      "id": "api-edge", "type": "security", "label": "API Gateway + WAF", "sublabel": "prod: WAF + x-api-key\ndev: optional key", "pos": [430, 50], "size": [190, 82]
+      "id": "api-edge", "type": "security", "label": "API Gateway + WAF", "sublabel": "prod: WAF + x-api-key\ndev: optional key", "pos": [430, 50], "size": [190, 82],
+      "sources": [{"path": "src/document-validation-stack.ts", "line": 740, "end_line": 785, "label": "routes and key gate"}, {"path": "src/document-validation-stack.ts", "line": 795, "end_line": 870, "label": "prod WAF and usage plan"}]
     },
     {
-      "id": "api-lambdas", "type": "backend", "label": "API Lambdas", "sublabel": "Upload: register + presign\nQuery: GET/search/PATCH", "pos": [180, 50], "size": [190, 82]
+      "id": "api-lambdas", "type": "backend", "label": "API Lambdas", "sublabel": "Upload: register + presign\nQuery: GET/search/PATCH", "pos": [180, 50], "size": [190, 82],
+      "sources": [{"path": "src/document-validation-stack.ts", "line": 655, "end_line": 737, "label": "Lambda definitions and grants"}, {"path": "src/document-processing/resources/upload-lambda/index.mjs", "line": 224, "end_line": 271, "label": "presign and registration"}, {"path": "src/document-processing/resources/query-lambda/index.mjs", "line": 1199, "end_line": 1221, "label": "query route dispatch"}]
     },
     {
-      "id": "document-bucket", "type": "cloud", "label": "S3 document bucket", "sublabel": "raw/ • processed/ • failed/\nresults/{id}.json", "pos": [680, 50], "size": [190, 72], "tag": "direct presigned PUT"
+      "id": "document-bucket", "type": "cloud", "label": "S3 document bucket", "sublabel": "raw/ • processed/ • failed/\nresults/{id}.json", "pos": [680, 50], "size": [190, 72], "tag": "direct presigned PUT",
+      "sources": [{"path": "src/document-validation-stack.ts", "line": 539, "end_line": 552, "label": "bucket wiring and result access"}, {"path": "patches/configurable-encryption.mjs", "line": 119, "end_line": 129, "label": "bucket encryption patch"}, {"path": "src/document-processing/resources/enrichment-lambda/handler.py", "line": 233, "end_line": 255, "label": "S3 input pointer"}]
     },
     {
-      "id": "ingest-queues", "type": "messagebus", "label": "SQS + DLQ", "sublabel": "raw/ ObjectCreated queue", "pos": [680, 190], "size": [190, 72], "tag": "5 receives → DLQ"
+      "id": "ingest-queues", "type": "messagebus", "label": "SQS + DLQ", "sublabel": "raw/ ObjectCreated queue", "pos": [680, 190], "size": [190, 72], "tag": "5 receives → DLQ",
+      "sources": [{"path": "patches/configurable-encryption.mjs", "line": 131, "end_line": 147, "label": "queue and DLQ encryption"}, {"path": "patches/configurable-encryption.mjs", "line": 155, "end_line": 194, "label": "S3 event notification"}, {"path": "patches/default-sqs-consumer-index.py", "line": 160, "end_line": 167, "label": "duplicate-safe retry behavior"}]
     },
     {
-      "id": "workflow-lambdas", "type": "backend", "label": "Workflow Lambdas", "sublabel": "SQS • model invoke • status", "pos": [180, 185], "size": [170, 82]
+      "id": "workflow-lambdas", "type": "backend", "label": "Workflow Lambdas", "sublabel": "SQS • model invoke • status", "pos": [180, 185], "size": [170, 82],
+      "sources": [{"path": "patches/default-sqs-consumer-index.py", "line": 31, "end_line": 216, "label": "ingress and idempotency"}, {"path": "src/document-processing/multi-model-document-processing.ts", "line": 227, "end_line": 280, "label": "classification and processing tasks"}]
     },
     {
-      "id": "orchestration", "type": "messagebus", "label": "Step Functions + EventBridge", "sublabel": "classify → process → enrich\nmove + terminal event", "pos": [430, 185], "size": [190, 82], "tag": "exceptions → failed/"
+      "id": "orchestration", "type": "messagebus", "label": "Step Functions + EventBridge", "sublabel": "classify → process → enrich\nmove + terminal event", "pos": [430, 185], "size": [190, 82], "tag": "exceptions → failed/",
+      "sources": [{"path": "src/document-validation-stack.ts", "line": 160, "end_line": 166, "label": "EventBridge broker"}, {"path": "src/document-validation-stack.ts", "line": 381, "end_line": 415, "label": "workflow configuration"}, {"path": "documentacion/ARQUITECTURA.md", "line": 102, "label": "terminal event contract"}]
     },
     {
-      "id": "enrichment", "type": "backend", "label": "Enrichment Lambda", "sublabel": "segment/select/extract\nnormalize + validate", "pos": [180, 345], "size": [170, 82], "tag": "field-centric + legacy/XML/tabular"
+      "id": "enrichment", "type": "backend", "label": "Enrichment Lambda", "sublabel": "segment/select/extract\nnormalize + validate", "pos": [180, 345], "size": [170, 82], "tag": "field-centric + legacy/XML/tabular",
+      "sources": [{"path": "src/document-processing/resources/enrichment-lambda/handler.py", "line": 585, "end_line": 730, "label": "routing and persistence hooks"}, {"path": "src/document-processing/resources/enrichment-lambda/pipeline/expediente.py", "line": 282, "end_line": 426, "label": "expediente pipeline"}, {"path": "src/document-processing/resources/enrichment-lambda/validators/engine.py", "line": 1, "label": "dynamic validation engine"}]
     },
     {
-      "id": "ml-services", "type": "cloud", "label": "Amazon Bedrock + Textract", "sublabel": "Bedrock: vision + text\nTextract: OCR", "pos": [430, 345], "size": [190, 82], "tag": "backoff + model fallback"
+      "id": "ml-services", "type": "cloud", "label": "Amazon Bedrock + Textract", "sublabel": "Bedrock: vision + text\nTextract: OCR", "pos": [430, 345], "size": [190, 82], "tag": "backoff + model fallback",
+      "sources": [{"path": "src/document-processing/resources/model-invoke-lambda/index.py", "line": 211, "end_line": 223, "label": "upstream Bedrock retries"}, {"path": "src/document-processing/resources/enrichment-lambda/pipeline/bedrock.py", "line": 341, "end_line": 498, "label": "Bedrock retry and fallback"}, {"path": "src/document-processing/resources/enrichment-lambda/pipeline/pdf_pages.py", "line": 89, "end_line": 194, "label": "Textract OCR fallback"}]
     },
     {
-      "id": "dynamodb", "type": "database", "label": "DynamoDB tables", "sublabel": "documents/catalog/apps/keys\ncosts/fallbacks", "pos": [680, 345], "size": [190, 82], "tag": "compact result + status/indexes"
+      "id": "dynamodb", "type": "database", "label": "DynamoDB tables", "sublabel": "documents/catalog/apps/keys\ncosts/fallbacks", "pos": [680, 345], "size": [190, 82], "tag": "compact result + status/indexes",
+      "sources": [{"path": "src/document-validation-stack.ts", "line": 430, "end_line": 512, "label": "document, key, and cost tables"}, {"path": "src/document-validation-stack.ts", "line": 566, "end_line": 578, "label": "apps table"}, {"path": "src/document-processing/resources/enrichment-lambda/handler.py", "line": 585, "end_line": 613, "label": "index, key, and cost writes"}]
     }
   ],
   "boundaries": [
