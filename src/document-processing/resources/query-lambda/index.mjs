@@ -1,7 +1,7 @@
 /**
  * QueryLambda - Read document-job status and search processed documents.
  *
- * Four endpoints (public like the upload API unless the stage
+ * Five endpoints (public like the upload API unless the stage
  * requires an API key — see AMBIENTES_Y_SEGURIDAD.md):
  *
  *   GET /documents/{id}
@@ -17,6 +17,12 @@
  *       `findSourceObject`/`getFileById` below and
  *       documentacion/API_USO.md for why (size limits) and the access-control
  *       implications of a presigned URL / a single shared API key.
+ *
+ *   POST /documents/{id}/reprocess
+ *       Creates a new document id and copies the original object internally
+ *       from processed/ or failed/ back to raw/. The optional documentType,
+ *       occurrenceMode and modelId body fields override the new run only;
+ *       the old result is never changed.
  *
  *   PATCH /documents/{id}/metadata
  *       Applies a flat JSON Merge Patch to the mutable metadata stored on the
@@ -90,7 +96,8 @@
  *     column. It defaults false for registered apps. AccessScope and
  *     AllowedDocTypes still decide which concrete documents it may change.
  *
- * A denied `GET /documents/{id}` or `/file` returns **404**, not 403 — it
+ * A denied `GET /documents/{id}`, `/file` or source lookup for `/reprocess`
+ * returns **404**, not 403 — it
  * must not confirm that a document you can't see even exists. `query()`
  * (list/search) silently drops out-of-scope items from `matches` rather than
  * erroring, same principle.
@@ -103,19 +110,28 @@
  * grandfather case, not a bug). Unregistered keys and permission-lookup
  * failures stay fail-open for reads but fail closed for metadata writes — this guards data
  * segregation between already-authenticated apps, not a secret, so an
- * outage in the Apps table should not become an outage of every read.
+ * outage in the Apps table should not become an outage of every read. Such a
+ * caller remains read-only: it cannot PATCH metadata or start a reproceso.
  */
 
+import { randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
   BatchGetCommand,
+  PutCommand,
   QueryCommand,
   ScanCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { S3Client, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  CopyObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { readFileSync } from "fs";
 
@@ -137,6 +153,18 @@ import {
   isPendingProcessingStatus,
   processingStatusFor,
 } from "./processing-status.mjs";
+import {
+  classificationModeFor,
+  deserializeDocumentCounts,
+  inheritedDocumentType,
+  occurrenceModeOf,
+  parseBody as parseReprocessBody,
+  parseDocumentTypes,
+  rawKeyFor,
+  serializeDocumentCounts,
+  userMetadataForReprocess,
+  validateSourceFile,
+} from "./reprocess-request.mjs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -225,10 +253,11 @@ const UNRESTRICTED = {
   allowedDocTypes: [],
   allowFieldSearch: true,
   allowMetadataWrite: true,
+  allowReprocess: true,
 };
 
 /** Grandfathered read access is not authority to mutate stored data. */
-const UNREGISTERED = { ...UNRESTRICTED, allowMetadataWrite: false };
+const UNREGISTERED = { ...UNRESTRICTED, allowMetadataWrite: false, allowReprocess: false };
 
 /**
  * Resolve the caller's own app + permissions from its x-api-key, mirroring
@@ -250,6 +279,10 @@ async function resolveCallerApp(event) {
       allowedDocTypes: Item.AllowedDocTypes || [],
       allowFieldSearch: !!Item.AllowFieldSearch,
       allowMetadataWrite: !!Item.AllowMetadataWrite,
+      // Upload is already available to every registered app. Reprocess is the
+      // same billed operation with the transport optimized away, so no second
+      // per-app grant is required; an unregistered key is still read-only.
+      allowReprocess: true,
     };
   } catch (err) {
     console.error("Failed to resolve caller app permissions (failing open — read access unaffected):", err);
@@ -260,7 +293,19 @@ async function resolveCallerApp(event) {
 /** Whether `caller` is allowed to see this specific document. */
 function canSeeDocument(caller, envelope) {
   if (!envelope) return false;
-  if (caller.allowedDocTypes.length && !caller.allowedDocTypes.includes(envelope.documentClassification)) {
+  // `documentClassification` is one type, or several comma-separated when the
+  // file holds documents of different types (see envelope.py::classification_of).
+  // EVERY type has to be granted: a bundle that mixes a granted type with one
+  // outside the grant stays hidden, which is the behaviour the old single
+  // container label produced too — it was never in `allowedDocTypes` either.
+  const classifications = String(envelope.documentClassification || "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (
+    caller.allowedDocTypes.length &&
+    !(classifications.length && classifications.every((t) => caller.allowedDocTypes.includes(t)))
+  ) {
     return false;
   }
   if (caller.accessScope === "own" && documentAppOrigin(envelope) !== caller.appName) {
@@ -494,6 +539,7 @@ async function getById(id, params, caller) {
       ...(item.RegisteredAt && { registeredAt: item.RegisteredAt }),
       ...(item.ProcessingStatusUpdatedAt && { updatedAt: item.ProcessingStatusUpdatedAt }),
       ...(item.UploadExpiresAt && { uploadExpiresAt: item.UploadExpiresAt }),
+      ...(item.ReprocessedFrom && { reprocessedFrom: item.ReprocessedFrom }),
     };
     if (isPendingProcessingStatus(processingStatus)) {
       return json(
@@ -526,6 +572,7 @@ async function getById(id, params, caller) {
     workflowStatus: item.WorkflowStatus,
     documentType: item.DocumentType,
     documentTypeName: item.DocumentTypeName,
+    ...(item.ReprocessedFrom && { reprocessedFrom: item.ReprocessedFrom }),
     result: envelope,
   };
   // full=1 adds the deepest S3 result (per-field detail: fields[] with
@@ -732,6 +779,239 @@ async function getFileById(id, params, caller) {
     expiresInSeconds: expiresIn,
     expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
   });
+}
+
+// ----------------------------------------------- POST reprocess by old id
+
+/**
+ * POST /documents/{id}/reprocess
+ *
+ * Creates a new immutable processing job from the original S3 object. The
+ * source result and source object remain untouched. CopyObject keeps the bytes
+ * inside S3, avoiding an API Gateway/Lambda download-upload round trip and its
+ * size limits. The copy lands under raw/, so the existing S3 -> SQS -> Step
+ * Functions path processes it exactly like a new upload.
+ */
+async function reprocessById(id, event, caller) {
+  if (!BUCKET || !TABLE) {
+    return json(500, { error: "CONFIG_ERROR", message: "Document storage is not configured" });
+  }
+  if (!caller.allowReprocess) {
+    return json(403, {
+      error: "FORBIDDEN",
+      message: "This API key is not registered and may read existing documents but cannot reprocess them",
+    });
+  }
+
+  const parsedBody = parseReprocessBody(event);
+  if (parsedBody.error) {
+    return json(400, { error: parsedBody.error.code, message: parsedBody.error.message });
+  }
+  const body = parsedBody.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json(400, { error: "INVALID_BODY", message: "Request body must be a JSON object" });
+  }
+  const occurrence = occurrenceModeOf(body);
+  if (occurrence.error) {
+    return json(400, { error: occurrence.error.code, message: occurrence.error.message });
+  }
+
+  const item = await resolveItemById(id);
+  if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  const envelope = parseEnrichment(item);
+  const canSee = envelope
+    ? canSeeDocument(caller, envelope)
+    : canSeePendingDocument(caller, item);
+  if (!canSee) {
+    return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+  }
+
+  const oldDocumentId = item.DocumentId;
+  const source = await findSourceObject(oldDocumentId);
+  if (!source) {
+    const processingStatus = processingStatusFor(item, !!envelope);
+    if (isPendingProcessingStatus(processingStatus)) {
+      return json(409, {
+        error: "SOURCE_NOT_READY",
+        message: `Document '${oldDocumentId}' is still processing; retry when its processingStatus is FINISHED or FAILED`,
+        processingStatus,
+      });
+    }
+    return json(404, {
+      error: "FILE_NOT_FOUND",
+      message: `No original file found for document '${oldDocumentId}' in processed/ or failed/`,
+    });
+  }
+
+  const fileName = source.key.split("/").pop();
+  let sourceHead;
+  try {
+    sourceHead = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: source.key }));
+  } catch (err) {
+    console.error("Failed to read source object metadata for reprocess:", err);
+    return json(404, {
+      error: "FILE_NOT_FOUND",
+      message: `Original file for document '${oldDocumentId}' is no longer available`,
+    });
+  }
+
+  // Omission means "repeat the old explicit declaration". Sending null or an
+  // empty string is deliberately different: it requests auto-classification.
+  const hasDocumentType = Object.prototype.hasOwnProperty.call(body, "documentType");
+  const inheritedType = inheritedDocumentType(item);
+  const requestedType = hasDocumentType ? body.documentType : inheritedType;
+  const parsedTypes = parseDocumentTypes(requestedType, occurrence.occurrenceMode);
+  if (parsedTypes.error) {
+    return json(400, { error: parsedTypes.error.code, message: parsedTypes.error.message });
+  }
+  const sourceValidation = validateSourceFile(fileName, parsedTypes.types);
+  if (sourceValidation.error) {
+    return json(400, {
+      error: sourceValidation.error.code,
+      message: sourceValidation.error.message,
+    });
+  }
+
+  if (
+    caller.allowedDocTypes.length &&
+    parsedTypes.types.some((type) => !caller.allowedDocTypes.includes(type))
+  ) {
+    return json(403, {
+      error: "FORBIDDEN_DOCUMENT_TYPE",
+      message: "This app is not allowed to process one or more requested document types",
+    });
+  }
+
+  // User metadata survives the reprocess. The DynamoDB map is authoritative
+  // after PATCH; HeadObject is the fallback for older rows. Execution knobs
+  // are rebuilt below and can never leak from the old request accidentally.
+  const headMetadata = sourceHead.Metadata || {};
+  const hasAuthoritativeMetadata = Object.prototype.hasOwnProperty.call(item, "Metadata");
+  const resultMetadata = isMetadataObject(item.Metadata)
+    ? item.Metadata
+    : isMetadataObject(envelope?.metadata)
+      ? envelope.metadata
+      : {};
+  const userMetadata = userMetadataForReprocess(
+    headMetadata,
+    resultMetadata,
+    hasAuthoritativeMetadata
+  );
+  const objectMetadata = { ...userMetadata };
+
+  const appOrigin = caller.appName || headMetadata["app-origin"] || documentAppOrigin(envelope) || null;
+  if (appOrigin) objectMetadata["app-origin"] = appOrigin;
+  if (typeof body.modelId === "string" && body.modelId.trim()) {
+    objectMetadata["model-id"] = body.modelId.trim();
+  }
+
+  let effectiveCounts = parsedTypes.counts;
+  // When neither target types nor mode were overridden, preserve an explicit
+  // :N/:all decision from the old upload. Otherwise the new request wins and
+  // catalog/global defaults apply to every count it leaves unspecified.
+  if (!hasDocumentType && !parsedTypes.occurrenceMode && headMetadata["document-counts"]) {
+    effectiveCounts = deserializeDocumentCounts(
+      headMetadata["document-counts"],
+      parsedTypes.types
+    );
+  }
+  const declaredCounts = serializeDocumentCounts(effectiveCounts);
+  if (declaredCounts) objectMetadata["document-counts"] = declaredCounts;
+
+  const documentId = randomUUID();
+  const key = rawKeyFor(parsedTypes.types, documentId, fileName);
+  const registeredAt = new Date().toISOString();
+  const declaredTypes = parsedTypes.types.join(",");
+
+  // Reserve the new id before the S3 event can race ahead of us. This mirrors
+  // POST /documents, except there is no AWAITING_UPLOAD phase because the
+  // server itself performs the copy immediately.
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: TABLE,
+        Item: {
+          DocumentId: documentId,
+          ProcessingStatus: "QUEUED",
+          ProcessingStatusUpdatedAt: registeredAt,
+          RegisteredAt: registeredAt,
+          UploadKey: key,
+          JobOwner: appOrigin || "dev-unrestricted",
+          ReprocessedFrom: oldDocumentId,
+          ReprocessRequestedAt: registeredAt,
+          ...(declaredTypes ? { RequestedDocumentType: declaredTypes } : {}),
+          ...(Object.keys(userMetadata).length ? { Metadata: userMetadata } : {}),
+        },
+        ConditionExpression: "attribute_not_exists(DocumentId)",
+      })
+    );
+  } catch (err) {
+    console.error("Failed to register reprocess job:", err);
+    return json(500, {
+      error: "JOB_REGISTRATION_FAILED",
+      message: "Failed to register the reprocessing job",
+    });
+  }
+
+  try {
+    const copySource = `${BUCKET}/${source.key.split("/").map(encodeURIComponent).join("/")}`;
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: BUCKET,
+        Key: key,
+        CopySource: copySource,
+        MetadataDirective: "REPLACE",
+        ...(Object.keys(objectMetadata).length ? { Metadata: objectMetadata } : {}),
+        ...(sourceHead.ContentType ? { ContentType: sourceHead.ContentType } : {}),
+        ...(sourceHead.ContentDisposition ? { ContentDisposition: sourceHead.ContentDisposition } : {}),
+      })
+    );
+  } catch (err) {
+    console.error("Failed to copy source object for reprocess:", err);
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: TABLE,
+          Key: { DocumentId: documentId },
+          UpdateExpression:
+            "SET ProcessingStatus = :failed, ProcessingStatusUpdatedAt = :updated, ReprocessError = :error",
+          ExpressionAttributeValues: {
+            ":failed": "FAILED",
+            ":updated": new Date().toISOString(),
+            ":error": String(err?.message || err).slice(0, 300),
+          },
+        })
+      );
+    } catch (statusErr) {
+      console.error("Failed to mark reprocess copy as failed:", statusErr);
+    }
+    return json(500, {
+      error: "REPROCESS_COPY_FAILED",
+      message: "Failed to copy the original file into the processing queue",
+      documentId,
+    });
+  }
+
+  return json(
+    202,
+    {
+      documentId,
+      reprocessedFrom: oldDocumentId,
+      documentType: declaredTypes || null,
+      occurrenceMode: parsedTypes.occurrenceMode,
+      ...(Object.keys(effectiveCounts).length ? { documentTypeCounts: effectiveCounts } : {}),
+      classificationMode: classificationModeFor(parsedTypes.types),
+      processingStatus: "QUEUED",
+      statusUrl: `/documents/${documentId}`,
+      retryAfterSeconds: 5,
+    },
+    {
+      Location: `/documents/${documentId}`,
+      "Retry-After": "5",
+      "Cache-Control": "no-store",
+      "Access-Control-Expose-Headers": "Location, Retry-After",
+    }
+  );
 }
 
 // --------------------------------------------------------- unique keys
@@ -1259,9 +1539,13 @@ export async function handler(event) {
   // `id` was URL-encoded — safer than pattern-matching `event.path`.
   const isFileRoute = event.resource === "/documents/{id}/file";
   const isMetadataRoute = event.resource === "/documents/{id}/metadata";
+  const isReprocessRoute = event.resource === "/documents/{id}/reprocess";
   try {
     const caller = await resolveCallerApp(event);
     if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params, caller);
+    if (id && isReprocessRoute && event.httpMethod === "POST") {
+      return await reprocessById(decodeURIComponent(id), event, caller);
+    }
     if (id && isMetadataRoute && event.httpMethod === "PATCH") {
       return await patchMetadataById(decodeURIComponent(id), event, caller);
     }

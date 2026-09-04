@@ -115,6 +115,7 @@ como en el DSL viejo.
 | `min_confidence` | sí | Umbral 0-1: un campo escalar con confianza por debajo se marca inválido (`confidence {x} below minimum {min}`) **pero conserva su valor**, para que una persona lo juzgue. Default 0.70. |
 | `discard_below_confidence` | sí | Piso 0-1 por debajo del cual el valor **no se entrega**: sale `value: null`, `valid: false` y un `reason` que lo dice, conservando la confianza baja que lo explica. Más estricto que `min_confidence` (que solo señala): un número en el que nadie confía pero que *parece* dato es peor aguas abajo que un blanco explícito. Default 0.50 (`pipeline/confidence.py`). Solo aplica a campos **con** valor: un campo opcional ausente no está "descartado", nunca estuvo. |
 | `schema_version` | solo informativo | Se registra en `tracking.schema.typeVersions` de cada resultado para saber qué versión de schema procesó el documento. **No cambia ningún comportamiento del código** — no hay ningún `if schema_version == ...` en el pipeline. Súbelo cuando quieras dejar rastro de un cambio relevante, no por obligación. |
+| `occurrence_mode` | sí, opcional | Default del tipo cuando el POST no manda `occurrenceMode` ni `:N`/`:all`: `single` conserva la primera ocurrencia; `multiple` conserva todas. Si falta, aplica el default global: `single` con un tipo declarado, `multiple` con varios. |
 | `pipeline: "expediente"` | sí, pero opcional | Ver [`pipeline: expediente`](#pipeline-expediente-qué-controla-realmente) abajo — **ya no es requisito para que se extraigan los campos.** |
 | `model_id` | sí, opcional | ID de modelo Bedrock (o ARN de inference-profile) que extrae específicamente ESTE tipo — pisa `BEDROCK_EXTRACTOR_MODEL_ID`/`BEDROCK_MODEL_ID` configurados por variable de entorno. Aplica a cualquier fase que corra para este tipo (`extractor`, y `recovery` si el tipo declara `extraction_strategy`) salvo que esa fase tenga su propia entrada en `model_ids`. Ausente o `null` → hereda lo configurado. |
 | `model_ids` | sí, opcional | Igual que `model_id` pero por FASE: `{"extractor": "...", "recovery": "..."}`. Pisa a `model_id` cuando ambos nombran la misma fase — así un tipo puede fijar solo `recovery` (p. ej. porque su fallback de Textract necesita un modelo distinto al de extracción normal) sin tocar las demás. `segmenter` no aplica aquí: la segmentación de un expediente corre ANTES de saber a qué tipo pertenece cada rango de páginas, así que no hay un `type_entry` del que leer el override — solo responde a `BEDROCK_SEGMENTER_MODEL_ID` y al override de desarrollo. |
@@ -819,16 +820,51 @@ expediente real recortó solo el 67 % de los tokens, porque las páginas que se
 conservan son las densas en texto. Detalle y validación en
 `documentacion/COSTOS.md` §0-bis.
 
+### Cardinalidad del catálogo y de una solicitud
+
+Cada tipo puede declarar su comportamiento normal:
+
+```jsonc
+"occurrence_mode": "single"    // conserva la primera ocurrencia
+"occurrence_mode": "multiple"  // conserva todas las ocurrencias
+```
+
+La precedencia completa, de mayor a menor, es:
+
+1. Sufijo del tipo en el request: `TIPO:N` o `TIPO:all`.
+2. `occurrenceMode: "single" | "multiple"` enviado en `POST /documents`, que
+   sobrescribe el catálogo para todos los tipos sin sufijo.
+3. `occurrence_mode` del catálogo de cada tipo.
+4. Default global si el catálogo no lo define: `single` cuando se declaró un
+   tipo y `multiple` cuando se declararon varios.
+
+Un valor de catálogo distinto de `single`/`multiple` hace fallar `pnpm build`.
+Si un override inválido entra directamente por DynamoDB, el runtime lo trata
+como ausente y usa el default global. Consulta `documentacion/API_USO.md` o
+`documentacion/API_RESUMEN.md` para el parámetro del POST.
+
+`FACTURA_FLETE_EXTRANJERO` declara `occurrence_mode: "multiple"`, así que una
+subida que pida únicamente ese tipo encuentra todas sus facturas aun sin mandar
+`occurrenceMode`. Cambios de esta propiedad se pueden aplicar con
+`pnpm sync:one -- --type <TIPO>` igual que el resto del schema.
+
+El catálogo sí debe describir cómo separar físicamente varias instancias:
+para eso existen `page_selection.multi_instance` y sus límites
+`start_markers`/`page_of_pattern`.
+
 ### Varias instancias del MISMO tipo en un archivo (`multi_instance`)
 
 `page_selection` contesta *qué páginas de este documento vale la pena pagar*.
-Es la pregunta correcta para un pedimento: la subida trae **uno** (más sus
-reimpresiones). Es la pregunta equivocada para una factura extranjera, donde un
+Es la pregunta correcta para un pedimento configurado como `single`: la subida
+trae **uno** (más sus reimpresiones). Es la pregunta equivocada para una factura extranjera, donde un
 PDF trae rutinariamente **varias facturas distintas** — un archivo de dos
 páginas que son dos facturas completas, o un expediente con tres de tres
 proveedores.
 
-Sin `multi_instance`, subir ese archivo declarando `documentType` produce **un
+`occurrence_mode: "multiple"` en el catálogo —o `occurrenceMode: "multiple"`
+en el POST— dice que deben conservarse todas, pero
+para el camino manual hace falta saber dónde termina cada una. Sin `multi_instance`,
+subir ese archivo declarando `documentType` produce **un
 solo documento**: `segment_pages` devuelve un segmento que cubre todo el
 fichero, así que las N facturas se extraen juntas y solo sobrevive un
 `NUMERO_FACTURA`, un `TOTAL` y un `pageStart/pageEnd`.
@@ -852,6 +888,13 @@ clasificación, no además de ella.
 **Y sale más barato que no partir**: cada instancia es su propia llamada de
 extracción, pero con sus 1-2 páginas en vez del archivo completo. Medido sobre
 un expediente real de 30 páginas: 3 llamadas de una página contra una de 30.
+
+**También corrige rangos del clasificador.** En modo guiado/automático el modelo
+puede reconocer bien el tipo pero juntar dos documentos consecutivos (por
+ejemplo, facturas de las páginas 9–10). Antes de extraer, el segmentador vuelve
+a aplicar `multi_instance` dentro de cada rango tipado; si los marcadores
+delimitan dos instancias, reemplaza el rango por ambas. Lo que no pueda separar
+con confianza permanece intacto (fail-open).
 
 | Knob | Default | Para qué |
 |---|---|---|
@@ -882,14 +925,15 @@ documentos como los encontraron los marcadores; si no, una copia anotada
 seguida de una página en blanco le gana al original por una página de
 continuación y se conserva la copia en vez del documento que copia.
 
-**También aplica sin `documentType` declarado.** En esa ruta clasifica el
-modelo, y se le dice que una reimpresión es un documento aparte —correcto:
-desde el texto de una página no puede saberlo—. Después, `segmenter.
-_collapse_duplicate_segments` aplica la MISMA identidad a los segmentos del
-mismo tipo y marca las copias como `OTRO` con subtipo `COPIA_DUPLICADA`. No se
-borran: la cobertura de páginas queda completa y la copia sigue visible con su
-rango, solo que no se vuelve a extraer. Así un archivo se comporta igual lo
-declare el que sube o no.
+**Copias físicas y cardinalidad.** El modelo considera una reimpresión como
+otra ocurrencia —correcto: desde el texto no puede saber la intención del
+caller—. Con `occurrence_mode: "single"`, `occurrenceMode: "single"` o un
+override `:1`,
+`segmenter._collapse_duplicate_segments` usa `duplicate_key_pattern` para
+elegir la impresión más completa antes de conservar sólo la primera; las otras
+se marcan internamente `OTRO/COPIA_DUPLICADA`. Con `multiple`, `:all` o `:N`
+mayor que uno, las copias **se preservan como ocurrencias físicas del tipo**:
+pedir todas y después ocultar una copia contradiría la cardinalidad solicitada.
 
 **Calibra con `--ocr` si tus documentos llegan escaneados.** `pnpm paginas` lee
 texto nativo, y un tipo cuyos PDF siempre vienen escaneados saldría entero en

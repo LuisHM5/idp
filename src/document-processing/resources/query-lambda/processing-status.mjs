@@ -44,13 +44,25 @@ export function canSeePendingDocument(caller, item) {
   if (caller.accessScope === "own" && item.JobOwner !== caller.appName) {
     return false;
   }
-  const requestedType = item.RequestedDocumentType === "AUTO"
-    ? null
-    : item.RequestedDocumentType;
+  // `RequestedDocumentType` carries what the uploader declared: one type, or
+  // several comma-separated (`POST /documents` accepts a list so the pipeline
+  // classifies among exactly those). `"AUTO"` is the sentinel for "nothing
+  // declared", written by the SQS consumer when the key has no type segment.
+  const requestedTypes = item.RequestedDocumentType === "AUTO"
+    ? []
+    : String(item.RequestedDocumentType || "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+  // EVERY declared type has to be allowed, not just one of them: a caller must
+  // not be able to reach a type outside its grant by listing it alongside one
+  // that is inside. Splitting also matters for the simple case — without it a
+  // scoped app could not even poll its own multi-type upload, because "A,B"
+  // never appears verbatim in `allowedDocTypes`.
   if (
-    requestedType &&
+    requestedTypes.length &&
     caller.allowedDocTypes.length &&
-    !caller.allowedDocTypes.includes(requestedType)
+    !requestedTypes.every((t) => caller.allowedDocTypes.includes(t))
   ) {
     return false;
   }

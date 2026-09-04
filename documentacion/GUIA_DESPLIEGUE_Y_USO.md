@@ -67,33 +67,24 @@ npx cdk bootstrap
 
 pnpm build      # 1) sincroniza catálogos → Lambda  2) parchea el blueprint  3) compila TS
 pnpm run diff       # opcional: revisar qué se va a crear
-pnpm run deploy     # crea el stack "DocumentValidationStack"
+pnpm run deploy     # prepara y despliega DocumentValidationStack-Dev
 ```
 
-**Tablas DynamoDB pendientes:** `deploy`/`deploy:dev`/`deploy:prod` corren `scripts/check-pending-tables.mjs` antes de tocar AWS — lista cualquier tabla DynamoDB que el diff vaya a crear/actualizar/borrar (así una tabla nueva del código, como `CostTable`, no queda commiteada sin desplegar sin que nadie lo note) y pide confirmación `(S/n)` si hay una terminal interactiva; en CI o con `--yes` no bloquea. Ejecútalo solo para inspeccionar: `node scripts/check-pending-tables.mjs -- --env dev`.
+**Tablas DynamoDB pendientes:** `deploy`/`deploy:dev`/`deploy:prod` corren `scripts/check-pending-tables.mjs` después de la preparación idempotente y antes de desplegar el stack de aplicación — lista cualquier tabla DynamoDB que el diff vaya a crear/actualizar/borrar (así una tabla nueva del código, como `CostTable`, no queda commiteada sin desplegar sin que nadie lo note) y pide confirmación `(S/n)` si hay una terminal interactiva; en CI o con `--yes` no bloquea. Ejecútalo solo para inspeccionar: `node scripts/check-pending-tables.mjs -- --env dev`.
 
 Al terminar, la salida muestra:
 
 - **`ApiEndpoint`** — URL del API de subida de documentos.
 - **`CatalogTableName`** — tabla DynamoDB del catálogo hot-reload.
 
-**Importante (primera vez con DynamoDB):** el stack _importa_ la tabla del catálogo (no la crea, para que sobreviva a los destroys), y **cada ambiente usa la suya**: `document-validation-catalog` en prod y `document-validation-catalog-dev` en dev (el nombre sale de `CATALOG_TABLE` en `.env.production` / `.env.dev`). Si no existe aún:
-
-```bash
-# prod
-aws dynamodb create-table \
-  --table-name document-validation-catalog \
-  --attribute-definitions AttributeName=type_id,AttributeType=S \
-  --key-schema AttributeName=type_id,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST --region us-east-1
-
-# dev (mismo esquema, tabla aparte)
-aws dynamodb create-table \
-  --table-name document-validation-catalog-dev \
-  --attribute-definitions AttributeName=type_id,AttributeType=S \
-  --key-schema AttributeName=type_id,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST --region us-east-1
-```
+**Primera vez con DynamoDB:** el stack _importa_ la tabla del catálogo para que
+sobreviva a los destroys, y **cada ambiente usa la suya**:
+`document-validation-catalog` en prod y `document-validation-catalog-dev` en
+dev (el nombre sale de `CATALOG_TABLE` en `.env.production` / `.env.dev`). No
+hay un paso manual: `deploy`, `deploy:dev` y `deploy:prod` ejecutan la
+preparación idempotente, crean la tabla cuando falta y aplican su etiqueta
+`CostStack` antes de desplegar. También aseguran el bootstrap `CDKToolkit` con
+su propia etiqueta.
 
 Después de crearla, llénala con el contenido de `catalogs/`: `pnpm sync` (dev) o `pnpm sync:prod` (prod).
 
@@ -250,9 +241,9 @@ veinte.** Ese arreglo es el único lugar donde viven los datos extraídos.
 {
   "documentId": "…",
   "envelopeVersion": 2,
-  // Si TODOS los documentos son del mismo tipo, ese es el tipo; el contenedor
-  // queda para paquetes de tipos mixtos.
-  "documentClassification": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",
+  // Si TODOS los documentos son del mismo tipo, ese es el tipo; si son de tipos
+  // distintos, son los tipos separados por coma, en orden de aparición.
+  "documentClassification": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO",
   "documentCount": 23,
   "validation": {
     "status": "REQUIERE_REVISION",
@@ -477,6 +468,43 @@ aws dynamodb put-item --table-name document-validation-fallback-models \
   --region us-east-1
 ```
 
+### 5.6.1 Segmentación degradada: detección, reintento y ventaneo
+
+Distinto del fallback de la sección anterior (que reacciona a un `ClientError` — el modelo está caído/no disponible): aquí la llamada a Bedrock responde 200 OK pero con texto vacío o truncado (`stopReason: "max_tokens"`) — típicamente porque el presupuesto de salida se agotó antes de que el modelo escribiera el JSON, en un expediente con muchas páginas o muchos documentos a listar (ej. `FACTURA_FLETE_EXTRANJERO`, donde cada factura cuenta como documento separado). `_invoke_with_fallback` no ve nada anómalo en esa respuesta, así que `pipeline/segmenter.py` lo detecta y maneja por su cuenta:
+
+1. El presupuesto de tokens de la llamada de segmentación ya NO es un `4096` fijo — escala con el número de páginas (piso 8192, techo configurable `SEGMENTER_MAX_TOKENS_CEILING`, default 32000).
+2. Si aun así la respuesta sale vacía, no parsea, o `stopReason` dice `max_tokens`, se reintenta UNA vez con el modelo más confiable conocido (el último de `model_fallback.get_fallback_models()`, hoy Haiku).
+3. Para expedientes grandes (por encima de `SEGMENTER_WINDOW_THRESHOLD` páginas, default 40 — el tope normal de 50 páginas sube a 500 cuando algún tipo declarado usa `page_selection`), la clasificación se reparte en ventanas de páginas (`SEGMENTER_WINDOW_SIZE`, default 25, con solape `SEGMENTER_WINDOW_OVERLAP`, default 3) clasificadas en paralelo (`SEGMENTER_WINDOW_WORKERS`, default 4) y luego fusionadas.
+
+Todas configurables por variable de entorno (redeploy, no hot-reload):
+
+| Variable | Default | Qué controla |
+|---|---|---|
+| `SEGMENTER_MAX_TOKENS_CEILING` | `32000` | Techo del presupuesto de salida de segmentación |
+| `SEGMENTER_WINDOW_THRESHOLD` | `40` | Páginas por encima de las cuales se ventanea |
+| `SEGMENTER_WINDOW_SIZE` | `25` | Páginas por ventana |
+| `SEGMENTER_WINDOW_OVERLAP` | `3` | Páginas compartidas entre ventanas consecutivas |
+| `SEGMENTER_WINDOW_WORKERS` | `4` | Hilos concurrentes clasificando ventanas |
+| `SEGMENTER_MAX_WINDOWS` | `20` | Tope duro de número de ventanas (agranda la ventana en vez de sumar más) |
+
+**En los datos finales**, si pese al reintento un rango de páginas se rindió (quedó marcado `OTRO`), `tracking.segmentationDegraded` (promovido también a `Tracking.SegmentationDegraded`) lo reporta:
+
+```jsonc
+"segmentationDegraded": [
+  {
+    "pageStart": 1, "pageEnd": 31,
+    "reason": "empty_response",       // o "unparseable_output" / "output_truncated" / "client_error"
+    "resolution": "marked_otro",      // o "recovered_on_retry" si el reintento sí funcionó
+    "attempts": [
+      { "modelId": "minimax.minimax-m2.5", "maxTokens": 8192, "stopReason": "max_tokens", "outputTokens": 8192, "reason": "empty_response" },
+      { "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "maxTokens": 8192, "stopReason": "end_turn", "outputTokens": 1523, "reason": null }
+    ]
+  }
+]
+```
+
+Ausente cuando nada degradó — misma regla que `modelFallbacks`. Un `resolution: "marked_otro"` también fuerza `reviewRequired: true` y agrega un `warnings[]` legible, aunque el resto del expediente haya extraído bien.
+
 ### 5.7 Migración única al CMK compartido de producción
 
 Dev no crea llaves KMS propias; prod utiliza una sola llave compartida,
@@ -576,7 +604,7 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 | `AccessDeniedException` de Bedrock                                     | Modelo no habilitado en la cuenta/región                                                             | Desde que existe el fallback de modelo (§5.6) esto ya no falla la extracción de inmediato — el pipeline cambia solo al siguiente modelo configurado y solo ves este error si TODA la lista de fallback también falla. Consola Bedrock → Model access → habilitar el/los modelo(s) en la región, o revisa `MODEL_FALLBACK_MAX_RETRIES`/la tabla `document-validation-fallback-models` |
 | Log con `bedrock: <modelo> unavailable (...); falling back to <otro>`  | El modelo pedido (configurado o del catálogo) no respondió — comportamiento normal del fallback (§5.6) | Informativo, no es un error a menos que se repita mucho: revisa por qué ese modelo falla (cuota, no habilitado) o reordena la tabla de fallback                                                                                                                                                                                            |
 | Task timed out (Lambda)                                                | Expediente muy grande                                                                                | La Lambda ya corre a 15 min / 1024 MB; para archivos mayores dividir el PDF o subir memoria en el stack                                                                                                                                                                                                                                     |
-| Resultado `REQUIERE_REVISION` con segmentos `OTRO`                     | Páginas sin tipo en el catálogo (COVE, DODA, manifestación…)                                         | Normal y conservador; si quieres que aprueben, agrega esos tipos al catálogo JSON                                                                                                                                                                                                                                                           |
+| Resultado automático `REQUIERE_REVISION` con segmentos `OTRO`          | Páginas sin tipo en el catálogo (COVE, DODA, manifestación…); en una solicitud cerrada esos segmentos se omiten | Normal y conservador; si quieres extraerlos, agrega esos tipos al catálogo JSON y solicítalos                                                                                                                                                                                                                                                |
 | Tipos nuevos no aplican                                                | Se editó la copia generada (`config/catalogs.json`)                                                  | Editar el archivo del tipo en `catalogs/` y correr `pnpm sync` (hot-reload) o `pnpm run build && pnpm run deploy`                                                                                                                                                                                                                            |
 | `test-e2e` no encuentra el endpoint                                    | Nombre de stack distinto                                                                             | `pnpm test-e2e --stack DocumentValidationStack --endpoint https://...`                                                                                                                                                                                                                                                                      |
 | `UPDATE_FAILED ... AWS::Logs::LogGroup ... was not found` al desplegar | Drift: un log group del stack fue borrado fuera de CloudFormation (limpiezas manuales de CloudWatch) | Recrear el log group con el nombre exacto del error: `aws logs create-log-group --log-group-name "<nombre>"` y reintentar `pnpm run deploy`. Ver los que CFN registra: `aws cloudformation describe-stack-resources --stack-name DocumentValidationStack --query "StackResources[?ResourceType=='AWS::Logs::LogGroup'].PhysicalResourceId"` |

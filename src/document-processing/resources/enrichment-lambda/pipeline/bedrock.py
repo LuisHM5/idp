@@ -74,6 +74,24 @@ _MODEL_OVERRIDE: Optional[str] = None
 _FALLBACK_EVENTS: Dict[str, Dict[str, Any]] = {}
 
 
+# Stage -> list of caller-level degradations this invocation, populated by
+# `record_stage_degraded`. Distinct from `_FALLBACK_EVENTS` in two ways: (1)
+# it records a CALLER's own retry loop (e.g. segmenter.py re-issuing a whole
+# new `converse()` call on a different model after a 200-OK-but-empty/
+# truncated response) rather than a swap `_invoke_with_fallback` made inside
+# a single call after a `ClientError`; (2) it accumulates, because a caller
+# that classifies a document in windows (segmenter.py's page-windowing) can
+# degrade more than once per invocation, each independent of the others —
+# a dict keyed by stage, like `_FALLBACK_EVENTS`, would silently drop all but
+# the last. A degradation that the caller's own retry then RECOVERED from is
+# still recorded (with its own `resolution`), unlike `_FALLBACK_EVENTS` which
+# only ever reports success. Cleared per invocation alongside `_USED_MODELS`;
+# writes happen from worker threads (windowed segmentation), so guarded by a
+# lock the same way `_PROMPT_LOG` is.
+_STAGE_DEGRADATIONS: Dict[str, List[Dict[str, Any]]] = {}
+_STAGE_DEGRADATIONS_LOCK = threading.Lock()
+
+
 # Every prompt/response pair sent to Bedrock this invocation, in call order —
 # one entry per `converse`/`converse_structured` call, appended by
 # `_record_prompt`. Extraction runs several calls concurrently (per-segment
@@ -99,6 +117,8 @@ def reset_used_models() -> None:
     _FALLBACK_EVENTS.clear()
     with _PROMPT_LOG_LOCK:
         _PROMPT_LOG.clear()
+    with _STAGE_DEGRADATIONS_LOCK:
+        _STAGE_DEGRADATIONS.clear()
 
 
 def used_models() -> Dict[str, str]:
@@ -143,6 +163,34 @@ def fallback_events() -> Dict[str, Dict[str, Any]]:
         failed along the way, in the order they were tried.
     """
     return {stage: dict(event) for stage, event in _FALLBACK_EVENTS.items()}
+
+
+def record_stage_degraded(stage: str, detail: Dict[str, Any]) -> None:
+    """Record that `stage` had to settle for a best-effort result over PART
+    of this invocation — e.g. `segmenter.py` giving up on a page range after
+    exhausting its own retry budget and labelling it OTRO. See
+    `_STAGE_DEGRADATIONS` for how this differs from `_FALLBACK_EVENTS`.
+    Thread-safe: windowed segmentation calls this from a `ThreadPoolExecutor`.
+    """
+    with _STAGE_DEGRADATIONS_LOCK:
+        _STAGE_DEGRADATIONS.setdefault(stage, []).append(dict(detail))
+
+
+def stage_degradations() -> Dict[str, List[Dict[str, Any]]]:
+    """Stage -> list of degradations recorded this invocation via
+    `record_stage_degraded`. A stage absent here never degraded — same
+    "only report what happened" rule as `fallback_events()`."""
+    with _STAGE_DEGRADATIONS_LOCK:
+        return {stage: list(events) for stage, events in _STAGE_DEGRADATIONS.items() if events}
+
+
+def note_used_model(stage: str, model_id: str) -> None:
+    """Correct `_USED_MODELS[stage]` after the fact for a retry the CALLER
+    made itself (a fresh `converse()` call on a different model, not a swap
+    `_invoke_with_fallback` performed inside one call after a `ClientError`
+    — that case already updates `_USED_MODELS` on its own). Same purpose as
+    that internal correction, for the one path it can't see."""
+    _USED_MODELS[stage] = model_id
 
 
 def _model_candidates(

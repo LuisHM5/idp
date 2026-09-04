@@ -3,6 +3,7 @@
   "importer_rfc": "OFU910626UQ0",
   "files": {
     "2607 0823 6001187.pdf": {
+      "sha256": "51eb41e9c807a017afea75b6e298e387fdf1921ed1a424ee85f4b6af6ae354ed",
       "description": "Pedimento de importación escaneado (27 páginas, sin capa de texto)",
       "expect_documents": [
         {
@@ -16,6 +17,7 @@
       ]
     },
     "normal_pend.pdf": {
+      "sha256": "6a74c340c07536fd6d1aed83de9c1265651772b6c5d91f1629abc3437fc96ef6",
       "description": "Pedimento de importación digital (3 páginas, capa de texto nativa, sin OCR) — importador OFU910626UQ0, mismo dueño que 2607 0823 6001187 pero pedimento/transacción distintos (naranja fresca, proveedor BRAVANTE PRODUCE). Ground truth leída directamente del PDF (pypdf layout + Textract), no derivada de una corrida previa del pipeline.",
       "expect_documents": [
         {
@@ -51,6 +53,7 @@
       ]
     },
     "OPERADORA P2607 0823 6001187.pdf": {
+      "sha256": "51eb41e9c807a017afea75b6e298e387fdf1921ed1a424ee85f4b6af6ae354ed",
       "description": "Copia OPERADORA del mismo pedimento escaneado",
       "expect_documents": [
         {
@@ -63,6 +66,7 @@
       ]
     },
     "26 07 3435 6041248 CG.pdf": {
+      "sha256": "6c97ca5598d4cfd0fa526a90b84e0ab20f2a066dfa5b16299722bf057ae42ddc",
       "description": "Expediente digital de 86 páginas (factura agencia + pedimento + COVE + acuses VUCEM + manifestación de valor). Solo se verifica la porción PEDIMENTO_ADUANAL: los demás tipos de ese expediente (factura de agencia, cuenta de gastos, acuse VUCEM) ya no tienen catálogo propio. La página 1 del pedimento trae el QR SOIANET (pa=3435, dn=6041248, ap=2026, pad=070) usado por el recovery de qr_recovery.py — verificado decodificando la página real con OpenCV antes de escribir este ground truth.",
       "expect_documents": [
         {

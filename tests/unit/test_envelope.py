@@ -172,9 +172,48 @@ def test_varios_documentos_del_mismo_tipo_se_clasifican_con_ese_tipo():
     assert env["documentCount"] == 2
 
 
-def test_tipos_mixtos_siguen_siendo_el_contenedor():
+def test_tipos_mixtos_se_listan_separados_por_coma():
+    """Un expediente mixto DICE qué trae, en orden de aparición.
+
+    `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` solo decía "varias cosas" y obligaba a
+    recorrer `documents[]` para saber cuáles.
+    """
     env = _build(_result([_doc(), _doc("PEDIMENTO_ADUANAL", pageStart=2, pageEnd=2)]))
-    assert env["documentClassification"] == envelope.CONTAINER_TYPE
+    assert env["documentClassification"] == "FACTURA_FLETE_EXTRANJERO,PEDIMENTO_ADUANAL"
+
+
+def test_un_tipo_repetido_no_se_repite_en_la_clasificacion():
+    env = _build(_result([
+        _doc(),
+        _doc("PEDIMENTO_ADUANAL", pageStart=2, pageEnd=2),
+        _doc(pageStart=3, pageEnd=3),
+    ]))
+    assert env["documentClassification"] == "FACTURA_FLETE_EXTRANJERO,PEDIMENTO_ADUANAL"
+
+
+def test_los_OTRO_nunca_entran_en_la_clasificacion_mixta():
+    """Son páginas conservadas para que la cobertura sea auditable, no
+    contenido que el archivo "sea" — por eso tampoco cuentan en documentCount."""
+    env = _build(_result([
+        _doc("OTRO", pageStart=1, pageEnd=1),
+        _doc("PEDIMENTO_ADUANAL", pageStart=2, pageEnd=2),
+        _doc("OTRO", documentSubtype="COVE", pageStart=3, pageEnd=3),
+        _doc(pageStart=4, pageEnd=4),
+    ]))
+    assert env["documentClassification"] == "PEDIMENTO_ADUANAL,FACTURA_FLETE_EXTRANJERO"
+    assert env["documentCount"] == 2
+
+
+def test_la_columna_indexada_sigue_siendo_el_contenedor():
+    """La etiqueta legible y la llave de búsqueda son necesidades distintas.
+
+    `DocumentType` es la partition key de un GSI y una Query busca por valor
+    EXACTO: indexar bajo `A,B` haría invisible el expediente para `?docType=A`,
+    y la Lambda de consulta no puede enumerar particiones sin un Scan.
+    """
+    assert envelope.index_type_of("A,B") == envelope.CONTAINER_TYPE
+    assert envelope.index_type_of("PEDIMENTO_ADUANAL") == "PEDIMENTO_ADUANAL"
+    assert envelope.index_type_of("") == ""
 
 
 def test_los_documentos_OTRO_no_cuentan_pero_no_se_borran():
@@ -193,6 +232,43 @@ def test_los_documentos_OTRO_no_cuentan_pero_no_se_borran():
 def test_sin_documentos_principales_manda_la_clasificacion_de_entrada():
     env = _build(_result([_doc("OTRO")]), fallback_classification="PEDIMENTO_ADUANAL")
     assert env["documentClassification"] == "PEDIMENTO_ADUANAL"
+
+
+def test_un_tipo_solicitado_no_encontrado_se_muestra_pero_no_cuenta():
+    marker = {
+        "documentType": "PEDIMENTO_ERP",
+        "pageStart": None,
+        "pageEnd": None,
+        "status": "REVIEW_REQUIRED",
+        "confidence": None,
+        "fields": {},
+    }
+    env = _build(_result(
+        [_doc(), marker], status="REVIEW_REQUIRED", reviewRequired=True
+    ))
+
+    assert env["documentCount"] == 1
+    assert env["documentClassification"] == "FACTURA_FLETE_EXTRANJERO"
+    assert env["validation"]["counts"] == {"APPROVED": 1}
+    assert env["validation"]["reviewRequired"] is True
+    assert env["documents"][1] == {"index": 2, **marker}
+
+
+def test_solo_marcadores_no_clasifican_el_archivo_como_si_se_hubieran_encontrado():
+    marker = {
+        "documentType": "PEDIMENTO_ERP",
+        "pageStart": None,
+        "pageEnd": None,
+        "status": "REVIEW_REQUIRED",
+        "confidence": None,
+        "fields": {},
+    }
+    env = _build(
+        _result([marker], status="REVIEW_REQUIRED", reviewRequired=True),
+        fallback_classification="PEDIMENTO_ERP",
+    )
+    assert env["documentClassification"] == "OTRO"
+    assert env["documentCount"] == 0
 
 
 # ------------------------------------------------------ presupuesto

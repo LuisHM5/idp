@@ -39,6 +39,50 @@ pnpm run deploy:prod    # DocumentValidationStack (dominio + WAF + API keys) —
 pnpm run diff:dev / diff:prod
 ```
 
+### Atribución de costos por stack
+
+Los dos stacks llevan siempre la etiqueta de asignación `CostStack`, declarada
+en `bin/app.ts` como metadata del stack y propagada por CloudFormation a los
+recursos que soportan etiquetas:
+
+| Stack | Etiqueta |
+|---|---|
+| `DocumentValidationStack-Dev` | `CostStack=DocumentValidationStack-Dev` |
+| `DocumentValidationStack` | `CostStack=DocumentValidationStack` |
+
+Agregarla o actualizarla no cambia nombres físicos, referencias, rutas ni
+configuración funcional. Un despliegue normal de cada ambiente basta para
+aplicarla a los recursos administrados por sus respectivos stacks.
+
+`CDKToolkit` es el bootstrap compartido y no forma parte del árbol de ninguno
+de los dos stacks. Los comandos de despliegue lo crean o actualizan de manera
+idempotente con `CostStack=CDKToolkit`; el comando explícito queda disponible
+para mantenimiento:
+
+```bash
+pnpm run bootstrap:cost-tags
+```
+
+Las tablas `document-validation-catalog-dev` y
+`document-validation-catalog` se **importan por nombre**, por lo que
+CloudFormation no administra su ciclo de vida. La preparación integrada en
+cada deploy las crea si faltan y asegura el `CostStack` de su ambiente. Los
+comandos explícitos son idempotentes y quedan disponibles para diagnóstico:
+
+```bash
+pnpm run tag:costs:dev
+pnpm run tag:costs:prod
+```
+
+Si la tabla ya existe, el comando sólo llama `DescribeTable`, `TagResource` y
+`ListTagsOfResource`: no modifica datos ni esquema. La tabla compartida
+`document-validation-fallback-models`, cuando exista, no debe atribuirse a dev
+ni a prod; se reporta como infraestructura compartida.
+
+Finalmente, la clave `CostStack` debe activarse en **Billing and Cost
+Management → Cost allocation tags** desde la cuenta pagadora. Hacerlo desde
+una cuenta vinculada no está permitido por AWS.
+
 La config por ambiente vive en `.env.dev` y `.env.production` (ambos gitignored;
 plantilla en `.env.example`). El ambiente se elige con `-c env=dev|prod` (lo
 hacen los scripts). Cada `.env.<env>` puede sobreescribir, entre otros, el
@@ -290,17 +334,18 @@ pnpm apps:reconfigure -- --name ERP --env prod --allow-metadata-write
 Cuatro controles, todos atributos en DynamoDB (no en API Gateway — no requieren
 redeploy ni tocan la key), aplicados por `query-lambda` en cada
 `GET /documents/{id}`, `GET /documents/{id}/file`, `GET /documents?...` y
-`PATCH /documents/{id}/metadata`:
+`PATCH /documents/{id}/metadata`, además de
+`POST /documents/{id}/reprocess`:
 
 | Flag | Default (app nueva) | Qué controla |
 |---|---|---|
-| `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma; mientras aún no existe el envelope se usa el `JobOwner` reservado por Upload. `all`: sin restricción. |
-| `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` al consultar, descargar o editar metadata de esos tipos. No bloquea el upload. `none` en `reconfigure` quita la restricción. |
+| `--access-scope own\|all` | `own` | `own`: solo documentos cuyo `tracking.appOrigin` sea la app misma; mientras aún no existe el envelope se usa el `JobOwner` reservado por Upload. También acota qué original puede reprocesar. `all`: sin restricción. |
+| `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` al consultar, descargar, reprocesar o editar metadata de esos tipos. No bloquea el upload. `none` en `reconfigure` quita la restricción. |
 | `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}` — y `system=`/`meta.<clave>=`, que **no** están detrás de este permiso: leen una sola clave conocida del envelope en vez de recorrerlo entero, y no amplían lo que la app ya puede ver (con `AccessScope: own`, `system=` solo puede acotar más). |
 | `--allow-metadata-write` | `false` | Si puede usar `PATCH /documents/{id}/metadata` para estados transitorios/marcas propios. No permite cambiar `validation.status`; sigue limitado por scope y tipos. |
 
 **Por qué 404, no 403, en un documento fuera de alcance**: `GET /documents/{id}`
-y `.../file` devuelven `404 NOT_FOUND` cuando el documento existe pero la app
+y `.../file` —y la búsqueda del original para `.../reprocess`— devuelven `404 NOT_FOUND` cuando el documento existe pero la app
 no puede verlo — igual que si no existiera. No confirmar la existencia evita
 que una app pueda enumerar/inferir qué IDs son válidos aunque no pueda leerlos.
 `GET /documents?...` (listar/buscar) simplemente omite esos resultados de
@@ -433,8 +478,8 @@ el diseño es **fail-open a nivel de trazabilidad**: el documento se procesa
 igual, solo con `appOrigin` ausente o `"unregistered"` — nunca se bloquea una
 subida por no poder resolver quién la hizo.
 
-**Del lado de leer o editar metadata** (`query-lambda`, cada `GET /documents*`
-y `PATCH /documents/{id}/metadata`): resuelve el
+**Del lado de leer, reprocesar o editar metadata** (`query-lambda`, cada `GET /documents*`,
+`POST /documents/{id}/reprocess` y `PATCH /documents/{id}/metadata`): resuelve el
 `ApiKeyId` del caller igual que arriba (mismo `GetItem` contra
 `document-validation-apps[-dev]`, mismo hot-path-friendly), y con eso decide
 `accessScope`/`allowedDocTypes`/`allowFieldSearch`/`allowMetadataWrite` para esa request. Dos casos
@@ -450,9 +495,10 @@ datos entre apps ya autenticadas, no un secreto. Código: `query-lambda/index.mj
 → `resolveCallerApp`/`canSeeDocument`.
 
 Ese fail-open es **solo de lectura**. Una key válida pero no registrada y un
-fallo al leer AppsTable reciben `AllowMetadataWrite=false`: una degradación de
-permisos nunca autoriza una mutación. En dev abierto (sin key) sí se permite el
-PATCH para facilitar pruebas; en prod siempre hay key.
+fallo al leer AppsTable reciben `AllowMetadataWrite=false` y tampoco pueden
+iniciar reprocesos: una degradación de permisos nunca autoriza una mutación ni
+un nuevo gasto de procesamiento. En dev abierto (sin key) sí se permiten PATCH
+y reproceso para facilitar pruebas; en prod siempre hay key.
 
 ### Permisos IAM para ejecutar `manage-apps.mjs` de forma segura
 
@@ -583,23 +629,13 @@ así que los defaults son holgados.
   empezar a mandar `x-api-key`. `scripts/enviar-documento.sh` ya soporta `API_KEY`.
 - API key = identificación + rate-limit + gate sobre TLS; no es auth fuerte. Si
   luego se requiere, se puede subir a IAM/Lambda authorizer sin rehacer el resto.
-- **Esto no es solo teórico desde `GET /documents/{id}/file`** (descarga del
-  archivo original vía URL prefirmada de S3, ver `API_USO.md` §3): ninguna
-  ruta de lectura (`GET /documents/{id}`, `GET /documents/{id}/file`,
-  `GET /documents`) valida que la app dueña de la `x-api-key` sea la misma
-  que subió el documento — `tracking.appOrigin` (arriba) es trazabilidad para
-  auditoría posterior, nunca una ACL evaluada en el request. Con **una sola
-  key compartida "por sistema"** (en vez de una key por app registrada vía
-  `pnpm apps:register`), cualquier proceso que tenga esa key puede listar,
-  consultar y descargar **cualquier documento de ese ambiente**, incluyendo
-  archivos originales que pueden contener PII (identificaciones, RFC/CURP,
-  montos, direcciones) — no solo los que ese mismo proceso subió. Si eso
-  importa (varios sistemas/clientes comparten un ambiente y sus documentos
-  deben estar aislados entre sí, no solo etiquetados), las opciones reales
-  hoy son: (a) una key por sistema **y** un stack separado por sistema si el
-  aislamiento debe ser real, no solo lógico; (b) agregar una validación de
-  `appOrigin` en `query-lambda` antes de responder (no implementada — cambio
-  de código); (c) un authorizer Lambda/IAM si se necesita autorización real
-  por sujeto. Una URL prefirmada, además, es una credencial de acceso en sí
+- **El aislamiento lógico sí se evalúa en cada request.** `GET`/`PATCH` y
+  `POST /documents/{id}/reprocess` resuelven la app de la key y aplican
+  `AccessScope`/`AllowedDocTypes`; un documento ajeno responde 404 y no puede
+  descargarse ni usarse como fuente de otro proceso. Aun así, una API key no
+  identifica a una persona: todos los procesos que compartan la misma key
+  comparten el mismo alcance. Usa una key por app; si se necesita autorización
+  por usuario/sujeto, sube a authorizer Lambda/IAM. Una URL prefirmada, además,
+  es una credencial de acceso en sí
   misma una vez emitida — válida hasta que expira (default 15 min, tope 1h en
   `/file`) para quien sea que la tenga, sin volver a pasar por `x-api-key`.

@@ -48,3 +48,29 @@ test("la fila ligera respeta propietario y tipo declarado", () => {
   }), true);
 });
 
+
+test("la fila ligera entiende varios tipos declarados", () => {
+  const caller = {
+    appName: "CEDIS",
+    accessScope: "own",
+    allowedDocTypes: ["PEDIMENTO_ADUANAL", "FACTURA_HONORARIOS"],
+  };
+  // Sin partir por coma esto daba false: "A,B" nunca aparece literal en
+  // allowedDocTypes, así que una app con scope no podía ni consultar el
+  // estado de su PROPIA subida multi-tipo.
+  assert.equal(canSeePendingDocument(caller, {
+    JobOwner: "CEDIS",
+    RequestedDocumentType: "PEDIMENTO_ADUANAL,FACTURA_HONORARIOS",
+  }), true);
+  // TODOS los tipos tienen que estar permitidos, no basta con uno: si no,
+  // listar un tipo prohibido junto a uno permitido sería la forma de colarlo.
+  assert.equal(canSeePendingDocument(caller, {
+    JobOwner: "CEDIS",
+    RequestedDocumentType: "PEDIMENTO_ADUANAL,TIPO_PROHIBIDO",
+  }), false);
+  // Una app sin restricción de tipos ve cualquier lista.
+  assert.equal(canSeePendingDocument(
+    { appName: "CEDIS", accessScope: "own", allowedDocTypes: [] },
+    { JobOwner: "CEDIS", RequestedDocumentType: "PEDIMENTO_ADUANAL,TIPO_PROHIBIDO" },
+  ), true);
+});

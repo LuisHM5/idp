@@ -9,7 +9,7 @@
 openapi: 3.1.0
 info:
   title: Documents Validator API
-  version: "1.0.0"
+  version: "1.1.0"
   license:
     name: ISC
     identifier: ISC
@@ -168,7 +168,7 @@ tags:
       devuelve una URL prefirmada, y el `PUT` lleva el archivo a S3. El endpoint
       NO recibe el archivo en ningún momento.
   - name: Consultar documentos
-    description: Resultados, archivo original y búsqueda por campo.
+    description: Resultados, reproceso, archivo original y búsqueda por campo.
 paths:
   /{uploadUrl}:
     put:
@@ -502,6 +502,133 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /documents/{id}/reprocess:
+    post:
+      operationId: reprocessDocument
+      tags: [Consultar documentos]
+      summary: Reprocesar el archivo original bajo un documentId nuevo
+      description: |
+        Localiza el archivo original del documento anterior en
+        `processed/{id}/` o `failed/{id}/`, verifica que la app pueda verlo y
+        crea una copia interna en `raw/` con un `documentId` nuevo. La copia
+        dispara el mismo pipeline que una subida normal; los bytes no pasan
+        por API Gateway ni por la Lambda y el resultado anterior no se modifica.
+
+        Si `documentType` se omite, se hereda la declaración explícita del
+        trabajo anterior cuando existe. Enviar `documentType: null` o `""`
+        fuerza clasificación automática. `occurrenceMode`, `:N`/`:all` y
+        `modelId` tienen el mismo contrato que en `POST /documents` y sólo
+        afectan la ejecución nueva. La metadata vigente del documento anterior
+        se conserva.
+      x-codeSamples:
+        - lang: Shell
+          label: curl
+          source: |
+            RESP=$(curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
+              -H "x-api-key: $KEY" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+                "occurrenceMode": "multiple"
+              }')
+            NEW_DOC_ID=$(echo "$RESP" | jq -r .documentId)
+            echo "$NEW_DOC_ID"
+        - lang: JavaScript
+          label: Node.js 18+
+          source: |
+            const r = await fetch(`${API}/documents/${oldDocumentId}/reprocess`, {
+              method: "POST",
+              headers: { "x-api-key": KEY, "content-type": "application/json" },
+              body: JSON.stringify({
+                documentType: "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+                occurrenceMode: "multiple",
+              }),
+            });
+            if (!r.ok) throw new Error(`reprocess → ${r.status}: ${await r.text()}`);
+            const { documentId: newDocumentId } = await r.json();
+        - lang: Python
+          label: Python 3 (requests)
+          source: |
+            r = requests.post(
+                f"{API}/documents/{old_document_id}/reprocess",
+                headers={"x-api-key": KEY},
+                json={
+                    "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+                    "occurrenceMode": "multiple",
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            new_document_id = r.json()["documentId"]
+        - lang: C#
+          label: .NET 6+
+          source: |
+            var response = await http.PostAsJsonAsync(
+                $"{api}/documents/{oldDocumentId}/reprocess",
+                new {
+                    documentType = "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+                    occurrenceMode = "multiple"
+                });
+            response.EnsureSuccessStatusCode();
+            var job = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var newDocumentId = job.GetProperty("documentId").GetString();
+      parameters:
+        - $ref: "#/components/parameters/DocumentIdPath"
+      requestBody:
+        required: false
+        description: Vacío para heredar el tipo explícito anterior (o auto si no existía).
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReprocessRequest" }
+          application/x-www-form-urlencoded:
+            schema: { $ref: "#/components/schemas/ReprocessRequest" }
+      responses:
+        "202":
+          description: |
+            Copia aceptada y trabajo nuevo en cola. `Location` y `statusUrl`
+            apuntan a `GET /documents/{nuevoId}`; respeta `Retry-After`.
+          headers:
+            Location:
+              schema: { type: string }
+              description: Ruta del trabajo nuevo.
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+              description: Espera mínima sugerida antes del primer GET.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReprocessResponse" }
+        "400":
+          description: >
+            INVALID_JSON, INVALID_BODY, INVALID_DOCUMENT_TYPE,
+            INVALID_OCCURRENCE_MODE, INVALID_FORMAT o DOCUMENT_TYPE_REQUIRED.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: >
+            FORBIDDEN si la key no está registrada; FORBIDDEN_DOCUMENT_TYPE si
+            el nuevo tipo queda fuera de AllowedDocTypes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: >
+            NOT_FOUND si no existe/no es visible; FILE_NOT_FOUND si ya no está
+            el objeto original en processed/ ni failed/.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: SOURCE_NOT_READY; el archivo todavía permanece en raw/ procesándose.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: JOB_REGISTRATION_FAILED o REPROCESS_COPY_FAILED.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
   /documents/{id}/metadata:
     patch:
       operationId: patchDocumentMetadata
@@ -520,7 +647,7 @@ paths:
         - Claves en minúsculas tras normalizar, con forma
           `[a-z0-9][a-z0-9._-]*`; valores planos US-ASCII; 2 KB para el mapa
           resultante completo.
-        - `app-origin` y `model-id` son reservadas y no se pueden modificar.
+        - `app-origin`, `model-id` y `document-counts` son reservadas y no se pueden modificar.
 
         Las apps registradas necesitan `AllowMetadataWrite=true` (se otorga
         con `pnpm apps:grant -- --name APP --metadata-write`) y solo pueden
@@ -776,7 +903,14 @@ paths:
                 value:
                   fileName: pedimento.pdf
                   documentType: PEDIMENTO_ERP
+                  occurrenceMode: single
                   metadata: { lote: "A123" }
+              variasFacturas:
+                summary: Todas las facturas de flete encontradas
+                value:
+                  fileName: facturas.pdf
+                  documentType: FACTURA_FLETE_EXTRANJERO
+                  occurrenceMode: multiple
               autoClassify:
                 summary: Sin tipo — Bedrock clasifica y segmenta solo
                 value:
@@ -790,6 +924,7 @@ paths:
                 value:
                   fileName: expediente.pdf
                   documentType: PEDIMENTO_ERP
+                  occurrenceMode: single
       responses:
         "200":
           description: >
@@ -807,6 +942,8 @@ paths:
                     bucket: documentvalidationstack-...
                     key: raw/PEDIMENTO_ERP/e18d014a-.../pedimento.pdf
                     documentType: PEDIMENTO_ERP
+                    occurrenceMode: single
+                    documentTypeCounts: { PEDIMENTO_ERP: 1 }
                     classificationMode: manual
                     uploadUrl: "https://...s3.amazonaws.com/..."
                     uploadMethod: PUT
@@ -858,7 +995,12 @@ paths:
             falta `documentType` (esos formatos no tienen clasificación
             automática por visión).
 
-            - `INVALID_DOCUMENT_TYPE` — `documentType` no es UPPER_SNAKE_CASE.
+            - `INVALID_DOCUMENT_TYPE` — algún `documentType` no es UPPER_SNAKE_CASE,
+            la lista pasa de 8 tipos o 200 caracteres, o trae varios tipos en un
+            `.xml`/`.xlsx`/`.csv` (ahí sólo se acepta uno).
+
+            - `INVALID_OCCURRENCE_MODE` — `occurrenceMode` no es `single` ni
+            `multiple`.
 
             - `INVALID_JSON` — el body no es JSON válido.
 
@@ -1335,11 +1477,14 @@ components:
           description: >
             Código de error estable — programa contra este valor, no contra
             `message`. Upload: MISSING_FIELD, INVALID_FORMAT,
-            DOCUMENT_TYPE_REQUIRED, INVALID_DOCUMENT_TYPE, INVALID_JSON,
-            INVALID_METADATA, INLINE_UPLOAD_REMOVED, PRESIGN_FAILED,
+            DOCUMENT_TYPE_REQUIRED, INVALID_DOCUMENT_TYPE,
+            INVALID_OCCURRENCE_MODE, INVALID_JSON, INVALID_METADATA,
+            INLINE_UPLOAD_REMOVED, PRESIGN_FAILED,
             JOB_REGISTRATION_FAILED.
             Consulta/escritura: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS,
-            FORBIDDEN, EMPTY_PATCH, METADATA_CONFLICT.
+            FORBIDDEN, FORBIDDEN_DOCUMENT_TYPE, EMPTY_PATCH,
+            METADATA_CONFLICT, SOURCE_NOT_READY, FILE_NOT_FOUND,
+            REPROCESS_COPY_FAILED.
         message: { type: string }
     UploadRequest:
       type: object
@@ -1358,11 +1503,63 @@ components:
             pasos (uploadUrl + PUT), que sirve para cualquier tamaño.
         documentType:
           type: string
+          example: PEDIMENTO_ADUANAL,FACTURA_HONORARIOS
           description: >
-            TYPE_ID del catálogo. Opcional para PDF/imagen (Bedrock clasifica
-            si se omite; si se manda, se honra sin re-clasificar/segmentar).
+            TYPE_ID del catálogo, o VARIOS separados por coma (misma convención
+            que `?docType=` en `GET /documents`). Tres modos según cuántos mandes:
+
+
+            - **uno** (`PEDIMENTO_ADUANAL`) — se honra tal cual: el archivo entero
+            es ese tipo y no se re-clasifica ni se segmenta;
+
+            - **varios** (`PEDIMENTO_ADUANAL,FACTURA_HONORARIOS`) — el archivo SÍ
+            se segmenta y cada documento encontrado se clasifica, pero la lista es
+            CERRADA: `documents[]` sólo contiene los tipos declarados; los demás
+            segmentos se omiten antes de extracción. Cada documento lleva su
+            propio esquema y rango `pageStart`/`pageEnd`;
+
+
+            Cada tipo admite además **cuántos buscar**: `TIPO:N` o `TIPO:all`
+            (`PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all`). Sin sufijo usa
+            `occurrenceMode` de este POST cuando se envía; si se omite, usa
+            `occurrence_mode` del catálogo del tipo y después el default global
+            (`single` con un tipo, `multiple` con varios). Un sufijo explícito
+            prevalece por tipo. Si falta una ocurrencia
+            pedida se agrega un marcador del tipo con `pageStart/pageEnd: null`,
+            `status: REVIEW_REQUIRED`, `confidence: null` y `fields: {}`; el
+            marcador activa revisión pero no cuenta en `documentCount` ni
+            `validation.counts`.
+
+            - **omitido** — Bedrock clasifica contra todo el catálogo.
+
+
+            Máximo 8 tipos y 200 caracteres en total (viajan como un solo segmento
+            de la llave de S3); si no, `400 INVALID_DOCUMENT_TYPE`.
             Obligatorio para `.xml`/`.xlsx`/`.csv` (400 DOCUMENT_TYPE_REQUIRED
-            si falta) — esos formatos se extraen determinísticamente, sin Bedrock.
+            si falta) — esos formatos se extraen determinísticamente, sin Bedrock,
+            y ahí aceptan **exactamente uno**: no hay clasificación por visión sobre
+            datos ya estructurados, así que no hay nada que elegir entre varios
+            esquemas (`400 INVALID_DOCUMENT_TYPE` si mandas una lista).
+        occurrenceMode:
+          type: string
+          enum: [single, multiple]
+          description: >
+            Cardinalidad para los tipos declarados sin sufijo en ESTE POST.
+            `single` conserva la primera ocurrencia de cada tipo; `multiple`
+            conserva todas las ocurrencias físicas encontradas y sobrescribe
+            `occurrence_mode` de todos los catálogos solicitados. Si se omite,
+            cada catálogo decide; sólo si no lo define se usa `single` con un
+            tipo y `multiple` con varios. Un sufijo
+            `TIPO:N` o `TIPO:all` siempre prevalece sólo para ese tipo. El
+            runtime acepta también `occurrence_mode` como alias de
+            compatibilidad; no mandes ambos con valores distintos.
+        occurrence_mode:
+          type: string
+          enum: [single, multiple]
+          deprecated: true
+          description: >
+            Alias compatible de `occurrenceMode`. Usa `occurrenceMode` en
+            integraciones nuevas. Si se mandan ambos, deben tener el mismo valor.
         modelId:
           type: string
           description: >
@@ -1390,7 +1587,7 @@ components:
               INVALID_METADATA`.
             - **2 KB en total** entre claves y valores (tope de S3) → `400
               INVALID_METADATA`.
-            - `app-origin` y `model-id` son claves **del sistema** y se
+            - `app-origin`, `model-id` y `document-counts` son claves **del sistema** y se
               descartan en silencio: la primera es la trazabilidad que
               `?system=` filtra y sale de tu API key, no del body.
 
@@ -1399,6 +1596,64 @@ components:
             INVALID_METADATA`.
           additionalProperties: true
           example: { lote: "A123", sucursal: "CHIH" }
+    ReprocessRequest:
+      type: object
+      properties:
+        documentType:
+          type: [string, "null"]
+          example: PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all
+          description: >
+            Uno o varios TYPE_ID separados por coma, con los mismos sufijos
+            `:N`/`:all` de POST /documents. Omitido hereda la declaración
+            explícita del trabajo anterior; null o string vacío fuerza auto.
+        occurrenceMode:
+          type: string
+          enum: [single, multiple]
+          description: >
+            Sobrescribe catálogo/default para los tipos sin sufijo en el
+            reproceso nuevo. `:N`/`:all` conserva precedencia.
+        occurrence_mode:
+          type: string
+          enum: [single, multiple]
+          deprecated: true
+          description: Alias compatible de occurrenceMode.
+        modelId:
+          type: string
+          description: Override de modelo para la ejecución nueva; sólo se honra en dev.
+    ReprocessResponse:
+      type: object
+      required:
+        [documentId, reprocessedFrom, documentType, occurrenceMode,
+         classificationMode, processingStatus, statusUrl, retryAfterSeconds]
+      properties:
+        documentId:
+          type: string
+          description: Id nuevo; el id anterior y su resultado permanecen intactos.
+        reprocessedFrom:
+          type: string
+          description: Id completo del documento usado como fuente.
+        documentType:
+          type: [string, "null"]
+          description: Tipos efectivos sin sufijos, o null para auto.
+        occurrenceMode:
+          type: [string, "null"]
+          enum: [single, multiple, null]
+        documentTypeCounts:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: integer
+                minimum: 1
+              - type: string
+                enum: [all]
+        classificationMode:
+          type: string
+          enum: [manual, guided, auto]
+        processingStatus:
+          type: string
+          enum: [QUEUED]
+        statusUrl: { type: string }
+        retryAfterSeconds: { type: integer, minimum: 1 }
     MetadataPatch:
       type: object
       minProperties: 1
@@ -1436,8 +1691,39 @@ components:
         documentId: { type: string }
         bucket: { type: string }
         key: { type: string }
-        documentType: { type: string }
-        classificationMode: { type: string, enum: [manual, auto] }
+        documentType:
+          type: [string, "null"]
+          description: >
+            TYPE_ID declarados, normalizados sin los sufijos `:N`/`:all` y
+            separados por coma cuando fueron varios; `null` si no se declaró
+            ninguno.
+        documentTypeCounts:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: integer
+                minimum: 1
+              - type: string
+                enum: [all]
+          example: { PEDIMENTO_ERP: 1, FACTURA_FLETE_EXTRANJERO: all }
+          description: >
+            Decisiones explícitas materializadas por el POST: sufijos
+            `TIPO:N`/`TIPO:all`, o todos los tipos sin sufijo cuando se envió
+            `occurrenceMode`. Los defaults de catálogo/global se resuelven en
+            enrichment y no aparecen aquí.
+        occurrenceMode:
+          type: [string, "null"]
+          enum: [single, multiple, null]
+          description: >
+            Modo explícito del POST; `null` cuando la cardinalidad se resolverá
+            con catálogo y default global.
+        classificationMode:
+          type: string
+          enum: [manual, auto, guided]
+          description: >
+            `manual` = un tipo declarado, honrado sin re-clasificar;
+            `guided` = varios declarados, se segmenta y clasifica sólo entre ellos;
+            `auto` = ninguno, clasificación contra todo el catálogo.
         uploadedAt: { type: string, format: date-time }
         registeredAt: { type: string, format: date-time }
         processingStatus:
@@ -1492,6 +1778,9 @@ components:
       required: [documentId, processingStatus]
       properties:
         documentId: { type: string }
+        reprocessedFrom:
+          type: string
+          description: Presente en un trabajo creado por reprocess; id completo de su fuente.
         processingStatus:
           type: string
           enum: [AWAITING_UPLOAD, QUEUED, PROCESSING, FINISHED, FAILED]
@@ -1535,13 +1824,24 @@ components:
                 históricos.
             documentClassification:
               type: string
+              example: PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO
               description: >
-                Cuando TODOS los documentos del archivo son del mismo tipo, ese
-                es el tipo. EXPEDIENTE_ADUANAL_MULTIDOCUMENTO queda para paquetes
-                de tipos mixtos.
+                Qué trae el archivo. Cuando TODOS los documentos son del mismo
+                tipo, ese es el tipo (aunque sean varios). Cuando son de tipos
+                distintos, son esos tipos **separados por coma**, en orden de
+                aparición. Los `OTRO` nunca entran (igual que en `documentCount`).
+
+
+                No confundir con la columna indexada `documentType`, que en un
+                archivo mixto sigue siendo `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`:
+                es la partition key de un GSI y sólo admite un valor exacto.
+                Buscar por los tipos de adentro (`?docType=PEDIMENTO_ERP`)
+                funciona igual, vía `ContainedDocumentTypes`.
             documentCount:
               type: integer
-              description: Documentos principales encontrados (excluye los OTRO).
+              description: >
+                Documentos principales encontrados; excluye `OTRO` y los
+                marcadores de tipos solicitados no encontrados.
             tracking: { $ref: "#/components/schemas/Tracking" }
             validation:
               type: object
@@ -1590,18 +1890,24 @@ components:
           additionalProperties: true
     ExtractedDocument:
       type: object
-      description: Un documento encontrado dentro del archivo.
+      description: >
+        Un documento encontrado dentro del archivo, o un marcador de tipo
+        solicitado no encontrado (`pageStart/pageEnd: null`, REVIEW_REQUIRED).
       properties:
         index: { type: integer, description: "Posición dentro de documents[], base 1." }
         documentType: { type: string }
-        documentSubtype: { type: string, nullable: true }
+        documentSubtype: { type: [string, "null"] }
         businessDestination: { type: string }
-        pageStart: { type: integer }
-        pageEnd: { type: integer }
+        pageStart:
+          type: [integer, "null"]
+          description: Primera página de la sección; null si el tipo solicitado no se encontró.
+        pageEnd:
+          type: [integer, "null"]
+          description: Última página de la sección; null si el tipo solicitado no se encontró.
         status:
           type: string
           enum: [APPROVED, PARTIALLY_APPROVED, REVIEW_REQUIRED, REJECTED, PROCESSING_ERROR]
-        confidence: { type: number, nullable: true }
+        confidence: { type: [number, "null"] }
         fieldConfidence:
           type: number
           description: >

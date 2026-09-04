@@ -726,7 +726,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     appsTable.grantReadData(uploadFn);
     documentTable.grant(uploadFn, "dynamodb:PutItem");
 
-    // Query Lambda - read/search documents and patch caller-owned metadata.
+    // Query Lambda - read/search documents, patch caller-owned metadata and
+    // reprocess an existing source object under a new immutable document id.
     const queryFn = new lambda.Function(this, "QueryLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
@@ -735,7 +736,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       ),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
-      description: "Document read/search and metadata patch via REST API",
+      description: "Document read/search, metadata patch and reprocess via REST API",
       environment: {
         DOCUMENT_TABLE: documentTable.tableName,
         DOCUMENT_BUCKET: documentBucket.bucketName,
@@ -750,10 +751,14 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // for its CMK) — grantReadData covers `${tableArn}/index/*` — plus read of
     // the full results/ objects in S3.
     documentTable.grantReadData(queryFn);
-    // PATCH /documents/{id}/metadata only updates the mutable metadata/audit
-    // columns on the base item. Keep write permission on this one table.
-    documentTable.grant(queryFn, "dynamodb:UpdateItem");
+    // PATCH updates metadata; POST /documents/{id}/reprocess reserves a new
+    // job row and marks it FAILED if its internal S3 copy cannot be created.
+    documentTable.grant(queryFn, "dynamodb:PutItem", "dynamodb:UpdateItem");
+    // Reprocess reads processed/failed and writes a server-side copy to raw/.
+    // Keep DeleteObject out of this Lambda: CopyObject only needs source read
+    // + destination put. The two grants also carry matching KMS permissions.
     documentBucket.grantRead(queryFn);
+    documentBucket.grantPut(queryFn);
     // Camino rápido de búsqueda: si el campo consultado es la unique key
     // declarada por el tipo, una sola Query aquí sustituye al recorrido
     // completo del tipo (ver `unique_keys.py` y el bloque UniqueKeyTable).
@@ -807,6 +812,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // GET  /documents?field=<dot.path>&value=<v>  → search by any extracted field
     // GET  /documents/{id}                        → full result for one document
     // GET  /documents/{id}/file                   → presigned S3 URL to the original uploaded file
+    // POST /documents/{id}/reprocess              → new job from the original S3 object
     // PATCH /documents/{id}/metadata              → merge external metadata (not validation status)
     const uploadIntegration = new apigateway.LambdaIntegration(uploadFn);
     const queryIntegration = new apigateway.LambdaIntegration(queryFn);
@@ -816,6 +822,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const documentByIdResource = documentsResource.addResource("{id}");
     documentByIdResource.addMethod("GET", queryIntegration, methodOptions);
     documentByIdResource.addResource("file").addMethod("GET", queryIntegration, methodOptions);
+    documentByIdResource.addResource("reprocess").addMethod("POST", queryIntegration, methodOptions);
     documentByIdResource.addResource("metadata").addMethod("PATCH", queryIntegration, methodOptions);
 
     // Alias NO DOCUMENTADO de `POST /documents`, a propósito: la documentación

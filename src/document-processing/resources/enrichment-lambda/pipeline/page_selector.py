@@ -715,7 +715,12 @@ def _extend_spans(spans: List[List[int]], all_numbers: List[int], follow: int) -
     return extended
 
 
-def split_instances(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> InstanceSplit:
+def split_instances(
+    pages: Sequence[Any],
+    spec: Optional[Dict[str, Any]],
+    *,
+    deduplicate: bool = True,
+) -> InstanceSplit:
     """Find each instance of the declared type inside `pages`.
 
     Deliberately does NOT honour `min_pages`/`expected_pages`: those are cost
@@ -774,7 +779,7 @@ def split_instances(pages: Sequence[Any], spec: Optional[Dict[str, Any]]) -> Ins
     # the document it copies.
     dropped = 0
     duplicate_key = spec.get("duplicate_key_pattern")
-    if duplicate_key:
+    if deduplicate and duplicate_key:
         patterns = _identity_patterns(duplicate_key)
         if patterns:
             spans, dropped = _group_by_identity(spans, texts, patterns)

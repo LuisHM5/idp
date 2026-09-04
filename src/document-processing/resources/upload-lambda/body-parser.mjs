@@ -64,9 +64,13 @@ export function parseBody(event) {
  * write them. `app-origin` is the traceability signal the query API filters on
  * (`GET /documents?system=`) and it is resolved from the request's OWN
  * x-api-key — letting a body field set it would let any app claim to be
- * another one. `model-id` has its own top-level `modelId` field.
+ * another one. `model-id` has its own top-level `modelId` field, y
+ * `document-counts` transporta la cardinalidad resuelta desde `occurrenceMode`
+ * y los sufijos `:N`/`:all` de `documentType`: si un caller pudiera escribirla
+ * a mano podría pedir un tipo y hacer que el pipeline buscara otro número de
+ * documentos del que declaró.
  */
-const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id"]);
+const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id", "document-counts"]);
 
 /** S3's ceiling for all user metadata on one object (keys + values together). */
 const MAX_METADATA_BYTES = 2048;
@@ -169,4 +173,236 @@ export function normalizeMetadata(metadata) {
     };
   }
   return { metadata: out };
+}
+
+/** Tipo documental: UPPER_SNAKE_CASE, empieza con letra. */
+const DOCUMENT_TYPE_SHAPE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * How many types one upload may declare, and how long the joined string may
+ * get. Both exist for the same reason: the declared types travel as ONE S3 key
+ * segment (`raw/{A,B,C}/{uuid}/{file}`), and an S3 key is capped at 1024 bytes
+ * for the whole path — uuid and filename included. 8 types is already far more
+ * than any real expediente needs, and 200 chars leaves the rest of the key
+ * plenty of room.
+ */
+const MAX_DOCUMENT_TYPES = 8;
+const MAX_DOCUMENT_TYPES_CHARS = 200;
+
+/** El sufijo `:N` / `:all`. El TIPO se valida aparte, con
+ * `DOCUMENT_TYPE_SHAPE`, para que siga exigiendo UPPER_SNAKE_CASE: un regex
+ * combinado con el flag `i` aceptaría `pedimento_erp` en minúsculas, que es
+ * justo lo que el mensaje de error dice que no se acepta. */
+const TYPE_COUNT_SPLIT = /^([^:]*)(?::(.*))?$/;
+
+/**
+ * Parse the `documentType` field into the types the caller declared and how
+ * many documents of each to look for.
+ *
+ * ONE field, comma-separated — deliberately not a second `documentTypes`
+ * array. It is the same convention the search endpoint already uses
+ * (`GET /documents?docType=A,B`), it needs no new field in the contract, and
+ * it works identically in a JSON body and in a form body, where every value is
+ * a string and an array could only travel as JSON-in-a-string.
+ *
+ *   PEDIMENTO_ERP                       -> catálogo; luego default global single
+ *   PEDIMENTO_ERP:2                     -> hasta 2
+ *   FACTURA_FLETE_EXTRANJERO:all        -> todas las que haya
+ *   PEDIMENTO_ERP,FACTURA_HONORARIOS    -> catálogos; luego default global multiple
+ *   PEDIMENTO_ERP:1,FACTURA_HONORARIOS  -> override del primero; modo para el segundo
+ *
+ * A single type still means "honour it and never re-segment the file"; two or
+ * more switch the pipeline into guided classification, where it segments but
+ * may only choose among the declared types.
+ *
+ * Si el POST omite `occurrenceMode`, las cuentas sin sufijo se dejan sin
+ * resolver: enrichment aplicará primero el default del catálogo y luego el
+ * default global (uno -> `single`, varios -> `multiple`). Un modo explícito se
+ * materializa aquí para todos los tipos sin sufijo, y un sufijo siempre gana.
+ *
+ * Los TIPOS se devuelven aparte de las CUENTAS a propósito: los tipos viajan en
+ * la llave de S3 (`raw/{A,B}/{uuid}/file`, que parsean tres componentes
+ * independientes) y las cuentas viajan como metadata del objeto, que solo lee
+ * el enrichment. Meter `:` en la llave sería un carácter de la lista "requiere
+ * manejo especial" de AWS, firmado en un presigned PUT, por un dato que a esos
+ * tres lectores no les sirve.
+ *
+ * Un tipo repetido se colapsa conservando el orden de primera aparición y **la
+ * cuenta MAYOR**, para que una lista mal escrita nunca descarte documentos en
+ * silencio.
+ *
+ * Returns `{ types, counts, occurrenceMode }` or `{ error: {code, message} }`,
+ * same contract as `parseBody`/`normalizeMetadata` — no HTTP shape here.
+ */
+export function parseDocumentTypes(documentType, occurrenceMode) {
+  const hasExplicitMode = !(
+    occurrenceMode === undefined || occurrenceMode === null || occurrenceMode === ""
+  );
+  if (
+    hasExplicitMode &&
+    (typeof occurrenceMode !== "string" ||
+      !["single", "multiple"].includes(occurrenceMode.trim().toLowerCase()))
+  ) {
+    return {
+      error: {
+        code: "INVALID_OCCURRENCE_MODE",
+        message: "Field 'occurrenceMode' must be 'single' or 'multiple'",
+      },
+    };
+  }
+  let resolvedOccurrenceMode = hasExplicitMode
+    ? occurrenceMode.trim().toLowerCase()
+    : null;
+  if (documentType === undefined || documentType === null || documentType === "") {
+    return { types: [], counts: {}, occurrenceMode: resolvedOccurrenceMode };
+  }
+  if (typeof documentType !== "string") {
+    return {
+      error: {
+        code: "INVALID_DOCUMENT_TYPE",
+        message:
+          "Field 'documentType' must be a string — one type, or several separated " +
+          "by commas (e.g. 'PEDIMENTO_ADUANAL,FACTURA_HONORARIOS'), each optionally " +
+          "followed by ':N' or ':all'",
+      },
+    };
+  }
+
+  const types = [];
+  const counts = {};
+  for (const part of documentType.split(",")) {
+    const item = part.trim();
+    if (!item) continue;
+    const [, rawType, rawCount] = TYPE_COUNT_SPLIT.exec(item);
+    const type = rawType.trim();
+    if (!DOCUMENT_TYPE_SHAPE.test(type)) {
+      return {
+        error: {
+          code: "INVALID_DOCUMENT_TYPE",
+          message:
+            `Document type '${type || item}' must match ^[A-Z][A-Z0-9_]{0,63}$ ` +
+            "(UPPER_SNAKE_CASE), optionally followed by ':N' (how many to look for) " +
+            "or ':all'. Several types go in one 'documentType' separated by commas",
+        },
+      };
+    }
+
+    // `undefined` significa "sin sufijo". Se resuelve después de deduplicar los
+    // tipos, usando el occurrenceMode de ESTE POST.
+    let count;
+    if (rawCount !== undefined) {
+      const trimmed = rawCount.trim();
+      if (trimmed.toLowerCase() === "all") {
+        count = "all";
+      } else {
+        count = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+        if (!Number.isInteger(count) || count < 1) {
+          return {
+            error: {
+              code: "INVALID_DOCUMENT_TYPE",
+              message:
+                `Count ':${rawCount}' on '${type}' must be a whole number of 1 or more, ` +
+                "or 'all'",
+            },
+          };
+        }
+      }
+    }
+
+    if (!types.includes(type)) {
+      types.push(type);
+      counts[type] = count;
+    } else {
+      // Repetido: gana la cuenta mayor, nunca la última escrita.
+      const seen = counts[type];
+      if (seen === undefined) counts[type] = count;
+      else if (count === undefined) counts[type] = seen;
+      else counts[type] = seen === "all" || count === "all" ? "all" : Math.max(seen, count);
+    }
+  }
+
+  if (types.length > MAX_DOCUMENT_TYPES) {
+    return {
+      error: {
+        code: "INVALID_DOCUMENT_TYPE",
+        message:
+          `Field 'documentType' declares ${types.length} types; at most ${MAX_DOCUMENT_TYPES} ` +
+          "are allowed (they travel as one segment of the S3 key)",
+      },
+    };
+  }
+  const joinedLength = types.join(",").length;
+  if (joinedLength > MAX_DOCUMENT_TYPES_CHARS) {
+    return {
+      error: {
+        code: "INVALID_DOCUMENT_TYPE",
+        message:
+          `Field 'documentType' is ${joinedLength} characters of type names; at most ` +
+          `${MAX_DOCUMENT_TYPES_CHARS} are allowed (they travel as one segment of the S3 key)`,
+      },
+    };
+  }
+  if (resolvedOccurrenceMode) {
+    for (const type of types) {
+      if (counts[type] === undefined) {
+        counts[type] = resolvedOccurrenceMode === "multiple" ? "all" : 1;
+      }
+    }
+  }
+  for (const type of types) {
+    if (counts[type] === undefined) delete counts[type];
+  }
+  return { types, counts, occurrenceMode: resolvedOccurrenceMode };
+}
+
+/**
+ * Las cuentas por tipo, serializadas para viajar como metadata de objeto S3.
+ *
+ * `PEDIMENTO_ERP=1,FACTURA_FLETE_EXTRANJERO=all` — plano y US-ASCII, que es
+ * todo lo que S3 admite en un valor de metadata (ver `normalizeMetadata`).
+ * Deliberadamente NO viaja en la llave junto a los tipos: la llave la parsean
+ * tres componentes independientes (el consumidor de SQS, model-invoke y el
+ * enrichment) y se firma en un presigned PUT, mientras que las cuentas solo las
+ * lee el enrichment.
+ *
+ * Devuelve "" cuando no hay nada que declarar, para que el caller omita la
+ * clave en vez de mandar una vacía.
+ */
+export function serializeDocumentCounts(counts) {
+  return Object.entries(counts || {})
+    .map(([type, count]) => `${type}=${count}`)
+    .join(",");
+}
+
+/**
+ * How the pipeline will decide this document's type, from what the caller
+ * declared. Returned to the caller as `classificationMode`.
+ *
+ *   "manual" — exactly one type: honoured as-is, never re-segmented.
+ *   "guided" — several: the file IS segmented and classified, but only among
+ *              the declared types; other segments are omitted from the result.
+ *   "auto"   — none: the classifier chooses from the whole catalog.
+ *
+ * "guided" is a new value of an existing enum, so a caller that never sends a
+ * list never sees it.
+ */
+export function classificationModeFor(types) {
+  if (types.length > 1) return "guided";
+  return types.length ? "manual" : "auto";
+}
+
+/**
+ * The S3 key the document is uploaded to.
+ *
+ * The declared types travel as ONE path segment, comma-joined — this key is
+ * their only carrier, read back independently by the SQS consumer, the
+ * model-invoke Lambda and the enrichment Lambda. With none declared the type
+ * segment is absent entirely, which is exactly how those three readers tell
+ * "auto-classify" from "the uploader said so".
+ */
+export function rawKeyFor(types, documentId, fileName) {
+  const declared = types.join(",");
+  return declared
+    ? `raw/${declared}/${documentId}/${fileName}`
+    : `raw/${documentId}/${fileName}`;
 }

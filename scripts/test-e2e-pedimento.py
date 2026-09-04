@@ -26,6 +26,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -34,6 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -132,7 +134,8 @@ def resolve_api_key(env: str) -> str | None:
     return key
 
 
-def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = None) -> dict:
+def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = None,
+           metadata: dict | None = None) -> dict:
     """Sube el documento con el flujo real de la API: dos pasos, siempre.
 
     1. `POST /documents` con solo metadata → devuelve `uploadUrl`.
@@ -144,7 +147,10 @@ def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = N
     responda `403 AccessDenied: There were headers present in the request
     which were not signed`.
     """
-    body = json.dumps({"fileName": pdf_path.name, "documentType": doc_type}).encode("utf-8")
+    body = json.dumps({
+        "fileName": pdf_path.name, "documentType": doc_type,
+        "metadata": metadata or {"source": "test-e2e-pedimento"},
+    }).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["x-api-key"] = api_key
@@ -167,6 +173,23 @@ def upload(endpoint: str, pdf_path: Path, doc_type: str, api_key: str | None = N
     return presign
 
 
+def api_json(url: str, api_key: str | None, method: str = "GET", body: dict | None = None) -> tuple[int, dict]:
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    if api_key:
+        headers["x-api-key"] = api_key
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                                 headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return response.status, json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.loads(error.read() or b"{}")
+        except ValueError:
+            payload = {}
+        return error.code, payload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--file", required=True, help="nombre del PDF en test-docs/pedimentos docs/docs")
@@ -176,6 +199,9 @@ def main() -> int:
     parser.add_argument("--stack", help="stack explícito (gana sobre --env)")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--wait", type=int, default=600, help="segundos máximo a esperar Step Functions (default 600)")
+    parser.add_argument("--run-id", help="identificador de suite para etiquetar el documento")
+    parser.add_argument("--json-out", help="escribe un resumen estructurado del caso")
+    parser.add_argument("--exercise-metadata", action="store_true", help="valida PATCH de metadata en este caso canario")
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
 
     stack = args.stack or (PROD_STACK if args.env == "prod" else DEV_STACK)
@@ -200,7 +226,10 @@ def main() -> int:
 
     t0 = time.time()
     api_key = resolve_api_key(args.env)
-    upload_result = upload(endpoint, pdf_path, args.doc_type, api_key=api_key)
+    metadata = {"source": "test-real-e2e", "test-suite": "real-e2e"}
+    if args.run_id:
+        metadata["test-run-id"] = args.run_id
+    upload_result = upload(endpoint, pdf_path, args.doc_type, api_key=api_key, metadata=metadata)
     doc_id = upload_result.get("documentId")
     if not doc_id:
         print(f"{RED}El API no devolvió documentId: {upload_result}{RESET}")
@@ -275,6 +304,52 @@ def main() -> int:
     else:
         print(f"  {GREEN}✓{RESET} el archivo ya no está en raw/ (se movió tras procesar)")
 
+    processed_keys = subprocess.run(
+        ["aws", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", f"processed/{doc_id}/",
+         "--region", args.region, "--query", "Contents[].Key", "--output", "text"],
+        capture_output=True, text=True, timeout=20,
+    ).stdout.strip()
+    if not processed_keys or processed_keys == "None":
+        infra_ok = False
+        print(f"  {RED}✗ no apareció el original bajo processed/{doc_id}/{RESET}")
+    else:
+        print(f"  {GREEN}✓{RESET} original persistido en processed/")
+
+    api_status, public = api_json(f"{endpoint}/documents/{doc_id}?full=1", api_key)
+    if api_status != 200 or public.get("processingStatus") != "FINISHED":
+        infra_ok = False
+        print(f"  {RED}✗ GET público no terminó correctamente (HTTP {api_status}){RESET}")
+    else:
+        print(f"  {GREEN}✓{RESET} GET público devuelve FINISHED")
+
+    file_status, file_meta = api_json(f"{endpoint}/documents/{doc_id}/file", api_key)
+    original_hash_ok = False
+    if file_status == 200 and file_meta.get("downloadUrl"):
+        try:
+            with urllib.request.urlopen(file_meta["downloadUrl"], timeout=300) as response:
+                original_hash_ok = hashlib.sha256(response.read()).hexdigest() == hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        except Exception:
+            original_hash_ok = False
+    if not original_hash_ok:
+        infra_ok = False
+        print(f"  {RED}✗ la descarga del original no conserva el SHA-256{RESET}")
+    else:
+        print(f"  {GREEN}✓{RESET} descarga del original con SHA-256 idéntico")
+
+    metadata_ok = None
+    if args.exercise_metadata:
+        marker = (args.run_id or "manual")[-40:]
+        patch_status, _ = api_json(f"{endpoint}/documents/{doc_id}/metadata", api_key, "PATCH",
+                                   {"quality-canary": marker})
+        _, refreshed = api_json(f"{endpoint}/documents/{doc_id}", api_key)
+        refreshed_metadata = refreshed.get("metadata") or (refreshed.get("result") or {}).get("metadata") or {}
+        metadata_ok = patch_status == 200 and refreshed_metadata.get("quality-canary") == marker
+        if not metadata_ok:
+            infra_ok = False
+            print(f"  {RED}✗ PATCH/GET de metadata no conservó el valor canario{RESET}")
+        else:
+            print(f"  {GREEN}✓{RESET} PATCH/GET de metadata confirmado")
+
     print(f"\n{DIM}--- Comparación contra ground truth ({args.file}) ---{RESET}")
     file_ok = True
     if documents:
@@ -291,11 +366,66 @@ def main() -> int:
         file_ok = False
         print(f"  {YELLOW}(sin documents que comparar — ver fallas de infraestructura arriba){RESET}")
 
+    evaluations = [tp.evaluate_expectation(exp_doc, documents) for exp_doc in spec.get("expect_documents", [])]
+    search_ok = None
+    first_expectation = (spec.get("expect_documents") or [{}])[0]
+    searchable = (first_expectation.get("fields") or {}).get("NUMERO_PEDIMENTO_NORMALIZADO")
+    if searchable:
+        query = urllib.parse.urlencode({"docType": args.doc_type, "field": "NUMERO_PEDIMENTO_NORMALIZADO", "value": searchable})
+        search_status, search_body = api_json(f"{endpoint}/documents?{query}", api_key)
+        search_ok = search_status == 200 and doc_id in json.dumps(search_body)
+        if not search_ok:
+            infra_ok = False
+            print(f"  {RED}✗ búsqueda por unique key no devolvió este documento{RESET}")
+        else:
+            print(f"  {GREEN}✓{RESET} búsqueda por unique key confirmada")
+
+    cost_table = "document-validation-costs" + ("-dev" if args.env == "dev" else "")
+    cost_recorded = False
+    cost_usd = None
+    for _ in range(6):
+        cost_lookup = subprocess.run(
+            ["aws", "dynamodb", "get-item", "--table-name", cost_table,
+             "--key", json.dumps({"DocumentId": {"S": doc_id}}), "--region", args.region,
+             "--query", "Item.[DocumentId.S,TotalCostUsd.N]", "--output", "text"],
+            capture_output=True, text=True, timeout=20,
+        )
+        parts = cost_lookup.stdout.strip().split()
+        cost_recorded = cost_lookup.returncode == 0 and bool(parts) and parts[0] == doc_id
+        if cost_recorded:
+            if len(parts) > 1 and parts[1] != "None":
+                cost_usd = float(parts[1])
+            break
+        time.sleep(3)
+    if not cost_recorded:
+        infra_ok = False
+        print(f"  {RED}✗ no apareció el registro de auditoría de costo{RESET}")
+    else:
+        print(f"  {GREEN}✓{RESET} auditoría de costo persistida")
     overall_ok = infra_ok and file_ok
     total_elapsed = time.time() - t0
     print(f"\n{GREEN if overall_ok else RED}{'E2E PASS' if overall_ok else 'E2E FAIL'}{RESET}  "
           f"{DIM}(infra={'ok' if infra_ok else 'FALLÓ'}, ground-truth={'ok' if file_ok else 'FALLÓ'}, "
           f"total {total_elapsed:.0f}s){RESET}")
+    summary = {
+        "schemaVersion": 1, "file": args.file, "documentId": doc_id,
+        "environment": args.env, "stack": stack, "executionArn": ex.get("executionArn") if ex else None,
+        "executionStatus": status, "infraPassed": infra_ok, "groundTruthPassed": file_ok,
+        "passed": overall_ok, "durationSeconds": round(total_elapsed, 3),
+        "publicApiPassed": api_status == 200 and public.get("processingStatus") == "FINISHED",
+        "originalHashPassed": original_hash_ok, "metadataRoundTripPassed": metadata_ok,
+        "uniqueKeySearchPassed": search_ok, "costRecordPassed": cost_recorded,
+        "costUsd": cost_usd,
+        "evaluations": evaluations,
+    }
+    if args.json_out:
+        target = Path(args.json_out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        os.chmod(target, 0o600)
+        raw_target = target.with_suffix(".result.json")
+        raw_target.write_text(json.dumps(exp if out is not None else {}, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        os.chmod(raw_target, 0o600)
     return 0 if overall_ok else 1
 
 

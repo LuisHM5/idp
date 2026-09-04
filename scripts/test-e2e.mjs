@@ -26,7 +26,11 @@ const PROD_STACK = "DocumentValidationStack";
 const DEFAULT_TIMEOUT_SECONDS = 20 * 60;
 const REQUEST_TIMEOUT_MS = 30_000;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
-const DOCUMENT_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+// Un tipo, o varios separados por coma — el mismo contrato que acepta
+// `POST /documents` (ver upload-lambda/body-parser.mjs::parseDocumentTypes).
+// Aquí solo se valida la FORMA; los topes de 8 tipos / 200 caracteres los
+// aplica la API, para no tener dos fuentes de verdad de los límites.
+const DOCUMENT_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}(?::(?:[1-9][0-9]*|[aA][lL][lL]))?(?:,[A-Z][A-Z0-9_]{0,63}(?::(?:[1-9][0-9]*|[aA][lL][lL]))?)*$/;
 const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 
@@ -56,7 +60,7 @@ export function readDotEnvVar(path, key) {
 export function parseArgs(argv) {
   const options = { positionals: [], full: false };
   const valueOptions = new Set([
-    "file", "type", "doc-type", "env", "endpoint", "stack", "region", "timeout", "wait",
+    "file", "type", "doc-type", "occurrence-mode", "env", "endpoint", "stack", "region", "timeout", "wait",
   ]);
 
   for (let i = 0; i < argv.length; i++) {
@@ -98,6 +102,8 @@ export function parseArgs(argv) {
     throw new E2EError(`Argumento inesperado: ${options.positionals[0]}`);
   }
   options.type = options.type || options["doc-type"];
+  options.occurrenceMode = options["occurrence-mode"]?.toLowerCase();
+  delete options["occurrence-mode"];
   options.timeout = options.timeout || options.wait;
   return options;
 }
@@ -113,7 +119,11 @@ escribe en stdout exactamente el JSON final devuelto por GET.
 
 Parámetros:
   documento             Ruta al archivo real
-  TIPO_DOCUMENTO        TYPE_ID en UPPER_SNAKE_CASE
+  TIPO_DOCUMENTO        TYPE_ID en UPPER_SNAKE_CASE. Varios separados por coma
+                        (PEDIMENTO_ADUANAL,FACTURA_HONORARIOS) hacen que el
+                        archivo se segmente y cada documento se clasifique
+                        solo entre esos tipos y se omite el resto. :N/:all
+                        sobrescribe --occurrence-mode para ese tipo.
 
 Opciones:
   --env dev|prod        Ambiente (default: dev)
@@ -121,11 +131,16 @@ Opciones:
   --stack NOMBRE        Stack explícito; gana sobre --env
   --region REGION       Región AWS (default: AWS_REGION o us-east-1)
   --timeout SEGUNDOS    Espera máxima total (default: ${DEFAULT_TIMEOUT_SECONDS})
+  --occurrence-mode MODO
+                        single conserva la primera ocurrencia de cada tipo sin
+                        sufijo; multiple conserva todas. Si se omite: catálogo;
+                        después single con un tipo, multiple con varios
   --full                Añade ?full=1 al GET final
   --help                Muestra esta ayuda
 
 Ejemplos:
   pnpm test-e2e -- ./factura.pdf FACTURA_FLETE_EXTRANJERO
+  pnpm test-e2e -- ./facturas.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
   pnpm test-e2e -- ./pedimento.pdf PEDIMENTO_ADUANAL --env prod
   pnpm --silent test-e2e -- ./factura.pdf FACTURA_FLETE_EXTRANJERO > resultado.json
 `);
@@ -202,13 +217,16 @@ async function apiFetch(url, options = {}, fetchImpl = fetch) {
   return { response, body };
 }
 
-export async function registerDocument({ endpoint, filePath, documentType, apiKey, metadata, fetchImpl }) {
+export async function registerDocument({
+  endpoint, filePath, documentType, occurrenceMode, apiKey, metadata, fetchImpl,
+}) {
   const { response, body } = await apiFetch(`${endpoint}/documents`, {
     method: "POST",
     headers: apiHeaders(apiKey, true),
     body: JSON.stringify({
       fileName: basename(filePath),
       documentType,
+      ...(occurrenceMode && { occurrenceMode }),
       metadata: metadata || { source: "test-e2e" },
     }),
   }, fetchImpl);
@@ -324,6 +342,7 @@ export async function runE2E({
   endpoint,
   filePath,
   documentType,
+  occurrenceMode,
   apiKey = null,
   timeoutMs = DEFAULT_TIMEOUT_SECONDS * 1000,
   full = false,
@@ -334,7 +353,9 @@ export async function runE2E({
   putFileImpl = putFile,
 }) {
   log(`POST /documents · ${basename(filePath)} · ${documentType}`);
-  const registration = await registerDocument({ endpoint, filePath, documentType, apiKey, fetchImpl });
+  const registration = await registerDocument({
+    endpoint, filePath, documentType, occurrenceMode, apiKey, fetchImpl,
+  });
   log(`Registrado ${registration.documentId} (${registration.processingStatus || "AWAITING_UPLOAD"})`);
 
   log("PUT directo a S3");
@@ -377,7 +398,7 @@ function resolveInputFile(rawPath, environment = process.env) {
   return resolve(rawPath);
 }
 
-function validateOptions(options) {
+export function validateOptions(options) {
   if (!options.file) throw new E2EError("Falta el documento");
   if (!options.type) throw new E2EError("Falta TIPO_DOCUMENTO");
   if (!existsSync(options.file) || !statSync(options.file).isFile()) {
@@ -388,7 +409,14 @@ function validateOptions(options) {
     throw new E2EError(`Formato no soportado: .${extension || "(sin extensión)"}`);
   }
   if (!DOCUMENT_TYPE_PATTERN.test(options.type)) {
-    throw new E2EError("TIPO_DOCUMENTO debe usar UPPER_SNAKE_CASE y tener máximo 64 caracteres");
+    throw new E2EError(
+      "TIPO_DOCUMENTO debe usar UPPER_SNAKE_CASE y tener máximo 64 caracteres. " +
+        "Para varios tipos, sepáralos por coma sin espacios: " +
+        "PEDIMENTO_ADUANAL,FACTURA_HONORARIOS"
+    );
+  }
+  if (options.occurrenceMode && !new Set(["single", "multiple"]).has(options.occurrenceMode)) {
+    throw new E2EError("--occurrence-mode debe ser single o multiple");
   }
   if (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds <= 0) {
     throw new E2EError("--timeout debe ser un número positivo de segundos");
@@ -446,6 +474,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     endpoint,
     filePath: options.file,
     documentType: options.type,
+    occurrenceMode: options.occurrenceMode,
     apiKey,
     timeoutMs: options.timeoutSeconds * 1000,
     full: options.full,

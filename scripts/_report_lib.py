@@ -274,6 +274,7 @@ def normalize_doc_item(it: Dict[str, Any]) -> Dict[str, Any]:
         "document_type_name": it.get("DocumentTypeName") or "",
         "document_name": it.get("DocumentName") or "",
         "app_origin": it.get("AppOrigin") or tracking.get("AppOrigin") or "",
+        "metadata": it.get("Metadata") or envelope.get("metadata") or {},
         "workflow_status": str(it.get("WorkflowStatus") or "desconocido"),
         "validation_status": str(it.get("ValidationStatus") or ""),
         "processed_at": str(it.get("ProcessedAt") or ""),

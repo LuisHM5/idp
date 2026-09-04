@@ -24,7 +24,14 @@ import { randomUUID } from "node:crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
-import { parseBody, normalizeMetadata } from "./body-parser.mjs";
+import {
+  parseBody,
+  normalizeMetadata,
+  parseDocumentTypes,
+  classificationModeFor,
+  rawKeyFor,
+  serializeDocumentCounts,
+} from "./body-parser.mjs";
 
 const s3 = new S3Client({});
 const ddb = new DynamoDBClient({});
@@ -45,10 +52,10 @@ const REQUIRES_DECLARED_TYPE = new Set(["xml", "xlsx", "csv"]);
 // connection uploading a large file without leaving it usable indefinitely.
 const PRESIGN_EXPIRY_SECONDS = 15 * 60;
 
-// Tipo documental manual: UPPER_SNAKE_CASE. Debe empezar con letra.
-// No se valida contra el catalogo aqui para no acoplar el upload al catalogo;
-// si el tipo no existe en el catalogo, el enrichment lo tratara como OTRO.
-const DOCUMENT_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+// La forma de cada tipo documental (UPPER_SNAKE_CASE) y el corte por comas
+// viven en `parseDocumentTypes` (body-parser.mjs), un modulo puro y testeable.
+// Ningun tipo se valida contra el catalogo aqui, para no acoplar el upload al
+// catalogo; si un tipo no existe, el enrichment lo tratara como OTRO.
 
 /**
  * Extract file extension from filename (lowercase).
@@ -70,25 +77,20 @@ function errorResponse(statusCode, error, message) {
 }
 
 /**
- * Validate `documentType` (optional manual classification) and `fileName`
- * (required extension allow-list), shared by both upload modes.
- * Returns { manualType, ext } on success, or an error response to return
- * as-is.
+ * Validate `documentType` (optional manual classification, one type or several
+ * comma-separated) and `fileName` (required extension allow-list), shared by
+ * both upload modes. Returns
+ * { manualTypes, typeCounts, occurrenceMode, ext } on success, or an error
+ * response to return as-is.
  */
-function validateCommon(fileName, documentType) {
-  let manualType = null;
-  if (documentType !== undefined && documentType !== null && documentType !== "") {
-    if (typeof documentType !== "string" || !DOCUMENT_TYPE_PATTERN.test(documentType)) {
-      return {
-        error: errorResponse(
-          400,
-          "INVALID_DOCUMENT_TYPE",
-          "Field 'documentType' must match ^[A-Z][A-Z0-9_]{0,63}$ (UPPER_SNAKE_CASE)"
-        ),
-      };
-    }
-    manualType = documentType;
+function validateCommon(fileName, documentType, occurrenceMode) {
+  const parsed = parseDocumentTypes(documentType, occurrenceMode);
+  if (parsed.error) {
+    return { error: errorResponse(400, parsed.error.code, parsed.error.message) };
   }
+  const manualTypes = parsed.types;
+  const typeCounts = parsed.counts;
+  const resolvedOccurrenceMode = parsed.occurrenceMode;
 
   const ext = getExtension(fileName);
   if (!ext || !ALLOWED_EXTENSIONS.has(ext)) {
@@ -101,7 +103,7 @@ function validateCommon(fileName, documentType) {
     };
   }
 
-  if (REQUIRES_DECLARED_TYPE.has(ext) && !manualType) {
+  if (REQUIRES_DECLARED_TYPE.has(ext) && !manualTypes.length) {
     return {
       error: errorResponse(
         400,
@@ -112,7 +114,25 @@ function validateCommon(fileName, documentType) {
     };
   }
 
-  return { manualType, ext };
+  // A list only makes sense when something has to CHOOSE among the types, and
+  // for an already-structured source nothing does: xml/tabular extraction
+  // resolves each field by xpath/cell against the one declared schema, with no
+  // classification step to narrow. Rejecting it here rather than letting the
+  // pipeline pick the first type keeps the caller from believing a file was
+  // searched for several schemas when it was only ever read as one.
+  if (REQUIRES_DECLARED_TYPE.has(ext) && manualTypes.length > 1) {
+    return {
+      error: errorResponse(
+        400,
+        "INVALID_DOCUMENT_TYPE",
+        `Field 'documentType' must name exactly one type for .${ext} uploads — ` +
+          "there is no vision-based auto-classification for structured data " +
+          "sources, so there is nothing to choose between several types"
+      ),
+    };
+  }
+
+  return { manualTypes, typeCounts, occurrenceMode: resolvedOccurrenceMode, ext };
 }
 
 /**
@@ -150,23 +170,40 @@ export async function handler(event) {
   const body = parsed.body;
 
   const { fileName, contentBase64, metadata, documentType, modelId } = body;
+  // camelCase is canonical like the rest of this API; accept the snake_case
+  // spelling too as a compatibility alias.
+  if (
+    body.occurrenceMode !== undefined &&
+    body.occurrence_mode !== undefined &&
+    String(body.occurrenceMode).trim().toLowerCase() !==
+      String(body.occurrence_mode).trim().toLowerCase()
+  ) {
+    return errorResponse(
+      400,
+      "INVALID_OCCURRENCE_MODE",
+      "Fields 'occurrenceMode' and 'occurrence_mode' disagree; send only occurrenceMode"
+    );
+  }
+  const requestedOccurrenceMode = body.occurrenceMode ?? body.occurrence_mode;
 
   if (!fileName) {
     return errorResponse(400, "MISSING_FIELD", "Field 'fileName' is required");
   }
 
-  const validated = validateCommon(fileName, documentType);
+  const validated = validateCommon(fileName, documentType, requestedOccurrenceMode);
   if (validated.error) return validated.error;
-  const { manualType } = validated;   // `ext` ya lo validó validateCommon
+  const { manualTypes, typeCounts, occurrenceMode } = validated;   // `ext` ya lo validó validateCommon
 
-  // Optional manual classification via documentType.
-  // If provided, the document is placed under raw/{TYPE}/{uuid}/ and the
-  // classification step short-circuits without calling Bedrock.
-  // If omitted, Bedrock auto-classifies from content.
+  // Optional manual classification via documentType. The declared types travel
+  // as ONE segment of the S3 key — that key is the only carrier of this signal,
+  // read independently by the SQS consumer, the model-invoke Lambda and the
+  // enrichment Lambda, so joining them here reaches all three with no new
+  // channel.
+  //   raw/{TYPE}/{uuid}/file        one type   -> honoured as-is, never re-segmented
+  //   raw/{A,B}/{uuid}/file         several    -> segmented, but classified ONLY among A and B
+  //   raw/{uuid}/file               none       -> Bedrock auto-classifies from content
   const documentId = randomUUID();
-  const key = manualType
-    ? `raw/${manualType}/${documentId}/${fileName}`
-    : `raw/${documentId}/${fileName}`;
+  const key = rawKeyFor(manualTypes, documentId, fileName);
 
   // Which app made this request, resolved from its x-api-key (present only
   // when the method requires one — see resolveAppOrigin above).
@@ -194,6 +231,16 @@ export async function handler(event) {
   if (appOrigin) {
     objectMetadata["app-origin"] = appOrigin;
   }
+  // Cuántos documentos de cada tipo buscar. Va por el mismo canal que
+  // `model-id`: el enrichment lo lee del objeto con `head_object`/`get_object`
+  // (`handler._fetch_document` ya lee `Metadata`), así que no hay que tocar ni
+  // la llave ni el consumidor de SQS. Se escribe DESPUÉS de la metadata del
+  // caller y `normalizeMetadata` ya la despojó de esta clave reservada, así que
+  // nadie puede pedir un tipo y declarar otro número por su cuenta.
+  const declaredCounts = serializeDocumentCounts(typeCounts);
+  if (declaredCounts) {
+    objectMetadata["document-counts"] = declaredCounts;
+  }
 
   if (contentBase64 !== undefined && contentBase64 !== null) {
     return errorResponse(
@@ -204,7 +251,9 @@ export async function handler(event) {
         "for every file size."
     );
   }
-  return handlePresigned(documentId, key, manualType, objectMetadata, appOrigin);
+  return handlePresigned(
+    documentId, key, manualTypes, objectMetadata, appOrigin, typeCounts, occurrenceMode
+  );
 }
 
 /**
@@ -223,7 +272,13 @@ export async function handler(event) {
  * Content-Type, so leaving it unset keeps the PUT usable from any client with
  * zero header bookkeeping.
  */
-async function handlePresigned(documentId, key, manualType, objectMetadata = {}, appOrigin = null) {
+async function handlePresigned(
+  documentId, key, manualTypes = [], objectMetadata = {}, appOrigin = null,
+  typeCounts = {}, occurrenceMode = null
+) {
+  // El string unido es lo que viaja: en la key de S3, en la columna
+  // RequestedDocumentType y en la respuesta. "" cuando no se declaro ninguno.
+  const declaredTypes = manualTypes.join(",");
   let uploadUrl;
   const registeredAt = new Date().toISOString();
   const uploadExpiresAt = new Date(
@@ -264,7 +319,7 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {},
           UploadExpiresAt: { S: uploadExpiresAt },
           UploadKey: { S: key },
           JobOwner: { S: appOrigin || "dev-unrestricted" },
-          ...(manualType ? { RequestedDocumentType: { S: manualType } } : {}),
+          ...(declaredTypes ? { RequestedDocumentType: { S: declaredTypes } } : {}),
         },
         ConditionExpression: "attribute_not_exists(DocumentId)",
       })
@@ -285,8 +340,16 @@ async function handlePresigned(documentId, key, manualType, objectMetadata = {},
       documentId,
       bucket: BUCKET,
       key,
-      documentType: manualType,
-      classificationMode: manualType ? "manual" : "auto",
+      documentType: declaredTypes || null,
+      occurrenceMode,
+      // Decisiones explícitas del request: sufijos y/o occurrenceMode. Si el
+      // modo se omitió, los defaults de catálogo se resuelven en enrichment.
+      ...(Object.keys(typeCounts).length ? { documentTypeCounts: typeCounts } : {}),
+      // "guided": el archivo SI se segmenta y clasifica, pero el clasificador
+      // solo puede elegir entre los tipos declarados (lo demás se omite de la salida).
+      // "manual" sigue significando exactamente lo de siempre: un solo tipo,
+      // honrado tal cual, sin re-segmentar.
+      classificationMode: classificationModeFor(manualTypes),
       uploadUrl,
       uploadMethod: "PUT",
       // NOTA: deliberadamente NO se devuelve una lista de cabeceras que el

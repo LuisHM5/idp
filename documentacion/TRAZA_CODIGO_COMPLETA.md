@@ -198,16 +198,22 @@ Ruta: `POST /documents` → `upload-lambda/index.mjs:handler` (`:141`).
 1. `handler(event)` parsea `event.body`. JSON inválido devuelve 400
    `INVALID_JSON`.
 2. Comprueba `fileName`; su ausencia devuelve 400 `MISSING_FIELD`.
-3. `validateCommon(fileName, documentType)` (`:72`):
-   - valida `documentType` como `UPPER_SNAKE_CASE` cuando existe;
+3. `validateCommon(fileName, documentType)` devuelve `{ manualTypes, ext }`:
+   - `parseDocumentTypes` (en `body-parser.mjs`, módulo puro) corta
+     `documentType` por comas y valida cada tipo como `UPPER_SNAKE_CASE`;
+     descarta duplicados conservando el orden y topa en 8 tipos / 200 caracteres,
+     porque los tipos viajan como un solo segmento de la llave de S3;
    - permite `jpg`, `jpeg`, `png`, `pdf`, `xml`, `xlsx` y `csv`;
    - exige `documentType` para XML/XLSX/CSV porque no existe clasificación
-     visual para fuentes estructuradas;
-   - no verifica que el tipo exista en el catálogo. Esa comprobación ocurre
-     después, en enrichment.
+     visual para fuentes estructuradas, y ahí acepta **exactamente uno**: sin
+     paso de clasificación no hay nada que elija entre varios esquemas;
+   - no verifica que los tipos existan en el catálogo. Esa comprobación ocurre
+     después, en enrichment (`_declared_types_from_key`).
 4. `randomUUID()` crea `documentId`.
-5. Construye la clave:
-   - manual: `raw/{TYPE}/{uuid}/{fileName}`;
+5. `rawKeyFor(manualTypes, documentId, fileName)` construye la clave:
+   - un tipo: `raw/{TYPE}/{uuid}/{fileName}`;
+   - varios: `raw/{A,B}/{uuid}/{fileName}` — **un solo segmento**, porque el
+     consumidor de SQS ancla el `documentId` en `key_parts[-2]`;
    - automática: `raw/{uuid}/{fileName}`.
 6. `resolveAppOrigin(apiKeyId)` (`:122`) hace `GetItem` en `AppsTable`. El
    lookup es best-effort: devuelve `null` sin llave y `unregistered` si una
@@ -544,17 +550,37 @@ envoltura PDF.
 7. Si falla el OCR de una página, esa página queda `source=empty`; no se pierde
    el resto del expediente.
 
-### 12.4 `segmenter.segment_pages()` (`segmenter.py:162`)
+### 12.4 `segmenter.segment_pages()` (`segmenter.py`)
 
 - Sin páginas: devuelve `[]`.
-- Con `declared_type` distinto del contenedor multidocumento: crea un solo
-  `Segment(type, 1, total, 1.0)` sin Bedrock.
-- Sin tipo declarado: `_build_prompt()` incluye marcadores/digest por página y
-  tipos candidatos cuyo catálogo tiene `pipeline=expediente`.
+- Con un tipo declarado: no llama a Bedrock. Crea un segmento completo o, si
+  el catálogo lleva `page_selection.multi_instance`, separa instancias con los
+  marcadores y límites del propio esquema.
+- Con varios tipos declarados: `_build_prompt()` clasifica exclusivamente entre
+  ellos; sin tipos declarados usa todos los candidatos determinados por forma
+  de catálogo (`is_segmentation_candidate`).
 - `bedrock.converse()` clasifica rangos.
 - `parse_json_response()` interpreta la salida y `_sanitize()` corrige límites,
   orden y huecos.
+- `_split_typed_instances()` vuelve a aplicar los límites deterministas de los
+  tipos con `page_selection.multi_instance` dentro de cada rango clasificado.
+  Corrige el caso donde el modelo reconoce `FACTURA_FLETE_EXTRANJERO` pero une
+  dos facturas consecutivas en un solo rango 9–10; antes de extracción se
+  convierten en 9–9 y 10–10.
+- `resolve_declared_counts()` y `_apply_type_limits()` aplican la precedencia:
+  `:N`/`:all` → `occurrenceMode` del POST (Upload lo materializa como cuentas)
+  → `occurrence_mode` del catálogo → default global (`single` con un tipo,
+  `multiple` con varios).
+- En modo `single`/`:1`, `duplicate_key_pattern` elige la impresión más completa
+  antes del límite. En `multiple`, `:all` o `:N>1`, las reimpresiones se
+  conservan como ocurrencias físicas del tipo.
 - Salida inválida/vacía cae a un único segmento `OTRO` con confianza 0.
+- Si el caller declaró tipos reales, `process_pdf()` conserva antes de extraer
+  únicamente los segmentos de esos tipos. Los `OTRO` internos (huecos, copias,
+  tipos ajenos y excedentes) no se publican ni generan extracción.
+- Después de validar los encontrados, agrega marcadores `REVIEW_REQUIRED` con
+  rango `null` por las ocurrencias solicitadas que falten; esos marcadores no
+  participan en reglas cruzadas ni en los conteos de documentos encontrados.
 - Devuelve también `usage_meta` para costeo.
 
 El tipo automático que decide esta función es la autoridad posterior; puede
@@ -570,8 +596,8 @@ Cada worker ejecuta `_extract_segment()` (`expediente.py:88`):
 
 1. Selecciona las `PageText` del rango.
 2. Carga el catálogo del tipo.
-3. Para `OTRO` o tipo sin schema, no llama al modelo; asigna review/aprobado y
-   conserva texto temporal.
+3. En clasificación automática, para `OTRO` o tipo sin schema no llama al
+   modelo; en una solicitud cerrada los `OTRO` ya fueron retirados.
 4. `text_extractor.extract_document()` obtiene entidades y confianzas.
 5. `_recover_from_qr()` intenta corrección determinista si el catálogo declara
    fuente QR y `QR_RECOVERY_ENABLED` está activo.
@@ -895,7 +921,25 @@ Entrada: `query-lambda/index.mjs:handler` (`:821`). Primero
 primero `processed/{id}/` y luego `failed/{id}/`; genera una URL GET prefirmada.
 Los bytes no pasan por Lambda/API Gateway.
 
-### 19.3 `PATCH /documents/{id}/metadata`
+### 19.3 `POST /documents/{id}/reprocess`
+
+1. `resolveItemById()` resuelve el id viejo y se autoriza con
+   `canSeeDocument()` o `canSeePendingDocument()`.
+2. `findSourceObject()` busca el original en `processed/{id}/` y luego
+   `failed/{id}/`; si todavía está en `raw/`, responde `409 SOURCE_NOT_READY`.
+3. `reprocess-request.mjs` aplica exactamente la misma gramática de
+   `documentType`, `occurrenceMode` y `:N`/`:all` del upload. Omitir tipo
+   hereda `RequestedDocumentType`; `null` fuerza auto.
+4. `HeadObject` recupera metadata y Content-Type. La metadata de usuario se
+   conserva; `app-origin`, `model-id` y `document-counts` se reconstruyen para
+   la nueva ejecución.
+5. `PutItem` reserva un UUID nuevo en estado `QUEUED` con
+   `ReprocessedFrom=<id viejo>` antes de que el evento S3 pueda adelantarse.
+6. `CopyObject` copia server-side a `raw/{TIPOS?}/{nuevoId}/{filename}`. El
+   evento normal arranca SQS/Step Functions. Si la copia falla, `UpdateItem`
+   deja el trabajo nuevo en `FAILED`; el resultado viejo nunca se toca.
+
+### 19.4 `PATCH /documents/{id}/metadata`
 
 1. `resolveCallerApp()` exige `AllowMetadataWrite`; una key no registrada o
    un fallo de AppsTable conservan lectura fail-open, pero escritura fail-closed.
@@ -911,7 +955,7 @@ Los bytes no pasan por Lambda/API Gateway.
 5. `parseEnrichment()`/`fetchFullResult()` superponen esa `Metadata` actual al
    snapshot histórico para que GET, `full=1` y filtros vean lo mismo.
 
-### 19.4 `GET /documents?...`
+### 19.5 `GET /documents?...`
 
 `query()` distingue tres planes, y reporta cuál contestó en el campo `lookup`
 de la respuesta:
@@ -1135,7 +1179,7 @@ función dueña porque no son invocables desde fuera de ella.
 
 | Objeto lógico | Productor principal | Consumidores | Campos importantes |
 | --- | --- | --- | --- |
-| `UploadRequest` | API Gateway | `upload.handler` | `fileName`, `documentType?`, `contentType?`, `modelId?` |
+| `UploadRequest` | API Gateway | `upload.handler` | `fileName`, `documentType?` (uno, o varios separados por coma), `contentType?`, `modelId?` |
 | `S3Pointer` | upload/consumidor | model invoke, enrichment | `bucket`, `key`, `filename`, `fileType` |
 | `WorkflowEvent` | consumidor + Step Functions | model invoke, enrichment | `documentId`, `content`, `classificationResult`, `processingResult`, `appOrigin` |
 | `PageText` | `pdf_pages` | segmenter, extractor, QR/recovery | `number`, `text`, `source`, `confidence` |
@@ -1162,7 +1206,7 @@ Archivo: `src/document-validation-stack.ts`.
 | Bloque | Datos/configuración que conecta | Destino runtime |
 | --- | --- | --- |
 | `BedrockDocumentProcessingStack.constructor()` (`:107`) | env, modelos, tablas importadas, bucket/cola/State Machine del blueprint, Lambdas y permisos | crea las rutas y recursos que usarán todas las funciones siguientes |
-| rutas del stack | `POST /documents`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file`, `PATCH /documents/{id}/metadata` | API Gateway → Upload/Query Lambda |
+| rutas del stack | `POST /documents`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata` | API Gateway → Upload/Query Lambda |
 
 ### 27.4 Upload Lambda
 
@@ -1172,7 +1216,9 @@ Archivo: `src/document-processing/resources/upload-lambda/index.mjs`.
 | --- | --- | --- | --- | --- | --- |
 | `getExtension()` (`:50`) | `validateCommon`, `handler` | `fileName` | toma el último sufijo y lo pasa a minúsculas | extensión → caller | JS `String.split`; no I/O |
 | `errorResponse()` (`:58`) | validaciones y catches | status, código y mensaje | construye respuesta proxy JSON con CORS | HTTP error → API Gateway | `JSON.stringify` |
-| `validateCommon()` (`:72`) | `handler` | nombre y tipo opcional | valida presencia, extensión admitida, tipo obligatorio para XML/XLSX/CSV y patrón del tipo | `{ext}` o respuesta de error → `handler` | `ALLOWED_EXTENSIONS`, `REQUIRES_DECLARED_TYPE`, regex |
+| `validateCommon()` | `handler` | nombre y tipo(s) opcionales | valida presencia, extensión admitida, tipo obligatorio (y único) para XML/XLSX/CSV, y delega la lista de tipos a `parseDocumentTypes` | `{manualTypes, ext}` o respuesta de error → `handler` | `ALLOWED_EXTENSIONS`, `REQUIRES_DECLARED_TYPE`, `parseDocumentTypes` |
+| `parseDocumentTypes()` (`body-parser.mjs`) | `validateCommon` | `documentType` crudo | corta por comas, valida forma, dedupe con orden, topes 8/200 | `{types}` o `{error}` | regex, sin I/O |
+| `rawKeyFor()` (`body-parser.mjs`) | `handler` | tipos, id, nombre | une los tipos por coma en UN segmento de la llave | string de llave S3 | ninguna |
 | `resolveAppOrigin()` (`:122`) | `handler` | `apiKeyId` | consulta `AppsTable`; obtiene nombre humano | string para metadata S3 → `handler`; fallback best-effort | DynamoDB `GetItem` |
 | `handler()` (`:141`) | API Gateway | evento proxy | parsea body, valida, genera UUID/key, arma metadata y siempre responde con URL prefirmada (rechaza `contentBase64` con 400) | respuesta HTTP; delega a `handlePresigned` | `randomUUID`, `validateCommon`, `resolveAppOrigin` |
 | `handlePresigned()` (`:203`) | `handler` | id, key, tipo y metadata | firma exactamente el futuro `PutObject` | `{documentId,key,uploadUrl,headers}` → cliente; después cliente → S3 raw | S3 presigner, `PutObjectCommand` |
@@ -1794,6 +1840,8 @@ Archivo: `src/document-processing/resources/query-lambda/index.mjs`.
 | `fetchFullResult()` (`:431`) | documentId | `GetObject results/{id}.json`, parsea JSON | DeepResult/None → `getById` |
 | `findSourceObject()` (`:453`) | documentId | prueba prefijos processed/failed/raw con `ListObjectsV2` | bucket/key/location/metadata → file route |
 | `getFileById()` (`:477`) | id, params, caller | autoriza por fila, localiza original y firma `GetObject` | URL temporal + metadata → API |
+| `reprocessById()` | id viejo, event, caller | autoriza, resuelve tipos, reserva UUID y hace `HeadObject` + `CopyObject` hacia `raw/` | `202 QUEUED` con id nuevo → API; evento S3 → pipeline |
+| helpers de `reprocess-request.mjs` | body/fila vieja/nombre | parseo puro, herencia, validación y construcción de key/counts | plan de reproceso → `reprocessById` |
 | `patchMetadataById()` | id, event, caller | autoriza, aplica merge patch y `UpdateItem` con lock optimista/reintentos | metadata completa + versión/auditoría → API |
 | `queryByType()` (`:534`) | TYPE_ID + filtros indexables | generador pagina `DocumentTypeIndex`, aplica status/fecha/contained server-side | entries id/processedAt → typeIndexEntries | DynamoDB `Query` |
 | `typeIndexEntries()` (`:593`) | varios type ids + opts | merge de generadores por tipo | stream ordenado de ids → query | `queryByType` |
@@ -1817,6 +1865,14 @@ GET /documents/{id}/file
   → findSourceObject → S3 ListObjectsV2
   → presigned GetObject URL → json
 
+POST /documents/{id}/reprocess
+  → resolveItemById → auth → findSourceObject
+  → parseDocumentTypes/validateSourceFile
+  → S3 HeadObject → DDB PutItem (nuevo id QUEUED)
+  → S3 CopyObject processed|failed → raw
+  → evento S3 normal → SQS → Step Functions
+  → 202 + Location/Retry-After
+
 PATCH /documents/{id}/metadata
   → resolveCallerApp (AllowMetadataWrite)
   → resolveItemById → auth
@@ -1839,6 +1895,7 @@ GET /documents?field=... sin docType
 | Dato/contrato cambiado | Productor que debe revisarse | Consumidores directos que también deben revisarse |
 | --- | --- | --- |
 | forma de `POST /documents` | `upload.handler/validateCommon` | API docs, scripts de envío, key parser del consumidor si cambia S3 key |
+| forma de `POST /documents/{id}/reprocess` | `query.reprocessById` + `reprocess-request.mjs` | permisos S3/DDB del Query Lambda, API docs, paridad con `body-parser.mjs` |
 | forma de key `raw/...` | upload/cliente directo | consumidor `handler`, `extract_manual_classification`, `_declared_type_from_key`, movimiento Step Functions, Query file lookup |
 | `WorkflowEvent.content` | consumidor SQS | model invoke `handler`, enrichment `_extract_s3_pointer/_declared_file_type`, indexing `_document_name` |
 | `classificationResult` | classification task/resultSelector | processing handler, enrichment `_process/_model_ids`, cost audit upstream |
@@ -1893,7 +1950,7 @@ legacy y las cuatro persistencias explícitas: S3 full, DDB index, DDB cost y DD
 | Módulo | Imports internos principales | Paquetes/runtime externos | Variables/recursos requeridos |
 | --- | --- | --- | --- |
 | Upload Lambda | ninguno del engine | AWS SDK v3 S3/DynamoDB, presigner, `node:crypto` | `DOCUMENT_BUCKET`, `APPS_TABLE` |
-| Query Lambda | bundle de tipos generado | AWS SDK v3 DynamoDB DocumentClient/S3, presigner | `DOCUMENT_TABLE`, `DOCUMENT_BUCKET`, `APPS_TABLE`, `CATALOG_TABLE`, GSI |
+| Query Lambda | bundle de tipos generado + `reprocess-request.mjs` | AWS SDK v3 DynamoDB DocumentClient/S3, presigner, `node:crypto` | `DOCUMENT_TABLE`, `DOCUMENT_BUCKET`, `APPS_TABLE`, `CATALOG_TABLE`, GSI; read/write en bucket y Put/Update en tracking para reproceso |
 | consumidor SQS | patch autocontenido | boto3, Powertools, urllib | `STATE_MACHINE_ARN`, `RAW_PREFIX`, endpoints opcionales |
 | model invoke | autocontenido | boto3 S3/Bedrock, botocore, Powertools | modelo/prompt/phase desde Task, `MAX_BEDROCK_DOC_BYTES` |
 | `handler.py` | catalog, extractors, indexing, cost, pipeline | boto3 S3, Python stdlib, Node runtime solo legacy | tablas/bucket/model flags vía env |

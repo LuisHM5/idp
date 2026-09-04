@@ -46,6 +46,7 @@ export interface DocumentTypeEntry {
 
 interface RawTypeConfig {
   description?: string;
+  occurrence_mode?: "single" | "multiple";
   extraction_fields?: string[];
   required_fields?: string[];
   extraction_hints?: Record<string, string>;

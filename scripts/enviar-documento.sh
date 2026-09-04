@@ -5,13 +5,20 @@
 # cliente HTTP externo sin credenciales AWS.
 #
 # Uso:
-#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
+#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
+#
+#   TIPO_DOCUMENTO admite varios tipos separados por coma
+#   (PEDIMENTO_ADUANAL,FACTURA_HONORARIOS): el archivo se segmenta y cada
+#   documento se clasifica solo entre esos tipos y se omite el resto. Sin
+#   sufijo, `single` conserva la primera ocurrencia y `multiple` conserva todas;
+#   :N/:all sobrescribe el modo para ese tipo.
 #
 # Ejemplos:
 #   scripts/enviar-documento.sh 2607-0823-6001630_P.pdf PEDIMENTO_ADUANAL
 #   scripts/enviar-documento.sh expediente.pdf            # sin tipo → Bedrock clasifica
 #   scripts/enviar-documento.sh expediente.pdf --env prod # manda al stack de prod
 #   scripts/enviar-documento.sh doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0
+#   scripts/enviar-documento.sh facturas.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
 #
 # Opciones:
 #   --env dev|prod    Ambiente destino (default: dev, igual que el deploy)
@@ -20,6 +27,10 @@
 #                     Solo dev: el stack de prod ignora el valor a propósito
 #                     (ALLOW_MODEL_OVERRIDE), porque viene de quien sube el
 #                     archivo y decidiría costo y calidad de extracción.
+#   --occurrence-mode single|multiple
+#                     Cardinalidad de los tipos sin sufijo para ESTE POST.
+#                     Si se omite: catálogo; después single con un tipo o
+#                     multiple con varios.
 #
 # Requisitos:
 #   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar) — solo
@@ -74,6 +85,7 @@ REGION="${AWS_REGION:-us-east-1}"
 FILE=""
 DOC_TYPE=""
 MODEL_ID=""
+OCCURRENCE_MODE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model)
@@ -88,6 +100,12 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       ENV="$2"; shift 2 ;;
+    --occurrence-mode)
+      if [[ $# -lt 2 ]]; then
+        echo "Falta el valor de --occurrence-mode (single o multiple)." >&2
+        exit 2
+      fi
+      OCCURRENCE_MODE="${2,,}"; shift 2 ;;
     --stack)
       if [[ $# -lt 2 ]]; then
         echo "Falta el valor de --stack." >&2
@@ -115,6 +133,22 @@ if [[ "$ENV" != "dev" && "$ENV" != "prod" ]]; then
   exit 2
 fi
 
+if [[ -n "$OCCURRENCE_MODE" && "$OCCURRENCE_MODE" != "single" && "$OCCURRENCE_MODE" != "multiple" ]]; then
+  echo "Modo de ocurrencia inválido: $OCCURRENCE_MODE (usa single o multiple)." >&2
+  exit 2
+fi
+
+# Un tipo, o varios separados por coma — mismo contrato que POST /documents.
+# Solo se valida la FORMA: los topes (8 tipos / 200 caracteres) los aplica la
+# API, para no tener dos fuentes de verdad de los límites. Fallar aquí evita
+# un viaje de ida y vuelta por el error más común: meter un espacio tras la coma.
+if [[ -n "$DOC_TYPE" && ! "$DOC_TYPE" =~ ^[A-Z][A-Z0-9_]*(:([1-9][0-9]*|[aA][lL][lL]))?(,[A-Z][A-Z0-9_]*(:([1-9][0-9]*|[aA][lL][lL]))?)*$ ]]; then
+  echo "TIPO_DOCUMENTO inválido: '$DOC_TYPE'" >&2
+  echo "Debe ser UPPER_SNAKE_CASE. Para varios tipos, sepáralos por coma SIN espacios:" >&2
+  echo "  $0 archivo.pdf PEDIMENTO_ADUANAL,FACTURA_HONORARIOS" >&2
+  exit 2
+fi
+
 if [[ -z "$STACK_NAME" ]]; then
   if [[ "$ENV" == "prod" ]]; then
     STACK_NAME="$PROD_STACK"
@@ -124,7 +158,8 @@ if [[ -z "$STACK_NAME" ]]; then
 fi
 
 if [[ -z "$FILE" ]]; then
-  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
+  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
+  echo "     TIPO_DOCUMENTO acepta varios tipos y sufijos :N/:all, sin espacios." >&2
   exit 2
 fi
 
@@ -236,6 +271,7 @@ trap 'rm -f "$REQ_BODY_FILE"' EXIT
 {
   printf '{"fileName":"%s"' "$FILE_NAME"
   [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
+  [[ -n "$OCCURRENCE_MODE" ]] && printf ',"occurrenceMode":"%s"' "$OCCURRENCE_MODE"
   [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
   printf '}'
 } > "$REQ_BODY_FILE"

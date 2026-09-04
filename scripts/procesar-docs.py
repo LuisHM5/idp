@@ -308,7 +308,8 @@ def main() -> int:
     )
     parser.add_argument(
         "type_pos", nargs="?", metavar="TYPE",
-        help="TYPE_ID declarado (2do posicional, ej. PEDIMENTO_ADUANAL) — alias corto de --type.",
+        help="TYPE_ID declarado (2do posicional, ej. PEDIMENTO_ADUANAL), o varios "
+        "separados por coma — alias corto de --type.",
     )
     parser.add_argument(
         "model_pos", nargs="?", metavar="MODEL",
@@ -322,8 +323,18 @@ def main() -> int:
     parser.add_argument(
         "--type",
         help="[igual que el 2do posicional] TYPE_ID declarado. Obligatorio para .xml/.xlsx/.csv (no hay "
-        "clasificación automática por visión sobre datos ya estructurados); opcional para .pdf (si se "
-        "omite, el segmentador auto-clasifica).",
+        "clasificación automática por visión sobre datos ya estructurados, y ahí sólo se acepta UNO); "
+        "opcional para .pdf (si se omite, el segmentador auto-clasifica). VARIOS separados por coma "
+        "(--type PEDIMENTO_ADUANAL,FACTURA_HONORARIOS) segmenta el archivo y clasifica cada documento "
+        "encontrado entre ESOS tipos solamente; la salida omite lo demás. Sin sufijo, cada "
+        "tipo usa --occurrence-mode; :N/:all lo sobrescribe.",
+    )
+    parser.add_argument(
+        "--occurrence-mode", choices=("single", "multiple"),
+        help="cardinalidad de los tipos sin :N/:all: single conserva la primera; "
+        "multiple conserva todas. Si se omite: catálogo; después single para un tipo, "
+        "multiple para varios. "
+        "Equivale al occurrenceMode de POST /documents.",
     )
     # pnpm forwards a literal "--" separator; argparse must not choke on it
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
@@ -333,7 +344,59 @@ def main() -> int:
     # silencio con el que perdió.
     if args.type and args.type_pos and args.type != args.type_pos:
         print(f"{YELLOW}--type ({args.type}) y el TYPE posicional ({args.type_pos}) no coinciden — usando --type{RESET}")
-    declared_type = args.type or args.type_pos
+    # Mismo contrato que `POST /documents`: un solo campo, varios tipos
+    # separados por coma, cada uno con un `:N`/`:all` opcional. Con un tipo,
+    # `declared_type` conserva exactamente el comportamiento de siempre (se
+    # honra el tipo, no se re-segmenta).
+    #
+    # El parseo se repite aquí a propósito en vez de importarlo: por el API las
+    # cuentas llegan ya serializadas como metadata de S3 (`TIPO=N`), y este
+    # script no pasa por el API. La gramática de entrada es la misma que ve el
+    # usuario (`TIPO:N`), y `tests/unit/node/upload-document-types.test.mjs`
+    # fija la del API.
+    declared_types: list = []
+    declared_counts: dict = {}
+    for item in (args.type or args.type_pos or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name, separator, raw_count = item.partition(":")
+        name = name.strip().upper()
+        raw_count = raw_count.strip().lower()
+        if raw_count == "all":
+            count = "all"
+        elif raw_count == "" and not separator:
+            count = None
+        elif raw_count.isdigit() and int(raw_count) >= 1:
+            count = int(raw_count)
+        else:
+            print(f"{RED}--type: cuenta inválida ':{raw_count}' en {name} "
+                  f"(usa :N con N>=1, o :all){RESET}")
+            return 2
+        if name not in declared_types:
+            declared_types.append(name)
+            declared_counts[name] = count
+        else:
+            prev = declared_counts[name]
+            if prev is None:
+                declared_counts[name] = count
+            elif count is not None:
+                declared_counts[name] = "all" if "all" in (prev, count) else max(prev, count)
+    # Un occurrenceMode explícito pisa catálogo/default global. Si se omite,
+    # dejamos sin materializar los tipos sin sufijo: process_pdf resolverá
+    # catálogo y luego single(uno)/multiple(varios), igual que el API.
+    if args.occurrence_mode:
+        default_count = "all" if args.occurrence_mode == "multiple" else 1
+        declared_counts = {
+            name: default_count if count is None else count
+            for name, count in declared_counts.items()
+        }
+    else:
+        declared_counts = {
+            name: count for name, count in declared_counts.items()
+            if count is not None
+        }
+    declared_type = declared_types[0] if len(declared_types) == 1 else None
     if args.model and args.model_pos and args.model != args.model_pos:
         print(f"{YELLOW}--model ({args.model}) y el MODEL posicional ({args.model_pos}) no coinciden — usando --model{RESET}")
     model_arg = args.model or args.model_pos
@@ -451,6 +514,7 @@ def main() -> int:
                             declared_type=declared_type,
                             expected_values=expected_values,
                             source_name=doc_path.name,
+                            declared_types=declared_types,
                         )
                     elif ext in ("xlsx", "csv"):
                         result = process_tabular(
@@ -459,6 +523,7 @@ def main() -> int:
                             declared_type=declared_type,
                             expected_values=expected_values,
                             source_name=doc_path.name,
+                            declared_types=declared_types,
                         )
                     else:
                         # A field-centric type isn't necessarily backed by a PDF —
@@ -474,12 +539,14 @@ def main() -> int:
                             model_id=model_arg,
                             source_name=doc_path.name,
                             source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
+                            declared_types=declared_types,
+                            declared_counts=declared_counts,
                         )
                 except Exception as e:
                     print(f"  {RED}ERROR: {e}{RESET}")
                     traceback.print_exc()
                     counts["ERROR"] = counts.get("ERROR", 0) + 1
-                    tipo_for_save = declared_type or "ERROR"
+                    tipo_for_save = declared_type or ",".join(declared_types) or "ERROR"
                     continue
 
                 status = result.get("status", "?")

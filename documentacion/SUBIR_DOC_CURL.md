@@ -60,7 +60,7 @@ con el que consultarás después, y la URL a la que subirás el archivo.
 RESP=$(curl -sS -X POST "$API/documents" \
   -H "Content-Type: application/json" \
   -H "x-api-key: $KEY" \
-  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"$TYPE\"}")
+  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"$TYPE\",\"occurrenceMode\":\"multiple\"}")
 
 echo "$RESP" | jq .
 ```
@@ -75,7 +75,14 @@ echo "DOC_ID=$DOC_ID"
 ```
 
 `documentType` es opcional. Si lo omites, el modelo clasifica y segmenta solo
-(más lento y más caro). Si lo mandas, se honra sin re-clasificar.
+(más lento y más caro). Si mandas **un** tipo, se honra sin re-clasificar. Si
+mandas **varios separados por coma** (`-d "documentType=PEDIMENTO_ADUANAL,FACTURA_HONORARIOS"`),
+el archivo sí se segmenta pero cada documento se clasifica sólo entre esos
+tipos; `documents[]` omite lo demás. El campo `occurrenceMode` del POST controla
+los tipos sin sufijo (`single` = primera, `multiple` = todas), y `:N`/`:all` lo
+sobrescribe por tipo. Si se omite, usa `occurrence_mode` del catálogo y después
+el default global (`single` con un tipo, `multiple` con varios). Un tipo pedido
+que no aparezca se reporta con rango `null` y revisión.
 
 ---
 
@@ -233,6 +240,7 @@ Los mensajes de API Gateway engañan. Esta tabla los traduce:
 | `403 SignatureDoesNotMatch` (XML) | La URL se alteró, o ya expiró | Repite el paso 1 |
 | `400 INLINE_UPLOAD_REMOVED` | Mandaste `contentBase64` | El modo inline ya no existe: usa los dos pasos |
 | `400 DOCUMENT_TYPE_REQUIRED` | Subiste `.xml`/`.xlsx`/`.csv` sin `documentType` | Esos formatos lo exigen: no hay clasificación automática |
+| `400 INVALID_DOCUMENT_TYPE` | Un tipo no es UPPER_SNAKE_CASE, la lista pasa de 8 tipos / 200 chars, o mandaste varios en un `.xml`/`.xlsx`/`.csv` | Revisa la lista; en fuentes estructuradas sólo se acepta uno |
 | `202` en el paso 3 | Todavía procesando | Respeta `Retry-After`; usa backoff con jitter |
 | `404` en el paso 3 | No existe o no es visible | No lo reintentes como estado pendiente |
 

@@ -13,6 +13,7 @@ pinned here:
 
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -559,3 +560,63 @@ def test_no_exhaustion_log_when_the_very_first_call_is_not_fallback_worthy(fake,
             bedrock.converse("hola", model_id="some-model", stage="extractor")
 
     assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+# --- bedrock.record_stage_degraded() / stage_degradations() / note_used_model() ---
+#
+# Distinct from fallback_events(): a CALLER's own retry loop (segmenter.py
+# re-issuing a fresh converse() call after a 200-OK-but-empty/truncated
+# response), not a swap _invoke_with_fallback made inside one call after a
+# ClientError. See pipeline/bedrock.py's docstring on _STAGE_DEGRADATIONS for
+# why this accumulates in a list instead of overwriting like _FALLBACK_EVENTS.
+
+
+def test_stage_degradations_starts_empty():
+    assert bedrock.stage_degradations() == {}
+
+
+def test_record_stage_degraded_accumulates_in_a_list():
+    """Unlike fallback_events(), which overwrites, a stage can degrade more
+    than once in one invocation (windowed segmentation calls the model once
+    per window) — every call must survive, not just the last."""
+    bedrock.record_stage_degraded("segmenter", {"pageStart": 1, "pageEnd": 10, "reason": "empty_response"})
+    bedrock.record_stage_degraded("segmenter", {"pageStart": 11, "pageEnd": 20, "reason": "output_truncated"})
+
+    events = bedrock.stage_degradations()["segmenter"]
+    assert len(events) == 2
+    assert [e["pageStart"] for e in events] == [1, 11]
+
+
+def test_a_stage_that_never_degraded_is_absent():
+    bedrock.record_stage_degraded("segmenter", {"pageStart": 1, "pageEnd": 1})
+    assert "extractor" not in bedrock.stage_degradations()
+
+
+def test_reset_clears_stage_degradations():
+    bedrock.record_stage_degraded("segmenter", {"pageStart": 1, "pageEnd": 1})
+    assert bedrock.stage_degradations() != {}
+
+    bedrock.reset_used_models()
+
+    assert bedrock.stage_degradations() == {}
+
+
+def test_note_used_model_corrects_used_models_without_resolve_model():
+    bedrock._USED_MODELS["segmenter"] = "original-model"
+    bedrock.note_used_model("segmenter", "retry-model")
+    assert bedrock.used_models()["segmenter"] == "retry-model"
+
+
+def test_record_stage_degraded_is_thread_safe():
+    """Windowed segmentation records from a ThreadPoolExecutor — every
+    concurrent write must land, none silently lost to a racing append."""
+    def _record(i):
+        bedrock.record_stage_degraded("segmenter", {"pageStart": i, "pageEnd": i})
+
+    threads = [threading.Thread(target=_record, args=(i,)) for i in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(bedrock.stage_degradations()["segmenter"]) == 50

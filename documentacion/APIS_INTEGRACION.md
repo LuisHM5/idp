@@ -34,9 +34,10 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 | 2 | `GET` | `/documents/{id}` | **Consultar** el resultado completo de un documento ya procesado, por su id | `query-lambda/index.mjs` |
 | 3 | `PATCH` | `/documents/{id}/metadata` | **Actualizar seguimiento externo**: estados transitorios, folios y marcas propios de la app, sin alterar la validación | `query-lambda/index.mjs` |
 | 4 | `GET` | `/documents/{id}/file` | **Descargar** el archivo original (el PDF/imagen/XML/XLSX/CSV que se subió, no el resultado) vía URL prefirmada de S3 | `query-lambda/index.mjs` |
-| 5 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata actual y/o cualquier campo extraído | `query-lambda/index.mjs` |
+| 5 | `POST` | `/documents/{id}/reprocess` | **Reprocesar** el archivo original con un id nuevo y, opcionalmente, otros tipos/cardinalidad/modelo | `query-lambda/index.mjs` |
+| 6 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata actual y/o cualquier campo extraído | `query-lambda/index.mjs` |
 
-**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.7 y en `API_USO.md` §4.
+**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.8 y en `API_USO.md` §5.
 
 ### 1.2 `POST /documents` — Iniciar el proceso de subida
 
@@ -57,11 +58,12 @@ El modo inline (`contentBase64`) fue eliminado — devuelve
 **tamaño** decidiera qué código corría: base64 infla ~33 %, y arriba de ~4 MB
 reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
-**Body** (`fileName` requerido; `documentType`, `metadata`, `modelId` opcionales). `metadata` es contexto libre del que sube que después se puede editar con `PATCH /documents/{id}/metadata` (1.5) y filtrar con `GET /documents?meta.<clave>=` (1.6); admite claves `[a-z0-9][a-z0-9._-]*`, valores planos US-ASCII y 2 KB de tope — lo demás es `400 INVALID_METADATA`. Acepta `application/json` o `application/x-www-form-urlencoded`:
+**Body** (`fileName` requerido; `documentType`, `occurrenceMode`, `metadata`, `modelId` opcionales). `occurrenceMode` acepta `single` o `multiple` y sobrescribe el default de catálogo de cada tipo sin sufijo `:N`/`:all`. Si se omite, manda el catálogo; si éste no define `occurrence_mode`, aplica `single` con un tipo y `multiple` con varios. `metadata` es contexto libre del que sube que después se puede editar con `PATCH /documents/{id}/metadata` (1.6) y filtrar con `GET /documents?meta.<clave>=` (1.7); admite claves `[a-z0-9][a-z0-9._-]*`, valores planos US-ASCII y 2 KB de tope — lo demás es `400 INVALID_METADATA`. Acepta `application/json` o `application/x-www-form-urlencoded`:
 ```json
 {
   "fileName": "pedimento.pdf",
   "documentType": "PEDIMENTO_ERP",
+  "occurrenceMode": "single",
   "metadata": {
     "lote": "A123",
     "folio_erp": "4711",
@@ -73,7 +75,13 @@ reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 
 **Respuesta 200**: `{ "documentId", "bucket", "key", "documentType", "classificationMode", "uploadUrl", "processingStatus": "AWAITING_UPLOAD", "statusUrl", "retryAfterSeconds" }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3). El registro ligero ya existe antes del PUT.
 
-`documentType` es opcional: si se omite, Bedrock clasifica automáticamente; si se envía, se salta la clasificación (más rápido/barato) **y se fuerza** ese tipo — útil cuando el sistema que integra ya sabe qué tipo de documento está mandando.
+`documentType` es opcional y admite **uno o varios tipos separados por coma**:
+
+- **uno** — se salta la clasificación (más rápido/barato) **y se fuerza** ese tipo, sin re-segmentar. Útil cuando el sistema que integra ya sabe exactamente qué está mandando.
+- **varios** (`PEDIMENTO_ADUANAL,FACTURA_HONORARIOS`) — el archivo se segmenta y cada documento encontrado se clasifica **sólo** entre esos tipos; `documents[]` omite todo lo demás. Sin `occurrenceMode`, cada catálogo manda y los tipos que no definan `occurrence_mode` buscan todas por el default global de varios tipos. `single` permite limitar todos a la primera y `:N`/`:all` prevalece por tipo. Si un tipo pedido no aparece, se devuelve un marcador `REVIEW_REQUIRED` con rango `null`, que no cuenta como documento encontrado. `classificationMode` responde `guided`.
+- **omitido** — Bedrock clasifica contra todo el catálogo.
+
+En `.xml`/`.xlsx`/`.csv` es obligatorio y sólo se acepta un tipo.
 
 ### 1.3 `GET /documents/{id}` — Consultar un resultado
 
@@ -129,9 +137,33 @@ Devuelve, en JSON, una **URL prefirmada de S3** (`downloadUrl`, no los bytes) pa
 
 No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que `POST /documents` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
 
-`404 NOT_FOUND` si el id no existe o queda fuera del alcance de la app; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las implicaciones de la URL temporal (ver 1.7): [`API_USO.md`](API_USO.md) §4.
+`404 NOT_FOUND` si el id no existe o queda fuera del alcance de la app; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las implicaciones de la URL temporal (ver 1.8): [`API_USO.md`](API_USO.md) §5.
 
-### 1.5 `PATCH /documents/{id}/metadata` — Actualizar seguimiento externo
+### 1.5 `POST /documents/{id}/reprocess` — Crear otro proceso desde el original
+
+Resuelve el id viejo (completo o prefijo), aplica la misma autorización de
+lectura y localiza el objeto en `processed/{id}/` o `failed/{id}/`. Después
+reserva una fila nueva en DynamoDB y ejecuta `CopyObject` hacia
+`raw/{TIPOS?}/{nuevoId}/{filename}`. La creación de esa copia dispara el flujo
+normal; no se transfieren bytes por HTTP y el documento/resultados anteriores
+no cambian.
+
+El body es opcional y acepta `documentType`, `occurrenceMode` (o
+`occurrence_mode`) y `modelId`. La gramática de tipos y precedencia de
+cardinalidad es idéntica a 1.2. Omitir `documentType` hereda la declaración
+anterior y sus cuentas explícitas; `null`/vacío fuerza auto. La metadata actual
+se conserva. Responde `202` con id nuevo, `reprocessedFrom`, `QUEUED`,
+`statusUrl`, `Location` y `Retry-After`.
+
+Una key válida pero no registrada conserva lectura por compatibilidad, pero es
+read-only: no puede reprocesar ni hacer PATCH. Toda app registrada sí puede
+reprocesar los documentos que su `AccessScope`/`AllowedDocTypes` le permita ver.
+
+`409 SOURCE_NOT_READY` indica que el objeto aún sigue en `raw/`; `404
+FILE_NOT_FOUND`, que ya no existe bajo `processed/`/`failed/`. Un fallo de copia
+marca el trabajo nuevo `FAILED` y responde `500 REPROCESS_COPY_FAILED`.
+
+### 1.6 `PATCH /documents/{id}/metadata` — Actualizar seguimiento externo
 
 Aplica un JSON Merge Patch plano a la columna mutable `Metadata`: un valor
 escalar crea/reemplaza, `null` o `""` borra y una clave ausente se conserva.
@@ -146,7 +178,7 @@ Una app registrada necesita `AllowMetadataWrite=true` (`pnpm apps:grant --
 si dos integraciones escriben a la vez, relee/reaplica para no perder claves
 independientes. Devuelve la metadata completa, versión, fecha y app autora.
 
-### 1.6 `GET /documents` — Buscar/listar
+### 1.7 `GET /documents` — Buscar/listar
 
 Cuatro filtros combinables, **todos en AND** (al menos uno es obligatorio):
 
@@ -159,11 +191,11 @@ Cuatro filtros combinables, **todos en AND** (al menos uno es obligatorio):
 
 Soporta además `status`, `since`/`until`, `order`, `limit`, `summary`, `full`. Sin `docType`, hace `Scan` completo de la tabla (más lento, adecuado para volumen moderado). `system` y `meta.<clave>` leen una sola clave conocida del envelope, así que —a diferencia de `field`/`value`— no están detrás del permiso `AllowFieldSearch`.
 
-### 1.7 Autenticación, límites y alcance de acceso (por ambiente)
+### 1.8 Autenticación, límites y alcance de acceso (por ambiente)
 
 | | dev | prod |
 |---|---|---|
-| Auth | Ninguna (abierto) | **`x-api-key`** obligatorio en los 5 endpoints — sin key válida, `403` nativo de API Gateway sin invocar Lambda |
+| Auth | Ninguna (abierto) | **`x-api-key`** obligatorio en los 6 endpoints — sin key válida, `403` nativo de API Gateway sin invocar Lambda |
 | Rate limit | No | WAFv2 (rate-based + reglas gestionadas) + usage plan (throttle/cuota por key) |
 | Payload (upload) | Igual en ambos | El archivo nunca pasa por la API: `POST` devuelve URL y el cliente hace `PUT` directo a S3 |
 | Payload (descarga, 1.4) | Igual en ambos | Sin tope propio — nunca pasa por Lambda/API Gateway, hereda el tamaño que tenga el archivo en S3 |
@@ -176,8 +208,8 @@ descarga o modifica documentos cuyo `tracking.appOrigin` coincide con su
 restringir más. `AccessScope=all` es un grant administrativo explícito. Dos
 casos conservan lectura irrestricta por compatibilidad — dev sin key y una key
 válida todavía no adoptada — pero una key no registrada **no puede escribir
-metadata**. Una URL de descarga ya emitida sigue siendo una credencial de vida
-corta y debe tratarse como secreto. Ver `API_USO.md` §3/§4 y
+metadata ni iniciar reprocesos**. Una URL de descarga ya emitida sigue siendo una credencial de vida
+corta y debe tratarse como secreto. Ver `API_USO.md` §3/§4/§5 y
 `AMBIENTES_Y_SEGURIDAD.md`.
 
 ---
@@ -228,6 +260,7 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 | `GetObject` | `query-lambda/index.mjs` | Lee `results/{id}.json` para responder `?full=1` |
 | `ListObjectsV2` | `query-lambda/index.mjs` | `GET /documents/{id}/file`: localiza el objeto original bajo `processed/{id}/` (o `failed/{id}/`) sin asumir el nombre de archivo |
 | `GetObject` (vía URL presignada, `getSignedUrl`) | `query-lambda/index.mjs` | `GET /documents/{id}/file`: firma la URL de descarga, el cliente hace el `GET`, no la Lambda — simétrico al `PutObject` presignado de la subida |
+| `HeadObject` + `CopyObject` | `query-lambda/index.mjs` | `POST /documents/{id}/reprocess`: recupera metadata y copia el original de `processed/`/`failed/` a una key nueva en `raw/`; no descarga bytes |
 | `DownloadFile` (transfer manager) | Código propio — `model-invoke-lambda/index.py` | Descarga el archivo para la llamada de visión del flujo estándar |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createSuccessChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Al terminar la ejecución SIN excepción (incluida una validación RECHAZADA — es un resultado de negocio, no una falla): mueve `raw/{TIPO?}/{uuid}/archivo` → `processed/{documentId}/{filename}`. Código propio no lo invoca directamente. |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createFailedChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Mismo movimiento pero a `failed/{documentId}/{filename}`, solo cuando la propia ejecución de Step Functions revienta (excepción no capturada, timeout) — no cuando el documento simplemente sale RECHAZADO. |
@@ -244,6 +277,7 @@ Tres tablas distintas, mismo servicio:
 | `Query` | `query-lambda/index.mjs` | tracking | Vía GSI `DocumentTypeIndex` — la ruta indexada, sin `Scan` |
 | `BatchGetItem` | `query-lambda/index.mjs` | tracking | Trae el envelope completo de los ids que matchearon el índice |
 | `UpdateItem` condicional | `query-lambda/index.mjs` | tracking | `PATCH /documents/{id}/metadata`: actualiza `Metadata` y su versión/auditoría; no toca `EnrichmentResult` |
+| `PutItem` + `UpdateItem` | `query-lambda/index.mjs` | tracking | reproceso: reserva el id nuevo antes de copiar; si `CopyObject` falla lo marca `FAILED` |
 | `UpdateItem` | `enrichment-lambda/indexing.py` | tracking | Promueve columnas indexadas al terminar de validar |
 | `UpdateItem` | SQS consumer (`patches/default-sqs-consumer-index.py`) | tracking | Marca `QUEUED` al recibir `ObjectCreated`, sin hacer retroceder entregas duplicadas |
 | `UpdateItem` | `status-event-lambda/index.py` | tracking | Proyecta eventos terminales a `FINISHED` o `FAILED` |
@@ -279,9 +313,10 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 |---|---|---|---|---|
 | `POST /documents` | Interna | Entrante (terceros → nosotros) | — | `API_USO.md` §1 |
 | `GET /documents/{id}` | Interna | Entrante | — | `API_USO.md` §2 |
-| `PATCH /documents/{id}/metadata` | Interna | Entrante | — | `API_USO.md` §3 |
-| `GET /documents/{id}/file` | Interna | Entrante | — | `API_USO.md` §4 |
-| `GET /documents` | Interna | Entrante | — | `API_USO.md` §5 |
+| `POST /documents/{id}/reprocess` | Interna | Entrante | — | `API_USO.md` §3 |
+| `PATCH /documents/{id}/metadata` | Interna | Entrante | — | `API_USO.md` §4 |
+| `GET /documents/{id}/file` | Interna | Entrante | — | `API_USO.md` §5 |
+| `GET /documents` | Interna | Entrante | — | `API_USO.md` §6 |
 | Amazon Bedrock (Converse/InvokeModel) | Externa | Saliente (nosotros → AWS) | Alta — es el motor de IA del producto | `ARQUITECTURA.md`, `COSTOS.md` |
 | Amazon Textract | Externa | Saliente | Media — solo OCR de páginas escaneadas | `ARQUITECTURA.md` |
 | Amazon S3 | Externa | Saliente | Alta — almacenamiento de todo el pipeline | `ARQUITECTURA.md` |

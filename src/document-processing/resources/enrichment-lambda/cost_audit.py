@@ -30,6 +30,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from indexing import display_name_for
+from pipeline.envelope import index_type_of
 from pipeline.pricing import PRICING_VERSION, bedrock_cost, lambda_cost, textract_cost
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,33 @@ def _upstream_bedrock_cost(event: Dict[str, Any], key: str) -> Dict[str, Any]:
     return bedrock_cost(phase.get("usage"), phase.get("modelId"))
 
 
+def _segmentation_cost(segmentation: Dict[str, Any]) -> Dict[str, Any]:
+    """`bedrock_cost` for the segmentation usage line — normally a single
+    `(modelId, usage)` pair, priced at that model's own rate. Windowed
+    segmentation or a caller-level retry on a degraded response (see
+    `pipeline/segmenter.py::_classify_pages`/`_classify_windowed`) can leave
+    calls spread across more than one model in the SAME invocation; when
+    that happened, `segmentation["perModel"]` (see
+    `pipeline/segmenter.py::_aggregate_usage`) carries the true per-model
+    split, and each part is priced at ITS OWN rate instead of one model's
+    tokens getting priced at another's."""
+    per_model = segmentation.get("perModel")
+    if not per_model:
+        return bedrock_cost(segmentation.get("usage"), segmentation.get("modelId"))
+    parts = [bedrock_cost(m.get("usage"), m.get("modelId")) for m in per_model]
+    return {
+        "modelId": segmentation.get("modelId"),
+        "inputTokens": sum(p.get("inputTokens", 0) for p in parts),
+        "outputTokens": sum(p.get("outputTokens", 0) for p in parts),
+        "cacheReadTokens": sum(p.get("cacheReadTokens", 0) for p in parts),
+        "cacheWriteTokens": sum(p.get("cacheWriteTokens", 0) for p in parts),
+        "pricingVersion": PRICING_VERSION,
+        "costUsd": round(sum(p["costUsd"] for p in parts), 6),
+        **({"approximatePricing": True} if any(p.get("approximatePricing") for p in parts) else {}),
+        "perModel": parts,
+    }
+
+
 def _page_counts(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     pages = result.get("pages")
     if not isinstance(pages, dict) or not pages.get("totalPages"):
@@ -91,7 +119,7 @@ def build_cost_breakdown(
     services = {
         "BedrockClassificationUpstream": _upstream_bedrock_cost(event, "classificationResult"),
         "BedrockProcessingUpstream": _upstream_bedrock_cost(event, "processingResult"),
-        "BedrockSegmentation": bedrock_cost(segmentation.get("usage"), segmentation.get("modelId")),
+        "BedrockSegmentation": _segmentation_cost(segmentation),
         # Localizador de páginas por IA: solo se invoca cuando los marcadores
         # del catálogo no alcanzaron y el tipo declara tamaño variable. $0 en
         # el caso normal, porque no se llama.
@@ -156,7 +184,13 @@ def write_cost_record(
         return None
 
     breakdown = build_cost_breakdown(result, event, duration_ms)
-    classification = str(result.get("documentClassification") or "OTRO").strip().upper() or "OTRO"
+    # Reducida al contenedor igual que la columna indexada (ver
+    # `envelope.index_type_of`): un expediente mixto reporta varios tipos
+    # separados por coma, y agrupar el costo por cada combinación distinta
+    # partiría el reporte en filas que no se pueden comparar entre sí.
+    classification = index_type_of(
+        str(result.get("documentClassification") or "OTRO").strip().upper() or "OTRO"
+    )
     source = source_key or result.get("sourceFile") or ""
 
     item: Dict[str, Any] = {

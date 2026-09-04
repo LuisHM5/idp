@@ -83,7 +83,7 @@ Los colores de los nodos siguen la paleta oficial por categoría de servicio de 
 
 🟠 Compute (Lambda) · 🟢 Storage (S3) · 🔵 Database (DynamoDB) · 🩷 App Integration (SQS, EventBridge, Step Functions) · 🟣 Networking (API Gateway) · 🔴 Security (KMS) · 🩵 Machine Learning (Bedrock, Textract) · ⚫ Cliente / externo
 
-![Diagrama de arquitectura AWS: Cliente registra el documento por API Gateway, sube directo a S3 raw/ con URL prefirmada, dispara SQS y Step Functions; la Enrichment Lambda escribe resultados y la Query Lambda atiende consultas y PATCH de metadata en DynamoDB.](diagrams/arquitectura-aws.png)
+![Diagrama de arquitectura AWS: Cliente registra el documento por API Gateway, sube directo a S3 raw/ con URL prefirmada, dispara SQS y Step Functions; la Enrichment Lambda escribe resultados y la Query Lambda atiende consultas, PATCH de metadata y reprocesos que copian el original de vuelta a raw/.](diagrams/arquitectura-aws.png)
 
 _Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mmd)._
 
@@ -101,7 +101,7 @@ _Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mm
 | **S3 `results/`**              | Resultado **completo**: todos los campos, arrays completos, checks y confianzas.                                                                                                                                                                                 |
 | **EventBridge (`idp-broker`)** | Publica la notificación terminal (`document-processed-successful` o `document-processing-failed`) con el id y datos de origen. El resultado enriquecido se consulta por id en DynamoDB/S3.                                                                         |
 | **Status Lambda**              | Consume ambos eventos terminales y proyecta el detalle interno del workflow al contrato público `FINISHED`/`FAILED`, después del movimiento del archivo. |
-| **Query Lambda**               | Atiende `GET /documents*` y `PATCH /documents/{id}/metadata`: lee DynamoDB/S3, aplica alcance por app y escribe únicamente la metadata externa cuando `AllowMetadataWrite` lo permite.                                                                          |
+| **Query Lambda**               | Atiende `GET /documents*`, `PATCH /documents/{id}/metadata` y `POST /documents/{id}/reprocess`: aplica alcance por app, lee DynamoDB/S3 y, al reprocesar, reserva un id nuevo y copia el original server-side de `processed/`/`failed/` a `raw/`.                                                                          |
 | **KMS**                        | En prod, un CMK compartido cifra los recursos del pipeline, incluido S3. Dev usa cifrado administrado por cada servicio y no crea CMKs propios. Ver `COSTOS.md`.                                                                                                  |
 
 Seguridad por ambiente (API keys, WAFv2, dominio propio) solo aplica a **prod**, gateada por `environment === "prod"` — detalle completo en [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md).

@@ -322,17 +322,31 @@ def test_declared_type_without_multi_instance_stays_one_segment(monkeypatch):
 
 
 def test_declared_type_with_multi_instance_yields_one_segment_per_invoice(monkeypatch):
+    import document_catalog
     from document_catalog import _parse_entry
     from pipeline import segmenter
 
-    entry = _parse_entry("FACTURA_FLETE_EXTRANJERO", {"fields": {}, "page_selection": FACTURA_SPEC})
+    entry = _parse_entry(
+        "FACTURA_FLETE_EXTRANJERO",
+        {
+            "fields": {},
+            "occurrence_mode": "multiple",
+            "page_selection": FACTURA_SPEC,
+        },
+    )
     monkeypatch.setattr(segmenter, "get_type_entry", lambda _t: entry)
+    monkeypatch.setattr(document_catalog, "get_type_entry", lambda _t: entry)
     segments, usage = segmenter.segment_pages(
-        _expediente_840(), declared_type="FACTURA_FLETE_EXTRANJERO"
+        _expediente_840(), declared_type="FACTURA_FLETE_EXTRANJERO",
     )
     # Sin llamada a Bedrock: el partidor es puro regex sobre texto ya extraído.
     assert usage == {}
-    assert [(s.page_start, s.page_end) for s in segments] == [(9, 9), (10, 10), (16, 16)]
+    assert [(s.page_start, s.page_end) for s in segments] == [
+        (9, 9),
+        (10, 10),
+        (16, 16),
+        (25, 25),
+    ]
     assert all(s.doc_type == "FACTURA_FLETE_EXTRANJERO" for s in segments)
 
 
@@ -565,6 +579,70 @@ def test_classifier_path_marks_a_repeated_invoice_as_a_copy(monkeypatch):
     copia = next(s for s in resultado if s.doc_type == "OTRO")
     assert copia.page_start == 22
     assert copia.subtype == "COPIA_DUPLICADA"
+
+
+def test_classifier_path_multiple_preserva_la_copia_fisica(monkeypatch):
+    from document_catalog import _parse_entry
+    from pipeline.segmenter import Segment, _collapse_duplicate_segments
+
+    entry = _parse_entry(
+        "FACTURA_FLETE_EXTRANJERO",
+        {
+            "fields": {},
+            "page_selection": FACTURA_SPEC,
+        },
+    )
+    monkeypatch.setattr("pipeline.segmenter.get_type_entry", lambda _t: entry)
+    pages = [
+        _page(1, WONDERFUL.format(num="SJ191703", total="14,612.40")),
+        _page(2, WONDERFUL.format(num="SJ191703", total="14,612.40")),
+    ]
+    resultado = _collapse_duplicate_segments(
+        [
+            Segment("FACTURA_FLETE_EXTRANJERO", 1, 1, 0.9),
+            Segment("FACTURA_FLETE_EXTRANJERO", 2, 2, 0.9),
+        ],
+        pages,
+        {"FACTURA_FLETE_EXTRANJERO": "all"},
+    )
+    assert [segment.doc_type for segment in resultado] == [
+        "FACTURA_FLETE_EXTRANJERO",
+        "FACTURA_FLETE_EXTRANJERO",
+    ]
+
+
+def test_expediente_840_corrige_el_rango_9_10_y_devuelve_cuatro(monkeypatch):
+    """Regresión del invoices-flete.pdf: el modelo agrupó 9-10, dejó 16 aparte
+    y detectó 25 como copia. `multiple` debe publicar cuatro ocurrencias."""
+    from document_catalog import _parse_entry
+    from pipeline import segmenter
+    from pipeline.segmenter import Segment
+
+    entry = _parse_entry(
+        "FACTURA_FLETE_EXTRANJERO",
+        {
+            "fields": {},
+            "page_selection": FACTURA_SPEC,
+        },
+    )
+    monkeypatch.setattr(segmenter, "get_type_entry", lambda _t: entry)
+    segmentos = [
+        Segment("FACTURA_FLETE_EXTRANJERO", 9, 10, 0.94),
+        Segment("FACTURA_FLETE_EXTRANJERO", 16, 16, 0.90),
+        Segment("FACTURA_FLETE_EXTRANJERO", 25, 25, 0.88),
+    ]
+
+    resultado = segmenter._split_typed_instances(
+        segmentos, _ocr("260708236001840"),
+        {"FACTURA_FLETE_EXTRANJERO": "all"},
+    )
+
+    assert [(s.page_start, s.page_end) for s in resultado] == [
+        (9, 9),
+        (10, 10),
+        (16, 16),
+        (25, 25),
+    ]
 
 
 def test_classifier_path_leaves_different_invoices_alone(monkeypatch):

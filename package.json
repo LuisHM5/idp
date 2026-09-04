@@ -15,6 +15,8 @@
     "sync:one:prod": "node scripts/sync-schema.mjs --one --env prod",
     "setup:python": "python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt",
     "test:unit": ".venv/bin/pytest tests/unit -q && node --test \"tests/unit/node/*.test.mjs\"",
+    "test:quality": ".venv/bin/python scripts/run-quality-tests.py",
+    "test:real": ".venv/bin/python scripts/run-real-tests.py",
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",
     "comparar": "bash scripts/comparar-documento.sh",
     "test:e2e:pedimento": ".venv/bin/python scripts/test-e2e-pedimento.py",

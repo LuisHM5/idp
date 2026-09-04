@@ -45,6 +45,15 @@ function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function validateOccurrenceMode(typeId, entry, file) {
+  if (!("occurrence_mode" in entry)) return;
+  if (!new Set(["single", "multiple"]).has(entry.occurrence_mode)) {
+    throw new Error(
+      `${file}: ${typeId}.occurrence_mode debe ser "single" o "multiple"`
+    );
+  }
+}
+
 /** "PEDIMENTO_ADUANAL" -> "Pedimento Aduanal" (nombre por defecto del tipo). */
 function titleize(typeId) {
   return typeId
@@ -103,6 +112,7 @@ function main() {
     // Each type file is { "<TYPE_ID>": { ...entry } }.
     for (const [typeId, entry] of Object.entries(data)) {
       if (typeId.startsWith("_")) continue;
+      validateOccurrenceMode(typeId, entry, file);
       if (documentTypes[typeId]) {
         console.warn(`  ⚠ tipo duplicado '${typeId}' (${file}) — se sobrescribe`);
       }

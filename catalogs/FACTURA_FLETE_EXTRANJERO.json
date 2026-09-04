@@ -1,6 +1,7 @@
 {
   "FACTURA_FLETE_EXTRANJERO": {
-    "schema_version": "5.1.0",
+    "schema_version": "5.2.0",
+    "occurrence_mode": "multiple",
     "display_name": "Factura Extranjera (mercancía, flete o servicios)",
     "aliases": [
       "factura extranjera",
@@ -54,7 +55,7 @@
         "BILL\\s+TO|SOLD\\s+TO"
       ],
       "page_of_pattern": "Page\\s+(\\d+)\\s+of\\s+(\\d+)",
-      "__COMENTARIO_copias__": "El expediente imprime la misma factura dos veces (el original y una copia anotada a mano por el agente aduanal). Con la identidad impresa —el número de factura, primer grupo de captura— las copias colapsan en una sola instancia: se conserva el tramo MÁS LARGO por identidad. Es una LISTA y no un solo regex con alternancia porque el grupo 1 solo existiría en la primera rama. Los dos patrones se prueban en orden y gana el primero que capture. El primero cubre el caso normal (valor pegado a la etiqueta: 'Invoice #: 517157'). El segundo existe por Wonderful Citrus, que imprime el número en una TABLA: Textract devuelve la fila de etiquetas, luego texto de OTRA columna, y despues los valores ('Invoice Number Invoice Date Invoice Due Date | AVE CRISTOBAL COLON NO 11534 COL COMPLEJO INDUSTRIAL CHIHUAHUA | SJ191703-1 07/27/2026'). Por eso deja pasar hasta 120 caracteres de ruido y ancla en la FORMA del valor (letras seguidas de digitos) en vez de en la distancia: sin eso capturaba 'DESTINATARIO' o 'AVE' y dos facturas distintas parecian la misma. El \\b final descarta el RFC OFU910626UQ0, que si no encajaria. Limitacion conocida: un proveedor que imprima un numero SOLO de digitos en una tabla asi no se dedupica (se conservan las dos copias, que es el lado seguro). Fail-open: una factura cuyo numero no se pueda leer nunca se descarta.",
+      "__COMENTARIO_copias__": "El expediente puede imprimir la misma factura dos veces (original y copia anotada). occurrenceMode se declara por POST: con single/:1 se usa la identidad para elegir la impresión más completa; con multiple/:all/:N>1 ambas se conservan como ocurrencias físicas. Es una LISTA y no un regex con alternancia porque el grupo 1 solo existiría en la primera rama. El primer patrón cubre el valor pegado a la etiqueta ('Invoice #: 517157'); el segundo cubre Wonderful Citrus, donde Textract devuelve una tabla y el valor aparece hasta 120 caracteres después. El \\b final evita confundir el RFC OFU910626UQ0. Si la identidad no se puede leer, el comportamiento es fail-open: nunca se descarta por deduplicación.",
       "duplicate_key_pattern": [
         "INVOICE\\s*(?:#|(?:NO\\.?|NUMBER)\\b)\\s*:?\\s*([A-Z]{1,5}\\d{3,}(?:-\\d+)?|\\d{4,}(?:-\\d+)?)\\b",
         "INVOICE\\s*(?:#|(?:NO\\.?|NUMBER)\\b)[\\s\\S]{0,120}?\\b([A-Z]{1,5}\\d{3,}(?:-\\d+)?)\\b"

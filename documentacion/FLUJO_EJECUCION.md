@@ -43,8 +43,18 @@ Puntos clave:
 
 ### 1. Subida
 - `upload-lambda/index.mjs:handler` — valida, y escribe a `raw/{TIPO}/{uuid}/file`
-  si el usuario declaró `documentType`, o `raw/{uuid}/file` si no. El **prefijo
-  con tipo** es cómo el usuario "fuerza" la clasificación.
+  si el usuario declaró `documentType`, `raw/{A,B}/{uuid}/file` si declaró varios
+  separados por coma, o `raw/{uuid}/file` si no declaró ninguno. El **prefijo con
+  tipo** es cómo el usuario "fuerza" la clasificación, y el único carrier de esa
+  señal: lo releen por su cuenta el consumidor de SQS, la model-invoke Lambda y
+  la de enrichment. Con varios tipos no se fuerza nada — se ACOTA: el archivo se
+  segmenta igual, pero el clasificador sólo puede elegir entre los declarados;
+  el resultado omite los demás segmentos. El `occurrenceMode` del POST se
+  convierte en la cuenta de cada tipo sin sufijo (`single` = primera,
+  `multiple` = todas). Si se omite, enrichment consulta `occurrence_mode` del
+  catálogo y, sólo si falta, usa `single` para un tipo/`multiple` para varios.
+  `:N`/`:all` prevalece por tipo. Los tipos solicitados ausentes salen como
+  marcadores con rango `null`.
 - **Un solo flujo, dos pasos, para cualquier tamaño:** `POST /documents` lleva solo
   metadata y devuelve una URL prefirmada de S3 (`uploadUrl`);
   el cliente sube con `PUT` directo a esa URL. El archivo nunca pasa por API

@@ -3,7 +3,7 @@ flowchart TB
     CLIENTE["Cliente"]:::client
 
     UP["POST /documents<br/>→ URL de upload"]:::network
-    QG["GET /documents*<br/>PATCH metadata"]:::network
+    QG["GET /documents* · PATCH metadata<br/>POST /documents/{id}/reprocess"]:::network
 
     RAW[("S3 raw/")]:::storage
     SQS["SQS"]:::integration
@@ -44,6 +44,7 @@ flowchart TB
     CLIENTE -->|"consulta / marca"| QG --> QL
     QL --> DDBT
     QL --> RES
+    QL -->|"CopyObject reproceso"| RAW
 
     classDef compute fill:#ED7100,stroke:#9D4E00,color:#fff,font-weight:bold
     classDef storage fill:#7AA116,stroke:#4B6B0B,color:#fff,font-weight:bold

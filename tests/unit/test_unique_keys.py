@@ -228,6 +228,22 @@ def test_a_document_inside_an_expediente_is_keyed_by_its_own_type(result):
     assert row["ValidationStatus"] == "APROBADO"
 
 
+def test_una_clasificacion_mixta_se_reporta_como_contenedor_en_ContainerType():
+    """`documentClassification` de un expediente mixto trae los tipos separados
+    por coma; `ContainerType` no.
+
+    Esa columna responde "¿venía suelto o dentro de un paquete?", así que repetir
+    ahí la lista de tipos no agrega nada y rompe la comparación con las filas ya
+    escritas antes de que la clasificación pasara a ser una lista.
+    """
+    result = _v2_result()
+    result["documentClassification"] = "PEDIMENTO_ADUANAL,FACTURA_FLETE_EXTRANJERO"
+    rows = unique_keys.derive_unique_keys(result)
+    assert len(rows) == 1
+    assert rows[0]["DocumentType"] == "PEDIMENTO_ADUANAL"
+    assert rows[0]["ContainerType"] == "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
+
+
 def test_two_fields_normalizing_to_the_same_key_write_one_row():
     """The printed number ("26 07 0823 6001630") and the normalized one are
     the same identifier — one row, attributed to the first declaration."""

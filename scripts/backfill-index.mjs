@@ -165,6 +165,10 @@ function deriveAttributes(envelope) {
   const expediente = envelope.expediente || {};
   const contained = new Set([type]);
   for (const doc of readDocuments(envelope)) {
+    if (
+      Object.hasOwn(doc, "pageStart") && doc.pageStart === null &&
+      Object.hasOwn(doc, "pageEnd") && doc.pageEnd === null
+    ) continue;
     const t = String(doc.documentType || "").trim().toUpperCase();
     if (t) contained.add(t);
   }

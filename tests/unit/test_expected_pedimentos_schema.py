@@ -99,6 +99,11 @@ def test_expected_pedimentos_json_is_valid(expected_data: dict) -> None:
     assert expected_data["files"], "expected_pedimentos.json has no files entries"
 
 
+def test_every_paid_fixture_has_a_sha256(expected_data: dict) -> None:
+    for file_name, entry in expected_data["files"].items():
+        assert re.fullmatch(r"[0-9a-f]{64}", entry.get("sha256", "")), file_name
+
+
 def test_expect_documents_have_at_least_one_declared_type(expected_data: dict) -> None:
     for file_name, i, doc in _iter_doc_expectations(expected_data):
         types = doc.get("type")

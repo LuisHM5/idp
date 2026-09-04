@@ -31,7 +31,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from document_catalog import FieldSpec, TypeRegistryEntry, get_type_entry
 from validators import engine
@@ -179,12 +179,21 @@ def process_xml(
     declared_type: Optional[str] = None,
     expected_values: Optional[Dict[str, str]] = None,
     source_name: str = "",
+    declared_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Process a single standalone XML document and return the full result,
     shaped exactly like `pipeline.expediente.process_pdf`'s return value (one
     entry in `documents`, same `tracking`/`status`/`crossDocumentChecks`
     envelope) so `handler.py`'s downstream assembly needs no branch on which
     pipeline produced it.
+
+    A list of several `declared_types` is rejected rather than resolved to the
+    first one: there is no classification step here to CHOOSE between schemas —
+    every field is resolved by xpath against exactly one type — so a caller that
+    sent a list would otherwise be told its file had been searched for several
+    when it was only ever read as one. `POST /documents` already refuses it; this
+    is the same rule for callers that reach the pipeline directly (e.g.
+    `scripts/procesar-docs.py`).
     """
     started = time.time()
     started_at = datetime.now(timezone.utc)
@@ -198,6 +207,14 @@ def process_xml(
             processing_id, source_name, message,
             build_tracking(started_at, started, _SOURCE_LABEL),
             stage=stage, exception=exception, source_format="xml",
+        )
+
+    if declared_types and len(declared_types) > 1:
+        return _fail(
+            "XML documents accept exactly one declared type, got "
+            f"{list(declared_types)} — there is no vision-based auto-classification "
+            "for raw XML, so there is nothing to choose between several schemas",
+            stage="declared_type",
         )
 
     if not declared_type:

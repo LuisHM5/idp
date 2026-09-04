@@ -3,6 +3,8 @@
 
   "NUEVO_TIPO": {
     "schema_version": "4.0.0",
+    "__COMENTARIO_occurrence_mode__": "Default de este tipo cuando el POST no manda occurrenceMode ni un sufijo :N/:all. single conserva la primera ocurrencia; multiple conserva todas. Si se omite esta propiedad, aplica el default global: single cuando se pide un tipo, multiple cuando se piden varios.",
+    "occurrence_mode": "single",
     "display_name": "Nuevo tipo",
     "aliases": [],
     "description": "Descripción breve y discriminante: encabezados, sellos, folios y rasgos que lo separan de documentos similares. Se usa para clasificar.",

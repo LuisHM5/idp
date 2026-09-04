@@ -41,7 +41,11 @@ test("las claves se normalizan y la última operación normalizada gana", () => 
 
 test("un patch vacío o compuesto solo de claves reservadas se rechaza", () => {
   assert.equal(parseMetadataPatch({}).error.code, "EMPTY_PATCH");
-  const reserved = parseMetadataPatch({ "app-origin": "OTRA", "MODEL-ID": "x" });
+  const reserved = parseMetadataPatch({
+    "app-origin": "OTRA",
+    "MODEL-ID": "x",
+    "document-counts": "A=all",
+  });
   assert.equal(reserved.error.code, "EMPTY_PATCH");
   assert.match(reserved.error.message, /app-origin/);
 });

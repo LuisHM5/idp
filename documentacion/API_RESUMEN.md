@@ -21,9 +21,10 @@ UPLOAD_URL="<UPLOAD_URL_DEVUELTA_POR_EL_POST>"
 1. POST /documents          → documentId, uploadUrl
 2. PUT  {uploadUrl}         → (S3, arranca el pipeline)
 3. GET  /documents/{id}     → resultado
-4. PATCH /documents/{id}/metadata → estado/marcas externas (opcional)
-5. GET  /documents/{id}/file→ archivo original   (opcional)
-6. GET  /documents?...       → buscar/listar      (opcional)
+4. POST /documents/{id}/reprocess → nuevo proceso desde el original (opcional)
+5. PATCH /documents/{id}/metadata → estado/marcas externas (opcional)
+6. GET  /documents/{id}/file→ archivo original   (opcional)
+7. GET  /documents?...       → buscar/listar      (opcional)
 ```
 
 ---
@@ -35,9 +36,44 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 | Body | | |
 |---|---|---|
 | `fileName` | **requerido** | `pdf` `jpg` `jpeg` `png` `xml` `xlsx` `csv` |
-| `documentType` | opcional | TYPE_ID, nombre o alias. **Requerido** en `xml` `xlsx` `csv` |
-| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. `app-origin` y `model-id` están reservadas. Editable (§4) y filtrable con `meta.<clave>` (§6). En form, JSON en string |
+| `documentType` | opcional | TYPE_ID, nombre o alias. **Varios separados por coma** = salida cerrada sólo a esos tipos. Admite overrides por tipo `:N`/`:all`. Los faltantes salen con rango `null` y revisión, sin contar como documentos. Máx. 8 tipos / 200 chars. **Requerido** en `xml` `xlsx` `csv`, y ahí sólo se acepta uno |
+| `occurrenceMode` | opcional | Sobrescribe los defaults de catálogo para todos los tipos sin sufijo: `single` conserva la primera; `multiple`, todas. También se acepta el alias `occurrence_mode`. `:N`/`:all` prevalece por tipo |
+| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. `app-origin`, `model-id` y `document-counts` están reservadas. Editable (§5) y filtrable con `meta.<clave>` (§7). En form, JSON en string |
 | `modelId` | opcional | solo dev |
+
+### Cardinalidad: `single` o `multiple`
+
+| `occurrenceMode` del POST | Sin sufijo en `documentType` |
+|---|---|
+| `single` | conserva la primera ocurrencia de cada tipo |
+| `multiple` | conserva todas las ocurrencias físicas |
+
+Si se omite el campo, cada tipo usa `occurrence_mode` de su catálogo. Si ese
+tipo no lo define, aplica el default global: `single` cuando declaraste un tipo
+y `multiple` cuando declaraste varios.
+
+Un sufijo del request siempre prevalece: `TIPO:1`, `TIPO:2` o `TIPO:all`.
+Precedencia: `:N/:all` → `occurrenceMode` del POST → `occurrence_mode` del
+catálogo → default global.
+
+```bash
+# FACTURA_FLETE_EXTRANJERO tiene occurrence_mode=multiple en su catálogo
+pnpm enviar ./test-docs/invoices-flete.pdf \
+  FACTURA_FLETE_EXTRANJERO --env dev
+
+# Un pedimento y todas las facturas: el sufijo :1 pisa multiple sólo para ERP
+pnpm enviar ./test-docs/invoices-flete.pdf \
+  "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO" \
+  --occurrence-mode multiple --env dev
+
+# Overrides por tipo
+pnpm enviar archivo.pdf "FACTURA_FLETE_EXTRANJERO:1" --env dev
+pnpm enviar archivo.pdf "PEDIMENTO_ERP:all" --env dev
+```
+
+`page_selection.multi_instance` define cómo separar determinísticamente las
+ocurrencias de un tipo `multiple`; `start_markers`/`page_of_pattern` delimitan
+cada documento. El detalle completo del schema está en `catalogs/README.md`.
 
 Petición completa de ejemplo (la metadata siempre va dentro del body del
 documento; no se manda como un JSON separado):
@@ -49,6 +85,7 @@ curl -sS -X POST "$API/documents" \
   -d '{
     "fileName": "pedimento.pdf",
     "documentType": "PEDIMENTO_ERP",
+    "occurrenceMode": "single",
     "metadata": {
       "lote": "A123",
       "folio_erp": "4711",
@@ -70,9 +107,12 @@ mismo nivel que `fileName`, no dentro de `metadata`.
 | `uploadMethod` | `PUT` |
 | `uploadExpiresInSeconds` · `uploadExpiresAt` | 900 s |
 | `processingStatus` · `statusUrl` · `retryAfterSeconds` | `AWAITING_UPLOAD` · ruta de consulta · 5 s |
-| `bucket` · `key` · `documentType` · `classificationMode` · `uploadedAt` · `registeredAt` | |
+| `bucket` · `key` · `documentType` · `uploadedAt` · `registeredAt` | `documentType` devuelve los TYPE_ID normalizados y sin sufijos, unidos por comas si fueron varios |
+| `occurrenceMode` | modo explícito del POST; `null` si se usará catálogo/default global |
+| `documentTypeCounts` | decisiones explícitas del POST (`:N`/`:all`, o el modo materializado); los defaults de catálogo no aparecen aquí |
+| `classificationMode` | `manual` (un tipo, honrado) · `guided` (varios, se clasifica sólo entre ellos) · `auto` (ninguno) |
 
-`400` `MISSING_FIELD` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` `INVALID_DOCUMENT_TYPE` `INVALID_JSON` `INVALID_METADATA` `INLINE_UPLOAD_REMOVED` · `500` `PRESIGN_FAILED` `JOB_REGISTRATION_FAILED`
+`400` `MISSING_FIELD` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` `INVALID_DOCUMENT_TYPE` `INVALID_OCCURRENCE_MODE` `INVALID_JSON` `INVALID_METADATA` `INLINE_UPLOAD_REMOVED` · `500` `PRESIGN_FAILED` `JOB_REGISTRATION_FAILED`
 
 ---
 
@@ -108,10 +148,11 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 | `200` | |
 |---|---|
 | `documentId` · `processingStatus` · `workflowStatus` · `documentType` · `documentTypeName` | `FINISHED`/`FAILED`; `workflowStatus` es interno |
+| `reprocessedFrom` | sólo en trabajos creados por `/reprocess`; id completo anterior |
 | `result.documentId` · `result.documentClassification` | envelope persistido |
 | `result.validation.status` | `APROBADO` `REQUIERE_REVISION` `RECHAZADO` |
-| `result.documents[]` | **siempre un arreglo**, con 1 o con N: `index` `documentType` `pageStart` `pageEnd` `status` `fields` |
-| `result.documentCount` · `result.envelopeVersion` | cuántos documentos trae · `2` (ausente = resultado guardado con la forma anterior) |
+| `result.documents[]` | **siempre un arreglo**, con 1 o con N: `index` `documentType` `pageStart` `pageEnd` `status` `fields`. Un tipo solicitado ausente lleva rango `null` y `REVIEW_REQUIRED` |
+| `result.documentCount` · `result.envelopeVersion` | cuántos documentos se encontraron (sin `OTRO` ni marcadores ausentes) · `2` (ausente = resultado guardado con la forma anterior) |
 | `result.tracking` · `result.metadata` · `result.warnings` · `result.checks` | contexto y detalle |
 | `fullResult` | solo con `full=1`; resultado profundo desde S3 con la metadata vigente superpuesta |
 
@@ -167,7 +208,47 @@ Formas mínimas de la respuesta:
 
 ---
 
-## 4. `PATCH /documents/{id}/metadata`
+## 4. `POST /documents/{id}/reprocess`
+
+Auth: `x-api-key` · Body opcional: `application/json` o
+`application/x-www-form-urlencoded`.
+
+Crea un `documentId` nuevo y copia internamente el archivo original desde
+`processed/` o `failed/` hacia `raw/`. No descarga bytes al cliente, no exige
+otro `PUT` y nunca modifica el resultado anterior.
+
+| Body | | |
+|---|---|---|
+| `documentType` | opcional | Mismo contrato que POST `/documents`: uno o varios separados por coma, admite `:N`/`:all`. Si se **omite**, hereda la declaración anterior. `null` o `""` fuerza auto |
+| `occurrenceMode` | opcional | `single` o `multiple`; alias `occurrence_mode`. Sobrescribe catálogo/default; `:N`/`:all` prevalece |
+| `modelId` | opcional | sólo dev; aplica al proceso nuevo |
+
+```bash
+curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
+  -H "x-api-key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+    "occurrenceMode": "multiple"
+  }'
+```
+
+| `202` | |
+|---|---|
+| `documentId` | **id nuevo** para consultar con GET |
+| `reprocessedFrom` | id completo anterior |
+| `documentType` · `documentTypeCounts` · `occurrenceMode` · `classificationMode` | decisión efectiva del reproceso |
+| `processingStatus` · `statusUrl` · `retryAfterSeconds` | `QUEUED` · ruta del id nuevo · 5 s |
+
+`400` `INVALID_JSON` `INVALID_BODY` `INVALID_DOCUMENT_TYPE`
+`INVALID_OCCURRENCE_MODE` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` ·
+`403` `FORBIDDEN` `FORBIDDEN_DOCUMENT_TYPE` · `404` `NOT_FOUND` `FILE_NOT_FOUND` ·
+`409` `SOURCE_NOT_READY` · `500` `JOB_REGISTRATION_FAILED`
+`REPROCESS_COPY_FAILED`
+
+---
+
+## 5. `PATCH /documents/{id}/metadata`
 
 Auth: `x-api-key` · Requiere `AllowMetadataWrite=true` · Body: JSON Merge Patch plano.
 Un valor crea/reemplaza; `null` o string vacío borra; una clave ausente se
@@ -213,7 +294,7 @@ pisar cambios de otra integración.
 
 ---
 
-## 5. `GET /documents/{id}/file`
+## 6. `GET /documents/{id}/file`
 
 Auth: `x-api-key`
 
@@ -236,7 +317,7 @@ curl -sS "$API/documents/$DOC_ID/file?expiresIn=900" -H "x-api-key: $KEY"
 
 ---
 
-## 6. `GET /documents` — búsqueda
+## 7. `GET /documents` — búsqueda
 
 Auth: `x-api-key` · Requiere al menos uno de `docType`, `system`, `meta.<clave>` o `field`+`value`
 

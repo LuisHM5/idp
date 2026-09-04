@@ -312,9 +312,41 @@ Ejecuta el ejemplo pasando el PDF:
 dotnet run -- /ruta/al/pedimento.pdf
 ~~~
 
-## 3. Reglas importantes
+## 3. Reprocesar un archivo ya almacenado
+
+No necesitas descargarlo ni repetir el `PUT` a S3. El id viejo va en la ruta;
+el body opcional permite cambiar tipos y cardinalidad. La respuesta trae un id
+nuevo y el anterior conserva su resultado:
+
+~~~csharp
+var reprocessBody = new
+{
+    documentType = "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+    occurrenceMode = "multiple"
+};
+
+using var reprocessResponse = await apiClient.PostAsJsonAsync(
+    $"{api}/documents/{Uri.EscapeDataString(documentId)}/reprocess",
+    reprocessBody);
+await EnsureSuccess(reprocessResponse);
+
+var reprocessJob = await ReadJson(reprocessResponse);
+var newDocumentId = reprocessJob.GetProperty("documentId").GetString()
+    ?? throw new InvalidOperationException("El reproceso no devolvió documentId.");
+
+var newResult = await WaitForResult(
+    apiClient, api, newDocumentId, attempts: 90,
+    delay: TimeSpan.FromSeconds(5));
+~~~
+
+Envía `{}` para heredar los tipos explícitos del trabajo anterior. Enviar
+`documentType = (string?)null` fuerza clasificación automática.
+
+## 4. Reglas importantes
 
 - POST /documents manda JSON, no los bytes del archivo.
+- POST /documents/{id}/reprocess crea otro id y copia el original dentro de S3;
+  no devuelve uploadUrl y no cambia el resultado viejo.
 - El PUT y la descarga van a S3 con un HttpClient separado y sin API key.
 - La metadata es plana, usa claves en minúsculas y admite únicamente valores
   escalares US-ASCII. El mapa completo tiene un límite de 2 KB.

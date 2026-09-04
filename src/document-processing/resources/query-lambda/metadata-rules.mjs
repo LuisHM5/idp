@@ -20,7 +20,7 @@
  */
 
 /** Keys this system owns; a caller may not write them. See body-parser.mjs. */
-export const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id"]);
+export const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id", "document-counts"]);
 
 /** S3's ceiling for all user metadata on one object (keys + values together).
  * Patched metadata never goes back to S3 — it lives on the DynamoDB item — but

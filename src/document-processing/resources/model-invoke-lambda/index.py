@@ -130,18 +130,32 @@ def type_has_upstream_extraction(classification, prompt):
 def extract_manual_classification(key):
     """Return the manual document type encoded in the S3 key, or None.
 
-    Expects keys shaped like `raw/{TYPE}/...`. Returns the TYPE segment when
-    it matches UPPER_SNAKE_CASE; otherwise returns None so the caller falls
-    back to model-based classification.
+    Expects keys shaped like `raw/{TYPE}/...`, or `raw/{A,B,C}/...` when the
+    uploader declared SEVERAL candidate types. Returns a type when every
+    comma-separated element matches UPPER_SNAKE_CASE; otherwise returns None so
+    the caller falls back to model-based classification.
+
+    With a list, the FIRST declared type is returned, and that is the right
+    answer rather than a placeholder: this value only decides two things, and
+    both are correct for it. `handler.py::_process` routes to the expediente
+    pipeline on `type_entry.field_tree is not None`, which the first declared
+    type satisfies; and `_run_expediente` then re-derives the FULL list from the
+    key itself, so the real classification of every segment comes from the text
+    segmenter, not from here. What survives is `fallback_classification` on the
+    envelope, used only when no document other than OTRO was found.
+
+    Returning the container type instead would be a bug: it does not exist in
+    the active catalog, so its `field_tree` is None and the document would be
+    routed to the legacy single-document flow.
     """
     if not key:
         return None
     parts = key.split("/")
     if len(parts) < 3 or parts[0] != "raw":
         return None
-    candidate = parts[1]
-    if _MANUAL_TYPE_RE.match(candidate):
-        return candidate
+    declared = [p.strip() for p in parts[1].split(",") if p.strip()]
+    if declared and all(_MANUAL_TYPE_RE.match(t) for t in declared):
+        return declared[0]
     return None
 
 

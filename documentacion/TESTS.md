@@ -5,10 +5,12 @@ valores esperados vs. extraídos de un documento para decidir si hay un bug.
 
 | Comando                                   | Qué prueba                                                                     | Requiere AWS            | Costo aprox. |
 | ----------------------------------------- | ------------------------------------------------------------------------------ | ----------------------- | ------------ |
-| `pnpm test:unit`                          | Motor de reglas, normalizadores, catálogo, el ground truth de pedimentos (esquema/nombres de campo válidos — ver [1](#1-antes-de-gastar-dinero-valida-el-ground-truth-gratis)) la forma del envelope (`documents[]`, qué campo se omite, el presupuesto de bytes) y el contrato de la API: parseo del body del upload, normalización de `metadata`, filtros de `GET /documents` y la lectura de envelopes de cualquier versión (`tests/unit/node/`, corren con `node --test`) | No | $0 |
+| `pnpm test:unit`                          | Motor de reglas, normalizadores, catálogo, el ground truth de pedimentos (esquema/nombres de campo válidos — ver [1](#1-antes-de-gastar-dinero-valida-el-ground-truth-gratis)) la forma del envelope (`documents[]`, qué campo se omite, el presupuesto de bytes) y el contrato de la API: parseo del body del upload, los tipos declarados (uno o varios separados por coma → `manual`/`guided`/`auto`, forma de la llave de S3, lista cerrada de candidatos del segmentador), normalización de `metadata`, filtros de `GET /documents` y la lectura de envelopes de cualquier versión (`tests/unit/node/`, corren con `node --test`) | No | $0 |
+| `pnpm test:quality`                       | Toda la suite gratuita con JUnit, cobertura Python/Node, baseline anti-regresión e histórico local | No | $0 |
+| `pnpm test:real -- --env dev`             | Primero la suite gratuita y después cada fixture etiquetado por API/S3/SQS/SFN/Lambdas/DynamoDB, contra ground truth | Sí | Muestra rango antes de confirmar |
 | `pnpm test:encryption`                    | Sintetiza ambos stacks y exige 0 CMK en dev / 1 CMK compartida en prod | No (sí requiere Docker para bundling) | $0 |
 | `pnpm comparar -- normal_pend.pdf`        | **Un solo documento**: valores esperados vs extraídos, campo por campo — ver [2](#2-comparar-expected-vs-real-de-un-documento-con-costo-script-simple) | Sí (Textract + Bedrock) | ~$0.02–0.35  |
-| `pnpm test:pedimentos`                    | Pipeline completo contra los 9 PDFs reales de `test-docs/pedimentos docs/docs` | Sí (Textract + Bedrock) | ~$1 USD      |
+| `pnpm test:pedimentos`                    | Pipeline directo contra todos los PDFs locales; compara los que están declarados en el ground truth | Sí (Textract + Bedrock) | Depende del corpus |
 | `pnpm test:pedimentos -- --file B2401416` | Igual a `pnpm comparar` pero sin el prompt de confirmación (útil en CI/scripts) | Sí                      | ~$0.02–0.35  |
 | `pnpm test:pedimentos -- --save /tmp/res` | Corre todo + guarda los JSON completos de resultado                            | Sí                      | —            |
 | `pnpm test-local --type INE`              | Motor de validación con entidades simuladas                                    | No                      | $0           |
@@ -244,3 +246,44 @@ permanente:
 | `✗` en un campo pero el valor se ve razonable | Puede ser tolerancia de formato (mayúsculas/espacios en strings, 0.01 en números) | Revisa la nota impresa junto al `✗`: muestra el valor exacto extraído vs esperado |
 | `test:e2e:pedimento` se queda esperando y nunca aparece la ejecución | El SQS consumer no disparó Step Functions, o la Lambda de consumo falló | Revisa la SQS DLQ y los logs del consumer Lambda en CloudWatch |
 | `test:e2e:pedimento` dice `status != SUCCEEDED` | Falla real de infraestructura (timeout, error no atrapado) — justo lo que este test existe para detectar y que `pnpm comparar` no puede ver | `pnpm track --execution-arn <arn>` (el comando se imprime en la salida) |
+
+## 8. Suite seria, cobertura e histórico local
+
+La entrada habitual es gratuita:
+
+```bash
+pnpm test:quality
+```
+
+Genera una carpeta privada e inmutable bajo
+`resultados-pruebas/local/<fecha>-<commit>-quality-free/` con `run.json`,
+JUnit de Python y Node, LCOV de Node, cobertura JSON/HTML de Python y logs. La
+carpeta está ignorada por Git porque los artefactos de una prueba real pueden
+contener información aduanal. `tests/quality-baseline.json` conserva la
+cobertura aceptada; una caída mayor a 0.5 puntos en líneas o ramas falla el
+comando. Para aceptar deliberadamente una nueva base:
+
+```bash
+pnpm test:quality -- --update-baseline
+```
+
+La corrida pagada nunca es automática:
+
+```bash
+pnpm test:real -- --env dev
+pnpm test:real -- --env prod --allow-prod
+# no interactivo en prod requiere además ALLOW_PROD_TESTS=1 y --yes
+```
+
+Antes de gastar valida que todos los archivos declarados existan y que su
+SHA-256 coincida con el revisado en `expected_pedimentos.json`. Cada upload se
+marca con `test-run-id`/`test-suite`; el dashboard puede separarlo del tráfico
+operativo. Para cada documento comprueba infraestructura, respuesta pública,
+movimiento a `processed/`, descarga byte a byte, auditoría de costo, búsqueda
+por unique key y ground truth. El primer caso también prueba PATCH de metadata.
+
+`pnpm reporte -- --env dev|prod` incorpora las corridas del ambiente y las
+gratuitas locales. La sección **Calidad comprobada** no confunde tres señales:
+aprobación de reglas, confianza declarada por el modelo y exactitud contra
+valores leídos por una persona. Cada paquete incluye `snapshot.json`; se puede
+regenerar sin AWS con `pnpm reporte -- --snapshot ruta/snapshot.json`.

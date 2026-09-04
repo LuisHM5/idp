@@ -44,6 +44,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
 from document_catalog import get_type_entry
+from pipeline.envelope import index_type_of
 
 logger = logging.getLogger(__name__)
 
@@ -74,18 +75,31 @@ def _document_name(result: Dict[str, Any], source_key: Optional[str]) -> str:
     return str(source).rsplit("/", 1)[-1]
 
 
-def _contained_types(classification: str, result: Dict[str, Any]) -> Set[str]:
-    """Every document type present in the result, including the top-level one.
+def _contained_types(index_type: str, result: Dict[str, Any]) -> Set[str]:
+    """Every document type present in the result, including the indexed one.
 
-    Un archivo con documentos de tipos DISTINTOS se etiqueta
+    Un archivo con documentos de tipos DISTINTOS se INDEXA como
     EXPEDIENTE_ADUANAL_MULTIDOCUMENTO, así que buscar PEDIMENTO_ADUANAL se
     perdería el pedimento de adentro sin este conjunto, filtrable del lado del
     GSI (`contains(ContainedDocumentTypes, :t)`). Cuando todos los documentos
     son del mismo tipo, ese tipo YA es la clasificación (ver
     `pipeline/envelope.py::classification_of`) y esto solo lo confirma.
+
+    Recibe el tipo INDEXADO (`envelope.index_type_of`), no la clasificación que
+    ve quien llama: ésa puede ser "A,B", y ese string aquí ensuciaría el set con
+    un valor que ninguna búsqueda puede pedir — `contains` compara elementos
+    completos — y que además crecería con una entrada por cada combinación de
+    tipos que llegara a existir.
     """
-    types: Set[str] = {classification}
+    types: Set[str] = {index_type}
     for doc in result.get("documents", []) or []:
+        if (
+            "pageStart" in doc
+            and doc.get("pageStart") is None
+            and "pageEnd" in doc
+            and doc.get("pageEnd") is None
+        ):
+            continue
         doc_type = str(doc.get("documentType") or "").strip().upper()
         if doc_type:
             types.add(doc_type)
@@ -109,11 +123,15 @@ def _decimalize(value: Any) -> Any:
 
 # camelCase (envelope's `tracking`) -> PascalCase (this module's DynamoDB
 # column naming convention) — every field build_tracking() sets (see
-# pipeline/result_common.py) plus modelIds/appOrigin/modelFallbacks, so this
-# column never lags behind el `tracking` del envelope (que a partir de v2 es
-# uno solo, ya no duplicado dentro de `expediente`). modelFallbacks (pipeline/bedrock.py::fallback_events) is present
-# only for stages that actually switched models this run — expected vs.
-# actual model and retry count, see catalogs/README.md's fallback section.
+# pipeline/result_common.py) plus modelIds/appOrigin/modelFallbacks/
+# segmentationDegraded, so this column never lags behind el `tracking` del
+# envelope (que a partir de v2 es uno solo, ya no duplicado dentro de
+# `expediente`). modelFallbacks (pipeline/bedrock.py::fallback_events) is
+# present only for stages that actually switched models this run — expected
+# vs. actual model and retry count, see catalogs/README.md's fallback
+# section. segmentationDegraded (pipeline/bedrock.py::stage_degradations,
+# populated by pipeline/segmenter.py) is present only when a page range's
+# classification had to settle for a best-effort result.
 _TRACKING_FIELD_MAP = {
     "createdAt": "CreatedAt",
     "updatedAt": "UpdatedAt",
@@ -126,6 +144,7 @@ _TRACKING_FIELD_MAP = {
     "appOrigin": "AppOrigin",
     "modelIds": "ModelIds",
     "modelFallbacks": "ModelFallbacks",
+    "segmentationDegraded": "SegmentationDegraded",
 }
 
 
@@ -154,14 +173,21 @@ def derive_index_attributes(
     classification = str(
         result.get("documentClassification") or _DEFAULT_TYPE
     ).strip().upper() or _DEFAULT_TYPE
+    # La clasificación que ve quien llama puede traer VARIOS tipos separados por
+    # coma (un expediente mixto). La columna indexada no: es la partition key de
+    # un GSI y una Query busca por valor exacto. `index_type_of` la reduce al
+    # contenedor, que es lo que `expandContainers` sabe consultar — ver su
+    # docstring. `ContainedDocumentTypes` (abajo) sigue trayendo la lista real,
+    # y es por donde `?docType=X` encuentra lo que está adentro.
+    index_type = index_type_of(classification)
     validation = result.get("validation") or {}
 
     attributes: Dict[str, Any] = {
-        "DocumentType": classification,
-        "DocumentTypeName": display_name_for(classification),
+        "DocumentType": index_type,
+        "DocumentTypeName": display_name_for(index_type),
         "ProcessedAt": str(result.get("processedAt") or _now()),
         "ValidationStatus": str(validation.get("status") or _DEFAULT_STATUS),
-        "ContainedDocumentTypes": _contained_types(classification, result),
+        "ContainedDocumentTypes": _contained_types(index_type, result),
         "IndexedAt": _now(),
     }
     name = _document_name(result, source_key)

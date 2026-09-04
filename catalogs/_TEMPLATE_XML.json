@@ -5,6 +5,8 @@
 
   "NUEVO_TIPO_XML": {
     "schema_version": "1.0.0",
+    "__COMENTARIO_occurrence_mode__": "Default del tipo si el POST no manda occurrenceMode ni :N/:all. Normalmente single para una fuente estructurada. Valores: single | multiple.",
+    "occurrence_mode": "single",
     "display_name": "Nuevo tipo (XML)",
     "aliases": [],
     "description": "Descripción breve: qué documento XML es y qué lo distingue (namespace raíz, elementos principales). Solo importa si algún día se auto-clasifica; con documentType declarado (el caso normal para XML) nunca se usa.",

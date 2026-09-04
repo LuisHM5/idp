@@ -23,11 +23,13 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from document_catalog import (
     get_cross_document_rules,
     get_type_entry,
+    normalize_declared_types,
+    resolve_declared_counts,
 )
 from validators import engine
 from validators.engine import RuleCheck, ValidationContext
@@ -48,10 +50,10 @@ from .normalize import (
 from . import confidence as conf_policy
 from . import page_locator, page_selector
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
-from .bedrock import fallback_events, used_models
+from .bedrock import fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
-from .segmenter import Segment, segment_pages
+from .segmenter import CONTAINER_TYPE, Segment, segment_pages
 from .text_extractor import _chunk_pages as chunk_pages, extract_document
 
 logger = logging.getLogger(__name__)
@@ -246,7 +248,7 @@ def _truncate_pdf(pdf_bytes: bytes, max_pages: int) -> Tuple[bytes, Optional[int
     return buf.getvalue(), total
 
 
-def _page_cap_for(declared_type: Optional[str]) -> Tuple[int, bool]:
+def _page_cap_for(declared_types: Optional[Sequence[str]]) -> Tuple[int, bool]:
     """How many pages of the upload to keep, and whether selection is driving it.
 
     Truncation and page selection are the two cost guards, and they are
@@ -266,17 +268,111 @@ def _page_cap_for(declared_type: Optional[str]) -> Tuple[int, bool]:
     and — importantly — an upload with NO declared type, since which selector
     applies isn't known until the segmenter has classified the pages, and
     classifying them requires reading them first.
+
+    With SEVERAL declared types the answer still has to be one number, decided
+    before anything has been classified. It is ANY, not all: if even one of the
+    declared types selects its own pages, truncating blindly reintroduces
+    exactly the bug above — with `MAX_PAGES=50`, a pedimento on page 63 of a
+    68-page upload is gone before its selector can see it. The cost of
+    EXTRACTION stays bounded either way, because each segment is filtered by its
+    own type's selector in `_extract_segment`; what grows is page loading and
+    OCR, which `max_source_pages` is there to cap.
     """
-    if not declared_type:
+    types = normalize_declared_types(declared_types)
+    if not types:
         return _MAX_PAGES, False
-    try:
-        entry = get_type_entry(declared_type)
-    except Exception:  # unknown/unloadable type: behave exactly as before
+    caps: List[int] = []
+    for declared_type in types:
+        try:
+            entry = get_type_entry(declared_type)
+        except Exception:  # unknown/unloadable type: behave exactly as before
+            continue
+        if not page_selector.enabled_for(entry):
+            continue
+        spec = page_selector.spec_for(entry) or {}
+        caps.append(int(spec.get("max_source_pages", _MAX_PAGES_WITH_SELECTION)))
+    if not caps:
         return _MAX_PAGES, False
-    if not page_selector.enabled_for(entry):
-        return _MAX_PAGES, False
-    spec = page_selector.spec_for(entry) or {}
-    return int(spec.get("max_source_pages", _MAX_PAGES_WITH_SELECTION)), True
+    return max(caps), True
+
+
+def _only_requested_segments(
+    segments: List[Segment], requested_types: Sequence[str]
+) -> List[Segment]:
+    """Close a declared request at the pipeline boundary.
+
+    The segmenter still uses `OTRO` internally to sanitize model output and to
+    account for gaps, duplicate copies and explicit count limits. Once the
+    caller named real document types, those audit-only ranges are not response
+    documents and must not reach extraction/validation.
+
+    With no real requested type (auto-classification, or the container
+    directive by itself), keep the historical complete-coverage behaviour.
+    """
+    if not requested_types:
+        return segments
+    allowed = set(requested_types)
+    kept = [segment for segment in segments if segment.doc_type in allowed]
+    omitted = len(segments) - len(kept)
+    if omitted:
+        logger.info(
+            "expediente: omitiendo %d segmento(s) fuera de los tipos solicitados %s",
+            omitted,
+            list(requested_types),
+        )
+    return kept
+
+
+def _missing_requested_documents(
+    documents: Sequence[Dict[str, Any]],
+    requested_types: Sequence[str],
+    declared_counts: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return one range-less review marker for every requested occurrence missing.
+
+    Finite `:N` requests get enough markers to expose the exact deficit. `:all`
+    has no target cardinality, so it gets one marker only when the type did not
+    appear at all. `process_pdf` resolves request overrides, catalog defaults
+    and the global one/many-types default before calling this helper.
+    """
+    if not requested_types:
+        return []
+    found: Dict[str, int] = {}
+    for document in documents:
+        doc_type = document.get("documentType")
+        if doc_type in requested_types:
+            found[doc_type] = found.get(doc_type, 0) + 1
+
+    counts = declared_counts or {}
+    missing: List[Dict[str, Any]] = []
+    for doc_type in requested_types:
+        default_count: Any = 1
+        requested = counts.get(doc_type, default_count)
+        present = found.get(doc_type, 0)
+        if requested == "all":
+            deficit = 1 if present == 0 else 0
+        elif (
+            isinstance(requested, int)
+            and not isinstance(requested, bool)
+            and requested >= 1
+        ):
+            deficit = max(requested - present, 0)
+        else:
+            # Metadata is best-effort and may come from an older/direct caller.
+            # A malformed value must not crash the document; use the mode default.
+            deficit = 1 if default_count == "all" and present == 0 else max(1 - present, 0)
+        missing.extend(
+            {
+                "documentType": doc_type,
+                "pageStart": None,
+                "pageEnd": None,
+                "status": engine.DOC_REVIEW,
+                "confidence": None,
+                "fields": {},
+            }
+            for _ in range(deficit)
+        )
+    return missing
 
 
 def process_pdf(
@@ -286,11 +382,21 @@ def process_pdf(
     model_id: Optional[str] = None,
     source_name: str = "",
     source_format: str = "pdf",
+    declared_types: Optional[Sequence[str]] = None,
+    declared_counts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Process a (possibly multi-document) PDF — or, when `source_format` is
     an image type ("jpg"/"jpeg"/"png"), a single standalone photographed/
     scanned document such as an ID card — and return the full result.
+
+    `declared_types` is the FULL list of types the uploader declared; pass it
+    when there is more than one, so the file is segmented and each document
+    classified among exactly those (see `segmenter.segment_pages`). With one
+    type it is equivalent to `declared_type`, which every existing caller keeps
+    using unchanged.
     """
+    types = normalize_declared_types(declared_types, declared_type)
+    declared_counts = resolve_declared_counts(types, declared_counts)
     started = time.time()
     started_at = datetime.now(timezone.utc)
     processing_id = str(uuid.uuid4())
@@ -334,7 +440,7 @@ def process_pdf(
             logger.exception("failed to read %s image for OCR", source_format)
             return _fail(f"unreadable {source_format} image: {e}", stage="page_load", exception=e)
     else:
-        page_cap, selection_drives_cap = _page_cap_for(declared_type)
+        page_cap, selection_drives_cap = _page_cap_for(types)
         pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, page_cap)
         try:
             pages = load_pages(pdf_bytes)
@@ -346,7 +452,11 @@ def process_pdf(
         return _fail(f"{source_format} document has no pages", stage="page_load")
     _mark("pageLoad")
 
-    segments, segmentation_usage = segment_pages(pages, declared_type=declared_type, model_id=model_id)
+    segments, segmentation_usage = segment_pages(
+        pages, model_id=model_id, declared_types=types, declared_counts=declared_counts
+    )
+    requested_types = [doc_type for doc_type in types if doc_type != CONTAINER_TYPE]
+    segments = _only_requested_segments(segments, requested_types)
     _mark("segmentation")
 
     if not is_image:
@@ -472,12 +582,18 @@ def process_pdf(
         if not doc.get("fieldTreeShape"):
             doc["extractedEntities"] = _public_entities(entities)
 
+    found_documents = list(documents)
+    missing_documents = _missing_requested_documents(
+        found_documents, requested_types, declared_counts
+    )
+    documents.extend(missing_documents)
+
     statuses = [d.get("status") for d in documents if d.get("documentType") != "OTRO"]
     overall = _overall_status(statuses, cross_checks)
 
     tracking = build_tracking(
         started_at, started, model_id,
-        doc_types=[d["documentType"] for d in documents],
+        doc_types=[d["documentType"] for d in found_documents],
         timings=timings,
     )
     warnings = [c["message"] for c in cross_checks if not c["valid"]]
@@ -495,6 +611,19 @@ def process_pdf(
             )
             + "el PDF original completo permanece sin modificar en S3 — "
             "reprocesar manualmente si se necesitan las páginas restantes."
+        )
+    segmentation_degraded = stage_degradations().get("segmenter") or []
+    for degradation in segmentation_degraded:
+        # Solo lo que terminó rendido (marcado OTRO) amerita alarmar al
+        # usuario final: lo que el reintento sí recuperó ("recovered_on_retry")
+        # queda visible en tracking para observabilidad, pero no es un
+        # problema que el usuario tenga que revisar.
+        if degradation.get("resolution") != "marked_otro":
+            continue
+        warnings.append(
+            f"Clasificación de páginas {degradation.get('pageStart')}-{degradation.get('pageEnd')} "
+            f"degradada tras agotar reintentos ({degradation.get('reason')}); "
+            "marcada como OTRO y sujeta a revisión manual."
         )
     # Bedrock usage for cost tracking (documentacion/COSTOS.md /
     # cost_audit.py): segmentation comes back from segment_pages() itself;
@@ -532,11 +661,27 @@ def process_pdf(
         # Only phases that actually switched models mid-call — see
         # pipeline/bedrock.py::fallback_events.
         "modelFallbacks": fallback_events(),
+        # Page ranges the segmenter had to settle for a best-effort result on
+        # (empty/truncated model output, even after its own retry) — see
+        # pipeline/bedrock.py::stage_degradations and
+        # pipeline/segmenter.py::_classify_pages. `[]`, not absent, to match
+        # this dict's other always-present keys; handler.py/indexing.py only
+        # promote it into tracking/DynamoDB when non-empty.
+        "segmentationDegraded": segmentation_degraded,
         "usage": usage_summary,
         "sourceFormat": source_format,
         "pages": pages_summary(pages),
         "status": overall,
-        "reviewRequired": truncated or overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL),
+        "reviewRequired": (
+            bool(missing_documents) or truncated
+            or overall in (engine.DOC_REVIEW, engine.DOC_PARTIAL)
+            # A degraded-and-marked-OTRO page range can leave `overall`
+            # looking fine (e.g. the rest of the expediente extracted
+            # cleanly) while a whole range never got classified at all —
+            # that always needs a human look, independent of what the other
+            # documents' own status says.
+            or any(d.get("resolution") == "marked_otro" for d in segmentation_degraded)
+        ),
         "documents": documents,
         "crossDocumentChecks": cross_checks,
         "warnings": warnings,
@@ -1190,4 +1335,3 @@ def _cross_pedimento_values(rule: Dict[str, Any], documents: List[Dict[str, Any]
             "message": "pedimento USD value consistent with foreign invoices" if ok
             else rule.get("message", "pedimento value does not match foreign invoices"),
             "details": {"pedimentoValorDolares": val_dolares, "foreignInvoicesTotal": inv_total}}
-

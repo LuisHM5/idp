@@ -177,6 +177,28 @@ def _legacy_fields(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 # ------------------------------------------------------------ documentos
 
+def _is_missing_requested_marker(doc: Dict[str, Any]) -> bool:
+    return (
+        "pageStart" in doc
+        and doc.get("pageStart") is None
+        and "pageEnd" in doc
+        and doc.get("pageEnd") is None
+    )
+
+
+def _is_main_document(doc: Dict[str, Any]) -> bool:
+    """Whether a row represents a document that was actually found.
+
+    Requested-type markers deliberately have no page range. They stay visible
+    in `documents[]`, but do not count as found content or influence the file's
+    classification/count summaries.
+    """
+    return (
+        doc.get("documentType") != "OTRO"
+        and not _is_missing_requested_marker(doc)
+    )
+
+
 def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
     """Un elemento de `documents[]`.
 
@@ -223,15 +245,50 @@ def classification_of(documents: List[Dict[str, Any]], fallback: str) -> str:
     `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` lo escondía de
     `GET /documents?docType=FACTURA_...` (que solo lo encontraba por el rodeo de
     `ContainedDocumentTypes`) y de una app restringida a ese tipo por
-    `AllowedDocTypes`. El contenedor queda para paquetes genuinamente mixtos.
+    `AllowedDocTypes`.
+
+    Y si son de tipos DISTINTOS, son esos tipos separados por coma, en orden de
+    aparición: `PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO` dice qué trae el archivo;
+    `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` solo decía "varias cosas" y obligaba a
+    recorrer `documents[]` para saber cuáles. Los `OTRO` nunca entran: son
+    páginas que se conservan para que la cobertura del archivo sea auditable, no
+    contenido que el archivo "sea" (por eso tampoco cuentan en `documentCount`).
+
+    ⚠️ Esta es la etiqueta que ve QUIEN LLAMA, no la que se indexa. La columna
+    `DocumentType` del GSI sigue siendo el contenedor — ver `index_type_of`.
     """
-    main = [d for d in documents if d.get("documentType") != "OTRO"]
+    main = [d for d in documents if _is_main_document(d)]
     if not main:
+        if any(_is_missing_requested_marker(d) for d in documents):
+            return "OTRO"
         return fallback
-    types = {d.get("documentType") for d in main}
-    if len(types) == 1:
-        return next(iter(types))
-    return CONTAINER_TYPE
+    types: List[str] = []
+    for doc in main:
+        doc_type = doc.get("documentType")
+        if doc_type and doc_type not in types:
+            types.append(doc_type)
+    if not types:
+        return fallback
+    return ",".join(types)
+
+
+def index_type_of(classification: str) -> str:
+    """La clasificación reducida a UN tipo, para la columna indexada.
+
+    `classification_of` puede devolver varios tipos separados por coma, y eso no
+    puede viajar a la partition key del GSI `DocumentType`: una Query de DynamoDB
+    busca por valor EXACTO de la partición, así que un expediente indexado bajo
+    `A,B` sería invisible para `?docType=A`, y la Lambda de consulta no tiene
+    forma de enumerar particiones sin un Scan — que es justamente lo que el par
+    contenedor + `ContainedDocumentTypes` existe para evitar.
+
+    Por eso lo mixto se sigue indexando bajo el contenedor: `expandContainers`
+    (query-lambda) hace UNA Query extra por él, filtrada por
+    `contains(ContainedDocumentTypes, :t)`, y así `?docType=PEDIMENTO_ERP`
+    encuentra el pedimento que vive dentro del expediente mixto. La etiqueta
+    legible y la llave de búsqueda son dos necesidades distintas.
+    """
+    return CONTAINER_TYPE if "," in (classification or "") else classification
 
 
 def _summary(counts: Counter) -> str:
@@ -323,7 +380,7 @@ def build(
     """Envelope v2 para los pipelines multi-documento (expediente/XML/tabular)."""
     documents = result.get("documents") or []
     views = [document_view(d, i) for i, d in enumerate(documents, 1)]
-    main = [d for d in documents if d.get("documentType") != "OTRO"]
+    main = [d for d in documents if _is_main_document(d)]
     counts = Counter(d.get("status") for d in main if d.get("status"))
 
     env: Dict[str, Any] = {

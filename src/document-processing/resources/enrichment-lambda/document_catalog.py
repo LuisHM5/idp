@@ -135,6 +135,11 @@ class TypeRegistryEntry:
     # each result's tracking so you can tell which version processed a document,
     # including hot-reloaded DynamoDB overrides.
     schema_version: Optional[str] = None
+    # Default cardinality when this type is explicitly requested and the POST
+    # does not send `occurrenceMode` nor a per-type `:N`/`:all` override.
+    # None means "use the global request default" (single for one declared
+    # type, multiple for several).
+    occurrence_mode: Optional[str] = None
     # Processing pipeline for this type. "expediente" routes through the
     # multi-document customs pipeline (segmenter + cross-document rules); any
     # other value (or None) uses the standard single-document flow.
@@ -200,6 +205,14 @@ class TypeRegistryEntry:
     # Empty (the default) means the type has no unique key and searches on it
     # take the same path they take today.
     unique_keys: List[Dict[str, Any]] = field(default_factory=list)
+    # Opt-OUT of auto-classification candidacy (`is_segmentation_candidate`).
+    # None (the default) means "decide by shape", which is what every type
+    # wants; set `"segmentation_candidate": false` in the catalog JSON only for
+    # a type the segmenter keeps confusing with a sibling, to take it out of the
+    # candidate list without touching code. It never affects a type the CALLER
+    # declared explicitly — naming a type in `documentType` is a stronger signal
+    # than any catalog default.
+    segmentation_candidate: Optional[bool] = None
     # XML namespace prefix -> URI map, used by pipeline/xml_document.py to
     # resolve each field's `xpath`/`item_xpath` (a field-centric-DSL field
     # extra, kept in FieldSpec.params like any other — see catalogs/README.md).
@@ -241,6 +254,22 @@ _SCHEMA_VERSIONS: Dict[str, str] = {}
 
 _RULE_CORE_KEYS = {"field", "rule_type", "pattern", "message"}
 _FIELD_SPEC_CORE_KEYS = {"type", "required", "hint", "validation", "fields", "item_fields", "item_type", "subfield", "computed"}
+
+
+def _parse_occurrence_mode(value: Any) -> Optional[str]:
+    """Normalize the optional catalog default without making runtime brittle.
+
+    Build/sync rejects invalid local catalog values. DynamoDB is hot-reloadable
+    and can be edited outside that tooling, so the runtime treats an invalid
+    value as absent and falls back to the global request rule.
+    """
+    if value is None or value == "":
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"single", "multiple"}:
+        return normalized
+    logger.warning("catalog occurrence_mode inválido %r; usando default global", value)
+    return None
 
 
 def _parse_rules(rules_data: List[Dict[str, Any]]) -> List[ValidationRule]:
@@ -426,6 +455,7 @@ def _parse_entry(
                 data.get("discard_below_confidence", conf_policy.DISCARD_BELOW)
             ),
             schema_version=data.get("schema_version"),
+            occurrence_mode=_parse_occurrence_mode(data.get("occurrence_mode")),
             form_mapping=data.get("form_mapping", {}) or {},
             pipeline=data.get("pipeline"),
             model_id=data.get("model_id") or None,
@@ -434,6 +464,7 @@ def _parse_entry(
             unique_keys=_parse_unique_keys(data),
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),
+            segmentation_candidate=data.get("segmentation_candidate"),
             namespaces=data.get("namespaces", {}) or {},
         )
 
@@ -467,6 +498,7 @@ def _parse_entry(
             data.get("discard_below_confidence", conf_policy.DISCARD_BELOW)
         ),
         schema_version=data.get("schema_version"),
+        occurrence_mode=_parse_occurrence_mode(data.get("occurrence_mode")),
         structured_fields=data.get("structured_fields", {}) or {},
         form_mapping=data.get("form_mapping", {}) or {},
         pipeline=data.get("pipeline"),
@@ -474,6 +506,7 @@ def _parse_entry(
         model_ids=data.get("model_ids", {}) or {},
         qr_recovery=data.get("qr_recovery"),
         page_selection=data.get("page_selection"),
+        segmentation_candidate=data.get("segmentation_candidate"),
         unique_keys=_parse_unique_keys(data),
     )
 
@@ -684,6 +717,120 @@ def is_customs_type(doc_type: str) -> bool:
     `_process`).
     """
     return get_type_entry(doc_type).pipeline == "expediente"
+
+
+def normalize_declared_types(
+    declared_types: Any = None, declared_type: Optional[str] = None
+) -> List[str]:
+    """The declared types as a clean, de-duplicated list, in the order given.
+
+    Accepts either form the pipelines are called with — a bare `declared_type`
+    string or a `declared_types` sequence — and, deliberately, a plain STRING in
+    the `declared_types` slot too. A `str` satisfies `Sequence[str]`, so without
+    this every caller that passes one would silently iterate its CHARACTERS and
+    look up types called "C", "O", "N"... That is not a hypothetical: the
+    pipelines are called directly by `scripts/procesar-docs.py` and by tests, not
+    only through the S3 key.
+    """
+    if isinstance(declared_types, str):
+        candidates = [declared_types]
+    elif declared_types:
+        candidates = list(declared_types)
+    else:
+        candidates = [declared_type] if declared_type else []
+
+    out: List[str] = []
+    for candidate in candidates:
+        name = str(candidate).strip() if candidate else ""
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def resolve_declared_counts(
+    declared_types: Any = None,
+    declared_counts: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve requested cardinality with one stable precedence chain.
+
+    `declared_counts` contains the strongest request-level decisions: an
+    explicit `TIPO:N`/`:all`, or a POST `occurrenceMode` already materialized
+    by Upload for every unsuffixed type. Missing types then use their catalog
+    `occurrence_mode`; if that property is absent, the global default is one
+    occurrence when one type was declared and all occurrences when several
+    types were declared.
+    """
+    types = normalize_declared_types(declared_types)
+    explicit = declared_counts or {}
+    global_default: Any = "all" if len(types) > 1 else 1
+    resolved: Dict[str, Any] = {}
+    for doc_type in types:
+        if doc_type in explicit:
+            resolved[doc_type] = explicit[doc_type]
+            continue
+        try:
+            catalog_mode = get_type_entry(doc_type).occurrence_mode
+        except Exception:
+            catalog_mode = None
+        if catalog_mode == "multiple":
+            resolved[doc_type] = "all"
+        elif catalog_mode == "single":
+            resolved[doc_type] = 1
+        else:
+            resolved[doc_type] = global_default
+    return resolved
+
+
+def _has_structured_source(specs: Optional[Dict[str, "FieldSpec"]]) -> bool:
+    """Whether anything in this field tree is read from an already-structured
+    source (XML via `xpath`/`item_xpath`, XLSX/CSV via `cell`/`column`) instead
+    of from the text of a page.
+
+    Detected by SHAPE, never by TYPE_ID: the `_XML`/`_XLSX` suffixes on catalog
+    filenames are a human naming convention, and `handler.py` routes to those
+    pipelines by the uploaded FILE's extension. Same recursive-walk pattern as
+    `pipeline.derived.has_derived`.
+    """
+    for spec in (specs or {}).values():
+        params = getattr(spec, "params", {}) or {}
+        if any(params.get(k) for k in ("xpath", "item_xpath", "cell", "column", "column_letter")):
+            return True
+        if _has_structured_source(getattr(spec, "fields", None)):
+            return True
+        if _has_structured_source(getattr(spec, "item_fields", None)):
+            return True
+    return False
+
+
+def is_segmentation_candidate(doc_type: str) -> bool:
+    """True when this type may be OFFERED to the segmenter as a candidate for an
+    upload that declared no type.
+
+    This is deliberately NOT `is_customs_type`. That flag (`pipeline:
+    "expediente"`) was doing double duty, and against the live catalog it is
+    true for exactly two of nine types — so an unlabelled PDF holding a
+    pedimento could not be classified as `PEDIMENTO_ADUANAL` at all, because
+    the type was never in the candidate list to begin with.
+
+    Candidacy is decided by SHAPE, never by TYPE_ID:
+      1. the type has a field-centric tree — nothing else can be extracted from
+         a page range by the expediente pipeline;
+      2. its fields are readable from page text, i.e. it is not backed by an
+         already-structured source (see `_has_structured_source`) — an XML type
+         is routed by file extension and its xpaths mean nothing on a scan;
+      3. it has a `description`, which is the discriminator the segmenter prompt
+         prints for the model to choose by;
+      4. it has not opted out with `"segmentation_candidate": false`.
+
+    Only the UNDECLARED path consults this. A type the caller named explicitly
+    in `documentType` is always a candidate — see `segmenter._candidate_types`.
+    """
+    entry = get_type_entry(doc_type)
+    if entry.type_id == "OTRO" or entry.segmentation_candidate is False:
+        return False
+    if entry.field_tree is None or not entry.description:
+        return False
+    return not _has_structured_source(entry.field_tree)
 
 
 # Expose DOCUMENT_CATALOG for backward compatibility

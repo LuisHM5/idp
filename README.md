@@ -88,8 +88,12 @@ pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo a dev (--dry-run
 pnpm sync:prod / sync:one:prod        # lo mismo contra la tabla de catálogo de PROD
 pnpm procesar -- mi_doc.pdf           # procesa localmente sin pasar por el stack (tus credenciales AWS)
 pnpm enviar mi_doc.pdf PEDIMENTO_ERP          # sube al stack desplegado
+pnpm enviar facturas.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
 pnpm resultado -- --id <documentId>   # trae y formatea el resultado
+pnpm reporte -- --env dev             # HTML + Excel ejecutivo, operación/calidad/costos/histórico
 pnpm test:unit                        # tests offline del motor de reglas ($0)
+pnpm test:quality                     # suite gratuita + JUnit + cobertura + histórico
+pnpm test:real -- --env dev           # todo el ground truth por el stack E2E real (con costo)
 pnpm comparar -- normal_pend.pdf      # esperado vs. extraído de un documento (AWS, centavos)
 pnpm test:pedimentos                  # suite completa de ground truth (AWS, ~$1)
 ```
@@ -132,7 +136,8 @@ documents-validator/
 │       │   └── custom_validators/          # validadores Node.js (solo flujo estándar)
 │       ├── upload-lambda/index.mjs         # POST /documents
 │       │   └── body-parser.mjs             #   parseo del body + normalización de metadata
-│       └── query-lambda/index.mjs          # GET /documents... + PATCH metadata externa
+│       └── query-lambda/index.mjs          # GET/PATCH + POST /documents/{id}/reprocess
+│           ├── reprocess-request.mjs       #   tipos/cardinalidad y key del reproceso
 │           ├── search-filters.mjs          #   filtros de búsqueda (tipo, sistema, metadata, campos)
 │           └── metadata-rules.mjs          #   merge patch y contrato plano/ASCII/2 KB
 ├── catalogs/

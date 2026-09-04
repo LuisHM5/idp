@@ -106,3 +106,56 @@ def test_build_tracking_solo_reporta_timings_cuando_los_hay():
     now, mono = datetime.now(timezone.utc), time.time()
     assert "timings" not in build_tracking(now, mono, None)
     assert build_tracking(now, mono, None, timings={"pageLoad": 1.0})["timings"] == {"pageLoad": 1.0}
+
+
+# --- la columna indexada vs la clasificación legible -------------------------
+
+
+def test_un_expediente_mixto_se_indexa_bajo_el_contenedor():
+    """`documentClassification` puede traer varios tipos separados por coma; la
+    columna `DocumentType` no puede.
+
+    Es la partition key del GSI y una Query busca por valor EXACTO: indexado
+    bajo `A,B`, el expediente sería invisible para `?docType=A`, y la Lambda de
+    consulta no tiene cómo enumerar particiones sin un Scan — justo lo que el
+    par contenedor + `ContainedDocumentTypes` existe para evitar.
+    """
+    result = {
+        "documentClassification": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO",
+        "documents": [
+            {"documentType": "PEDIMENTO_ERP"},
+            {"documentType": "FACTURA_FLETE_EXTRANJERO"},
+            {"documentType": "OTRO"},
+        ],
+    }
+    attrs = indexing.derive_index_attributes(result)
+    assert attrs["DocumentType"] == "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
+    # Y los tipos reales siguen siendo buscables por aquí, que es lo que hace
+    # que `?docType=PEDIMENTO_ERP` encuentre el pedimento de adentro.
+    assert {"PEDIMENTO_ERP", "FACTURA_FLETE_EXTRANJERO"} <= attrs["ContainedDocumentTypes"]
+    # Y la clasificación con comas NO se cuela al set: `contains(...)` compara
+    # elementos completos, así que sería un valor que nadie puede pedir, y el set
+    # crecería con una entrada por cada combinación de tipos que existiera.
+    assert not any("," in t for t in attrs["ContainedDocumentTypes"])
+
+
+def test_un_tipo_unico_se_indexa_con_ese_tipo_como_siempre():
+    result = {
+        "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+        "documents": [{"documentType": "FACTURA_FLETE_EXTRANJERO"}],
+    }
+    attrs = indexing.derive_index_attributes(result)
+    assert attrs["DocumentType"] == "FACTURA_FLETE_EXTRANJERO"
+
+
+def test_un_tipo_solicitado_pero_no_encontrado_no_se_indexa_como_contenido():
+    result = {
+        "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+        "documents": [
+            {"documentType": "FACTURA_FLETE_EXTRANJERO", "pageStart": 1, "pageEnd": 1},
+            {"documentType": "PEDIMENTO_ERP", "pageStart": None, "pageEnd": None},
+        ],
+    }
+    attrs = indexing.derive_index_attributes(result)
+    assert "FACTURA_FLETE_EXTRANJERO" in attrs["ContainedDocumentTypes"]
+    assert "PEDIMENTO_ERP" not in attrs["ContainedDocumentTypes"]

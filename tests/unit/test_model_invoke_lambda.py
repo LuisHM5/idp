@@ -168,6 +168,17 @@ def test_unparseable_response_raises(mod):
         ("raw/9f8e7d6c-1234-4321-abcd-000000000000/file.pdf", None),  # uuid → auto
         ("raw/file.pdf", None),
         ("", None),
+        # Varios tipos declarados: se devuelve el PRIMERO, y lo que importa es
+        # que devuelva ALGO — así se ahorra la llamada de visión, que en este
+        # camino no sirve para nada porque el segmentador de texto reclasifica
+        # cada segmento de todas formas. Ver el docstring de la función: el
+        # primer tipo es el único valor que además rutea bien en handler.py.
+        ("raw/PEDIMENTO_ADUANAL,FACTURA_HONORARIOS/uuid-1/file.pdf", "PEDIMENTO_ADUANAL"),
+        ("raw/A, B/uuid-1/file.pdf", "A"),
+        # Un solo elemento mal formado invalida la lista entera: mejor caer a
+        # clasificación por modelo que honrar media declaración.
+        ("raw/PEDIMENTO_ADUANAL,no-es-un-tipo/uuid-1/file.pdf", None),
+        ("raw/,/uuid-1/file.pdf", None),
     ],
 )
 def test_manual_classification_from_key(mod, key, expected):

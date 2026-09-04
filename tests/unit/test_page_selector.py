@@ -292,6 +292,41 @@ def test_a_type_can_set_its_own_source_ceiling():
         expediente.get_type_entry = original
 
 
+
+def test_several_declared_types_use_the_highest_ceiling():
+    """Varios tipos declarados: si ALGUNO selecciona sus propias páginas, no se
+    trunca a ciegas — truncar primero volvería a tirar el pedimento de la página
+    63 antes de que su selector pudiera verlo. Se toma el tope más alto."""
+    from document_catalog import _parse_entry
+    from pipeline import expediente
+
+    monkey = {
+        "CON_TOPE_120": _parse_entry(
+            "CON_TOPE_120", {"fields": {}, "page_selection": {**SPEC, "max_source_pages": 120}}
+        ),
+        "CON_TOPE_300": _parse_entry(
+            "CON_TOPE_300", {"fields": {}, "page_selection": {**SPEC, "max_source_pages": 300}}
+        ),
+        "SIN_SELECCION": _parse_entry("SIN_SELECCION", {"fields": {}}),
+    }
+    original = expediente.get_type_entry
+    expediente.get_type_entry = lambda t: monkey[t]
+    try:
+        assert expediente._page_cap_for(["CON_TOPE_120", "CON_TOPE_300"]) == (300, True)
+        # Basta con que UNO seleccione, no que lo hagan todos.
+        assert expediente._page_cap_for(["SIN_SELECCION", "CON_TOPE_120"]) == (120, True)
+        # Si ninguno selecciona, se queda el truncado de siempre.
+        assert expediente._page_cap_for(["SIN_SELECCION"]) == (expediente._MAX_PAGES, False)
+    finally:
+        expediente.get_type_entry = original
+
+
+def test_an_empty_declared_list_is_the_same_as_none():
+    from pipeline import expediente
+
+    assert expediente._page_cap_for([]) == (expediente._MAX_PAGES, False)
+
+
 # --- cheap exits: don't bother filtering ----------------------------------
 
 def test_short_documents_are_never_filtered():

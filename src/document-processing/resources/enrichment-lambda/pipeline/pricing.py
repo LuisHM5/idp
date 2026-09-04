@@ -16,20 +16,87 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-PRICING_VERSION = "2026-08-05"
+# Se persiste por documento (`cost_audit` -> columna `PricingVersion`, visible
+# en `pnpm costos`), así que es lo que permite saber CON QUÉ TARIFAS se calculó
+# un registro viejo. Súbela cuando cambie cualquier número de las tablas de
+# abajo — incluido agregar un modelo, porque eso cambia el costo reportado de
+# los documentos que ya corrieron con él.
+PRICING_VERSION = "2026-09-04"
 
-# $ per token, Bedrock Converse, Regional us-east-1 (see COSTOS.md section 1 —
-# matches Cost Explorer exactly for this account). Only models this pipeline
-# has actually billed get their own entry; an unrecognized model falls back to
-# the Haiku 4.5 rates with `approximatePricing: true` on the returned
-# breakdown, so switching BEDROCK_MODEL_ID doesn't silently mis-price without
-# any signal.
+# $ per MILLION tokens, Bedrock Converse, on-demand STANDARD tier, us-east-1.
+# An unrecognized model falls back to the Haiku 4.5 rates with
+# `approximatePricing: true` on the returned breakdown, so a model that isn't
+# listed here never mis-prices silently.
+#
+# ⚠️ Every model this pipeline can actually run has to be listed, not just the
+# configured one: `pipeline.model_fallback.DEFAULT_FALLBACK_MODELS` switches
+# models on its own when one is unavailable. Until 2026-09-04 this table held
+# ONLY Haiku while MiniMax was first in that list — so every cost record was
+# computed at Haiku's rates whatever actually ran, over-reporting a real
+# 31-page expediente as $0.143 when it cost $0.070. If you add a model to the
+# fallback list or to BEDROCK_*_MODEL_ID, add it here in the same change.
+#
+# Rates below verified 2026-09-04 against the AWS Price List API, us-east-1,
+# `service_tier: standard`, all effectiveDate 2026-08-01.
+#
+# ⚠️ **Los modelos NO viven todos bajo el mismo service code**, y esto cuesta
+# media hora de confusión si no está escrito:
+#
+#   AmazonBedrock         -> MiniMax, Kimi, GLM (terceros). De Anthropic solo
+#                            tiene los LEGACY (Claude 2.0/2.1/Instant/3 Haiku/
+#                            3 Sonnet) y, para ésos, únicamente SKUs de INPUT:
+#                            preguntar por output de Anthropic aquí no devuelve
+#                            nada, y parece que el precio no existiera.
+#   AmazonBedrockService  -> los modelos ACTUALES de Anthropic (Claude Haiku 4.5,
+#                            Sonnet 4.5, Sonnet 4), con input, output y los dos
+#                            de caché. No tiene ninguno de los de terceros.
+#
+# O sea que un script que refresque tarifas tiene que consultar LOS DOS. Además,
+# en `AmazonBedrockService` el `inferenceType` viene vacío: lo que distingue
+# input de output es el `usagetype`
+# (`USE1-anthropic.claude-haiku-4-5-mantle-{input,output}-tokens-standard`).
+#
+# Nota sobre `cacheWrite`: Haiku publica DOS tarifas de escritura de caché,
+# $1.375/M (`mantle-cache-write-tokens-standard`, TTL default de 5 min) y
+# $2.20/M (`...-1h-standard`, TTL de una hora). Aquí va la de 5 min porque es la
+# que el pipeline usa — `bedrock.py` manda `{"cachePoint": {"type": "default"}}`
+# y nunca `"1h"`. Si alguna vez se cambia ese TTL, esta tarifa se queda corta un
+# 60%.
+#
+# `cacheRead`/`cacheWrite` for the three non-Anthropic models: Bedrock lists NO
+# cache SKU for them and none supports prompt caching (verified, see
+# models_pricing.md), so the pipeline never sends cache tokens and these should
+# stay at 0. They are priced at the input rate rather than 0.0 on purpose — if
+# cache tokens ever do show up, the number over-reports instead of vanishing.
 _BEDROCK_PRICING: Dict[str, Dict[str, float]] = {
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
         "input": 1.10,
         "output": 5.50,
         "cacheRead": 0.11,
         "cacheWrite": 1.375,
+    },
+    # USE1-minimax.minimax-m2.5-mantle-{input,output}-tokens-standard
+    "minimax.minimax-m2.5": {
+        "input": 0.30,
+        "output": 1.20,
+        "cacheRead": 0.30,
+        "cacheWrite": 0.30,
+    },
+    # USE1-moonshotai.kimi-k2.5-mantle-{input,output}-tokens-standard
+    "moonshotai.kimi-k2.5": {
+        "input": 0.60,
+        "output": 3.00,
+        "cacheRead": 0.60,
+        "cacheWrite": 0.60,
+    },
+    # USE1-zai.glm5-mantle-{input,output}-tokens-standard. Note the SKU spells
+    # it `glm5` while the Bedrock model id is `zai.glm-5`; the key here is the
+    # MODEL ID, which is what `bedrock_cost` is called with.
+    "zai.glm-5": {
+        "input": 1.00,
+        "output": 3.20,
+        "cacheRead": 1.00,
+        "cacheWrite": 1.00,
     },
 }
 _DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"

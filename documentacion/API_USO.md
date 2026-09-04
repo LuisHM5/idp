@@ -46,7 +46,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
     Lambda** (no genera costo de backend). Ver `AMBIENTES_Y_SEGURIDAD.md`.
   - **No la mandes en el `PUT` a S3** (paso 2 de la subida): ese va firmado en la
     URL y no pasa por API Gateway.
-- **Autorización por app:** además de autenticar, la `x-api-key` decide qué documentos puede leer o editar esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 5 y `AMBIENTES_Y_SEGURIDAD.md`.
+- **Autorización por app:** además de autenticar, la `x-api-key` decide qué documentos puede leer, reprocesar o editar esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 6 y `AMBIENTES_Y_SEGURIDAD.md`.
 - **Formato:** JSON. Errores devuelven `{ "error": "CODIGO", "message": "..." }`.
   Programa contra `error` (código estable), no contra `message`.
 
@@ -60,6 +60,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
 |---|---|---|
 | `POST` | `/documents` | **Paso 1 de 2:** registrar el documento y obtener la URL de subida (no recibe el archivo) |
 | `GET`  | `/documents/{id}` | Obtener el resultado completo de un documento por su id |
+| `POST` | `/documents/{id}/reprocess` | Crear un proceso nuevo reutilizando el archivo original ya almacenado en S3 |
 | `PATCH` | `/documents/{id}/metadata` | Crear, cambiar o borrar estados/marcas propios de la app sin alterar la validación |
 | `GET`  | `/documents/{id}/file` | Obtener una URL prefirmada de S3 para descargar el **archivo original** subido |
 | `GET`  | `/documents?docType=...` | Listar/filtrar documentos por tipo (indexado, sin Scan) |
@@ -603,10 +604,15 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
 ```jsonc
 {
   "fileName": "pedimento.pdf",           // requerido; pdf|jpg|jpeg|png|xml|xlsx|csv
-  "documentType": "PEDIMENTO_ERP",   // opcional (obligatorio en .xml/.xlsx/.csv)
+  "documentType": "PEDIMENTO_ERP",       // opcional (obligatorio en .xml/.xlsx/.csv).
+                                         // Varios separados por coma para que
+                                         // los busque y clasifique: ver §Notas
+  "occurrenceMode": "single",            // opcional: pisa defaults de catálogo.
+                                         // Omitido: catálogo; si no define,
+                                         // single con un tipo/multiple con varios
   "metadata": { "lote": "A123" },        // opcional; se conserva con el documento
                                          // y luego se puede filtrar con
-                                         // GET /documents?meta.lote=A123 (§5)
+                                         // GET /documents?meta.lote=A123 (§6)
   "modelId": "amazon.nova-pro-v1:0"      // opcional; SOLO DEV — ver notas
 }
 ```
@@ -618,6 +624,8 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
   "bucket": "documentvalidationstack-...",
   "key": "raw/PEDIMENTO_ERP/e18d014a-.../pedimento.pdf",
   "documentType": "PEDIMENTO_ERP",
+  "occurrenceMode": "single",
+  "documentTypeCounts": { "PEDIMENTO_ERP": 1 },
   "classificationMode": "manual",
   "uploadUrl": "https://...s3.amazonaws.com/...",
   "uploadMethod": "PUT",
@@ -699,12 +707,54 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 ### Notas del upload
 
-- Si mandas `documentType`, se salta la clasificación automática **y se HONRA tu tipo**: el documento se trata como ese tipo único y **no se re-clasifica ni se segmenta** en otro (p. ej. un PDF de varias páginas declarado `PEDIMENTO_ERP` se procesa como un solo pedimento, no como `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). Si quieres que el sistema segmente/clasifique solo, **omite** `documentType`. Para forzar la segmentación multi-documento explícitamente, declara `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
-- **Archivos `.xml`/`.xlsx`/`.csv`:** para tipos con esquema XML (sufijo `_XML`) o tabular (sufijo `_XLSX`/`_CSV`) `documentType` es **obligatorio** — la API lo rechaza con `400 DOCUMENT_TYPE_REQUIRED` si falta, porque no existe clasificación automática por visión sobre datos ya estructurados. A cambio, el documento se extrae **determinísticamente** (XPath para XML, celda/columna para XLSX/CSV — sin llamar a Bedrock en ningún paso): más rápido y sin costo de modelo. Ver `catalogs/README.md` → "Tipos con fuente XML" / "Tipos con fuente tabular".
+- **`documentType` decide entre tres modos**, según cuántos tipos mandes. Es **un solo campo**: varios tipos van separados por coma, igual que en `GET /documents?docType=A,B`.
+
+  | Mandas | `classificationMode` | Qué hace |
+  |---|---|---|
+  | **Un** tipo (`PEDIMENTO_ERP`) | `manual` | Se salta la clasificación automática **y se HONRA tu tipo**: el archivo entero se trata como ese tipo único y **no se re-clasifica ni se segmenta** (un PDF de varias páginas declarado `PEDIMENTO_ERP` es un solo pedimento, no un `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). |
+  | **Varios** (`PEDIMENTO_ADUANAL,FACTURA_HONORARIOS`) | `guided` | El archivo **sí se segmenta y se clasifica**, pero la lista es **CERRADA**: `documents[]` sólo contiene los tipos declarados. Cada documento encontrado lleva su tipo, `pageStart`/`pageEnd` y su propio esquema; los demás segmentos se omiten. |
+  | **Nada** (omites el campo) | `auto` | El clasificador elige contra todo el catálogo. |
+
+- **Cuándo usar la lista.** Cuando sabes qué *debería* traer el archivo pero no cuántos ni en qué orden — un expediente con un pedimento y sus facturas de honorarios. Sale **más barato y más preciso** que omitir el tipo: el prompt del clasificador sólo lleva los tipos que pediste (en un caso real, 2,552 caracteres contra 4,649), y no hay tipos parecidos del resto del catálogo con los que confundirse. Para forzar la segmentación multi-documento sin acotar nada, sigue estando `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
+
+- **Cuántos documentos de cada tipo buscar: `TIPO:N`.** Cada tipo admite un sufijo opcional que dice cuántos documentos de ese tipo debe buscar el pipeline:
+
+  ```
+  documentType=PEDIMENTO_ERP                                  # occurrenceMode single (default)
+  documentType=PEDIMENTO_ERP:2                                # hasta 2
+  documentType=FACTURA_FLETE_EXTRANJERO:all                   # todas las que haya
+  documentType=PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO         # ambos usan occurrenceMode del POST
+  documentType=PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:2     # cantidades explícitas
+  ```
+
+  **El POST puede sobrescribir el catálogo:** `occurrenceMode: "single"` conserva la primera ocurrencia de cada tipo sin sufijo y `occurrenceMode: "multiple"` conserva todas. Si se omite, cada tipo usa su `occurrence_mode` de catálogo; sólo cuando esa propiedad falta aplica el default global (`single` con un tipo declarado, `multiple` con varios). Un `:N` o `:all` explícito siempre prevalece para ese tipo. También se acepta `occurrence_mode` como alias de compatibilidad, aunque el contrato usa camelCase.
+
+  En una lista guiada no necesitas anticipar cuántas facturas contiene el expediente. Si quieres acotar un tipo por costo o por regla de negocio, usa `:N`.
+
+  En una solicitud cerrada, los tipos ajenos, las copias y las ocurrencias que exceden un `:N` se omiten de `documents[]` y no se extraen. Si falta una ocurrencia solicitada, aparece un marcador del tipo pedido con `pageStart: null`, `pageEnd: null`, `status: "REVIEW_REQUIRED"`, `confidence: null` y `fields: {}`. Para `TIPO:N` se agrega uno por cada faltante; para `TIPO:all`, uno únicamente si el tipo no apareció. Esos marcadores activan revisión, pero no cuentan en `documentCount` ni en `validation.counts`.
+
+  La respuesta del `POST` devuelve el `occurrenceMode` explícito (`null` si se omitió) y las decisiones materializadas en `documentTypeCounts`. Los defaults de catálogo se resuelven después, en enrichment. Por ejemplo, con `occurrenceMode: "multiple"` y un override `PEDIMENTO_ERP:1`:
+
+  ```jsonc
+  "documentType": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO",
+  "occurrenceMode": "multiple",
+  "documentTypeCounts": {
+    "PEDIMENTO_ERP": 1,
+    "FACTURA_FLETE_EXTRANJERO": "all"
+  },
+  "classificationMode": "guided"
+  ```
+
+  Una cuenta inválida (`:0`, `:-1`, `:1.5`, `:abc`) es `400 INVALID_DOCUMENT_TYPE`; un `occurrenceMode` distinto de `single`/`multiple` es `400 INVALID_OCCURRENCE_MODE`. Un tipo repetido con cuentas distintas conserva la MAYOR.
+
+- **Topes de la lista:** máximo **8 tipos** y **200 caracteres** en total, porque viajan como un solo segmento de la llave de S3 (`raw/{A,B}/{uuid}/archivo.pdf`) y una llave de S3 tiene 1024 bytes contando uuid y nombre de archivo. Pasarse es `400 INVALID_DOCUMENT_TYPE`, igual que un tipo que no sea UPPER_SNAKE_CASE. Los tipos repetidos se descartan; el orden que mandes es el que ve el clasificador.
+
+- **Archivos `.xml`/`.xlsx`/`.csv`:** para tipos con esquema XML (sufijo `_XML`) o tabular (sufijo `_XLSX`/`_CSV`) `documentType` es **obligatorio** — la API lo rechaza con `400 DOCUMENT_TYPE_REQUIRED` si falta, porque no existe clasificación automática por visión sobre datos ya estructurados. A cambio, el documento se extrae **determinísticamente** (XPath para XML, celda/columna para XLSX/CSV — sin llamar a Bedrock en ningún paso): más rápido y sin costo de modelo. Ver `catalogs/README.md` → "Tipos con fuente XML" / "Tipos con fuente tabular". Ahí además se acepta **exactamente un tipo**: no hay nada que elija entre varios esquemas, así que una lista se rechaza con `400 INVALID_DOCUMENT_TYPE` en vez de leer el archivo con el primero y hacerte creer que se buscaron todos.
 - **`modelId` (solo dev):** procesa **ese documento** con el modelo de Bedrock que indiques, sin redeploy — útil para comparar modelos sobre el mismo archivo. Aplica a todas las fases y gana sobre las variables `BEDROCK_*_MODEL_ID`; el resultado reporta en `tracking.modelIds` qué modelo corrió en cada fase. **El stack de prod lo ignora a propósito** (no define `ALLOW_MODEL_OVERRIDE`): el valor viene de quien sube el archivo, y en prod dejaría que un tercero eligiera el modelo —y con él el costo y la calidad de extracción— sobre documentos ajenos. Con `pnpm enviar`: `--model amazon.nova-pro-v1:0`.
 - **Fallback automático de modelo (siempre activo, no es un flag de request):** si el modelo que le tocaba a una fase (`extractor`/`recovery`) falla porque no está disponible (no habilitado, no existe, error/timeout/cuota del proveedor — nunca por un request mal formado, eso propaga tal cual), el pipeline cambia solo al siguiente modelo de una lista ordenada y reintenta, hasta 4 veces por default. `tracking.modelIds` ya refleja el modelo que **realmente** corrió (no el configurado) cuando esto pasa; además, solo para las fases donde hubo cambio, `tracking.modelFallbacks` reporta el detalle: modelo esperado vs. el que finalmente corrió, cuántos reintentos tomó, y el error de cada intento fallido. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.
-- **`tracking.appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `tracking.appOrigin` con el nombre de esa app — buscable después vía `GET /documents?system=<app>` (§5). Sale de la **key**, no del body: un `metadata: {"app-origin": "..."}` se descarta, así que ninguna app puede declararse otra. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece dentro de `tracking`.
-- **`metadata` (contexto tuyo, editable y filtrable):** lo que mandes en `metadata` viaja con el documento hasta su resultado (queda en `metadata` del envelope y en la columna `Metadata` del item) y se puede filtrar con `GET /documents?meta.<clave>=<valor>` (§5). Después de procesarlo puede modificarse con `PATCH /documents/{id}/metadata` (§3), incluso para agregar metadata a documentos antiguos. Las claves se normalizan a minúsculas y deben cumplir `[a-z0-9][a-z0-9._-]*`; los valores son planos, US-ASCII y el mapa completo tiene 2 KB de tope. Lo que no cumpla se rechaza con `400 INVALID_METADATA`. `app-origin` y `model-id` son claves reservadas del sistema.
+- **Segmentación degradada (clasificación de un expediente con 2+ tipos declarados):** distinto del punto anterior, aquí Bedrock responde 200 OK pero con texto vacío o truncado (`stopReason: "max_tokens"`) — el pipeline lo detecta, sube el presupuesto de salida y reintenta una vez con el modelo más confiable antes de rendirse; para expedientes grandes, la clasificación se reparte en ventanas de páginas que luego se fusionan. Si pese a eso un rango de páginas queda sin clasificar (marcado `OTRO`), `tracking.segmentationDegraded` reporta cuáles, por qué y con qué intentos, `reviewRequired` se fuerza a `true` y se agrega un `warnings[]` legible — en vez del `documentCount: 0` mudo de antes. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.1.
+- **`tracking.appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `tracking.appOrigin` con el nombre de esa app — buscable después vía `GET /documents?system=<app>` (§6). Sale de la **key**, no del body: un `metadata: {"app-origin": "..."}` se descarta, así que ninguna app puede declararse otra. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece dentro de `tracking`.
+- **`metadata` (contexto tuyo, editable y filtrable):** lo que mandes en `metadata` viaja con el documento hasta su resultado (queda en `metadata` del envelope y en la columna `Metadata` del item) y se puede filtrar con `GET /documents?meta.<clave>=<valor>` (§6). Después de procesarlo puede modificarse con `PATCH /documents/{id}/metadata` (§4), incluso para agregar metadata a documentos antiguos. Las claves se normalizan a minúsculas y deben cumplir `[a-z0-9][a-z0-9._-]*`; los valores son planos, US-ASCII y el mapa completo tiene 2 KB de tope. Lo que no cumpla se rechaza con `400 INVALID_METADATA`. `app-origin`, `model-id` y `document-counts` son claves reservadas del sistema.
 - **Tope de páginas (pipeline de expedientes/pedimentos):** depende de si el tipo declarado **selecciona sus propias páginas** (`page_selection` en su catálogo). Si las selecciona, el documento **no se trunca**: el costo ya lo acota el selector, que solo manda al modelo las páginas con los campos del tipo, y solo aplica un tope muy superior (`max_source_pages`, 500 por defecto) como salvaguarda contra un archivo capaz de agotar la Lambda. Si **no** las selecciona —tipo sin `page_selection`, con `enabled: false`, `PAGE_SELECTION_ENABLED=false`, o una subida **sin tipo declarado** (no se sabe qué selector aplica hasta clasificar, y clasificar exige leer las páginas)— un PDF de más de 50 páginas (`MAX_PAGES`, configurable) se **trunca a las primeras 50** antes de correr Textract/Bedrock, para acotar el costo de un documento inesperadamente grande. El PDF original completo **no se toca** — sigue intacto en S3 — pero el resultado solo cubre las páginas procesadas, queda marcado `reviewRequired: true` con un warning explícito, y un campo `truncated: {originalPages, processedPages}`. Si necesitas las páginas restantes, hay que reprocesar manualmente.
 - El resultado final se publica en **EventBridge** (broker `idp-broker`, source `document-validation-pipeline`) y se persiste (ver GET abajo).
 
@@ -712,6 +762,7 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 ```bash
 pnpm enviar pedimento.pdf PEDIMENTO_ERP              # dev por default
 pnpm enviar pedimento.pdf PEDIMENTO_ERP --env prod   # API key desde .env.production
+pnpm enviar facturas.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
 ```
 
 ---
@@ -729,6 +780,21 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 > respuesta que cambiara de forma según el resultado obligaría a escribir dos
 > caminos y a equivocarse el día que llegan dos. `documentCount` y
 > `documentClassification` en la raíz sirven para lo trivial sin abrir el arreglo.
+>
+> **`documentClassification` dice QUÉ TRAE el archivo.** Si todos los documentos
+> son del mismo tipo, es ese tipo (aunque sean varios); si son de tipos
+> distintos, son **los tipos separados por coma en orden de aparición**
+> (`"PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO"`). En clasificación automática
+> pueden existir filas `OTRO`, pero nunca entran en esa etiqueta ni en
+> `documentCount`; en una solicitud cerrada ni siquiera se publican. Los
+> marcadores de tipos solicitados no encontrados tampoco cuentan como contenido.
+>
+> No lo confundas con la **columna indexada** `documentType`, que en un archivo
+> mixto sigue diciendo `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`: es la partition key
+> de un GSI de DynamoDB y una Query busca por valor **exacto**, así que indexar
+> bajo `"A,B"` haría el expediente invisible para `?docType=A` (y no hay forma de
+> enumerar particiones sin un Scan). Buscar por los tipos de adentro sigue
+> funcionando igual, vía `ContainedDocumentTypes` — ver §6.
 
 **Mientras procesa — `202`:**
 
@@ -824,11 +890,11 @@ opcionales importantes del envelope:
     // sean varios. EXPEDIENTE_ADUANAL_MULTIDOCUMENTO queda solo para paquetes
     // de tipos mixtos.
     "documentClassification": "FACTURA_FLETE_EXTRANJERO",
-    "documentCount": 2,                   // documentos principales (excluye OTRO)
+    "documentCount": 2,                   // encontrados: excluye OTRO y marcadores sin rango
 
     // Procedencia/procesamiento — presente en TODO resultado (flujo estándar y
     // expediente por igual). createdAt siempre está; modelIds/appOrigin/
-    // modelFallbacks/timings solo si hay algo que reportar.
+    // modelFallbacks/segmentationDegraded/timings solo si hay algo que reportar.
     "tracking": {
       "createdAt": "2026-07-27T13:19:04.231Z",
       "processingStartedAt": "...", "processingCompletedAt": "...",
@@ -848,7 +914,20 @@ opcionales importantes del envelope:
           "retries": 1,
           "attempts": [{ "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "error": "AccessDeniedException" }]
         }
-      }
+      },
+      // Ausente salvo que la segmentación se haya rendido en algún rango de
+      // páginas (respuesta vacía/truncada pese al reintento — ver
+      // GUIA_DESPLIEGUE_Y_USO.md §5.6.1). Un "marked_otro" fuerza reviewRequired.
+      "segmentationDegraded": [
+        {
+          "pageStart": 1, "pageEnd": 31,
+          "reason": "empty_response", "resolution": "marked_otro",
+          "attempts": [
+            { "modelId": "minimax.minimax-m2.5", "maxTokens": 8192, "stopReason": "max_tokens", "outputTokens": 8192, "reason": "empty_response" },
+            { "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "maxTokens": 8192, "stopReason": "max_tokens", "outputTokens": 8192, "reason": "empty_response" }
+          ]
+        }
+      ]
     },
     "metadata": { "lote": "A123" },       // la que mandaste en el POST, verbatim
 
@@ -999,6 +1078,10 @@ consulte documentos históricos debe checar `envelopeVersion` antes de asumir
 Query params:
 - `full=1` → agrega **`fullResult`**: el detalle más profundo desde S3 (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`, más `value`/`valid`/`reason` (vista simple: valor resuelto, booleano y motivo si `valid` es falso)). El `result` del envelope trae las entidades y `liquidacionNormalizada`, pero el detalle por-campo solo está en `fullResult`.
 
+Un trabajo creado por `POST /documents/{id}/reprocess` incluye además
+`reprocessedFrom` con el id completo usado como fuente, tanto mientras está
+pendiente como cuando ya terminó.
+
 **Errores:** `404 NOT_FOUND` si no hay documento con ese id/prefijo, **o si existe pero la app que llama no tiene permiso de verlo** (ver "Seguridad — acceso por app" más abajo) — misma respuesta en ambos casos, a propósito: no confirma que un documento fuera de tu alcance exista.
 
 **Ejemplo:**
@@ -1010,7 +1093,93 @@ Atajo del repo (equivalente, formateado): `pnpm resultado -- --id 4ff224be`.
 
 ---
 
-## 3. `PATCH /documents/{id}/metadata` — Estados y marcas propios de la app
+## 3. `POST /documents/{id}/reprocess` — Reprocesar el archivo original
+
+Inicia otro procesamiento a partir de un documento que ya fue subido. Recibe
+el id viejo en la ruta, localiza su archivo original en S3 y crea un
+`documentId` nuevo. El resultado viejo queda intacto: no se sobrescribe ni se
+borra.
+
+No hay una segunda subida del cliente. La Query Lambda hace un `CopyObject`
+interno de `processed/{id}/` o `failed/{id}/` a una key nueva bajo `raw/`; ese
+objeto dispara el mismo flujo S3 → SQS → Step Functions que un upload normal.
+Por eso el tamaño del PDF no atraviesa API Gateway/Lambda y la respuesta no
+trae `uploadUrl`.
+
+Body opcional, en JSON o `application/x-www-form-urlencoded`:
+
+| Campo | Comportamiento |
+|---|---|
+| `documentType` | Uno o varios TYPE_ID separados por coma, con el mismo contrato `:N`/`:all` de §1. Si se **omite**, hereda los tipos explícitos del proceso anterior; si el anterior era automático, vuelve a ser automático. Enviar `null` o `""` fuerza auto aunque antes hubiera tipo |
+| `occurrenceMode` | `single` o `multiple`; también acepta `occurrence_mode`. Pisa catálogo/default para los tipos sin sufijo; `:N`/`:all` sigue ganando |
+| `modelId` | Override sólo para la ejecución nueva y sólo efectivo en dev. Si se omite, se usa la configuración actual, no el override viejo |
+
+La metadata vigente del documento anterior se copia al trabajo nuevo. La app
+que llama debe poder ver el documento fuente según `AccessScope` y
+`AllowedDocTypes`; fuera de alcance responde `404`, igual que el GET. Si pide
+explícitamente un tipo fuera de sus `AllowedDocTypes`, responde `403`. Una API
+key válida pero todavía no registrada conserva las lecturas legacy, pero no
+puede iniciar reprocesos; primero hay que adoptarla/registrarla.
+
+**Reprocesar con tipos nuevos:**
+
+```bash
+RESP=$(curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
+  -H "x-api-key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+    "occurrenceMode": "multiple"
+  }')
+
+NEW_DOC_ID=$(echo "$RESP" | jq -r .documentId)
+curl -sS "$API/documents/$NEW_DOC_ID" -H "x-api-key: $KEY"
+```
+
+**Repetir con la declaración anterior:** body vacío u `{}`.
+
+```bash
+curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
+  -H "x-api-key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Respuesta `202`:**
+
+```json
+{
+  "documentId": "8aa31cde-...",
+  "reprocessedFrom": "ca22771e-72d8-403a-ad81-7f71617af908",
+  "documentType": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO",
+  "occurrenceMode": "multiple",
+  "documentTypeCounts": {
+    "PEDIMENTO_ERP": 1,
+    "FACTURA_FLETE_EXTRANJERO": "all"
+  },
+  "classificationMode": "guided",
+  "processingStatus": "QUEUED",
+  "statusUrl": "/documents/8aa31cde-...",
+  "retryAfterSeconds": 5
+}
+```
+
+La cabecera `Location` repite `statusUrl` y `Retry-After` indica la espera
+mínima antes de consultar. Cada POST crea un id nuevo; no es una actualización
+del id anterior.
+
+Errores:
+
+- `400 INVALID_JSON|INVALID_BODY|INVALID_DOCUMENT_TYPE|INVALID_OCCURRENCE_MODE|INVALID_FORMAT|DOCUMENT_TYPE_REQUIRED` — body o combinación no válida;
+- `403 FORBIDDEN|FORBIDDEN_DOCUMENT_TYPE` — key no registrada o tipo fuera del alcance;
+- `404 NOT_FOUND` — no existe o la app no puede ver el documento viejo;
+- `404 FILE_NOT_FOUND` — el registro existe pero el original ya no está en `processed/`/`failed/`;
+- `409 SOURCE_NOT_READY` — todavía sigue bajo `raw/`; espera a que el GET termine;
+- `500 JOB_REGISTRATION_FAILED|REPROCESS_COPY_FAILED` — no pudo reservarse el trabajo o copiarse el objeto. Si falla la copia, el `documentId` nuevo queda en `FAILED` para auditoría.
+
+---
+
+## 4. `PATCH /documents/{id}/metadata` — Estados y marcas propios de la app
 
 Aplica un **JSON Merge Patch plano** sobre la metadata mutable del documento.
 Está pensado para seguimiento externo: `estado_externo`, `folio_erp`,
@@ -1029,7 +1198,7 @@ Semántica:
 - clave ausente → conserva el valor anterior;
 - el body debe ser un objeto plano; claves `[a-z0-9][a-z0-9._-]*`, valores
   US-ASCII, máximo 2 KB para **todo el mapa resultante**;
-- `app-origin` y `model-id` son reservadas y no se pueden modificar.
+- `app-origin`, `model-id` y `document-counts` son reservadas y no se pueden modificar.
 
 ```bash
 curl -sS -X PATCH "$API/documents/$DOC_ID/metadata" \
@@ -1081,7 +1250,7 @@ dos integraciones escriben al mismo tiempo.
 
 ---
 
-## 4. `GET /documents/{id}/file` — Descargar el archivo original
+## 5. `GET /documents/{id}/file` — Descargar el archivo original
 
 Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo tal cual se subió (el PDF/imagen/XML/XLSX/CSV original, no el resultado de la extracción). `{id}` acepta id completo o prefijo, igual que `GET /documents/{id}`.
 
@@ -1123,14 +1292,14 @@ curl -sS -o expediente.pdf "$(curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224b
 
 Este endpoint expone **bytes del archivo original** (posible PII: fotos de identificación, RFC/CURP, montos, direcciones), no solo el JSON de resultado — así que el modelo de autorización de este API pesa más aquí que en cualquier otro endpoint. Dos puntos concretos:
 
-1. **La `x-api-key` SÍ filtra por dueño del documento, por default.** `query-lambda` resuelve la app que llama (por su `x-api-key`, contra `document-validation-apps[-dev]`) y, salvo que esa app tenga `AccessScope=all` configurado explícitamente, solo puede ver/descargar documentos cuyo `tracking.appOrigin` sea ella misma — cualquier otro id existe pero responde `404` (ver "Seguridad — acceso por app" en la sección 5, más abajo, para el detalle completo del modelo). Esto es el default de **cualquier app registrada desde ahora** (`pnpm apps:register`); dos casos quedan sin restringir a propósito — sin `x-api-key` (dev abierto) y una key válida nunca registrada aquí (`idp-default` antes de `apps:adopt`, el caso "sistema preexistente") — ver `AMBIENTES_Y_SEGURIDAD.md`. Si necesitas que una app vea todo (ej. un portal admin interno), es explícito: `pnpm apps:reconfigure -- --name X --access-scope all`.
+1. **La `x-api-key` SÍ filtra por dueño del documento, por default.** `query-lambda` resuelve la app que llama (por su `x-api-key`, contra `document-validation-apps[-dev]`) y, salvo que esa app tenga `AccessScope=all` configurado explícitamente, solo puede ver/descargar/reprocesar documentos cuyo `tracking.appOrigin` sea ella misma — cualquier otro id existe pero responde `404` (ver "Seguridad — acceso por app" en la sección 6, más abajo, para el detalle completo del modelo). Esto es el default de **cualquier app registrada desde ahora** (`pnpm apps:register`); dos casos quedan sin restringir a propósito — sin `x-api-key` (dev abierto) y una key válida nunca registrada aquí (`idp-default` antes de `apps:adopt`, el caso "sistema preexistente") — ver `AMBIENTES_Y_SEGURIDAD.md`. Si necesitas que una app vea todo (ej. un portal admin interno), es explícito: `pnpm apps:reconfigure -- --name X --access-scope all`.
 2. **La URL prefirmada es en sí misma una credencial de acceso**, independiente de la `x-api-key` que la generó: cualquiera que la obtenga (log de proxy, historial de navegador, un `Referer` filtrado, copiar-pegar a un chat) puede descargar el archivo **sin volver a pasar por autenticación** hasta que expira. Por eso el default es corto (15 min, tope 1h) — no subir `expiresIn` más de lo necesario, y tratar la URL resultante como un secreto de vida corta, no como un link para reenviar. Esto es independiente del punto 1: la restricción por app decide **quién puede pedir** la URL; una vez emitida, cualquiera que la tenga puede usarla hasta que expire.
 
 **Tamaño de archivo — resumen:** sin límite real. La única cota que aplica es la del **upload** original (§1): ~4 MB si se subió inline, sin tope práctico si se subió vía URL prefirmada (S3 acepta objetos hasta 5 TB, `PUT` de una sola parte hasta 5 GB). La descarga hereda ese mismo tamaño sin ningún límite adicional propio, porque nunca pasa por Lambda/API Gateway.
 
 ---
 
-## 5. `GET /documents` — Buscar por tipo, sistema, metadata y campos extraídos
+## 6. `GET /documents` — Buscar por tipo, sistema, metadata y campos extraídos
 
 Cuatro filtros, **todos combinables entre sí y todos en AND**: un documento
 tiene que cumplirlos todos para salir en `matches`. Basta con mandar uno.
@@ -1139,7 +1308,7 @@ tiene que cumplirlos todos para salir en `matches`. Basta con mandar uno.
 |---|---|---|
 | **`docType`** | El **tipo de documento** | Columna indexada `DocumentType`. Se resuelve **dentro de DynamoDB** contra el GSI `DocumentTypeIndex` (partición `DocumentType`, orden `ProcessedAt`): solo se leen los documentos de ese tipo, **sin Scan**. |
 | **`system`** | Qué **sistema lo subió** | `tracking.appOrigin`, que sale de la **API key** con la que se hizo el `POST /documents` — no de nada que mande el cliente en el body. Alias: `appOrigin`, `sistema`. |
-| **`meta.<clave>`** | La **metadata actual** del documento | El objeto del `POST /documents` (§1), incluyendo cambios posteriores hechos por `PATCH /documents/{id}/metadata` (§3), sin interpretarlo. |
+| **`meta.<clave>`** | La **metadata actual** del documento | El objeto del `POST /documents` (§1), incluyendo cambios posteriores hechos por `PATCH /documents/{id}/metadata` (§4), sin interpretarlo. |
 | **`field` + `value`** | Cualquier **campo extraído** del documento | El envelope del resultado, por dot-path o por búsqueda profunda. **Se puede repetir** para exigir varios campos a la vez. |
 
 Solo `docType` se filtra dentro de DynamoDB; los otros tres se aplican en la
@@ -1502,8 +1671,8 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
   "matches": [
     {
       "documentId": "PEDIMENTO-ADUANAL-4ff224be-...",
-      "documentClassification": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",
-      "documentType": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",  // columna indexada
+      "documentClassification": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO",  // qué trae
+      "documentType": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",  // columna indexada (ver nota)
       "documentTypeName": "Expediente Aduanal Multidocumento",
       "documentName": "expediente-2026.pdf",
       "validationStatus": "REQUIERE_REVISION",
@@ -1632,7 +1801,7 @@ Además del `EnrichmentResult`, cada item lleva columnas de primer nivel que esc
 | `ContainedDocumentTypes` | `["EXPEDIENTE_...", "PEDIMENTO_ERP", "FACTURA"]` | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente. |
 | `DocumentName` | `expediente-2026.pdf` | Nombre del archivo original. |
 | `Tracking` | `{CreatedAt, UpdatedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, Timings, Schema, AppOrigin, ModelIds, ModelFallbacks}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. Misma paridad de campos que `result.tracking` (ver §2 y `indexing.py::_TRACKING_FIELD_MAP`), solo que en PascalCase para combinar con el resto de estas columnas — nunca un subconjunto recortado. `AppOrigin` es lo que filtra `?system=`, pero el filtro se evalúa sobre el envelope, no sobre esta columna. |
-| `Metadata` | `{lote: "A123", estado_externo: "EN_REVISION"}` | **Map mutable**: nace del `metadata` del `POST /documents` (§1) y `PATCH /documents/{id}/metadata` (§3) la puede crear o cambiar. Es la fuente actual que la API superpone al snapshot de `EnrichmentResult`/S3 y lo que filtra `?meta.<clave>=`. |
+| `Metadata` | `{lote: "A123", estado_externo: "EN_REVISION"}` | **Map mutable**: nace del `metadata` del `POST /documents` (§1), se hereda al reprocesar (§3) y `PATCH /documents/{id}/metadata` (§4) la puede crear o cambiar. Es la fuente actual que la API superpone al snapshot de `EnrichmentResult`/S3 y lo que filtra `?meta.<clave>=`. |
 | `MetadataVersion`, `MetadataUpdatedAt`, `MetadataUpdatedBy` | `3`, fecha ISO, `ERP` | Auditoría/concurrencia de la última edición de metadata; no forman parte de la metadata del usuario ni de sus filtros. |
 
 Documentos procesados antes de esto no tienen las columnas: `pnpm backfill:index` las reconstruye desde `EnrichmentResult` (idempotente, `--dry-run` disponible).
@@ -1643,8 +1812,9 @@ Cómo lo devuelve cada endpoint:
 |---|---|---|
 | `GET /documents/{id}` | DynamoDB (`result`) | Envelope completo (con `documents[...]`) |
 | `GET /documents/{id}?full=1` | DynamoDB + S3 (`fullResult`) | Envelope + detalle por-campo `fields[]` |
-| `PATCH /documents/{id}/metadata` | DynamoDB (`UpdateItem` condicional) | Mapa completo actualizado; no toca S3 ni la validación — ver §3 |
-| `GET /documents/{id}/file` | DynamoDB (resolver id) + S3 (`ListObjectsV2` + URL prefirmada) | El **archivo original**, no el resultado — ver §4 |
+| `POST /documents/{id}/reprocess` | DynamoDB + S3 (`HeadObject` + `CopyObject`) | Trabajo nuevo desde el original; no modifica el id viejo — ver §3 |
+| `PATCH /documents/{id}/metadata` | DynamoDB (`UpdateItem` condicional) | Mapa completo actualizado; no toca S3 ni la validación — ver §4 |
+| `GET /documents/{id}/file` | DynamoDB (resolver id) + S3 (`ListObjectsV2` + URL prefirmada) | El **archivo original**, no el resultado — ver §5 |
 | `GET /documents?docType=...` | DynamoDB (Query al GSI + BatchGet) | Envelope completo por match |
 | `GET /documents?docType=...&system=...&meta.<clave>=...` | DynamoDB (Query al GSI + BatchGet) + filtro en la Lambda | Envelope completo por match; los dos filtros no añaden lecturas |
 | `GET /documents?field=...` | DynamoDB (Scan) | Envelope completo por match |

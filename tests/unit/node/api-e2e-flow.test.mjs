@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parseArgs, runE2E } from "../../../scripts/test-e2e.mjs";
+import { parseArgs, runE2E, validateOptions } from "../../../scripts/test-e2e.mjs";
 
 test("recorre POST -> PUT -> GET 202 -> GET 200 y entrega el JSON final", async () => {
   const directory = await mkdtemp(join(tmpdir(), "documents-validator-e2e-"));
@@ -77,6 +77,7 @@ test("recorre POST -> PUT -> GET 202 -> GET 200 y entrega el JSON final", async 
       endpoint,
       filePath: documentPath,
       documentType: "FACTURA_FLETE_EXTRANJERO",
+      occurrenceMode: "multiple",
       apiKey: "test-api-key",
       timeoutMs: 60_000,
       full: true,
@@ -94,6 +95,7 @@ test("recorre POST -> PUT -> GET 202 -> GET 200 y entrega el JSON final", async 
     assert.deepEqual(posted, {
       fileName: "factura-real.pdf",
       documentType: "FACTURA_FLETE_EXTRANJERO",
+      occurrenceMode: "multiple",
       metadata: { source: "test-e2e" },
     });
     assert.equal(requests[0].options.headers["x-api-key"], "test-api-key");
@@ -120,8 +122,39 @@ test("acepta documento y tipo como posicionales o como opciones", () => {
       file: "factura.pdf",
       type: "FACTURA_FLETE_EXTRANJERO",
       env: "prod",
+      occurrenceMode: undefined,
       timeout: undefined,
     }
   );
   assert.equal(parseArgs(["--file", "doc.pdf", "--doc-type", "PEDIMENTO_ADUANAL"]).type, "PEDIMENTO_ADUANAL");
+  assert.equal(
+    parseArgs(["doc.pdf", "PEDIMENTO_ADUANAL", "--occurrence-mode", "multiple"]).occurrenceMode,
+    "multiple"
+  );
+});
+
+test("acepta un tipo, o varios separados por coma", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "documents-validator-type-"));
+  const file = join(directory, "factura.pdf");
+  await writeFile(file, "%PDF-1.7\n%%EOF\n");
+  try {
+    // No lanza: el script tiene que dejar pasar el mismo contrato que la API.
+    for (const type of ["PEDIMENTO_ADUANAL", "PEDIMENTO_ADUANAL,FACTURA_FLETE_EXTRANJERO", "A,B,C"]) {
+      validateOptions({ file, type, timeoutSeconds: 60 });
+    }
+    assert.throws(
+      () => validateOptions({ file, type: "A", occurrenceMode: "all", timeoutSeconds: 60 }),
+      /single o multiple/
+    );
+    // Una lista mal formada explica la coma en vez de solo repetir el patrón.
+    for (const type of ["PEDIMENTO_ADUANAL,", ",PEDIMENTO_ADUANAL", "A, B", "a,B", "A,,B"]) {
+      assert.throws(
+        () => validateOptions({ file, type, timeoutSeconds: 60 }),
+        /sep\u00e1ralos por coma sin espacios/,
+        `debería rechazar ${JSON.stringify(type)}`
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

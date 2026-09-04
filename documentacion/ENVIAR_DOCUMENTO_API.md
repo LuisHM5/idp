@@ -7,7 +7,8 @@ Guía para mandar un documento al pipeline de validación y leer el resultado.
 ```bash
 pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP  # dev (default)
 pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP --env prod
-# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--env dev|prod]
+pnpm enviar invoices-flete.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
+# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--env dev|prod]
 ```
 
 Para probar de una vez la subida, la espera eficiente por `202`/`Retry-After`
@@ -26,6 +27,18 @@ variables de entorno ni volver a desplegar:
 
 ```bash
 pnpm enviar doc.pdf PEDIMENTO_ERP --model amazon.nova-pro-v1:0
+```
+
+`--occurrence-mode multiple` agrega `"occurrenceMode":"multiple"` al POST y
+busca todas las ocurrencias de cada tipo sin `:N`/`:all`; si se omite, el API
+usa primero `occurrence_mode` del catálogo y después el default global
+(`single` con un tipo, `multiple` con varios). Un sufijo sigue ganando por
+tipo, por ejemplo:
+
+```bash
+pnpm enviar invoices-flete.pdf \
+  "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO" \
+  --occurrence-mode multiple --env dev
 ```
 
 Aplica a todas las fases del pipeline y gana sobre `BEDROCK_*_MODEL_ID`. El
@@ -106,7 +119,7 @@ FILE="2607-0823-6001630_P.pdf"
 # --- Paso 1: pedir la URL
 RESP=$(curl -sS -X POST "$API_ENDPOINT/documents" \
   -H "Content-Type: application/json" \
-  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"PEDIMENTO_ERP\"}")
+  -d "{\"fileName\":\"$(basename "$FILE")\",\"documentType\":\"PEDIMENTO_ERP\",\"occurrenceMode\":\"single\"}")
 
 DOC_ID=$(echo "$RESP" | jq -r .documentId)      # guárdalo
 UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
@@ -121,7 +134,14 @@ curl -sS --fail -X PUT --upload-file "$FILE" "$UPLOAD_URL"
   `403 AccessDenied: There were headers present in the request which were not
   signed` — un 403 que parece de permisos y es de firma.
 - `documentType` es **opcional**: si lo omites, Bedrock clasifica solo (más
-  lento y caro); si lo mandas, se salta ese paso.
+  lento y caro); si mandas un tipo, se salta ese paso. Con **varios separados por
+  coma** (`"documentType":"PEDIMENTO_ADUANAL,FACTURA_HONORARIOS"`) el archivo se
+  segmenta y cada documento encontrado se clasifica, pero sólo entre esos tipos;
+  `documents[]` omite el resto. `occurrenceMode` en el POST decide si cada tipo
+  sin sufijo conserva la primera (`single`) o todas (`multiple`); si se omite,
+  usa el catálogo y luego `single` con un tipo/`multiple` con varios;
+  `:N`/`:all` lo sobrescribe por tipo. Un tipo pedido que no aparezca sale con
+  rango `null` y revisión.
 - Formatos: `pdf`, `jpg`, `jpeg`, `png`, `xml`, `xlsx`, `csv`.
 - **No hay tope de tamaño**: el archivo no pasa por API Gateway ni por la
   Lambda. El modo inline (`contentBase64`) fue eliminado — devuelve
@@ -165,6 +185,27 @@ muchos más campos y puede incluir arreglos como `CONCEPTOS.items[]`:
 
 El resultado final también se publica en **EventBridge** (broker `idp-broker`,
 source `document-validation-pipeline`).
+
+### 4. Reprocesar el mismo archivo con otros tipos
+
+No lo descargues ni repitas el PUT. Usa el id anterior; el servidor copia el
+original dentro de S3, crea otro id y deja intacto el resultado viejo:
+
+```bash
+RESP=$(curl -sS -X POST "$API_ENDPOINT/documents/$DOC_ID/reprocess" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
+    "occurrenceMode": "multiple"
+  }')
+
+NEW_DOC_ID=$(echo "$RESP" | jq -r .documentId)
+pnpm resultado -- --id "$NEW_DOC_ID" --wait
+```
+
+En prod agrega `-H "x-api-key: $KEY"`. Un body `{}` hereda la declaración de
+tipos anterior; `{"documentType":null}` vuelve a clasificación automática.
+La referencia completa está en `API_USO.md` §3.
 
 ---
 

@@ -451,12 +451,45 @@ Los tres sacaron la misma factura (`35079805`, acuse `COVE2689JP013 / 35079805`,
 MISMA entrada en corridas distintas del mismo día. Y no soporta prompt caching
 (ni kimi), así que en un documento multi-chunk cada llamada paga el prefijo de
 schema+hints completo sin descuento — Haiku 4.5 es el único de los tres que lo
-aprovecha, y el único con tarifa verificada en `pipeline/pricing.py` (por eso
-todo costo calculado con los otros dos sale marcado ⚠ "tarifa aproximada").
+aprovecha.
+
+> **Corregido el 2026-09-04.** Esa frase decía además que Haiku era el único
+> con tarifa verificada en `pipeline/pricing.py`, y era cierto — ése era el
+> problema. `minimax.minimax-m2.5` es el **primero** de
+> `model_fallback.DEFAULT_FALLBACK_MODELS`, o sea el que realmente corría, y al
+> no estar en la tabla **todo** su costo se calculaba a tarifa de Haiku: un
+> expediente real de 31 páginas se reportaba como $0.143 cuando costó $0.070.
+> Ya están los tres (MiniMax `$0.30/$1.20`, Kimi K2.5 `$0.60/$3.00`, GLM 5
+> `$1.00/$3.20` por millón), verificados contra la AWS Price List API
+> (`AmazonBedrock`, us-east-1, `service_tier: standard`, vigentes desde
+> 2026-08-01). `tests/unit/test_pricing_coverage.py` fija la invariante: todo
+> modelo que pueda correr tiene que tener tarifa propia.
+>
+> **Los números de las secciones anteriores a esta fecha se midieron contra
+> Cost Explorer con Haiku corriendo**, así que siguen siendo válidos para su
+> época; lo que estaba mal era el cálculo de los documentos procesados con los
+> modelos nuevos.
 
 Se fija por tipo en el catálogo (`model_ids: {"extractor": "..."}`) o global con
 `BEDROCK_MODEL_ID` / `BEDROCK_EXTRACTOR_MODEL_ID` — ver
 `pipeline/bedrock.py::_model_candidates` para el orden de precedencia.
+
+**Segmentación con más de un modelo en la misma invocación (2026-09-04).**
+La latencia errática de minimax de arriba, sobre un expediente grande (31+
+páginas, o cualquiera con 2+ tipos declarados), podía agotar el presupuesto
+de salida de la llamada de segmentación (`max_tokens` fijo en 4096, ni
+siquiera el default de `converse()`) sin escribir texto — el pipeline
+colapsaba TODO el archivo a `documentClassification: "OTRO"` /
+`documentCount: 0`, sin ninguna señal en la respuesta. `pipeline/segmenter.py`
+ahora detecta esto (`stopReason`/respuesta vacía), reintenta una vez con el
+modelo más confiable, y para expedientes grandes reparte la clasificación en
+ventanas de páginas — ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.1.
+Consecuencia de costeo: `usage.segmentation` puede traer llamadas a MÁS DE UN
+modelo en una sola invocación (el reintento, o ventanas distintas). Cuando
+pasa, trae un `perModel: [...]` además del `modelId`/`usage` de siempre, y
+`cost_audit.py::_segmentation_cost` sabe agregarlo tarifa por tarifa en vez
+de aplicar la de un solo modelo a todo — el mismo tipo de error que el
+párrafo de arriba ya documentó una vez, de otra causa.
 
 ## 4. Infraestructura de soporte (medida, mismo periodo, dev)
 
@@ -645,7 +678,7 @@ pnpm costos -- --id <documentId>  # detalle de un documento (prefijo basta)
 pnpm costos -- --env prod
 ```
 
-`PricingVersion` (`pipeline/pricing.py`, hoy `2026-08-05`) queda grabado en
+`PricingVersion` (`pipeline/pricing.py`, hoy `2026-09-04`) queda grabado en
 cada registro para que una futura repreciación de AWS no vuelva
 incomparables los registros viejos contra los nuevos sin decirlo.
 
@@ -654,3 +687,40 @@ registro — no hay backfill retroactivo de los resultados que ya estaban en
 S3/tracking antes de 2026-08-05 (los datos de `usage`/`pages` sí existen ahí
 para quien quiera calcularlos a mano, igual que hizo este documento en las
 secciones anteriores).
+
+## 8. Atribución de costos de infraestructura por stack
+
+Cada despliegue aplica una etiqueta estable al stack y a los recursos para los
+que CloudFormation soporta propagación:
+
+- dev: `CostStack=DocumentValidationStack-Dev`
+- prod: `CostStack=DocumentValidationStack`
+- bootstrap compartido: `CostStack=CDKToolkit`, mediante
+  la preparación automática de cada deploy
+
+La etiqueta es únicamente metadata: no cambia nombres, referencias, permisos,
+rutas ni comportamiento del pipeline. Las tablas de catálogo son recursos
+importados, no administrados por los stacks, y por eso requieren etiquetado
+directo. `deploy`, `deploy:dev` y `deploy:prod` las crean cuando faltan y
+aseguran la etiqueta automáticamente; sobre una tabla existente nunca cambian
+los datos ni el esquema. La tabla de fallback, si existe, es compartida y no se
+debe cargar artificialmente a uno de los dos ambientes.
+
+Para que Cost Explorer muestre importes, un administrador de la cuenta
+pagadora debe activar la clave de asignación `CostStack`. Puede tardar hasta 24
+horas en aparecer después de aplicarse y hasta otras 24 horas en quedar activa.
+El backfill admite hasta 12 meses, pero únicamente recupera periodos durante
+los cuales el recurso ya tenía la etiqueta. Los cargos de servicios que no
+produzcan líneas facturables etiquetables permanecerán sin atribuir; por eso la
+suma por stack no se fuerza a coincidir artificialmente con el total de la
+cuenta.
+
+## Tráfico de pruebas reales
+
+`pnpm test:real` genera costos auténticos y persiste documentos igual que una
+integración externa. Sus uploads llevan `metadata.test-run-id` y
+`metadata.test-suite=real-e2e`; no se altera `TotalCostUsd` ni se inventa un
+descuento. `pnpm reporte` conserva esos cargos, pero abre sus KPIs operativos
+con el filtro `trafficKind=operational`; el usuario puede mostrar el tráfico
+de prueba o ambos grupos. Las corridas anteriores sin etiqueta se consideran
+operativas porque no existe evidencia segura para reclasificarlas.

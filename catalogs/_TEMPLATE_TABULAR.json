@@ -5,6 +5,8 @@
 
   "NUEVO_TIPO_XLSX": {
     "schema_version": "1.0.0",
+    "__COMENTARIO_occurrence_mode__": "Default del tipo si el POST no manda occurrenceMode ni :N/:all. Normalmente single para una fuente estructurada. Valores: single | multiple.",
+    "occurrence_mode": "single",
     "display_name": "Nuevo tipo (XLSX/CSV)",
     "aliases": [],
     "description": "Descripción breve: qué reporte/export es. Solo importa si algún día se auto-clasifica; con documentType declarado (obligatorio para este tipo) nunca se usa.",

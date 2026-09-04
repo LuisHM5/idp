@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "tolerancePoints": 0.5,
+  "python": {
+    "lines": 68.31740515493773,
+    "branches": 61.57024793388429
+  },
+  "node": {
+    "lines": 90.04660452729694,
+    "branches": 89.21875
+  }
+}

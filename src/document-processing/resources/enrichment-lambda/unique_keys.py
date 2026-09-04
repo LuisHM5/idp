@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from document_catalog import get_type_entry
+from pipeline.envelope import index_type_of
 
 logger = logging.getLogger(__name__)
 
@@ -156,9 +157,14 @@ def _document_sources(
     facturas del mismo tipo se clasifica con ese tipo y no hay contenedor que
     reportar.
     """
-    classification = str(
-        result.get("documentClassification") or _DEFAULT_TYPE
-    ).strip().upper() or _DEFAULT_TYPE
+    # Colapsada al contenedor (ver `envelope.index_type_of`): "encontrado dentro
+    # de EXPEDIENTE_ADUANAL_MULTIDOCUMENTO" es lo que ContainerType significa y
+    # lo que ya reportaba; "dentro de A,B" repetiría la lista de tipos en una
+    # columna que sólo responde "¿venía suelto o dentro de un paquete?".
+    classification = index_type_of(
+        str(result.get("documentClassification") or _DEFAULT_TYPE).strip().upper()
+        or _DEFAULT_TYPE
+    )
     documents = result.get("documents") or (result.get("expediente") or {}).get("documents") or []
     if not documents:
         return [(classification, _values(result.get("extractedEntities")), None)]

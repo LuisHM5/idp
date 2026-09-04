@@ -36,7 +36,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from document_catalog import FieldSpec, TypeRegistryEntry, get_type_entry
 from validators import engine
@@ -318,10 +318,20 @@ def process_tabular(
     declared_type: Optional[str] = None,
     expected_values: Optional[Dict[str, str]] = None,
     source_name: str = "",
+    declared_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Process a single standalone XLSX/CSV document and return the full
     result, shaped exactly like `pipeline.expediente.process_pdf`'s /
-    `pipeline.xml_document.process_xml`'s return value."""
+    `pipeline.xml_document.process_xml`'s return value.
+
+    A list of several `declared_types` is rejected rather than resolved to the
+    first one: there is no classification step here to CHOOSE between schemas —
+    every field is resolved by cell/column lookup against exactly one type — so a caller that
+    sent a list would otherwise be told its file had been searched for several
+    when it was only ever read as one. `POST /documents` already refuses it; this
+    is the same rule for callers that reach the pipeline directly (e.g.
+    `scripts/procesar-docs.py`).
+    """
     started = time.time()
     started_at = datetime.now(timezone.utc)
     processing_id = str(uuid.uuid4())
@@ -334,6 +344,14 @@ def process_tabular(
             processing_id, source_name, message,
             build_tracking(started_at, started, _SOURCE_LABEL),
             stage=stage, exception=exception, source_format=source_format,
+        )
+
+    if declared_types and len(declared_types) > 1:
+        return _fail(
+            f"{source_format.upper()} documents accept exactly one declared type, got "
+            f"{list(declared_types)} — there is no vision-based auto-classification "
+            "for raw tabular data, so there is nothing to choose between several schemas",
+            stage="declared_type",
         )
 
     if not declared_type:

@@ -197,7 +197,7 @@ Routing to the expediente pipeline (`pipeline/expediente.py`) happens if **any**
 | Declared | `classificationMode` | Segmenter behaviour |
 |---|---|---|
 | one | `manual` | No model call at all (`_declared_segments`) — the whole file is that type, or one segment per `multi_instance`. |
-| several | `guided` | The model runs, but `_candidate_types(allowed)` offers ONLY those types with no gate applied, and a post-parse guard demotes anything else to `OTRO`. |
+| several | `guided` | The model runs, but `_candidate_types(allowed)` offers ONLY those types with no gate applied. `OTRO` remains internal; the response contains only requested types. |
 | none | `auto` | Candidates by shape (`is_segmentation_candidate`). |
 
 Two things that are easy to get wrong here:
@@ -205,10 +205,10 @@ Two things that are easy to get wrong here:
 - **`_page_cap_for` takes the whole list and answers ANY, not all**: if even one declared type selects its own pages, the upload is not blindly truncated to `MAX_PAGES`, because truncation runs first and would drop a pedimento on page 63 before its selector could see it. Extraction cost stays bounded per segment; page loading and OCR are capped by `max_source_pages` instead.
 - **`normalize_declared_types` exists because `str` satisfies `Sequence[str]`.** Passing a bare string into a `declared_types` slot would otherwise iterate its CHARACTERS. Use it rather than an inline comprehension.
 
-**How many of each type (`TIPO:N`)** rides alongside: `documentType=PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all`, **defaulting to 1 when no suffix is given**. Two things to keep straight:
+**How many of each type (`TIPO:N`)** rides alongside: `documentType=PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all`. A single type without a suffix defaults to 1; several types default to `all` for every unsuffixed type. Two things to keep straight:
 
 - **The counts travel as S3 object metadata (`document-counts`), NOT in the key.** The key carries the TYPES because three components parse it (`handler._declared_types_from_key`, the SQS consumer patch, `model-invoke`); the counts are read by exactly one, so they go through the same channel as `model-id`, which `handler._fetch_document` already returns. `body-parser.mjs` reserves the key so a caller cannot forge it.
-- **The excess is relabelled, never dropped** — `segmenter._apply_type_limits` turns it into `OTRO`/`LIMITE_ALCANZADO`, the same trick `_collapse_duplicate_segments` uses for a duplicate copy, so page coverage stays complete and `documentCount` still reports what was asked for. The default of 1 DOES change what a caller declaring a `multi_instance` type gets (3 invoices → 1); that was a deliberate decision, and `documentTypeCounts` in the upload response is what makes it visible.
+- **The segmenter's internal map stays complete, the closed response does not** — `_apply_type_limits` and `_collapse_duplicate_segments` relabel excess/copies as `OTRO`, then `expediente._only_requested_segments` removes every non-requested segment before extraction. Missing finite occurrences get one range-null review marker per deficit; `:all` gets one only when the type is absent. Markers do not count in `documentCount`, validation counts, classification, or `ContainedDocumentTypes`.
 
 `.xml`/`.xlsx`/`.csv` accept exactly one type (rejected at the API *and* in `process_xml`/`process_tabular`, since `scripts/procesar-docs.py` reaches those directly): there is no classification step to choose between schemas.
 

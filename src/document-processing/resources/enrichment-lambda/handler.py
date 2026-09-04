@@ -44,7 +44,13 @@ from extractors import get_extractor
 from indexing import write_index_attributes
 from unique_keys import write_unique_keys
 from pipeline import envelope
-from pipeline.bedrock import fallback_events, reset_used_models, set_model_override, used_models
+from pipeline.bedrock import (
+    fallback_events,
+    reset_used_models,
+    set_model_override,
+    stage_degradations,
+    used_models,
+)
 from pipeline.model_fallback import reload_fallback_models
 
 logger = logging.getLogger(__name__)
@@ -268,36 +274,91 @@ def _declared_file_type(event: Dict[str, Any]) -> Optional[str]:
     return str(file_type).strip().lower() if file_type else None
 
 
-def _declared_type_from_key(key: str) -> Optional[str]:
-    """User-declared document type from the S3 layout, or None.
+def _declared_types_from_key(key: str) -> List[str]:
+    """The document types the uploader declared, in order, from the S3 layout.
 
     Manual classification places the object under `raw/{TYPE}/{uuid}/file`, so
-    the second path segment names the type the uploader chose explicitly. An
-    auto-classified object is under `raw/{uuid}/file` (no type segment). Returns
-    the declared type only when that segment is a known catalog type — a bare
-    UUID resolves to OTRO and yields None.
+    the second path segment names the type the uploader chose explicitly. When
+    SEVERAL types were declared (`POST /documents` accepts them comma-separated
+    so the pipeline searches for exactly those), that same segment holds them
+    all: `raw/{A,B}/{uuid}/file`. An auto-classified object is under
+    `raw/{uuid}/file`, with no type segment at all.
+
+    Only types the catalog actually knows are kept — a bare UUID, or a name
+    nobody registered, resolves to OTRO and is dropped, which degrades to
+    "nothing declared" exactly as before. That is also what makes the key a safe
+    carrier during a partial deploy: an older reader that cannot parse a list
+    just falls back to auto-classification instead of failing.
     """
     parts = (key or "").split("/")
-    if len(parts) >= 3 and parts[0] == "raw":
-        candidate = parts[1].strip().upper()
-        if candidate and get_type_entry(candidate).type_id != "OTRO":
-            return candidate
-    return None
+    if len(parts) < 3 or parts[0] != "raw":
+        return []
+    declared: List[str] = []
+    for part in parts[1].split(","):
+        candidate = part.strip().upper()
+        if not candidate or candidate in declared:
+            continue
+        if get_type_entry(candidate).type_id != "OTRO":
+            declared.append(candidate)
+    return declared
 
 
-def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str]:
-    """Download the raw document from S3 and return its bytes + MIME type.
+def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str, Dict[str, str]]:
+    """Download the raw document from S3 and return its bytes, MIME type and
+    the object's own metadata.
 
     Also applies a per-request model override when the upload carried one and
     the deployment allows it — see `_apply_model_override`.
+
+    The metadata is returned rather than only consumed here because it is the
+    channel the upload API uses for signals that only this Lambda needs:
+    `model-id` (applied here) and `document-counts` (read by the caller — see
+    `_declared_counts_from_metadata`). Both are stripped from the caller's own
+    `metadata` at upload time, so neither can be forged.
     """
     import boto3  # defer boto3 import; Lambda runtime provides it
 
     response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
     body = response["Body"].read()
     content_type = response.get("ContentType") or mimetypes.guess_type(key)[0] or ""
-    _apply_model_override(response.get("Metadata") or {})
-    return body, content_type
+    s3_metadata = response.get("Metadata") or {}
+    _apply_model_override(s3_metadata)
+    return body, content_type, s3_metadata
+
+
+def _declared_counts_from_metadata(s3_metadata: Dict[str, str]) -> Dict[str, Any]:
+    """How many documents of each type the uploader asked for.
+
+    Format written by `upload-lambda/body-parser.mjs::serializeDocumentCounts`:
+    `PEDIMENTO_ERP=1,FACTURA_FLETE_EXTRANJERO=all` — flat US-ASCII, which is all
+    an S3 metadata value can hold. Values are `int >= 1` or the string `"all"`.
+
+    Travels as object metadata rather than in the S3 key (where the TYPES live)
+    because three independent components parse that key and none of them needs
+    this. Absent metadata yields `{}`; the expediente pipeline then resolves
+    `occurrence_mode` from each catalog and finally the global default (`single`
+    for one declared type, `multiple` for several).
+
+    Never raises: a malformed value degrades that one type to the downstream
+    catalog/global default rather than failing the document.
+    """
+    raw = (s3_metadata or {}).get("document-counts")
+    if not raw:
+        return {}
+    counts: Dict[str, Any] = {}
+    for part in str(raw).split(","):
+        name, _, value = part.partition("=")
+        name = name.strip().upper()
+        value = value.strip().lower()
+        if not name or not value:
+            continue
+        if value == "all":
+            counts[name] = "all"
+        elif value.isdigit() and int(value) >= 1:
+            counts[name] = int(value)
+        else:
+            logger.warning("document-counts: valor ilegible '%s' para %s; usando catálogo/default", value, name)
+    return counts
 
 
 def _apply_model_override(s3_metadata: Dict[str, str]) -> None:
@@ -342,7 +403,7 @@ def _try_reextract(
 
     bucket, key = pointer
     try:
-        document_bytes, content_type = _fetch_document(bucket, key)
+        document_bytes, content_type, _ = _fetch_document(bucket, key)
     except Exception as e:
         logger.error("Failed to fetch s3://%s/%s for re-extraction: %s", bucket, key, e)
         return None
@@ -474,7 +535,7 @@ def _run_expediente(
 
     bucket, key = pointer
     try:
-        document_bytes, _ = _fetch_document(bucket, key)
+        document_bytes, _, s3_metadata = _fetch_document(bucket, key)
     except Exception as e:
         logger.error("failed to fetch s3://%s/%s: %s", bucket, key, e)
         return None
@@ -487,9 +548,18 @@ def _run_expediente(
     # declared_type stays None so the text segmenter, which re-classifies with
     # deterministic markers, is the accuracy authority (the single upstream
     # vision call regularly confuses look-alikes, e.g. fee CFDI vs. permit).
-    declared_type = _declared_type_from_key(key)
+    # With exactly ONE declared type, `declared_type` is set and the whole file
+    # is that type. With several, it stays None on purpose: that is what keeps
+    # the xml/tabular branches below failing the way they always have (they need
+    # one schema, and there is nothing to choose it with), and what lets the
+    # segmenter run — restricted to `declared_types` — instead of short-circuiting.
+    declared_counts = _declared_counts_from_metadata(s3_metadata)
+    declared_types = _declared_types_from_key(key)
+    declared_type = declared_types[0] if len(declared_types) == 1 else None
     if declared_type:
         logger.info("honoring user-declared type '%s' from key %s", declared_type, key)
+    elif declared_types:
+        logger.info("guided classification among %s from key %s", declared_types, key)
 
     # Already-structured sources (XML, XLSX/CSV) skip the PDF/OCR/segmentation
     # pipeline entirely: pipeline.xml_document/pipeline.tabular_document
@@ -508,6 +578,7 @@ def _run_expediente(
             declared_type=declared_type,
             expected_values=expected_values,
             source_name=key,
+            declared_types=declared_types,
         )
     elif ext in ("xlsx", "xlsm", "csv"):
         from pipeline.tabular_document import process_tabular  # deferred: pulls openpyxl
@@ -518,6 +589,7 @@ def _run_expediente(
             declared_type=declared_type,
             expected_values=expected_values,
             source_name=key,
+            declared_types=declared_types,
         )
     else:
         from pipeline.expediente import process_pdf  # deferred: pulls pypdf
@@ -533,6 +605,8 @@ def _run_expediente(
             expected_values=expected_values,
             source_name=key,
             source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
+            declared_types=declared_types,
+            declared_counts=declared_counts,
         )
 
     # Persist the FULL result to S3: a large expediente (86 pages, 20+
@@ -568,6 +642,11 @@ def _run_expediente(
         "modelIds": _model_ids(event),
         **({"appOrigin": event.get("appOrigin")} if event.get("appOrigin") else {}),
         **({"modelFallbacks": fallback_events()} if fallback_events() else {}),
+        **(
+            {"segmentationDegraded": stage_degradations()["segmenter"]}
+            if stage_degradations().get("segmenter")
+            else {}
+        ),
     }
 
     return envelope.build(

@@ -146,6 +146,55 @@ def _check_doc_expectation(exp: dict, documents: list) -> tuple[bool, list[str],
     return False, best_notes, best_doc
 
 
+def evaluate_expectation(exp: dict, documents: list) -> dict:
+    """Versión estructurada del comparador para JUnit, histórico y reportes.
+
+    Los valores expected/actual se conservan en el artefacto privado del caso;
+    el dashboard usa únicamente los contadores y nombres de campo.
+    """
+    allowed_types = exp.get("type", [])
+    candidates = [d for d in documents if d.get("documentType") in allowed_types]
+    if not candidates:
+        return {
+            "passed": False, "classificationPassed": False,
+            "expectedTypes": allowed_types, "actualTypes": [d.get("documentType") for d in documents],
+            "fieldChecks": [], "requiredChecks": [], "matchedType": None,
+        }
+
+    scored = []
+    for doc in candidates:
+        from pipeline.normalize import pedimento_consecutivo
+        entities = doc.get("extractedEntities", {})
+        fields = []
+        for name, expected in (exp.get("fields") or {}).items():
+            passed, note = _match_field(entities, name, expected)
+            actual = next((_leaf_value(entities, alias) for alias in name.split("|")
+                           if _leaf_value(entities, alias) not in (None, "", [])), None)
+            fields.append({"field": name, "passed": passed, "expected": expected, "actual": actual, "detail": note})
+        required = [{"field": name, "passed": _leaf_value(entities, name) not in (None, "", [])}
+                    for name in exp.get("required_present", [])]
+        references = []
+        if exp.get("pedimento_consecutivo"):
+            found = {pedimento_consecutivo(_leaf_value(entities, name))
+                     for name in ("NUMERO_PEDIMENTO_NORMALIZADO", "NUMERO_PEDIMENTO", "PEDIMENTO_REFERENCE")}
+            found.discard(None)
+            references.append({"field": "pedimento_consecutivo", "passed": exp["pedimento_consecutivo"] in found,
+                               "expected": exp["pedimento_consecutivo"], "actual": sorted(found)})
+        score = sum(x["passed"] for x in fields + required + references)
+        scored.append((score, doc, fields, required, references))
+    _, doc, fields, required, references = max(scored, key=lambda row: row[0])
+    expected_status = exp.get("expected_status")
+    status_passed = expected_status is None or doc.get("status") == expected_status
+    passed = all(x["passed"] for x in fields + required + references) and status_passed
+    return {
+        "passed": passed, "classificationPassed": True, "expectedTypes": allowed_types,
+        "actualTypes": [d.get("documentType") for d in documents], "matchedType": doc.get("documentType"),
+        "fieldChecks": fields, "requiredChecks": required,
+        "referenceChecks": references,
+        "expectedStatus": expected_status, "actualStatus": doc.get("status"), "statusPassed": status_passed,
+    }
+
+
 def _print_engine_checks(doc: dict) -> None:
     """Print the matched document's own failing validation-engine checks.
 

@@ -30,6 +30,8 @@ Salida en `reportes/<env>/<timestamp>/`:
     reporte.md          resumen estático en texto/tablas
     reporte.html          dashboard interactivo (ábrelo en el navegador)
     datos_raw.xlsx         una fila por documento (costo + calidad) + hojas agregadas
+    reporte_ejecutivo.xlsx copia compatible, formateada, con KPIs e histórico de pruebas
+    snapshot.json          corte reproducible de datos normalizados
 
 Uso:
     pnpm reporte                              # dev, todo el historial
@@ -43,6 +45,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import webbrowser
 from collections import Counter, defaultdict
@@ -50,6 +54,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from quality_history import DEFAULT_HISTORY, load_runs, quality_snapshot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _report_lib import (  # noqa: E402
@@ -156,6 +161,8 @@ def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -
             "typeName": base["document_type_name"],
             "name": (d or {}).get("document_name") or (c or {}).get("source_file") or "",
             "appOrigin": (d or {}).get("app_origin") or (c or {}).get("app_origin") or "",
+            "metadata": (d or {}).get("metadata") or {},
+            "trafficKind": "test" if ((d or {}).get("metadata") or {}).get("test-run-id") else "operational",
             "processedAt": (d or {}).get("processed_at") or (c or {}).get("processed_at") or "",
             "hasQuality": d is not None,
             "hasCost": c is not None,
@@ -322,7 +329,7 @@ def by_key_snapshot(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str,
     return snapshot_by(rows, lambda r: r[key])
 
 
-def render_markdown(rows: List[Dict[str, Any]], env: str) -> str:
+def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None) -> str:
     overall = overall_snapshot(rows)
     by_type = by_key_snapshot(rows, "type")
     by_model = by_key_snapshot(rows, "model")
@@ -448,6 +455,22 @@ def render_markdown(rows: List[Dict[str, Any]], env: str) -> str:
             f"{money5(page_now)} | {money5(ref['costPerPage']) if ref else '—'} |"
         )
 
+    if quality:
+        latest = quality.get("latestFree") or quality.get("latest") or {}
+        real = quality.get("latestReal") or {}
+        qs, rs = latest.get("summary") or {}, real.get("summary") or {}
+        lines += [
+            "", "## Calidad comprobada", "",
+            f"Corridas históricas: **{quality.get('runs', 0)}**.", "",
+            "| Métrica | Último valor |", "| --- | --- |",
+            f"| Última suite | {latest.get('suite', '—')} · {latest.get('status', '—')} |",
+            f"| Pruebas gratuitas | {qs.get('tests', '—')} ({qs.get('failures', '—')} fallas) |",
+            f"| Cobertura de líneas Python | {qs.get('lineCoverage', 0):.1f}% |" if qs.get("lineCoverage") is not None else "| Cobertura de líneas Python | — |",
+            f"| Cobertura de líneas Node | {qs.get('nodeLineCoverage', 0):.1f}% |" if qs.get("nodeLineCoverage") is not None else "| Cobertura de líneas Node | — |",
+            f"| Último E2E completo | {real.get('status', '—')} |",
+            f"| Exactitud de campos etiquetados | {pct(rs.get('fieldAccuracy'))} |",
+            f"| Éxito técnico E2E | {pct(rs.get('e2ePassRate'))} |",
+        ]
     lines += ["", "_Generado por `pnpm reporte` (scripts/reporte.py) — dashboard interactivo: `reporte.html` · datos crudos: `datos_raw.xlsx`._"]
     return "\n".join(lines)
 
@@ -456,24 +479,37 @@ def render_markdown(rows: List[Dict[str, Any]], env: str) -> str:
 # Excel (datos crudos)
 # ---------------------------------------------------------------------------
 
-def write_excel(out_path: Path, rows: List[Dict[str, Any]]) -> None:
+def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Dict[str, Any]] = None) -> None:
     from openpyxl import Workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.chart import LineChart, Reference
 
     wb = Workbook()
     bold = Font(bold=True)
+    header_fill = PatternFill("solid", fgColor="17365D")
+    stripe_fill = PatternFill("solid", fgColor="EAF2F8")
 
     def write_sheet(ws, headers: List[str], data_rows: List[List[Any]]) -> None:
         ws.append(headers)
         for cell in ws[1]:
-            cell.font = bold
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
         for row in data_rows:
             ws.append(row)
         for col_idx, header in enumerate(headers, start=1):
             ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max(12, min(40, len(header) + 4))
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for row_idx in range(2, ws.max_row + 1):
+            if row_idx % 2 == 0:
+                for cell in ws[row_idx]:
+                    cell.fill = stripe_fill
 
     service_names = sorted({name for r in rows for name in r["services"]})
-    ws_docs = wb.active
+    ws_exec = wb.active
+    ws_exec.title = "Resumen Ejecutivo"
+    ws_docs = wb.create_sheet("Documentos")
     ws_docs.title = "Documentos"
     headers = [
         "DocumentId", "DocumentType", "DocumentTypeName", "DocumentName", "AppOrigin", "ProcessedAt",
@@ -498,6 +534,18 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]]) -> None:
             row += [s["cost"], s["input_tokens"], s["output_tokens"], s["model_id"]] if s else [None, None, None, None]
         data_rows.append(row)
     write_sheet(ws_docs, headers, data_rows)
+
+    operational = [r for r in rows if r.get("trafficKind") != "test"]
+    tests_traffic = [r for r in rows if r.get("trafficKind") == "test"]
+    op = overall_snapshot(operational)
+    write_sheet(ws_exec, ["Indicador", "Valor", "Lectura"], [
+        ["Ambiente operativo", len(operational), "Documentos sin test-run-id"],
+        ["Tráfico de prueba", len(tests_traffic), "Separado de los KPIs operativos"],
+        ["Éxito técnico", op["n_completed"] / op["n"] if op["n"] else None, "Ejecuciones completas / operativas"],
+        ["Aprobación de reglas", op["approval_rate"], "No equivale a exactitud humana"],
+        ["Costo total operativo USD", op["total_cost"], "Excluye tráfico E2E etiquetado"],
+        ["Latencia p95 segundos", op["p95_seconds"], "Punta a punta"],
+    ])
 
     agg_headers = [
         "Documentos", "TasaAprobacion", "ConfianzaPromedio",
@@ -612,6 +660,26 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]]) -> None:
             ["Ultimo documento", overall["last_date"]],
         ],
     )
+
+    if quality:
+        trend = quality.get("trend") or []
+        ws_q = wb.create_sheet("CalidadPruebas")
+        write_sheet(ws_q, ["Corrida", "Fecha", "Suite", "Estado", "Pruebas", "Fallas", "PythonLineas", "PythonRamas", "NodeLineas", "NodeRamas", "ExactitudCampos", "ExitoE2E", "DuracionSeg"], [
+            [r.get("runId"), r.get("at"), r.get("suite"), r.get("status"), r.get("tests"), r.get("failures"),
+             r.get("lineCoverage"), r.get("branchCoverage"), r.get("nodeLineCoverage"), r.get("nodeBranchCoverage"),
+             r.get("fieldAccuracy"), r.get("e2ePassRate"), r.get("durationSeconds")]
+            for r in trend
+        ])
+        for row in range(2, ws_q.max_row + 1):
+            for col in (11, 12):
+                ws_q.cell(row, col).number_format = "0.0%"
+        if len(trend) >= 2:
+            chart = LineChart()
+            chart.title = "Tendencia de cobertura"
+            chart.y_axis.title = "%"
+            chart.add_data(Reference(ws_q, min_col=7, max_col=8, min_row=1, max_row=ws_q.max_row), titles_from_data=True)
+            chart.set_categories(Reference(ws_q, min_col=1, min_row=2, max_row=ws_q.max_row))
+            ws_q.add_chart(chart, "M2")
 
     wb.save(out_path)
 
@@ -733,6 +801,7 @@ function appOf(r){ return r.appOrigin || '(sin sistema)'; }
 const state = {
   desde: '', hasta: '',
   types: new Set(), apps: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
+  traffic: new Set(['operational']),
   hiddenServices: new Set(),
   sortKey: 'processedAt', sortDir: -1,
   docLimit: 200,
@@ -750,6 +819,7 @@ function filteredRows() {
     if (state.models.size && !state.models.has(r.model)) return false;
     if (state.workflow.size && !state.workflow.has(r.workflowStatus)) return false;
     if (state.validation.size && !state.validation.has(r.validationStatus)) return false;
+    if (state.traffic.size && !state.traffic.has(r.trafficKind)) return false;
     return true;
   });
 }
@@ -953,13 +1023,14 @@ function renderFilters() {
   mk('f-models', distinct('model'), state.models);
   mk('f-workflow', distinct('workflowStatus'), state.workflow);
   mk('f-validation', distinct('validationStatus'), state.validation);
+  mk('f-traffic', distinct('trafficKind'), state.traffic);
   mk('f-services', Object.keys(SERVICE_LABEL).filter(s => ROWS.some(r => r.services[s])), state.hiddenServices);
   // hiddenServices marca "oculto", no "activo" — invertimos la clase abajo en el listener.
 }
 
 function activeFilterCount() {
   return (state.desde ? 1 : 0) + (state.hasta ? 1 : 0)
-    + state.types.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size;
+    + state.types.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size + state.traffic.size;
 }
 
 // Los filtros viven en un panel colapsado: la barra pegajosa de arriba se
@@ -980,6 +1051,7 @@ function attachChipHandlers() {
   document.querySelectorAll('#f-models .chip').forEach(el => el.addEventListener('click', () => { toggle(state.models, el.dataset.value); render(); }));
   document.querySelectorAll('#f-workflow .chip').forEach(el => el.addEventListener('click', () => { toggle(state.workflow, el.dataset.value); render(); }));
   document.querySelectorAll('#f-validation .chip').forEach(el => el.addEventListener('click', () => { toggle(state.validation, el.dataset.value); render(); }));
+  document.querySelectorAll('#f-traffic .chip').forEach(el => el.addEventListener('click', () => { toggle(state.traffic, el.dataset.value); render(); }));
   document.querySelectorAll('#f-services .chip').forEach(el => {
     if (!state.hiddenServices.has(el.dataset.value)) el.classList.add('active');
     el.addEventListener('click', () => { toggle(state.hiddenServices, el.dataset.value); renderServiceSection(filteredRows()); attachServiceChipHandlers(); });
@@ -1284,7 +1356,7 @@ document.getElementById('f-hasta').addEventListener('change', e => { state.hasta
 document.getElementById('f-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));
 document.getElementById('f-reset').addEventListener('click', () => {
   state.desde = ''; state.hasta = '';
-  state.types.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear();
+  state.types.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
   document.getElementById('f-desde').value = ''; document.getElementById('f-hasta').value = '';
   render();
 });
@@ -1305,12 +1377,65 @@ def _json_default(o: Any) -> Any:
     raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
 
 
-def render_html(rows: List[Dict[str, Any]], env: str) -> str:
+def render_quality_html(quality: Dict[str, Any]) -> str:
+    """Bloque ejecutivo de precisión real; nunca imprime expected/actual."""
+    latest_free = quality.get("latestFree") or {}
+    latest_real = quality.get("latestReal") or {}
+    free = latest_free.get("summary") or {}
+    real = latest_real.get("summary") or {}
+    def percentage(value: Any) -> str:
+        return "—" if value is None else f"{float(value):.1%}"
+
+    def coverage(value: Any) -> str:
+        return "—" if value is None else f"{float(value):.1f}%"
+    insights = []
+    if not latest_real:
+        insights.append("Aún no existe una corrida E2E completa; aprobación y confianza no demuestran exactitud.")
+    elif latest_real.get("status") != "PASSED":
+        insights.append("La última validación E2E falló: revisar los casos antes de promover cambios.")
+    if real.get("fieldAccuracy") is not None and real["fieldAccuracy"] < 1:
+        insights.append(f"La exactitud de campos etiquetados es {real['fieldAccuracy']:.1%}; hay una regresión medible contra ground truth.")
+    if free.get("lineCoverage") is not None and free["lineCoverage"] < 80:
+        insights.append(f"La cobertura Python está en {free['lineCoverage']:.1f}%; conviene priorizar rutas críticas sin cobertura.")
+    for regression in quality.get("regressions") or []:
+        insights.append(
+            f"La {regression['label']} de la última suite subió {regression['delta']:.0%} "
+            f"contra la mediana de corridas comparables ({regression['severity']})."
+        )
+    if not insights:
+        insights.append("La última evidencia gratuita y E2E no muestra regresiones de exactitud.")
+    trend_rows = "".join(
+        f"<tr><td>{esc(r.get('at', '')[:19])}</td><td>{esc(r.get('suite'))}</td>"
+        f"<td>{esc(r.get('status'))}</td><td class='num'>{r.get('tests', 0)}</td>"
+        f"<td class='num'>{r.get('failures', 0)}</td>"
+        f"<td class='num'>{percentage(r.get('fieldAccuracy'))}</td></tr>"
+        for r in reversed((quality.get("trend") or [])[-12:])
+    ) or "<tr><td colspan='6'>Sin corridas registradas.</td></tr>"
+    insight_html = "".join(f"<li>{esc(item)}</li>" for item in insights)
+    return f'''<details class="card quality-card" open>
+        <summary>Calidad comprobada e histórico de pruebas</summary>
+        <p class="section-sub">Exactitud contra valores humanos, separada de aprobación de reglas y confianza del modelo.</p>
+        <div class="kpi-row dense">
+          <div class="kpi-tile"><div class="kpi-value">{quality.get('runs', 0)}</div><div class="kpi-label">Corridas conservadas</div></div>
+          <div class="kpi-tile"><div class="kpi-value">{esc(latest_free.get('status', '—'))}</div><div class="kpi-label">Suite gratuita</div><div class="kpi-sub">{free.get('tests', 0)} pruebas · {free.get('failures', 0)} fallas</div></div>
+          <div class="kpi-tile"><div class="kpi-value">{coverage(free.get('lineCoverage'))} / {coverage(free.get('nodeLineCoverage'))}</div><div class="kpi-label">Cobertura Python / Node</div></div>
+          <div class="kpi-tile"><div class="kpi-value">{percentage(real.get('fieldAccuracy'))}</div><div class="kpi-label">Exactitud de campos</div><div class="kpi-sub">sólo campos etiquetados</div></div>
+          <div class="kpi-tile"><div class="kpi-value">{percentage(real.get('e2ePassRate'))}</div><div class="kpi-label">Éxito E2E</div></div>
+        </div>
+        <div class="sub-head">Insights</div><ul class="insight-list">{insight_html}</ul>
+        <div class="sub-head">Últimas corridas</div><div class="table-wrap"><table>
+          <thead><tr><th>Fecha</th><th>Suite</th><th>Estado</th><th class="num">Pruebas</th><th class="num">Fallas</th><th class="num">Exactitud</th></tr></thead>
+          <tbody>{trend_rows}</tbody></table></div>
+      </details>'''
+
+
+def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None) -> str:
     from _report_lib import BASE_CSS
 
     overall = overall_snapshot(rows)
     date_range = f"{overall['first_date'][:10]} a {overall['last_date'][:10]}" if overall["first_date"] else "sin datos"
 
+    quality_html = render_quality_html(quality or {})
     body = f'''<div class="wrap">
       <header class="page-head">
         <h1>Reporte — {esc(env)}</h1>
@@ -1337,10 +1462,13 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
           <div class="filter-group"><span class="fg-label">Modelo</span><div class="chip-row" id="f-models"></div></div>
           <div class="filter-group"><span class="fg-label">Estado de ejecución</span><div class="chip-row" id="f-workflow"></div></div>
           <div class="filter-group"><span class="fg-label">Estado de negocio</span><div class="chip-row" id="f-validation"></div></div>
+          <div class="filter-group"><span class="fg-label">Tráfico</span><div class="chip-row" id="f-traffic"></div></div>
         </div>
       </section>
 
       <div class="kpi-row" id="kpis"></div>
+
+      {quality_html}
 
       <section class="card">
         <h2>Estado de las ejecuciones</h2>
@@ -1454,6 +1582,19 @@ def render_html(rows: List[Dict[str, Any]], env: str) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def write_report_bundle(out_dir: Path, rows: List[Dict[str, Any]], quality: Dict[str, Any], env: str) -> Dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "reporte.md").write_text(render_markdown(rows, env, quality), encoding="utf-8")
+    (out_dir / "reporte.html").write_text(render_html(rows, env, quality), encoding="utf-8")
+    write_excel(out_dir / "datos_raw.xlsx", rows, quality)
+    shutil.copy2(out_dir / "datos_raw.xlsx", out_dir / "reporte_ejecutivo.xlsx")
+    snapshot = {"schemaVersion": 1, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
+                "rows": rows, "quality": quality}
+    snapshot_path = out_dir / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+    os.chmod(snapshot_path, 0o600)
+    return overall_snapshot(rows)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env", choices=("dev", "prod"), default="dev", help="ambiente a consultar (default: dev)")
@@ -1466,7 +1607,20 @@ def main() -> int:
     parser.add_argument("--sistema", help="filtra por AppOrigin (uno o varios separados por coma; también filtrable interactivo en el HTML)")
     parser.add_argument("--out", help="carpeta de salida (default: reportes/<env>/<timestamp>/)")
     parser.add_argument("--open", action="store_true", help="abrir el HTML en el navegador al terminar")
+    parser.add_argument("--history-dir", default=str(DEFAULT_HISTORY), help="historial local de pruebas")
+    parser.add_argument("--snapshot", help="regenera el reporte offline desde un snapshot.json anterior")
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
+
+    if args.snapshot:
+        saved = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
+        rows, quality = saved.get("rows") or [], saved.get("quality") or quality_snapshot([])
+        env = saved.get("environment") or args.env
+        out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / env / datetime.now().strftime("%Y%m%d-%H%M%S")
+        overall = write_report_bundle(out_dir, rows, quality, env)
+        print(f"Reporte reproducido desde {args.snapshot}: {overall['n']} documento(s) → {out_dir}/")
+        if args.open:
+            webbrowser.open((out_dir / "reporte.html").resolve().as_uri())
+        return 0
 
     stack = args.stack or stack_id(args.env)
     cost_table = args.cost_table or cost_table_name(args.env)
@@ -1490,9 +1644,12 @@ def main() -> int:
         print(f"{RED}No pude leer la tabla {doc_table} en {args.region}: {e}{RESET}")
         return 1
 
+    quality_runs = load_runs("local", Path(args.history_dir)) + load_runs(args.env, Path(args.history_dir))
+    quality_runs.sort(key=lambda r: r.get("startedAt", ""))
+    quality = quality_snapshot(quality_runs)
+
     if not cost_raw and not doc_raw:
-        print(f"{YELLOW}Ambas tablas están vacías — aún no se ha procesado ningún documento con este stack.{RESET}")
-        return 0
+        print(f"{YELLOW}Ambas tablas están vacías — el reporte contendrá únicamente el histórico de pruebas.{RESET}")
 
     cost_rows = [normalize_cost_item(it) for it in cost_raw]
     doc_rows = [normalize_doc_item(it) for it in doc_raw]
@@ -1512,13 +1669,7 @@ def main() -> int:
             return 0
 
     out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / args.env / datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    (out_dir / "reporte.md").write_text(render_markdown(rows, args.env), encoding="utf-8")
-    (out_dir / "reporte.html").write_text(render_html(rows, args.env), encoding="utf-8")
-    write_excel(out_dir / "datos_raw.xlsx", rows)
-
-    overall = overall_snapshot(rows)
+    overall = write_report_bundle(out_dir, rows, quality, args.env)
     print(
         f"\n{CYAN}{overall['n']} documento(s) ({overall['n_with_cost']} con costo) · "
         f"aprobación {pct(overall['approval_rate'])} · costo total {money(overall['total_cost'])}{RESET}"
@@ -1527,6 +1678,8 @@ def main() -> int:
     print("  reporte.md        (resumen estático)")
     print("  reporte.html       (dashboard interactivo — ábrelo en el navegador)")
     print("  datos_raw.xlsx     (datos crudos — Excel)")
+    print("  reporte_ejecutivo.xlsx (Excel ejecutivo con KPIs e histórico)")
+    print("  snapshot.json      (corte reproducible)")
 
     if args.open:
         webbrowser.open((out_dir / "reporte.html").resolve().as_uri())
