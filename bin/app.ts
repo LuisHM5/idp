@@ -40,6 +40,10 @@ const stackId =
 new BedrockDocumentProcessingStack(app, stackId, {
   env,
   environment,
+  // Stack metadata only: CloudFormation propagates this tag to every managed
+  // resource type that supports stack-level tags. Keeping it in StackProps
+  // also tags the stack itself without changing names, references or behavior.
+  tags: { CostStack: stackId },
   enableDynamoCatalog: true,
   forceReloadCatalog: true,
   enableFallbackModels: true,

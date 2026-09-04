@@ -1,6 +1,8 @@
 {
   "__NOTAS__": "PEDIMENTO_ADUANAL.json con los campos renombrados a las columnas de la tabla de pedimentos del ERP. Misma fuente (PDF del pedimento), mismos hints, mismas reglas y el mismo bloque qr_recovery; solo cambia el nombre de cada campo y se conservan ÚNICAMENTE los que existen como columna en el ERP, más los campos del QR (datos deterministas, confianza 0.99). Ver __COMENTARIO_equivalencias__ para el mapeo campo->columna y __COMENTARIO_sin_columna__ para lo que se dejó fuera.",
   "PEDIMENTO_ERP": {
+    "__COMENTARIO_segmentation_candidate__": "PEDIMENTO_ERP y PEDIMENTO_ADUANAL son el MISMO documento fisico (mismos page_selection.markers: NUM. PEDIMENTO / CVE. PEDIM / T. OPER / CUADRO DE LIQUIDACION); lo que cambia son los nombres de los campos de salida, no lo que se ve en la pagina. Por eso este tipo se saca de la clasificacion automatica: un clasificador que lee texto no tiene con que elegir entre los dos, y elegir mal cambia el shape del resultado. Se pide declarandolo: documentType=PEDIMENTO_ERP (solo, o dentro de una lista separada por comas). Quitar esta linea lo devuelve a la lista de candidatos.",
+    "segmentation_candidate": false,
     "schema_version": "1.0.0",
     "display_name": "Pedimento (mapeo ERP)",
     "aliases": [],

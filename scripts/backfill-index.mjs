@@ -139,9 +139,27 @@ function trackingAttribute(envelope) {
   return Object.keys(out).length ? out : null;
 }
 
+
+/**
+ * La clasificación reducida a UN tipo, espejo de
+ * `enrichment-lambda/pipeline/envelope.py::index_type_of`.
+ *
+ * `documentClassification` puede traer varios tipos separados por coma (un
+ * expediente mixto). La columna `DocumentType` no puede: es la partition key de
+ * un GSI y una Query busca por valor EXACTO, así que un backfill que escribiera
+ * "A,B" ahí dejaría esos expedientes invisibles para `?docType=A`.
+ */
+function indexTypeOf(classification) {
+  return String(classification || "").includes(",")
+    ? "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
+    : classification;
+}
+
 /** Same derivation as enrichment-lambda/indexing.py, from a stored envelope. */
 function deriveAttributes(envelope) {
-  const type = String(envelope.documentClassification || "OTRO").trim().toUpperCase();
+  const type = indexTypeOf(
+    String(envelope.documentClassification || "OTRO").trim().toUpperCase()
+  );
   // Relee envelopes de CUALQUIER edad: v2 los trae en la raíz, v1 dentro de
   // `expediente` (ver query-lambda/envelope-shape.mjs).
   const expediente = envelope.expediente || {};

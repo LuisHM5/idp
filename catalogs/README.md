@@ -126,6 +126,7 @@ como en el DSL viejo.
 | `qr_recovery` | sí | Recuperación determinística de campos desde un QR embebido. Declara cómo localizar la página, filtrar la URL, mapear parámetros y publicar el payload/estado; ver la sección siguiente. |
 | `unique_key` / `unique_keys` | sí | Campo(s) cuyo valor identifica UN documento de este tipo por sí solo, indexados como `TIPODOC#valor` para que buscar por ellos sea una sola Query. Normalmente se declara sobre el campo (`fields[X].unique_key`); aquí, a nivel de tipo, es la única forma para un tipo del DSL legado. Ver [Unique keys](#unique-keys-unique_key-buscar-por-un-campo-sin-recorrer-el-tipo). |
 | `page_selection` | sí | Selección de páginas de interés: manda a Bedrock **solo** las páginas cuyo texto cumple los marcadores del tipo, en vez del documento completo. Opt-in por tipo; ver la sección siguiente. |
+| `segmentation_candidate` | sí, opcional | **Solo `false` tiene efecto**: saca al tipo de la lista de candidatos de la clasificación automática (subidas sin `documentType`). Ausente = se decide por la forma del tipo. Es el escape hatch para un tipo que el clasificador confunde con un hermano — `PEDIMENTO_ERP` lo usa, por ser el mismo documento físico que `PEDIMENTO_ADUANAL`. Nunca afecta a un tipo que el caller declara explícitamente. Ver [Candidatura de auto-clasificación](#candidatura-de-auto-clasificación-segmentation_candidate). |
 | `form_mapping` | sí, pero heredado | Mecanismo viejo para campos computados (ver más abajo) — hoy solo tiene sentido si no usas la convención `concept_aliases`/`source`/`filters` directo en `fields`. Para tipos nuevos, prefiere esa convención. |
 | `prompt_profile` | **no, reservado** | Se lee en `_shared.json._model_profiles` pero ningún código lo consume todavía. No lo confundas con algo funcional. |
 | `field_sets` | **no, ignorado en este DSL** | Solo aplica al DSL legado (tipos sin `fields`). En un tipo field-centric no hace nada — no lo agregues. |
@@ -1132,22 +1133,49 @@ con `fields` se extraiga** — `handler.py` rutea al pipeline de expediente si
    aprendió a leer el árbol recursivo nuevo, así que sin esta condición un
    tipo field-centric caería al flujo estándar y no extraería nada.
 
-Lo que **sí** sigue dependiendo exclusivamente de `pipeline: "expediente"`:
+Y lo que **ya no** depende de él, aunque este documento lo afirmara antes:
 
-- **Candidatura de auto-segmentación**: cuando subes un PDF *sin* declarar
-  tipo (`raw/{uuid}/archivo`, no `raw/{TIPO}/{uuid}/archivo`), el segmentador
-  solo considera como candidatos los tipos con `pipeline: "expediente"`
-  (`segmenter._candidate_types`). Un tipo field-centric sin este flag nunca
-  será reconocido dentro de un expediente multi-documento sin declarar —
-  solo funciona si el uploader declara el tipo explícitamente en la key de S3.
-- **Reglas cross-documento**: solo corren para documentos procesados por el
-  pipeline de expediente (necesitan "hermanos" — otros documentos del mismo
-  expediente — para comparar).
+- **Candidatura de auto-clasificación** — ahora la decide
+  `is_segmentation_candidate` por la FORMA del tipo, no por este flag. Ver la
+  sección siguiente. (Con este flag como gate, contra el catálogo real solo
+  calificaban 2 de 9 tipos: un PDF sin declarar que traía un pedimento no podía
+  clasificarse como `PEDIMENTO_ADUANAL`, porque el tipo nunca estuvo en la lista.)
+- **Reglas cross-documento** — se declaran por REGLA, no por tipo:
+  `get_cross_document_rules()` devuelve todas las de `_shared.json`, y cada una
+  lista en su propio `documents: [...]` a qué tipos aplica (`expediente._docs_of`).
 
-En corto: pon `pipeline: "expediente"` si tu tipo puede aparecer sin
-declararse dentro de un PDF multi-documento, o si necesita reglas
-cross-documento. Si siempre se sube con tipo declarado y no cruza datos con
-otros documentos, puedes omitirlo — la extracción funciona igual.
+En corto: hoy `pipeline: "expediente"` casi no controla nada por sí solo —
+`handler.py` ya rutea por `fields`. Ponerlo no hace daño y sigue siendo la
+declaración de intención más clara, pero no es lo que mete a tu tipo en la
+clasificación automática ni lo que activa las reglas cruzadas.
+
+### Candidatura de auto-clasificación (`segmentation_candidate`)
+
+Cuando subes un PDF **sin** declarar tipo (`raw/{uuid}/archivo`), el segmentador
+tiene que ofrecerle una lista de candidatos al modelo. Un tipo entra en esa lista
+por su forma, nunca por su TYPE_ID (`document_catalog.is_segmentation_candidate`):
+
+1. declara `fields` (sin árbol field-centric no hay nada que extraer de un rango
+   de páginas);
+2. **no** es de fuente estructurada — ningún campo declara `xpath`/`item_xpath`/
+   `cell`/`column`. Esto deja fuera a los tipos `_XML`/`_XLSX`, que se rutean por
+   la extensión del archivo y cuyos xpaths no significan nada sobre un escaneo;
+3. tiene `description` — es el discriminador que el prompt le imprime al modelo,
+   así que una descripción que solo explica el ESQUEMA (y no cómo se reconoce el
+   documento) deja al clasificador sin nada con qué decidir;
+4. no se sacó a mano con `"segmentation_candidate": false`.
+
+Ese último es el escape hatch para un tipo que el clasificador confunde con un
+hermano, sin tocar código y hot-reloadable con `pnpm sync:one`. **`PEDIMENTO_ERP`
+lo usa**: es el MISMO documento físico que `PEDIMENTO_ADUANAL` (mismos
+`page_selection.markers`), solo que con los nombres de campo del ERP en la salida.
+Un clasificador que lee texto no tiene con qué elegir entre los dos, y elegir mal
+cambia el shape del resultado — esa variante se pide declarándola.
+
+**Declarar el tipo gana siempre.** Si el caller manda `documentType`, ese tipo
+entra a la lista de candidatos aunque no califique por forma y aunque se haya
+sacado con `segmentation_candidate: false`: nombrarlo explícitamente es una señal
+más fuerte que cualquier default del catálogo.
 
 ## Custom con scripts
 
