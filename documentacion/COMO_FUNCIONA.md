@@ -194,8 +194,8 @@ sequenceDiagram
 | Subir uno grande (≥4 MB) | `aws s3 cp doc.pdf s3://<bucket>/raw/$(uuidgen)/doc.pdf` |
 | Ver el resultado | `pnpm resultado -- --id <documentId> --wait` |
 | Probar local sin el stack | `pnpm procesar -- doc.pdf --importer MI_RFC` |
-| Cambiar reglas sin redeploy | editar `catalogs/<TIPO>.json` + `pnpm sync` |
-| Crear un tipo nuevo | copiar `catalogs/_TEMPLATE.json` → `catalogs/<TIPO>.json` + `pnpm sync:one` |
+| Cambiar reglas sin redeploy | editar el tipo bajo `catalogs/base/` o `catalogs/custom/` + `pnpm sync` |
+| Crear un tipo nuevo | copiar `catalogs/_TEMPLATE.json` → `catalogs/base/<dominio>/<TIPO>.json` o `catalogs/custom/<integración>/<TIPO>.json` + `pnpm sync:one` |
 | Desplegar cambios de código | `pnpm build && pnpm run deploy` |
 
 ---

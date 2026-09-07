@@ -20,7 +20,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAMBDA_DIR = REPO_ROOT / "src/document-processing/resources/enrichment-lambda"
 sys.path.insert(0, str(LAMBDA_DIR))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
 
+from catalog_paths import active_catalog_path  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline.confidence import row_key  # noqa: E402
 from pipeline.text_extractor import (  # noqa: E402
@@ -34,7 +36,7 @@ OCR = 1.0  # confianza de página neutra, para leer los números sin ruido
 
 
 def cargar(type_id="PEDIMENTO_ERP"):
-    path = REPO_ROOT / "catalogs" / f"{type_id}.json"
+    path = active_catalog_path(REPO_ROOT, type_id)
     return _parse_entry(type_id, json.loads(path.read_text(encoding="utf-8"))[type_id])
 
 

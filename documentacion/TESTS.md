@@ -21,7 +21,7 @@ valores esperados vs. extraídos de un documento para decidir si hay un bug.
 La verdad de terreno de los tests de pedimentos vive en
 `tests/integration/expected_pedimentos.json` — al agregar documentos de
 prueba nuevos, añade ahí sus valores esperados (nombre exacto del campo tal
-como está en `catalogs/*.json`, no un alias inventado).
+como está en el árbol activo `catalogs/**`, no un alias inventado).
 
 ## 1. Antes de gastar dinero: valida el ground truth (gratis)
 
@@ -240,7 +240,7 @@ permanente:
 
 | Síntoma | Causa probable | Solución |
 | --- | --- | --- |
-| `test_field_names_exist_in_catalog` falla | Nombre de campo con typo en `expected_pedimentos.json`, o campo que no existe en el catálogo | Revisa `catalogs/PEDIMENTO_ADUANAL.json` (o el tipo correspondiente) y corrige el nombre exacto |
+| `test_field_names_exist_in_catalog` falla | Nombre de campo con typo en `expected_pedimentos.json`, o campo que no existe en el catálogo | Revisa `catalogs/base/aduanas/PEDIMENTO_ADUANAL.json` (o el tipo correspondiente) y corrige el nombre exacto |
 | `no expectations defined for this file` | El PDF no tiene entrada en `expected_pedimentos.json` | Normal si es un documento sin ground truth aún — agrégalo (ver sección 3) |
 | `PROCESSING ERROR` al correr `pnpm comparar` | Error real del pipeline (credenciales AWS, modelo no habilitado, etc.) | Revisa que `aws sts get-caller-identity` funcione y que el modelo Bedrock esté habilitado (ver `GUIA_DESPLIEGUE_Y_USO.md` sección 1) |
 | `✗` en un campo pero el valor se ve razonable | Puede ser tolerancia de formato (mayúsculas/espacios en strings, 0.01 en números) | Revisa la nota impresa junto al `✗`: muestra el valor exacto extraído vs esperado |
@@ -286,4 +286,7 @@ por unique key y ground truth. El primer caso también prueba PATCH de metadata.
 gratuitas locales. La sección **Calidad comprobada** no confunde tres señales:
 aprobación de reglas, confianza declarada por el modelo y exactitud contra
 valores leídos por una persona. Cada paquete incluye `snapshot.json`; se puede
-regenerar sin AWS con `pnpm reporte -- --snapshot ruta/snapshot.json`.
+regenerar sin AWS con `pnpm reporte -- --snapshot ruta/snapshot.json`. En el
+HTML, pasar el cursor (o enfocar con teclado) sobre cada barra, segmento o
+punto de las gráficas abre el desglose del elemento seleccionado, con el valor
+sin el redondeo visual y su contexto.

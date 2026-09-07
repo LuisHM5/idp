@@ -1,5 +1,6 @@
 {
   "CERTIFICADO_POLIZA": {
+    "catalog_status": "stable",
     "schema_version": "5.0.0",
     "display_name": "Certificado de Póliza de Seguro",
     "aliases": [

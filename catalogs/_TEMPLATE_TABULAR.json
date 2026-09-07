@@ -4,6 +4,7 @@
   "__COMENTARIO_diferencia_clave__": "Igual que XML, cada campo lleva una dirección de dato en vez de `hint`: aquí es `cell` (celda fija, estilo Excel 'B2') o `column` (columna de una tabla, por nombre de encabezado) -- no hay modelo (Bedrock) leyendo el documento. XLSX y CSV comparten EXACTAMENTE el mismo mapeo de catálogo (un CSV se trata como un libro con una sola hoja implícita) -- el mismo tipo sirve para ambos si el layout de columnas coincide. Costo de Bedrock $0 (ver catalogs/README.md 'Tipos con fuente tabular' para el gotcha específico de CSV -- a diferencia de XML/XLSX, un .csv SIN documentType declarado SÍ intentaría una llamada real a Bedrock antes de fallar, por eso upload-lambda lo exige para xml/xlsx/csv).",
 
   "NUEVO_TIPO_XLSX": {
+    "catalog_status": "beta",
     "schema_version": "1.0.0",
     "__COMENTARIO_occurrence_mode__": "Default del tipo si el POST no manda occurrenceMode ni :N/:all. Normalmente single para una fuente estructurada. Valores: single | multiple.",
     "occurrence_mode": "single",

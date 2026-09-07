@@ -10,7 +10,7 @@
  *                                field-centric DSL's reusable item_fields, see
  *                                catalogs/_TEMPLATE.json)
  *   - catalogs/_TEMPLATE.json → template for new types (ignored here)
- *   - catalogs/<TYPE_ID>.json → one document type, shape { "<TYPE_ID>": { ... } }
+ *   - recursive <TYPE_ID>.json files → one document type, except any `save/` subtree
  *
  * Output: config/catalogs.json in the customs shape the loaders understand:
  *   { _global_output_fields, _field_sets, _common_item_fields, document_types,
@@ -20,10 +20,11 @@
  * all that is needed to bake it into the deployed Lambda.
  */
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, rmSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { uniqueKeysOf } from "./_unique_keys.mjs";
+import { discoverCatalogTypes } from "./catalog-files.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(__dirname, "..");
@@ -111,25 +112,10 @@ function main() {
     : {};
 
   const documentTypes = {};
-  // Any "_*.json" file is special (not a document type) — _shared.json,
-  // _TEMPLATE.json, and every per-source-format template (_TEMPLATE_XML.json,
-  // _TEMPLATE_TABULAR.json, ...). Filtering by prefix instead of an explicit
-  // filename allowlist means a new template never needs a code change here.
-  const files = readdirSync(CATALOGS_DIR)
-    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
-    .sort();
-
-  for (const file of files) {
-    const data = loadJson(join(CATALOGS_DIR, file));
-    // Each type file is { "<TYPE_ID>": { ...entry } }.
-    for (const [typeId, entry] of Object.entries(data)) {
-      if (typeId.startsWith("_")) continue;
-      validateOccurrenceMode(typeId, entry, file);
-      if (documentTypes[typeId]) {
-        console.warn(`  ⚠ tipo duplicado '${typeId}' (${file}) — se sobrescribe`);
-      }
-      documentTypes[typeId] = entry;
-    }
+  const types = discoverCatalogTypes(CATALOGS_DIR);
+  for (const { typeId, entry, relativePath } of types) {
+    validateOccurrenceMode(typeId, entry, relativePath);
+    documentTypes[typeId] = entry;
   }
 
   const combined = {
@@ -142,7 +128,7 @@ function main() {
 
   writeFileSync(OUTPUT, JSON.stringify(combined, null, 2), "utf8");
   console.log(
-    `bundled ${Object.keys(documentTypes).length} tipos de ${CATALOGS_DIR}/*.json -> ${OUTPUT}`
+    `bundled ${Object.keys(documentTypes).length} tipos activos de ${CATALOGS_DIR}/**/*.json -> ${OUTPUT}`
   );
 
   writeTypeIndex(documentTypes);

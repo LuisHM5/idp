@@ -9,9 +9,9 @@ pedimento aduanal**. Su elemento raíz es `cfdi:Comprobante`, versión 4.0, y su
 contenido corresponde a una factura CFDI: comprobante, emisor, receptor,
 conceptos, impuestos y Timbre Fiscal Digital.
 
-Por esta razón, `catalogs/PEDIMENTO_ADUANAL_XML.json` extrae exhaustivamente
+Por esta razón, `catalogs/base/aduanas/PEDIMENTO_ADUANAL_XML.json` extrae exhaustivamente
 el CFDI disponible, pero no puede producir los campos aduanales que sí declara
-`catalogs/PEDIMENTO_ADUANAL.json` para el pedimento PDF. Un `xpath` solamente
+`catalogs/base/aduanas/PEDIMENTO_ADUANAL.json` para el pedimento PDF. Un `xpath` solamente
 puede recuperar nodos o atributos existentes; no debe inferir ni inventar los
 datos faltantes.
 

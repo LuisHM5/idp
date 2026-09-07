@@ -1,0 +1,94 @@
+{
+  "COMPROBANTE_ESTUDIOS": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Comprobante de Estudios",
+    "aliases": ["certificado de estudios", "título", "diploma", "constancia de estudios", "historial académico"],
+    "description": "Documento emitido por una institución educativa para acreditar estudios: certificado, título, diploma, grado, constancia, carta de pasante o historial académico. Debe mostrar la institución, la persona y el programa o nivel acreditado. No confundir con cédula profesional SEP, credencial escolar, recibo de colegiatura, currículum ni constancia de un curso informal sin emisor identificable.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "fields": {
+      "TIPO_DOCUMENTO": {
+        "type": "string",
+        "required": true,
+        "hint": "Tipo literal o equivalente visible: CERTIFICADO, TITULO, DIPLOMA, GRADO, CONSTANCIA, CARTA_DE_PASANTE, HISTORIAL u OTRO.",
+        "validation": []
+      },
+      "NOMBRE_ESTUDIANTE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo de la persona a quien se acreditan los estudios.",
+        "validation": []
+      },
+      "INSTITUCION_EDUCATIVA": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo de la institución educativa emisora.",
+        "validation": []
+      },
+      "CLAVE_INSTITUCION": {
+        "type": "string",
+        "required": false,
+        "hint": "CCT, clave institucional o registro oficial cuando esté impreso.",
+        "validation": []
+      },
+      "PROGRAMA_O_CARRERA": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre del programa, carrera, especialidad, grado o estudios acreditados.",
+        "validation": []
+      },
+      "NIVEL_EDUCATIVO": {
+        "type": "string",
+        "required": false,
+        "hint": "Nivel explícito, por ejemplo BACHILLERATO, TECNICO, LICENCIATURA, ESPECIALIDAD, MAESTRIA o DOCTORADO. No inferirlo solo por el nombre de la institución.",
+        "validation": []
+      },
+      "ESTATUS": {
+        "type": "string",
+        "required": false,
+        "hint": "Resultado o estatus literal: CONCLUIDO, TITULADO, PASANTE, EN_CURSO, ACREDITADO u otro visible.",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Folio, número de certificado, título o registro principal. Conservar letras, ceros y separadores.",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de emisión o expedición del documento. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "PERIODO_ESTUDIOS": {
+        "type": "string",
+        "required": false,
+        "hint": "Período cursado o fechas de inicio y fin tal como aparecen.",
+        "validation": []
+      },
+      "PROMEDIO": {
+        "type": "number",
+        "required": false,
+        "hint": "Promedio general únicamente cuando esté impreso como tal. No calcularlo desde materias.",
+        "validation": []
+      },
+      "LUGAR_EMISION": {
+        "type": "string",
+        "required": false,
+        "hint": "Lugar de expedición cuando esté explícito.",
+        "validation": []
+      },
+      "AUTORIDAD_FIRMANTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre y cargo de la autoridad firmante principal, sin inventar texto de una firma ilegible.",
+        "validation": []
+      }
+    }
+  }
+}

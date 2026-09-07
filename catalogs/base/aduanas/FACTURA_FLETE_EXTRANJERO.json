@@ -1,5 +1,6 @@
 {
   "FACTURA_FLETE_EXTRANJERO": {
+    "catalog_status": "stable",
     "schema_version": "5.2.0",
     "occurrence_mode": "multiple",
     "display_name": "Factura Extranjera (mercancía, flete o servicios)",

@@ -169,7 +169,7 @@ def test_a_payload_field_alone_enables_generic_qr_reading(monkeypatch):
 
 def _factura_honorarios_entry():
     raw = json.loads(
-        (REPO_ROOT / "catalogs/FACTURA_HONORARIOS.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "catalogs/base/fiscal/FACTURA_HONORARIOS.json").read_text(encoding="utf-8")
     )["FACTURA_HONORARIOS"]
     shared = json.loads(
         (REPO_ROOT / "catalogs/_shared.json").read_text(encoding="utf-8")

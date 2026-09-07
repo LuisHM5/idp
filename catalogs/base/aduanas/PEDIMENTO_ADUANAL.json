@@ -1,5 +1,6 @@
 {
   "PEDIMENTO_ADUANAL": {
+    "catalog_status": "stable",
     "schema_version": "5.0.0",
     "display_name": "Pedimento Aduanal",
     "description": "Esquema mínimo para alimentar la captura general del pedimento, el cuadro de liquidación, las facturas relacionadas y el reporte de pedimento.",

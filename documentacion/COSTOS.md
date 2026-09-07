@@ -189,7 +189,7 @@ páginas nativas, sin OCR), 18 ejecuciones nuevas:
 | **Costo/página**  | **$0.0194**        | **$0.0041**        |
 
 Caída de ~3.1x en input y ~7x en output para el **mismo PDF**. Coincide en
-el tiempo con la migración del DSL de catálogo (`catalogs/PEDIMENTO_ADUANAL.json`
+el tiempo con la migración del DSL de catálogo (`catalogs/base/aduanas/PEDIMENTO_ADUANAL.json`
 al nuevo formato `fields` consolidado, ver memoria `catalog-dsl-v4-migration`)
 y con los cambios locales pendientes en `pipeline/expediente.py` /
 `pipeline/pdf_pages.py` / `pipeline/result_common.py` (working tree, aún sin

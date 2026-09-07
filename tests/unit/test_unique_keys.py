@@ -99,7 +99,7 @@ def test_a_type_without_the_key_declares_nothing():
 
 def test_live_catalog_declares_the_pedimento_number():
     """The one shipped type that uses this — guards against the declaration
-    being dropped from catalogs/PEDIMENTO_ADUANAL.json by accident."""
+    being dropped from catalogs/base/aduanas/PEDIMENTO_ADUANAL.json by accident."""
     specs = unique_keys.unique_key_specs("PEDIMENTO_ADUANAL")
     assert {s["field"] for s in specs} == {
         "NUMERO_PEDIMENTO",

@@ -1,0 +1,106 @@
+{
+  "INE": {
+    "catalog_status": "stable",
+    "schema_version": "6.0.0",
+    "display_name": "Credencial para Votar (INE)",
+    "aliases": [
+      "INE",
+      "credencial para votar",
+      "credencial de elector",
+      "identificación oficial INE",
+      "CPV",
+      "CPVE"
+    ],
+    "description": "Credencial para Votar emitida por el Instituto Nacional Electoral. Se reconoce por el encabezado INSTITUTO NACIONAL ELECTORAL / CREDENCIAL PARA VOTAR, fotografía del titular, nombre, Clave de Elector, CURP y vigencia en el anverso; el reverso contiene el CIC, Identificador Ciudadano/OCR, códigos QR y zona de lectura mecánica. No confundir con pasaporte, licencia de conducir, cédula profesional ni una consulta de Lista Nominal.",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "min_confidence": 0.85,
+    "fields": {
+      "APELLIDO_PATERNO": {
+        "type": "string",
+        "required": true,
+        "hint": "Primer apellido del titular dentro del bloque NOMBRE. Copiarlo literalmente, sin incluir el segundo apellido, los nombres ni la etiqueta.",
+        "validation": []
+      },
+      "APELLIDO_MATERNO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido del titular dentro del bloque NOMBRE. Dejar null cuando no esté impreso; no inventarlo ni repetir el primer apellido.",
+        "validation": []
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o nombres propios del titular dentro del bloque NOMBRE. No incluir apellidos, domicilio, CURP ni Clave de Elector.",
+        "validation": []
+      },
+      "CURP": {
+        "type": "string",
+        "required": true,
+        "hint": "CURP de 18 caracteres impresa en el anverso. Extraer en mayúsculas y sin espacios. No copiar la Clave de Elector ni reconstruir una CURP que no sea visible.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "CLAVE_ELECTOR": {
+        "type": "string",
+        "required": true,
+        "hint": "Clave de Elector de 18 caracteres impresa junto a CLAVE DE ELECTOR. Extraer en mayúsculas y sin espacios; no confundir con CURP, CIC ni Identificador Ciudadano/OCR.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{18}$",
+            "message": "La Clave de Elector debe contener 18 caracteres alfanuméricos"
+          }
+        ]
+      },
+      "FECHA_NACIMIENTO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha visible junto a FECHA DE NACIMIENTO. Normalizar a YYYY-MM-DD. No derivarla de la CURP, Clave de Elector o zona de lectura mecánica.",
+        "validation": []
+      },
+      "VIGENCIA": {
+        "type": "string",
+        "required": true,
+        "hint": "Valor visible junto a VIGENCIA. Conservar el año final o el rango tal como aparece, por ejemplo 2034 o 2024-2034; no tomar otros años impresos en la credencial.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(19|20)\\d{2}(\\s*-\\s*(19|20)\\d{2})?$",
+            "message": "La vigencia debe ser un año o un rango de años válido"
+          }
+        ]
+      },
+      "CIC": {
+        "type": "string",
+        "required": false,
+        "hint": "Código de Identificación de la Credencial de nueve dígitos en el reverso. Conservar ceros iniciales. Dejar null si sólo se recibió el anverso; no confundirlo con el Identificador Ciudadano/OCR.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{9}$",
+            "message": "El CIC debe contener nueve dígitos"
+          }
+        ]
+      },
+      "IDENTIFICADOR_CIUDADANO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número Identificador Ciudadano, también denominado OCR, de 13 dígitos en el reverso de los modelos vigentes. Conservar ceros iniciales. Dejar null si sólo se recibió el anverso; no tomar el CIC de nueve dígitos.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{13}$",
+            "message": "El Identificador Ciudadano/OCR debe contener 13 dígitos"
+          }
+        ]
+      }
+    },
+    "cross_field_validation": []
+  }
+}

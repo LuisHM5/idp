@@ -4,7 +4,7 @@ Uses a synthetic CFDI fixture (fake RFCs/UUID/names) rather than a real
 document — real CFDIs carry PII and shouldn't land in the repo (see AGENTS.md:
 "keep any PII out of commits"). The synthetic fixture mirrors the real SAT
 CFDI 4.0 shape closely enough to exercise the same xpath/namespace/predicate
-paths declared in catalogs/FACTURA_HONORARIOS_XML.json.
+paths declared in catalogs/base/fiscal/FACTURA_HONORARIOS_XML.json.
 """
 
 import json
@@ -17,12 +17,15 @@ LAMBDA_DIR = (
 )
 sys.path.insert(0, str(LAMBDA_DIR))
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+
+from catalog_paths import active_catalog_path  # noqa: E402
 import document_catalog  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import xml_document  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CATALOG_FILE = REPO_ROOT / "catalogs" / "FACTURA_HONORARIOS_XML.json"
+CATALOG_FILE = active_catalog_path(REPO_ROOT, "FACTURA_HONORARIOS_XML")
 
 _SYNTHETIC_CFDI = """<?xml version="1.0" encoding="UTF-8"?>
 <cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"

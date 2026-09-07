@@ -1,0 +1,108 @@
+{
+  "ACTA_NACIMIENTO": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Acta de Nacimiento",
+    "aliases": ["acta", "acta de nacimiento", "copia certificada de acta de nacimiento", "registro civil"],
+    "description": "Copia certificada del acta de nacimiento mexicana, preferentemente en el formato único nacional. Se distingue por el encabezado del Registro Civil, 'Acta de Nacimiento', datos de identidad y registro, identificador electrónico, código de verificación y elementos QR. No confundir con constancia CURP, certificado médico de nacimiento, carta de naturalización ni acta de matrimonio.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "min_confidence": 0.85,
+    "fields": {
+      "IDENTIFICADOR_ELECTRONICO": {
+        "type": "string",
+        "required": true,
+        "unique_key": { "normalize": "alnum" },
+        "hint": "Identificador electrónico de la copia certificada, normalmente una cadena larga de dígitos. No confundir con código de verificación, CURP, oficialía, libro o número de acta.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9-]{8,40}$",
+            "message": "El identificador electrónico tiene un formato inesperado"
+          }
+        ]
+      },
+      "CODIGO_VERIFICACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Código de verificación impreso junto al identificador electrónico o al QR. Conservarlo literalmente.",
+        "validation": []
+      },
+      "CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP de la persona registrada cuando aparezca como campo. No reconstruirla si el acta no la muestra.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o nombres propios de la persona registrada, sin apellidos.",
+        "validation": []
+      },
+      "PRIMER_APELLIDO": {
+        "type": "string",
+        "required": true,
+        "hint": "Primer apellido de la persona registrada.",
+        "validation": []
+      },
+      "SEGUNDO_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido de la persona registrada. Dejar null cuando no exista.",
+        "validation": []
+      },
+      "SEXO_REGISTRAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Sexo registral cuando esté impreso explícitamente. No derivarlo de CURP o nombre.",
+        "validation": []
+      },
+      "FECHA_NACIMIENTO": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de nacimiento de la persona registrada, no la fecha de registro ni de expedición. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "LUGAR_NACIMIENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Localidad, municipio, entidad y país de nacimiento tal como aparecen, sin inferir componentes ausentes.",
+        "validation": []
+      },
+      "NACIONALIDAD": {
+        "type": "string",
+        "required": false,
+        "hint": "Nacionalidad impresa para la persona registrada.",
+        "validation": []
+      },
+      "DATOS_REGISTRO": {
+        "type": "object",
+        "required": true,
+        "hint": "Bloque de datos del registro del nacimiento. No incluir nombres de progenitores ni datos de filiación.",
+        "validation": [],
+        "fields": {
+          "ENTIDAD_REGISTRO": { "type": "string", "required": true, "hint": "Entidad federativa donde se registró el nacimiento.", "validation": [] },
+          "MUNICIPIO_REGISTRO": { "type": "string", "required": false, "hint": "Municipio o alcaldía del registro.", "validation": [] },
+          "OFICIALIA": { "type": "string", "required": false, "hint": "Número o clave de oficialía. Conservar como string.", "validation": [] },
+          "LIBRO": { "type": "string", "required": false, "hint": "Número o clave de libro. Conservar como string.", "validation": [] },
+          "NUMERO_ACTA": { "type": "string", "required": false, "hint": "Número del acta. Conservar ceros y separadores.", "validation": [] },
+          "FECHA_REGISTRO": { "type": "date", "required": false, "hint": "Fecha del registro del nacimiento. Normalizar a YYYY-MM-DD.", "validation": [] }
+        }
+      },
+      "FECHA_EXPEDICION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de expedición de la copia certificada, distinta de nacimiento y registro. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      }
+    }
+  }
+}

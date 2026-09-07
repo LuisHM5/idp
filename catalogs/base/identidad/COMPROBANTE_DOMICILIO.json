@@ -1,0 +1,70 @@
+{
+  "COMPROBANTE_DOMICILIO": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Comprobante de Domicilio",
+    "aliases": ["comprobante domicilio", "recibo de servicios", "recibo CFE", "estado de cuenta como domicilio"],
+    "description": "Documento usado para acreditar domicilio: recibo de electricidad, agua, gas, telefonía, internet, impuesto predial o estado de cuenta que muestre titular, emisor, fecha o período y dirección de servicio/correspondencia. El diseño cambia por emisor, pero la salida es neutral. No confundir con factura de compra, ticket, contrato de arrendamiento sin dirección vigente ni Constancia de Situación Fiscal cuando se cargue expresamente como tipo fiscal.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "fields": {
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "hint": "Tipo genérico del documento: ELECTRICIDAD, AGUA, GAS, TELEFONIA, INTERNET, PREDIAL, ESTADO_CUENTA u OTRO. Elegir por el servicio visible, no por el nombre del archivo.",
+        "validation": []
+      },
+      "EMISOR": {
+        "type": "string",
+        "required": true,
+        "hint": "Empresa, institución o autoridad que emite el comprobante.",
+        "validation": []
+      },
+      "TITULAR": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre de la persona o razón social asociada a la cuenta o domicilio. No sustituirlo con destinatarios publicitarios.",
+        "validation": []
+      },
+      "NUMERO_SERVICIO_O_CUENTA": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de servicio, contrato, cuenta o referencia principal, conservando ceros. No extraer número completo de tarjeta bancaria.",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de emisión, corte o generación más reciente. Normalizar a YYYY-MM-DD; no aplicar una antigüedad máxima universal.",
+        "validation": []
+      },
+      "PERIODO": {
+        "type": "string",
+        "required": false,
+        "hint": "Período facturado o de consumo tal como aparece, por ejemplo JUL-AGO 2026.",
+        "validation": []
+      },
+      "DOMICILIO": {
+        "type": "object",
+        "required": true,
+        "hint": "Dirección de servicio, inmueble o correspondencia que el documento acredita. No tomar domicilios de oficinas del emisor.",
+        "validation": [],
+        "fields": {
+          "TEXTO_COMPLETO": { "type": "string", "required": true, "hint": "Dirección completa en el orden impreso, sin etiquetas.", "validation": [] },
+          "CALLE": { "type": "string", "required": false, "hint": "Calle, avenida, carretera o vialidad.", "validation": [] },
+          "NUMERO_EXTERIOR": { "type": "string", "required": false, "hint": "Número exterior, conservando letras y guiones.", "validation": [] },
+          "NUMERO_INTERIOR": { "type": "string", "required": false, "hint": "Número interior, departamento o unidad.", "validation": [] },
+          "COLONIA": { "type": "string", "required": false, "hint": "Colonia, barrio o fraccionamiento.", "validation": [] },
+          "CODIGO_POSTAL": { "type": "string", "required": false, "hint": "Código postal de cinco dígitos cuando sea mexicano.", "validation": [{ "rule_type": "regex", "pattern": "^\\d{5}$", "message": "El código postal debe contener cinco dígitos" }] },
+          "MUNICIPIO_O_ALCALDIA": { "type": "string", "required": false, "hint": "Municipio o alcaldía.", "validation": [] },
+          "LOCALIDAD": { "type": "string", "required": false, "hint": "Ciudad o localidad.", "validation": [] },
+          "ENTIDAD": { "type": "string", "required": false, "hint": "Entidad federativa.", "validation": [] },
+          "PAIS": { "type": "string", "required": false, "hint": "País únicamente cuando esté escrito.", "validation": [] }
+        }
+      }
+    }
+  }
+}

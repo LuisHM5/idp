@@ -1,0 +1,129 @@
+{
+  "PASAPORTE": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Pasaporte",
+    "aliases": ["pasaporte mexicano", "passport", "pasaporte SRE", "documento de viaje"],
+    "description": "Página de datos de un pasaporte, principalmente pasaporte mexicano emitido por la Secretaría de Relaciones Exteriores. Se reconoce por el encabezado PASAPORTE/PASSPORT, escudo o autoridad emisora, fotografía, número de pasaporte, nacionalidad, fechas de nacimiento y vencimiento, y dos o tres líneas de zona de lectura mecánica (MRZ). No confundir con visa, tarjeta de residencia, matrícula consular ni portada de libreta sin página de datos.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "min_confidence": 0.85,
+    "fields": {
+      "NUMERO_PASAPORTE": {
+        "type": "string",
+        "required": true,
+        "unique_key": { "normalize": "alnum" },
+        "hint": "Número de pasaporte impreso en la página de datos. Extraer en mayúsculas, conservando letras y ceros; no usar el número personal, CURP ni caracteres de control MRZ.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{6,12}$",
+            "message": "El número de pasaporte tiene un formato inesperado"
+          }
+        ]
+      },
+      "TIPO_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Tipo de documento o carácter inicial de la MRZ, normalmente P para pasaporte.",
+        "validation": []
+      },
+      "PAIS_EMISOR": {
+        "type": "string",
+        "required": true,
+        "hint": "País o código de tres letras de la autoridad emisora, por ejemplo MEX. No confundir con nacionalidad o lugar de nacimiento.",
+        "validation": []
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o nombres propios del titular, sin apellidos.",
+        "validation": []
+      },
+      "PRIMER_APELLIDO": {
+        "type": "string",
+        "required": true,
+        "hint": "Primer apellido o surname principal del titular.",
+        "validation": []
+      },
+      "SEGUNDO_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido del titular cuando esté impreso. Dejar null si no existe.",
+        "validation": []
+      },
+      "NACIONALIDAD": {
+        "type": "string",
+        "required": true,
+        "hint": "Nacionalidad impresa del titular, sin inferirla del país emisor.",
+        "validation": []
+      },
+      "FECHA_NACIMIENTO": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de nacimiento del titular. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "LUGAR_NACIMIENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Lugar de nacimiento tal como está impreso.",
+        "validation": []
+      },
+      "SEXO_REGISTRAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Sexo registral impreso; no inferirlo por nombre, fotografía o CURP.",
+        "validation": []
+      },
+      "CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP únicamente cuando aparezca impresa como campo. No derivarla de la MRZ.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "FECHA_EXPEDICION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de expedición del pasaporte. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "FECHA_VENCIMIENTO": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de expiración o vencimiento del pasaporte. Normalizar a YYYY-MM-DD.",
+        "validation": [
+          {
+            "rule_type": "date_expiry",
+            "message": "El pasaporte está vencido"
+          }
+        ]
+      },
+      "AUTORIDAD_EMISORA": {
+        "type": "string",
+        "required": false,
+        "hint": "Autoridad u oficina emisora tal como se muestra en la página de datos.",
+        "validation": []
+      },
+      "MRZ_LINEA_1": {
+        "type": "string",
+        "required": false,
+        "hint": "Primera línea completa de la zona de lectura mecánica, conservando signos '<' y dígitos de control.",
+        "validation": []
+      },
+      "MRZ_LINEA_2": {
+        "type": "string",
+        "required": false,
+        "hint": "Segunda línea completa de la zona de lectura mecánica, conservando signos '<' y dígitos de control.",
+        "validation": []
+      }
+    }
+  }
+}

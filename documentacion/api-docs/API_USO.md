@@ -1954,7 +1954,7 @@ Para dar de alta/quitar estos permisos: `pnpm apps:register`/`reconfigure`
 ## 7. `GET /document-types` — Catálogo de tipos de documento
 
 Qué tipos existen, para armar un selector o generar un cliente sin tener que
-leer `catalogs/*.json` del repo. Dos formas:
+leer los JSON activos de `catalogs/base/` y `catalogs/custom/` del repo. Dos formas:
 
 | Petición | Para qué |
 | --- | --- |
@@ -2021,7 +2021,7 @@ curl -sS -G "$API/document-types/PEDIMENTO_ERP" -H "x-api-key: $KEY" \
       "required": true,
       "hint": "Número de pedimento de 15 dígitos, en el encabezado."
     }
-    // ... el resto de los campos del tipo, mismo shape que catalogs/*.json → "fields"
+    // ... el resto de los campos del tipo, mismo shape que el JSON activo → "fields"
   }
 }
 ```

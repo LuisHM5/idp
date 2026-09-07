@@ -1,0 +1,79 @@
+{
+  "IDENTIFICACION": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "display_name": "Identificación genérica",
+    "aliases": [
+      "identificación",
+      "identificación oficial",
+      "documento de identidad",
+      "ID"
+    ],
+    "description": "Análisis genérico de un documento presentado como identificación. Determina si contiene los elementos mínimos de una identificación personal: autoridad o emisor reconocible, nombre del titular, número o clave individual y, normalmente, fotografía o datos biográficos. No certifica autenticidad ni sustituye la validación con la autoridad emisora. Se usa declarando documentType=IDENTIFICACION para evitar competir con tipos específicos como INE o PASAPORTE.",
+    "segmentation_candidate": false,
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "min_confidence": 0.85,
+    "fields": {
+      "ES_DOCUMENTO_IDENTIDAD": {
+        "type": "boolean",
+        "required": true,
+        "hint": "True sólo si el documento está destinado a identificar a una persona y muestra de forma legible al menos nombre del titular, una clave o número individual y una autoridad o emisor. Una fotografía ayuda, pero no basta por sí sola. False para formatos internos, comprobantes, constancias sin función de identificación, imágenes parciales sin datos suficientes o documentos de otra naturaleza. Este resultado evalúa la clase documental, no su autenticidad.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "El archivo no contiene los elementos mínimos de un documento de identidad"
+          }
+        ]
+      },
+      "TIPO_IDENTIFICACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Tipo de identificación que aparece explícitamente, por ejemplo CREDENCIAL PARA VOTAR, PASAPORTE, LICENCIA DE CONDUCIR, TARJETA DE RESIDENCIA o CÉDULA PROFESIONAL. Dejar null si no puede determinarse; no inventar categorías.",
+        "validation": []
+      },
+      "NOMBRE_COMPLETO": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre completo del titular tal como está impreso. No agregar títulos, etiquetas, domicilio ni datos de otra persona.",
+        "validation": []
+      },
+      "NUMERO_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número, folio o clave principal que individualiza la identificación. Conservar letras, números y ceros iniciales. No usar números secundarios si existe un campo claramente rotulado como número del documento.",
+        "validation": []
+      },
+      "AUTORIDAD_EMISORA": {
+        "type": "string",
+        "required": false,
+        "hint": "Institución, dependencia o autoridad que emitió el documento, copiada literalmente. No inferirla sólo por colores o diseño.",
+        "validation": []
+      },
+      "FECHA_VENCIMIENTO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha completa de vencimiento cuando esté impresa. Normalizar a YYYY-MM-DD. Si el documento sólo muestra un año de vigencia o no tiene vencimiento, dejar null.",
+        "validation": [
+          {
+            "rule_type": "date_expiry",
+            "message": "La identificación está vencida"
+          }
+        ]
+      },
+      "TIENE_FOTOGRAFIA": {
+        "type": "boolean",
+        "required": false,
+        "hint": "True si se observa una fotografía del titular dentro del documento; false si el documento completo es legible y no contiene fotografía; null si la imagen está recortada, incompleta o no permite determinarlo.",
+        "validation": []
+      },
+      "MOTIVO_RESULTADO": {
+        "type": "string",
+        "required": true,
+        "hint": "Explicación breve basada únicamente en elementos visibles de por qué ES_DOCUMENTO_IDENTIDAD es true o false. Mencionar cuáles de estos elementos existen o faltan: nombre, número individual, autoridad emisora y fotografía. No afirmar que el documento es auténtico, falso o válido ante una autoridad.",
+        "validation": []
+      }
+    },
+    "cross_field_validation": []
+  }
+}

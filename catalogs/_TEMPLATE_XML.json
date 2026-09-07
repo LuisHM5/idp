@@ -1,9 +1,10 @@
 {
-  "__NOTAS__": "Plantilla para un tipo cuya fuente es XML ya estructurado (un CFDI del SAT, un acuse de VUCEM, cualquier XML con esquema fijo) en vez de un PDF/escaneo. Copia este archivo, renombra NUEVO_TIPO_XML (el nombre de archivo debe coincidir con la llave), borra esta clave __NOTAS__ y las __COMENTARIO__ (documentación, el loader no las lee). Ver catalogs/README.md -> 'Tipos con fuente XML' para la referencia completa, y catalogs/FACTURA_HONORARIOS_XML.json para un tipo real ya probado contra un archivo real. `pipeline/xml_document.py` es quien ejecuta este mapeo.",
+  "__NOTAS__": "Plantilla para un tipo cuya fuente es XML ya estructurado (un CFDI del SAT, un acuse de VUCEM, cualquier XML con esquema fijo) en vez de un PDF/escaneo. Copia este archivo dentro de catalogs/base/<dominio>/ o catalogs/custom/<integracion>/, renombra NUEVO_TIPO_XML (el nombre de archivo debe coincidir con la llave), borra esta clave __NOTAS__ y las __COMENTARIO__ (documentación, el loader no las lee). Ver catalogs/README.md -> 'Tipos con fuente XML' para la referencia completa, y catalogs/base/fiscal/FACTURA_HONORARIOS_XML.json para un tipo real ya probado contra un archivo real. `pipeline/xml_document.py` es quien ejecuta este mapeo.",
 
   "__COMENTARIO_diferencia_clave__": "La diferencia frente al DSL normal (_TEMPLATE.json) es que cada campo lleva `xpath` en vez de `hint`: no hay modelo (Bedrock) leyendo el documento, así que no hace falta describir en español dónde vive el dato para un humano/LLM -- el xpath ya apunta exactamente al nodo/atributo. Por esto mismo, un tipo XML normalmente tiene MENOS campos que su equivalente en PDF: solo lo que el XML realmente trae, no las secciones que una representación impresa agrega encima (ver el comentario en FACTURA_HONORARIOS_XML.json). El costo de Bedrock para estos tipos ya es $0 sin tocar Step Functions (ver AGENTS.md 'Trabajo Bedrock desperdiciado' y catalogs/README.md), SIEMPRE que la subida declare `documentType` explícito -- no existe clasificación automática por visión sobre XML crudo.",
 
   "NUEVO_TIPO_XML": {
+    "catalog_status": "beta",
     "schema_version": "1.0.0",
     "__COMENTARIO_occurrence_mode__": "Default del tipo si el POST no manda occurrenceMode ni :N/:all. Normalmente single para una fuente estructurada. Valores: single | multiple.",
     "occurrence_mode": "single",

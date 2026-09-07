@@ -1,5 +1,6 @@
 {
   "PEDIMENTO_ADUANAL_XML": {
+    "catalog_status": "stable",
     "schema_version": "1.0.0",
     "display_name": "Pedimento Aduanal XML (CFDI relacionado)",
     "aliases": [

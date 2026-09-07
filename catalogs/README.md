@@ -2,22 +2,44 @@
 
 Esta carpeta es la **única fuente de verdad** de los tipos de documento. Un
 archivo JSON por tipo, más un archivo compartido. No hay otro lugar donde se
-definan tipos — no se toca `handler.py` para agregar/editar un tipo.
+definan tipos — no se toca `handler.py` para agregar/editar un tipo. Las
+carpetas expresan si el contrato es reutilizable (`base`) o está acoplado a
+una integración (`custom`); el `TYPE_ID`, no la ruta, sigue siendo la identidad
+pública del tipo.
 
 ```
 catalogs/
 ├── _shared.json      → globals: _field_sets, _common_item_fields, cross_document_validation_rules, _global_output_fields
 ├── _TEMPLATE.json     → plantilla para crear un tipo nuevo (se ignora en build/sync)
-├── PEDIMENTO_ADUANAL.json
-└── <TYPE_ID>.json     → un tipo por archivo, shape { "<TYPE_ID>": { ...entry } }
+├── base/
+│   ├── aduanas/       → contratos neutrales de comercio exterior
+│   ├── fiscal/        → documentos fiscales reutilizables
+│   ├── identidad/     → identidad y domicilio
+│   ├── recursos_humanos/ → alta y acreditación profesional
+│   └── seguros/
+├── custom/
+│   └── erp/           → variantes acopladas, como PEDIMENTO_ERP
+└── save/              → archivo inactivo; nunca entra a build/sync
 ```
 
 - El **nombre del archivo** es el `TYPE_ID` (UPPER_SNAKE_CASE): `PEDIMENTO_ADUANAL.json`.
 - Los archivos que empiezan con `_` son especiales (no son tipos).
-- **Solo se leen los archivos directos de esta carpeta.** `pnpm build`/`pnpm sync`
-  no bajan a subcarpetas — un tipo movido a `catalogs/algo/` desaparece del
-  catálogo empaquetado y de DynamoDB sin ningún error visible. Si necesitas
-  "guardar" un tipo sin borrarlo, no lo dejes dentro de `catalogs/`.
+- `pnpm build`/`pnpm sync` recorren recursivamente todas las subcarpetas,
+  excepto cualquier directorio llamado exactamente `save`. Mover un tipo a
+  `save/` lo quita del bundle; usa `pnpm sync -- --prune` para marcar también
+  `enabled=false` una fila antigua que aún exista en DynamoDB.
+- Cada archivo debe declarar exactamente un `TYPE_ID`, la llave debe coincidir
+  con el nombre del archivo y no puede repetirse en otra carpeta. Build/sync
+  fallan temprano si se viola cualquiera de estas reglas.
+
+Los catálogos de ingreso `CURP`, `ACTA_NACIMIENTO`, `CONSTANCIA_NSS` y
+`PASAPORTE` están activos como beta y participan en autoclasificación.
+`COMPROBANTE_DOMICILIO`, `CEDULA_PROFESIONAL` y `COMPROBANTE_ESTUDIOS` también
+están activos, pero declaran `segmentation_candidate: false`: mientras no se
+calibren con muestras representativas se usan enviando `documentType`.
+`IDENTIFICACION` sigue la misma regla: se invoca explícitamente para decidir si
+un archivo tiene la estructura mínima de una identificación y extraer sus datos
+fundamentales; no compite con tipos específicos ni afirma autenticidad.
 
 ## Los 2 únicos comandos
 
@@ -25,10 +47,14 @@ catalogs/
 pnpm sync                              # sube TODA la carpeta catalogs/ a DynamoDB (hot-reload)
 pnpm sync:one -- PEDIMENTO              # sube UN tipo (por nombre difuso)
 pnpm sync:one -- --type INE             # por TYPE_ID exacto
-pnpm sync:one -- --file catalogs/X.json # por archivo
+pnpm sync:one -- --file catalogs/base/identidad/INE.json # por archivo
+pnpm sync -- --prune                     # deshabilita tipos remotos sin JSON activo
 ```
 
-Opciones: `--dry-run` (no escribe), `--env dev|prod`, `--table`, `--region`.
+Opciones: `--dry-run` (no escribe), `--prune`, `--env dev|prod`, `--table`, `--region`.
+Sin `--prune`, un sync completo solo **reporta** filas habilitadas que existen
+en DynamoDB pero ya no en el árbol activo. La poda nunca borra la fila: cambia
+`enabled=false`, y un sync futuro del mismo tipo la reactiva.
 
 **Ambiente:** cada ambiente tiene su propia tabla de catálogo
 (`document-validation-catalog-dev` / `document-validation-catalog`). Igual que
@@ -46,11 +72,11 @@ build normal:
 pnpm run build && pnpm run deploy
 ```
 
-`pnpm run build` combina automáticamente `catalogs/*.json` en el catálogo
+`pnpm run build` combina automáticamente los JSON activos bajo `catalogs/**`
 empaquetado (`src/document-processing/resources/enrichment-lambda/config/catalogs.json`,
 generado — nunca se edita a mano, está en `.gitignore`). **DynamoDB siempre
 gana sobre lo empaquetado en runtime** — si un tipo tiene fila en DynamoDB,
-lo que digan `catalogs/*.json` localmente no importa hasta que sincronices de
+lo que digan los JSON locales no importa hasta que sincronices de
 nuevo.
 
 ## Cómo crear un tipo nuevo (DSL field-centric)
@@ -81,9 +107,9 @@ como en el DSL viejo.
 
 1. **Copia la plantilla que corresponda**:
    ```bash
-   cp catalogs/_TEMPLATE.json catalogs/ACTA_NACIMIENTO.json               # PDF/escaneo
-   cp catalogs/_TEMPLATE_XML.json catalogs/ACTA_NACIMIENTO_XML.json       # XML ya estructurado
-   cp catalogs/_TEMPLATE_TABULAR.json catalogs/REPORTE_GASTOS_XLSX.json   # XLSX/CSV ya estructurado
+   cp catalogs/_TEMPLATE.json catalogs/base/identidad/ACTA_NACIMIENTO.json
+   cp catalogs/_TEMPLATE_XML.json catalogs/base/fiscal/NUEVO_CFDI_XML.json
+   cp catalogs/_TEMPLATE_TABULAR.json catalogs/custom/erp/REPORTE_GASTOS_XLSX.json
    ```
 2. **Edita** el archivo: renombra la llave (`NUEVO_TIPO`/`NUEVO_TIPO_XML`/
    `NUEVO_TIPO_XLSX` según la plantilla) al `TYPE_ID` elegido — debe coincidir
@@ -108,6 +134,7 @@ como en el DSL viejo.
 
 | Campo | Leído por el código | Qué es |
 |---|---|---|
+| `catalog_status` | no, metadato interno | Madurez operativa: `stable` para tipos calibrados o `beta` mientras falten muestras representativas. No aparece en `GET /document-types` ni cambia el pipeline. |
 | `description` | sí | Va al prompt de clasificación (Bedrock). Sé discriminante. |
 | `fields` | sí | El árbol de campos — ver abajo. Su sola presencia es lo que activa el DSL field-centric (`document_catalog.py: if "fields" in data`). |
 | `display_name` | sí | Nombre legible (`"Pedimento Aduanal"`). Se guarda en `DocumentTypeName` y el API lo acepta en `?docType=`. Si falta, se deriva del `TYPE_ID`. |
@@ -1286,10 +1313,10 @@ cualquier catálogo sin tocar nada más.
   tipo es por la **presencia de la llave `"fields"`**, punto. Puedes subir el
   número cuando quieras dejar rastro de un cambio, pero no esperes que
   cambie ningún comportamiento por sí solo.
-- **`catalogs/save/` (o cualquier subcarpeta) no se incluye en el build.**
-  `pnpm build`/`pnpm sync` solo leen archivos `.json` directos de `catalogs/`.
-  Un tipo movido a una subcarpeta desaparece silenciosamente del catálogo —
-  sin error, sin warning.
+- **Solo `save/` significa inactivo.** `pnpm build`/`pnpm sync` recorren todas
+  las demás subcarpetas. Un tipo movido a cualquier directorio llamado
+  `save` deja de entrar al bundle; el sync completo reporta si quedó una fila
+  habilitada en DynamoDB y `--prune` la deshabilita explícitamente.
 - **DynamoDB gana siempre sobre lo empaquetado.** Si un tipo tiene fila en
   DynamoDB (por un `sync` anterior), lo que digas en `catalogs/<TIPO>.json`
   localmente no tiene efecto en producción hasta que vuelvas a sincronizar —

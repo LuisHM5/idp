@@ -21,10 +21,12 @@ LAMBDA_DIR = (
 )
 sys.path.insert(0, str(LAMBDA_DIR))
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+
+from catalog_paths import active_catalog_path  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import page_selector  # noqa: E402
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SPEC = {
     "markers": [r"NUM\.?\s*PEDIMENTO", r"CVE\.?\s*PEDIM", r"T\.?\s*OPER"],
@@ -161,7 +163,7 @@ def test_env_kill_switch_only_ever_disables(monkeypatch):
 def test_pedimento_markers_hit_a_pedimento_page_and_miss_a_vucem_page():
     """Guards the calibration: with min_score=3 a VUCEM/manifestación page
     must stay under the bar, or the selector starts keeping junk pages."""
-    catalog = json.loads((REPO_ROOT / "catalogs" / "PEDIMENTO_ADUANAL.json").read_text())
+    catalog = json.loads(active_catalog_path(REPO_ROOT, "PEDIMENTO_ADUANAL").read_text())
     spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
 
     pedimento = _page(1, "NUM. PEDIMENTO: 26 07 3435 6041248 T.OPER IMP CVE. PEDIMENTO: A1 REGIMEN:IMD")
@@ -375,7 +377,7 @@ def test_expected_pages_ignores_junk_instead_of_crashing():
 
 def test_the_real_catalog_skips_a_standalone_pedimento():
     """Un pedimento suelto ('Página X de 5') no debe pasar por el filtro."""
-    catalog = json.loads((REPO_ROOT / "catalogs" / "PEDIMENTO_ADUANAL.json").read_text())
+    catalog = json.loads(active_catalog_path(REPO_ROOT, "PEDIMENTO_ADUANAL").read_text())
     spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
     hit = "NUM. PEDIMENTO CVE. PEDIM T.OPER REGIMEN: VALOR ADUANA"
     assert page_selector.select(_doc({1}, 5, hit), spec).skipped == []
@@ -470,7 +472,7 @@ def test_types_without_boundaries_keep_follow_pages():
 
 
 def test_the_real_catalog_declares_usable_boundaries():
-    catalog = json.loads((REPO_ROOT / "catalogs" / "PEDIMENTO_ADUANAL.json").read_text())
+    catalog = json.loads(active_catalog_path(REPO_ROOT, "PEDIMENTO_ADUANAL").read_text())
     spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
     bounds = page_selector._boundaries(spec)
     assert bounds["page_of"] and bounds["end"]
@@ -557,7 +559,7 @@ def test_un_patron_invalido_no_truena_la_seleccion():
 def test_los_dos_catalogos_de_pedimento_declaran_la_identidad():
     import re
     for type_id in ("PEDIMENTO_ADUANAL", "PEDIMENTO_ERP"):
-        catalog = json.loads((REPO_ROOT / "catalogs" / f"{type_id}.json").read_text())
+        catalog = json.loads(active_catalog_path(REPO_ROOT, type_id).read_text())
         pattern = catalog[type_id]["page_selection"]["duplicate_key_pattern"]
         m = re.search(pattern, "NUM. PEDIMENTO:26  07  3435  6041353    T.OPER    IMP")
         assert m and re.sub(r"\D", "", m.group(1)) == "260734356041353", type_id

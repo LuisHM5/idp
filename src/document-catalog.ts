@@ -2,12 +2,13 @@
  * Document Catalog - TypeScript representation for CDK prompt generation.
  *
  * Reads the same bundled catalog the Python Lambda loads at runtime
- * (config/catalogs.json, produced from catalogs/*.json by `pnpm build`), so
- * prompts and validation rules are always in sync.
+ * (config/catalogs.json, produced recursively from active catalogs by
+ * `pnpm build`, excluding every save/ subtree), so prompts and validation
+ * rules are always in sync.
  *
- * To add a new document type: copy catalogs/_TEMPLATE.json to
- * catalogs/<TYPE_ID>.json, edit it, then `pnpm sync` (DynamoDB, hot) or
- * `pnpm build && pnpm run deploy` (bundled). See AGENTS.md.
+ * To add a new document type: copy catalogs/_TEMPLATE.json into the suitable
+ * catalogs/base/** or catalogs/custom/** directory, edit it, then `pnpm sync`
+ * (DynamoDB, hot) or `pnpm build && pnpm run deploy` (bundled). See AGENTS.md.
  */
 
 import * as fs from "fs";
@@ -69,7 +70,7 @@ interface RawTypeConfig {
  * This is the single source of truth for both CDK (prompts) and Lambda (validation).
  */
 export function loadCatalog(): DocumentTypeEntry[] {
-  // Single bundled catalog produced from catalogs/*.json by `pnpm build`.
+  // Single bundled catalog produced recursively from active catalogs by `pnpm build`.
   // Resolve relative to project root (works from dist/src/ and src/).
   const candidates = [
     path.join(__dirname, "../../src/document-processing/resources/enrichment-lambda/config/catalogs.json"),

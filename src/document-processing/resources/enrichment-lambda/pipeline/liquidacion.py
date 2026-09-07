@@ -71,7 +71,7 @@ def _config_from_field_tree(entry) -> Optional[Dict[str, Any]]:
     filters, default} mapping straight from the field-centric DSL, when the
     type declares no separate `form_mapping` block. Each subfield of the
     computed `LIQUIDACION_NORMALIZADA` object carries its own mapping keys
-    directly (see catalogs/PEDIMENTO_ADUANAL.json) instead of duplicating the
+    directly (see catalogs/base/aduanas/PEDIMENTO_ADUANAL.json) instead of duplicating the
     field name in a parallel config structure — `FieldSpec.params` already
     holds every JSON key beyond type/required/hint/validation. A bare
     `concept_aliases` with no explicit `source` defaults to summing

@@ -746,6 +746,21 @@ td.delta-bad { color: #d03b3b; }
 .ref-line .ref-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; }
 .ref-line .ref-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-primary); }
 .ref-value { text-align: right; font-variant-numeric: tabular-nums; }
+.chart-point[data-tooltip]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.report-tooltip { position: fixed; z-index: 1000; max-width: min(360px, calc(100vw - 24px)); padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--text-primary); color: var(--surface);
+  box-shadow: 0 8px 28px rgba(0,0,0,.24); font-size: 12.5px; line-height: 1.4; white-space: pre-line;
+  pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(3px); transition: opacity .08s, transform .08s; }
+.report-tooltip.visible { opacity: 1; visibility: visible; transform: translateY(0); }
+.volume-plot { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 9px; align-items: stretch; }
+.volume-y { height: 180px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end;
+  color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; padding-bottom: 1px; }
+.volume-main { min-width: 0; }
+.volume-plot-area { height: 180px; border-left: 1px solid var(--gridline); border-bottom: 1px solid var(--gridline);
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent calc(25% - 1px), var(--gridline) 25%); }
+.volume-bars { height: 100%; display: flex; align-items: flex-end; gap: 3px; }
+.volume-axis-note { color: var(--text-muted); font-size: 11px; margin-top: 5px; }
+@media (max-width: 560px) { .volume-plot { grid-template-columns: 38px minmax(0, 1fr); gap: 6px; } .volume-y { font-size: 10px; } }
 '''
 
 JS_TEMPLATE = r'''
@@ -776,6 +791,13 @@ function esc(s){ const d=document.createElement('div'); d.textContent = (s===nul
 function money(x){ return (x===null||x===undefined) ? '—' : '$'+Number(x).toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4}); }
 function num(x){ return (x===null||x===undefined) ? '—' : Number(x).toLocaleString('en-US',{maximumFractionDigits:0}); }
 function pctFmt(x){ return (x===null||x===undefined) ? '—' : (x*100).toFixed(0)+'%'; }
+function exactNumber(x, maxDigits=12) {
+  if (x===null || x===undefined || !Number.isFinite(Number(x))) return '—';
+  return Number(x).toLocaleString('en-US', {useGrouping:true, maximumFractionDigits:maxDigits});
+}
+function exactMoney(x){ return x===null || x===undefined ? '—' : '$'+exactNumber(x, 12)+' USD'; }
+function exactPct(x){ return x===null || x===undefined ? '—' : exactNumber(Number(x)*100, 8)+'%'; }
+function exactSeconds(x){ return x===null || x===undefined ? '—' : exactNumber(x, 8)+' segundos'; }
 function secsFmt(x){
   if (x===null||x===undefined) return '—';
   if (x < 1) return Math.round(x*1000)+'ms';
@@ -784,6 +806,13 @@ function secsFmt(x){
   return Math.floor(x/3600)+'h '+Math.floor((x%3600)/60)+'m';
 }
 function money5(x){ return (x===null||x===undefined) ? '—' : '$'+Number(x).toFixed(5); }
+function tooltipAttrs(text, keyboard=true) {
+  if (!text) return '';
+  return `data-tooltip="${esc(text)}" aria-label="${esc(text)}"${keyboard ? ' tabindex="0"' : ''}`;
+}
+function tooltipText(title, ...lines) {
+  return [title, ...lines.flat().filter(x => x!==null && x!==undefined && x!=='')].join('\n');
+}
 function pctl(sorted, q){
   if (!sorted.length) return null;
   if (sorted.length === 1) return sorted[0];
@@ -978,6 +1007,18 @@ function dailyVolume(rows) {
   return [...byDay.values()].sort((a,b) => a.day.localeCompare(b.day));
 }
 
+function niceAxisMax(value) {
+  if (!value || value <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / magnitude;
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return step * magnitude;
+}
+
+function axisNumber(value) {
+  return Number.isInteger(value) ? num(value) : Number(value).toLocaleString('en-US', {maximumFractionDigits: 2});
+}
+
 function worstFields(rows, limit) {
   const agg = {};
   rows.forEach(r => {
@@ -998,9 +1039,10 @@ function worstFields(rows, limit) {
 function kpiTile(value, label, sub) {
   return `<div class="kpi-tile"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div>${sub?`<div class="kpi-sub">${esc(sub)}</div>`:''}</div>`;
 }
-function hBar(value, maxValue, color, label, valueText) {
+function hBar(value, maxValue, color, label, valueText, detail) {
   const w = maxValue <= 0 ? 0 : Math.max(2, value/maxValue*100);
-  return `<div class="bar-row"><div class="bar-label">${esc(label)}</div><div class="bar-track"><div class="bar-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div><div class="bar-value">${esc(valueText)}</div></div>`;
+  const tip = tooltipText(label, detail || `Valor exacto: ${exactNumber(value)}`, `Valor mostrado: ${valueText}`);
+  return `<div class="bar-row chart-point" ${tooltipAttrs(tip)} role="img"><div class="bar-label">${esc(label)}</div><div class="bar-track"><div class="bar-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div><div class="bar-value">${esc(valueText)}</div></div>`;
 }
 function stackBar(counts, n, roleMap) {
   if (!n) return '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
@@ -1008,7 +1050,8 @@ function stackBar(counts, n, roleMap) {
   const segs = entries.filter(([,c]) => c>0).map(([status,count]) => {
     const color = STATUS_ROLE_COLOR[roleMap[status] || 'neutral'];
     const w = count/n*100;
-    return `<div class="stack-seg" style="width:${w.toFixed(3)}%;background:${color}" title="${esc(status)}: ${count} de ${n}"></div>`;
+    const tip = tooltipText(status, `Valor exacto: ${exactNumber(count)} de ${exactNumber(n)} documentos`, `Participación: ${exactPct(count/n)}`);
+    return `<div class="stack-seg chart-point" style="width:${w.toFixed(3)}%;background:${color}" ${tooltipAttrs(tip)} role="img"></div>`;
   }).join('');
   return `<div class="stack-bar">${segs}</div>`;
 }
@@ -1070,7 +1113,8 @@ function renderServiceSection(rows) {
   const visible = Object.entries(bySvc).filter(([name]) => !state.hiddenServices.has(name));
   const maxCost = Math.max(0, ...visible.map(([,a]) => a.cost));
   const bars = visible.sort((a,b) => b[1].cost - a[1].cost)
-    .map(([name,a],i) => hBar(a.cost, maxCost, CATEGORICAL[i % CATEGORICAL.length], SERVICE_LABEL[name]||name, money(a.cost)))
+    .map(([name,a],i) => hBar(a.cost, maxCost, CATEGORICAL[i % CATEGORICAL.length], SERVICE_LABEL[name]||name, money(a.cost),
+      tooltipText(`Costo exacto: ${exactMoney(a.cost)}`, `Documentos: ${exactNumber(a.docs)}`, `Tokens entrada: ${exactNumber(a.inputTokens)}`, `Tokens salida: ${exactNumber(a.outputTokens)}`)))
     .join('');
   document.getElementById('by-service-bars').innerHTML = bars || '<p class="empty-hint">Sin datos de costo con los filtros actuales.</p>';
 }
@@ -1089,7 +1133,8 @@ function renderDurationSection(rows) {
   const counts = durationHistogram(rows);
   const maxC = Math.max(0, ...counts);
   document.getElementById('duration-hist').innerHTML = a.nWithDuration
-    ? counts.map((c, i) => hBar(c, maxC, CATEGORICAL[0], DURATION_BUCKETS[i][0], `${c} doc${c === 1 ? '' : 's'}`)).join('')
+    ? counts.map((c, i) => hBar(c, maxC, CATEGORICAL[0], DURATION_BUCKETS[i][0], `${c} doc${c === 1 ? '' : 's'}`,
+      tooltipText(`Documentos: ${exactNumber(c)}`, `Proporción del corte con tiempo: ${exactPct(c/a.nWithDuration)}`))).join('')
     : '<p class="empty-hint">Ningún documento filtrado trae tiempo de proceso registrado (<code>Tracking.ProcessingSeconds</code>).</p>';
 
   const byType = aggBy(rows, r => r.type).filter(([, m]) => m.nWithDuration).sort((x, y) => y[1].avgDuration - x[1].avgDuration);
@@ -1108,7 +1153,8 @@ function renderDurationSection(rows) {
     .sort((x, y) => y[1] - x[1]);
   const maxSvc = Math.max(0, ...svcDur.map(e => e[1]));
   document.getElementById('duration-by-service').innerHTML = svcDur.length
-    ? svcDur.map(([n, v, docs], i) => hBar(v, maxSvc, CATEGORICAL[i % CATEGORICAL.length], `${SERVICE_LABEL[n] || n} (${docs} docs)`, secsFmt(v))).join('')
+    ? svcDur.map(([n, v, docs], i) => hBar(v, maxSvc, CATEGORICAL[i % CATEGORICAL.length], `${SERVICE_LABEL[n] || n} (${docs} docs)`, secsFmt(v),
+      tooltipText(`Promedio exacto: ${exactSeconds(v)}`, `Documentos con dato: ${exactNumber(docs)}`))).join('')
     : '<p class="empty-hint">Los registros de costo filtrados no traen duración por servicio.</p>';
 
   const slow = rows.filter(r => r.processingSeconds !== null && r.processingSeconds !== undefined)
@@ -1145,7 +1191,8 @@ function renderReferenceSection(rows) {
   const maxRef = Math.max(a.avgCostPage || 0, ...COST_REF.perPage.map(x => x.value));
   const line = (label, value, color, sub) => {
     const w = maxRef <= 0 ? 0 : Math.max(1, value / maxRef * 100);
-    return `<div class="ref-line"><div class="ref-label" title="${esc(label)}">${esc(label)}${sub ? ` <span class="muted">${esc(sub)}</span>` : ''}</div>
+    const tip = tooltipText(label, `Valor exacto: ${exactMoney(value)} por página`, sub ? `Fuente: ${sub}` : 'Datos del corte filtrado');
+    return `<div class="ref-line chart-point" ${tooltipAttrs(tip)} role="img"><div class="ref-label">${esc(label)}${sub ? ` <span class="muted">${esc(sub)}</span>` : ''}</div>
       <div class="ref-track"><div class="ref-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div>
       <div class="ref-value">${money5(value)}</div></div>`;
   };
@@ -1271,7 +1318,71 @@ function openDetail(id) {
   document.getElementById('detail-dialog').showModal();
 }
 
+// Un solo tooltip flotante evita depender del `title` nativo (que tarda en
+// aparecer, no admite varias líneas de forma consistente y no se puede leer
+// con teclado). Los elementos dinámicos solo declaran `data-tooltip`.
+const REPORT_TOOLTIP = document.getElementById('report-tooltip');
+let activeTooltipTarget = null;
+
+function placeTooltip(clientX, clientY) {
+  const gap = 14, edge = 12;
+  REPORT_TOOLTIP.style.left = `${clientX + gap}px`;
+  REPORT_TOOLTIP.style.top = `${clientY + gap}px`;
+  const box = REPORT_TOOLTIP.getBoundingClientRect();
+  let left = clientX + gap, top = clientY + gap;
+  if (left + box.width > window.innerWidth - edge) left = clientX - box.width - gap;
+  if (top + box.height > window.innerHeight - edge) top = clientY - box.height - gap;
+  REPORT_TOOLTIP.style.left = `${Math.max(edge, left)}px`;
+  REPORT_TOOLTIP.style.top = `${Math.max(edge, top)}px`;
+}
+
+function showTooltip(target, event) {
+  const detail = target && target.dataset ? target.dataset.tooltip : '';
+  if (!detail) return;
+  activeTooltipTarget = target;
+  REPORT_TOOLTIP.textContent = detail;
+  REPORT_TOOLTIP.classList.add('visible');
+  REPORT_TOOLTIP.setAttribute('aria-hidden', 'false');
+  if (event && Number.isFinite(event.clientX)) {
+    placeTooltip(event.clientX, event.clientY);
+  } else {
+    const rect = target.getBoundingClientRect();
+    placeTooltip(rect.left + rect.width/2, rect.bottom);
+  }
+}
+
+function hideTooltip() {
+  activeTooltipTarget = null;
+  REPORT_TOOLTIP.classList.remove('visible');
+  REPORT_TOOLTIP.setAttribute('aria-hidden', 'true');
+}
+
+document.addEventListener('pointerover', event => {
+  const target = event.target.closest?.('.chart-point[data-tooltip]');
+  if (target && target !== activeTooltipTarget) showTooltip(target, event);
+});
+document.addEventListener('pointermove', event => {
+  const target = event.target.closest?.('.chart-point[data-tooltip]');
+  if (target && target !== activeTooltipTarget) showTooltip(target, event);
+  else if (activeTooltipTarget && activeTooltipTarget.matches(':hover')) placeTooltip(event.clientX, event.clientY);
+});
+document.addEventListener('pointerout', event => {
+  const target = event.target.closest?.('.chart-point[data-tooltip]');
+  if (target === activeTooltipTarget && (!event.relatedTarget || !target.contains(event.relatedTarget))) hideTooltip();
+});
+document.addEventListener('focusin', event => {
+  const target = event.target.closest?.('.chart-point[data-tooltip]');
+  if (target) showTooltip(target);
+});
+document.addEventListener('focusout', event => {
+  if (event.target === activeTooltipTarget) hideTooltip();
+});
+document.addEventListener('keydown', event => { if (event.key === 'Escape') hideTooltip(); });
+window.addEventListener('scroll', hideTooltip, true);
+window.addEventListener('resize', hideTooltip);
+
 function render() {
+  hideTooltip();
   const rows = filteredRows();
   renderFilters();
   attachChipHandlers();
@@ -1307,9 +1418,21 @@ function render() {
   const volume = dailyVolume(rows);
   if (volume.length) {
     const maxN = Math.max(...volume.map(v => v.n));
-    const bars = volume.map(v => `<div class="vol-bar" style="height:${Math.max(4, v.n/maxN*100).toFixed(1)}%" title="${esc(v.day)}: ${v.n} documento(s), ${money(v.cost)}"></div>`).join('');
+    const axisMax = niceAxisMax(maxN);
+    const yTicks = [axisMax, axisMax * .75, axisMax * .5, axisMax * .25, 0];
+    const bars = volume.map(v => {
+      const statuses = Object.entries(v.val).sort((a,b)=>b[1]-a[1]).map(([s,n]) => `${s}: ${exactNumber(n)}`);
+      const tip = tooltipText(v.day, `Documentos: ${exactNumber(v.n)}`, `Costo exacto: ${exactMoney(v.cost)}`, statuses.length ? ['Resultado de negocio:', ...statuses] : 'Sin resultados de negocio completos');
+      return `<div class="vol-bar chart-point" style="height:${Math.max(2, v.n/axisMax*100).toFixed(1)}%" ${tooltipAttrs(tip)} role="img"></div>`;
+    }).join('');
     document.getElementById('volume-chart').innerHTML =
-      `<div class="vol-chart">${bars}</div><div class="vol-labels"><span>${esc(volume[0].day)}</span><span>${esc(volume[volume.length-1].day)}</span></div>`;
+      `<div class="volume-plot" role="img" aria-label="Volumen diario de documentos, máximo ${axisNumber(maxN)} documentos">
+        <div class="volume-y" aria-hidden="true">${yTicks.map(v => `<span>${axisNumber(v)}</span>`).join('')}</div>
+        <div class="volume-main"><div class="volume-plot-area"><div class="volume-bars">${bars}</div></div>
+          <div class="vol-labels"><span>${esc(volume[0].day)}</span><span>${esc(volume[volume.length-1].day)}</span></div>
+          <div class="volume-axis-note">Documentos procesados por día</div>
+        </div>
+      </div>`;
   } else {
     document.getElementById('volume-chart').innerHTML = '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
   }
@@ -1323,7 +1446,8 @@ function render() {
   const byApp = aggBy(rows, appOf).sort((a,b) => b[1].n - a[1].n);
   const maxAppN = Math.max(0, ...byApp.map(([,m]) => m.n));
   document.getElementById('by-app-bars').innerHTML = byApp.map(([name,m],i) =>
-    hBar(m.n, maxAppN, CATEGORICAL[i % CATEGORICAL.length], `${name} (${m.n} docs)`, money(m.totalCost))).join('');
+    hBar(m.n, maxAppN, CATEGORICAL[i % CATEGORICAL.length], `${name} (${m.n} docs)`, money(m.totalCost),
+      tooltipText(`Documentos: ${exactNumber(m.n)}`, `Costo exacto: ${exactMoney(m.totalCost)}`, `Aprobación: ${exactPct(m.approvalRate)}`, `Tiempo promedio: ${exactSeconds(m.avgDuration)}`))).join('');
   document.getElementById('by-app-table').innerHTML = byApp.length ? `<div class="table-wrap"><table>
     <thead><tr><th>Sistema</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Tiempo prom.</th><th class="num">p95</th><th class="num">Costo total</th><th class="num">$/doc</th></tr></thead>
     <tbody>${byApp.map(([t,m]) => `<tr><td>${esc(t)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${secsFmt(m.p95Duration)}</td><td class="num">${money(m.totalCost)}</td><td class="num">${money(m.avgCostDoc)}</td></tr>`).join('')}</tbody>
@@ -1332,7 +1456,8 @@ function render() {
   const byModel = aggBy(rows, r => r.model).sort((a,b) => b[1].n - a[1].n);
   const maxModelN = Math.max(0, ...byModel.map(([,m]) => m.n));
   document.getElementById('by-model-bars').innerHTML = byModel.map(([name,m],i) =>
-    hBar(m.n, maxModelN, CATEGORICAL[i % CATEGORICAL.length], `${name} (${m.n} docs)`, pctFmt(m.approvalRate))).join('');
+    hBar(m.n, maxModelN, CATEGORICAL[i % CATEGORICAL.length], `${name} (${m.n} docs)`, pctFmt(m.approvalRate),
+      tooltipText(`Documentos: ${exactNumber(m.n)}`, `Aprobación exacta: ${exactPct(m.approvalRate)}`, `Confianza promedio: ${exactPct(m.avgConfidence)}`, `Costo exacto: ${exactMoney(m.totalCost)}`))).join('');
   document.getElementById('by-model-table').innerHTML = byModel.length ? `<div class="table-wrap"><table>
     <thead><tr><th>Modelo</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Tiempo prom.</th><th class="num">Costo total</th></tr></thead>
     <tbody>${byModel.map(([name,m]) => `<tr><td>${esc(name)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${money(m.totalCost)}</td></tr>`).join('')}</tbody>
@@ -1561,6 +1686,7 @@ def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str
       </details>
 
       <dialog id="detail-dialog"><div class="detail-inner" id="detail-content"></div></dialog>
+      <div class="report-tooltip" id="report-tooltip" role="tooltip" aria-hidden="true"></div>
 
       <footer>Generado por <code>pnpm reporte</code> (scripts/reporte.py) · une la tabla de costos y la de tracking de documentos por <code>DocumentId</code> · datos crudos en <code>datos_raw.xlsx</code> · reportes individuales: <code>pnpm reporte:costos</code> / <code>pnpm reporte:documentos</code>.</footer>
     </div>

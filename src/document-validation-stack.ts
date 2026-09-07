@@ -480,7 +480,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     // Tabla de UNIQUE KEYS: TIPODOC#valor -> documento.
     //
-    // Un tipo puede declarar en su schema (`catalogs/*.json`) el campo cuyo
+    // Un tipo puede declarar en su schema (bajo `catalogs/base/**` o
+    // `catalogs/custom/**`) el campo cuyo
     // valor identifica UN documento de ese tipo por sí solo — el número de
     // pedimento, el UUID de un CFDI. El enrichment Lambda escribe una fila por
     // cada valor encontrado (`enrichment-lambda/unique_keys.py`) con clave de

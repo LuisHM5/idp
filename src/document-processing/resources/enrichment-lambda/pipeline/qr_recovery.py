@@ -3,7 +3,7 @@ it, and pull declared fields out of a URL's query string.
 
 Nothing here is specific to pedimentos or to any field name — a document
 type opts in by declaring a `qr_recovery` block in its catalog JSON (see
-catalogs/PEDIMENTO_ADUANAL.json for the pedimento's SOIANET QR mapping).
+catalogs/base/aduanas/PEDIMENTO_ADUANAL.json for the pedimento's SOIANET QR mapping).
 This module only knows how to render a page, decode a QR, parse a URL, and
 slice/validate a param per the spec it's handed.
 

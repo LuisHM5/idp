@@ -14,7 +14,8 @@ and extraction. It:
 6. Returns a Canonical_Result with status and detailed checks
 
 EXTENSIBILITY:
-- Add new document types: edit catalogs/<TYPE>.json, then `pnpm sync` (DynamoDB) or `pnpm run build && deploy`
+- Add new document types under catalogs/base/** or catalogs/custom/**, then
+  `pnpm sync` (DynamoDB) or `pnpm run build && deploy`
 - Enable Textract fallback for a type: set `extraction_strategy` in its catalog
   entry (`textract_bedrock` or `textract_analyze_id`)
 - Add custom validation logic: create a .mjs file in custom_validators/

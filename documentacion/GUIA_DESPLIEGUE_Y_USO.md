@@ -291,7 +291,7 @@ pnpm run deploy
 
 ### 5.2 Actualizar el catálogo (fuente de verdad)
 
-Edita el archivo del tipo en **`catalogs/`** (p. ej. `catalogs/PEDIMENTO_ADUANAL.json`); nunca `config/catalogs.json`, que es copia generada. Luego:
+Edita el archivo activo bajo **`catalogs/base/`** o **`catalogs/custom/`** (p. ej. `catalogs/base/aduanas/PEDIMENTO_ADUANAL.json`); nunca `config/catalogs.json`, que es copia generada. Build y sync recorren subcarpetas y excluyen cualquier directorio `save/`. Luego:
 
 ```bash
 # Opción A — con redeploy (queda versionado en la Lambda):
@@ -299,6 +299,7 @@ pnpm build && pnpm run deploy
 
 # Opción B — hot-reload SIN redeploy (efecto inmediato):
 pnpm sync                              # toda la carpeta → tabla de DEV
+pnpm sync -- --prune                  # además deshabilita filas remotas sin JSON activo
 pnpm sync:one -- --type PEDIMENTO_ERP       # un solo tipo → tabla de DEV
 pnpm sync:prod                         # toda la carpeta → tabla de PROD
 pnpm sync:one:prod -- --type PEDIMENTO_ERP  # un solo tipo → tabla de PROD
@@ -309,7 +310,7 @@ pnpm sync:one:prod -- --type PEDIMENTO_ERP  # un solo tipo → tabla de PROD
 ### 5.3 Crear un tipo nuevo
 
 ```bash
-cp catalogs/_TEMPLATE.json catalogs/MI_TIPO.json    # copia la plantilla
+cp catalogs/_TEMPLATE.json catalogs/base/mi_dominio/MI_TIPO.json
 # edita MI_TIPO.json (ver catalogs/README.md)
 pnpm sync:one -- --type MI_TIPO                     # aplica al vuelo (o build + deploy)
 ```
@@ -556,9 +557,9 @@ solo después del segundo dry-run, un E2E exitoso y la revisión del ARN exacto.
 
 ### 6.1 Eliminación parcial (tipos del catálogo)
 
-Para **deshabilitar** un tipo sin borrarlo, pon `"enabled": false` en su archivo de `catalogs/` y corre `pnpm sync:one -- --type MI_TIPO`.
+Para **deshabilitar** un tipo sin borrarlo, muévelo a `catalogs/save/` y corre primero `pnpm sync -- --dry-run --prune` para revisar el alcance; después ejecuta `pnpm sync -- --prune`. La fila se conserva en DynamoDB con `enabled=false` y se reactiva si el tipo vuelve al árbol activo y se sincroniza.
 
-Para eliminar un tipo **definitivamente**: borra `catalogs/MI_TIPO.json`, corre `pnpm run build && pnpm run deploy`, y quítalo de DynamoDB con:
+Para eliminar un tipo **definitivamente**: borra su JSON activo, corre `pnpm run build && pnpm run deploy`, y quítalo de DynamoDB con:
 ```bash
 # ...y de la tabla del ambiente correspondiente (dev: document-validation-catalog-dev)
 aws dynamodb delete-item --table-name document-validation-catalog \
@@ -621,7 +622,9 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 ## 10. Mapa de archivos (qué editar y qué no)
 
 ```
-catalogs/<TYPE_ID>.json              ← EDITAR: un archivo por tipo (fuente de verdad)
+catalogs/base/<dominio>/<TYPE_ID>.json   ← EDITAR: contrato reutilizable
+catalogs/custom/<integración>/<TYPE_ID>.json ← EDITAR: contrato acoplado
+catalogs/save/                           ← INACTIVO: excluido recursivamente
 catalogs/_shared.json                ← EDITAR: field_sets + reglas cross-documento
 catalogs/_TEMPLATE.json              ← plantilla para tipos nuevos
 config/catalogs.json                 ← NO EDITAR: copia generada por pnpm build

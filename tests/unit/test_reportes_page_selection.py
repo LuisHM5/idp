@@ -111,6 +111,14 @@ def test_reporte_dashboard_carries_it_through_the_join():
     html = rp.render_html(rows, "dev")
     assert 'id="page-sel-card"' in html
     assert "pageSelAgg" in html and "renderPageSel" in html
+    # Cada elemento de las gráficas tiene un tooltip propio, con mouse y foco.
+    assert 'id="report-tooltip"' in html
+    assert "function exactNumber" in html
+    assert 'data-tooltip="${esc(text)}"' in html
+    assert "chart-point[data-tooltip]" in html
+    assert 'tabindex="0"' in html
+    assert "niceAxisMax" in html
+    assert "volume-y" in html and "volume-plot-area" in html
 
 
 def test_dashboard_snapshot_is_none_without_selection():

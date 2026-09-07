@@ -2,6 +2,7 @@
   "__NOTAS__": "Plantilla del nuevo DSL field-centric (schema_version 4.x). Copia este archivo, renombra NUEVO_TIPO, borra esta clave __NOTAS__ y las claves __COMENTARIO__ (son solo documentación, no las lea el loader). Cada campo aparece UNA sola vez como llave de `fields`: su hint, si es obligatorio, sus reglas de validación y su tipo viven juntos ahí — ya no hay que repetir el nombre en 5 estructuras paralelas distintas.",
 
   "NUEVO_TIPO": {
+    "catalog_status": "beta",
     "schema_version": "4.0.0",
     "__COMENTARIO_occurrence_mode__": "Default de este tipo cuando el POST no manda occurrenceMode ni un sufijo :N/:all. single conserva la primera ocurrencia; multiple conserva todas. Si se omite esta propiedad, aplica el default global: single cuando se pide un tipo, multiple cuando se piden varios.",
     "occurrence_mode": "single",

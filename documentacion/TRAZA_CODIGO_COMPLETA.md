@@ -464,8 +464,8 @@ Código: `enrichment-lambda/document_catalog.py`.
 
 ### 10.1 `_load_catalog()` (`:474`)
 
-1. `_load_from_json()` carga `config/catalogs.json`, generado desde los JSON
-   directos de `catalogs/` durante el build.
+1. `_load_from_json()` carga `config/catalogs.json`, generado recursivamente
+   desde los JSON activos de `catalogs/` durante el build (`save/` se excluye).
 2. `_load_from_dynamodb()` (`:427`) pagina un Scan de `CATALOG_TABLE`, ignora
    items `enabled=false` y parsea el resto.
 3. `catalog.update(db_catalog)` hace que DynamoDB gane por `type_id`.

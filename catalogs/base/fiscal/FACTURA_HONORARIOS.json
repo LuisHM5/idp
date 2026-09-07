@@ -1,5 +1,6 @@
 {
   "FACTURA_HONORARIOS": {
+    "catalog_status": "stable",
     "schema_version": "5.1.0",
     "display_name": "Factura de Honorarios",
     "aliases": [

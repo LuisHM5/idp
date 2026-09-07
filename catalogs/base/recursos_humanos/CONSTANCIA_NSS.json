@@ -1,0 +1,70 @@
+{
+  "CONSTANCIA_NSS": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Constancia de Número de Seguridad Social",
+    "aliases": ["NSS", "constancia NSS", "asignación de NSS", "localización de NSS", "número de seguro social"],
+    "description": "Constancia o comprobante oficial del IMSS resultado del trámite de asignación o localización del Número de Seguridad Social. Se reconoce por el logotipo o nombre del IMSS, la referencia a asignación/localización de NSS, un NSS de 11 dígitos, CURP y nombre de la persona asegurada. No confundir con constancia de semanas cotizadas, vigencia de derechos, movimiento afiliatorio patronal, incapacidad ni tarjeta de citas.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "min_confidence": 0.85,
+    "fields": {
+      "NSS": {
+        "type": "string",
+        "required": true,
+        "unique_key": { "normalize": "digits" },
+        "hint": "Número de Seguridad Social de 11 dígitos asignado a la persona. Conservar ceros iniciales y no confundirlo con folio, CURP o registro patronal.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{11}$",
+            "message": "El NSS debe contener exactamente 11 dígitos"
+          }
+        ]
+      },
+      "CURP": {
+        "type": "string",
+        "required": true,
+        "hint": "CURP de 18 caracteres del titular. Extraer en mayúsculas y sin espacios; no confundirla con el NSS.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "NOMBRE_COMPLETO": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo de la persona titular tal como aparece en la constancia, sin etiquetas.",
+        "validation": []
+      },
+      "TIPO_TRAMITE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre literal del trámite o resultado, por ejemplo ASIGNACIÓN O LOCALIZACIÓN DEL NÚMERO DE SEGURIDAD SOCIAL.",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Folio de solicitud, trámite o comprobante visible. Conservar letras, dígitos y separadores.",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de generación o emisión del comprobante. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "DELEGACION_O_SUBDELEGACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Delegación, subdelegación u oficina IMSS emisora cuando esté impresa.",
+        "validation": []
+      }
+    }
+  }
+}

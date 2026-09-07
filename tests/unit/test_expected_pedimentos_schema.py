@@ -3,9 +3,9 @@
 Catches typos in the ground-truth fixture (e.g. `DESTINO` instead of
 `DESTINO_PAIS`) before they burn a real Bedrock/Textract run and look like
 "the pipeline didn't extract the field" when the bug is actually in the
-fixture. Reads `catalogs/<TYPE_ID>.json` + `catalogs/_shared.json` directly
-(the source of truth), not the generated bundle, so it works without
-`pnpm build`.
+fixture. Finds `<TYPE_ID>.json` recursively in the active catalog tree and
+reads it with `catalogs/_shared.json` (the source of truth), not the generated
+bundle, so it works without `pnpm build`.
 """
 
 from __future__ import annotations
@@ -29,14 +29,25 @@ def _load_json(path: Path) -> dict:
         return json.load(fh)
 
 
+def _catalog_path(type_id: str) -> Path:
+    matches = [
+        path
+        for path in CATALOGS_DIR.rglob(f"{type_id}.json")
+        if "save" not in path.relative_to(CATALOGS_DIR).parts
+    ]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected one active catalog for {type_id}, found {len(matches)}"
+        )
+    return matches[0]
+
+
 def _load_type_fields(type_id: str) -> dict[str, Any]:
-    path = CATALOGS_DIR / f"{type_id}.json"
-    if not path.exists():
-        raise AssertionError(f"catalogs/{type_id}.json does not exist")
+    path = _catalog_path(type_id)
     entry = _load_json(path)[type_id]
     if "fields" not in entry:
         raise AssertionError(
-            f"catalogs/{type_id}.json uses the legacy DSL (no 'fields' key) — "
+            f"{path.relative_to(REPO)} uses the legacy DSL (no 'fields' key) — "
             "this schema check only supports the field-centric DSL"
         )
     return entry["fields"]
@@ -137,7 +148,7 @@ def test_field_names_exist_in_catalog(expected_data: dict) -> None:
                 if not field_path_exists(fields_tree, path, common_item_fields):
                     errors.append(
                         f"{file_name} expect_documents[{i}]: field path "
-                        f"'{path}' does not exist in catalogs/{type_id}.json"
+                        f"'{path}' does not exist in {_catalog_path(type_id).relative_to(REPO)}"
                     )
 
     assert not errors, "\n" + "\n".join(errors)

@@ -2,7 +2,7 @@
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
-El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado principalmente en expedientes aduanales mexicanos**. Hoy hay nueve tipos de catálogo activos: `PEDIMENTO_ERP`, para entregar el pedimento con nombres de columna listos para el ERP; `PEDIMENTO_ADUANAL`, para el esquema aduanal completo del pedimento PDF; `PEDIMENTO_ADUANAL_XML`, para extraer exhaustivamente el CFDI XML relacionado sin inventar datos aduanales que la fuente no contiene; `FACTURA_HONORARIOS` y `FACTURA_HONORARIOS_XML`, para CFDI de honorarios en PDF o XML; `FACTURA_FLETE_EXTRANJERO`, para facturas no-CFDI de transportistas extranjeros; `CONSTANCIA_SITUACION_FISCAL`, para constancias individuales del SAT; `INE`, para Credenciales para Votar vigentes E–J; y `CERTIFICADO_POLIZA`, para certificados y carátulas de seguro con formato variable por aseguradora. Los demás tipos genéricos de identificación (Pasaporte, CURP, NOM-35...) siguen en el repo pero **aparcados** en `catalogs/save/` — esa carpeta no la lee ni `pnpm build` ni `pnpm sync`, así que no están activos hasta que alguien los mueva de vuelta a `catalogs/`.
+El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documentos oficiales o formatos típicos con una salida reutilizable, y **`custom/`**, contratos ligados a una empresa o sistema. Hoy hay 17 tipos activos: los nueve tipos aduanales/fiscales/identidad/seguros ya existentes y ocho catálogos beta para ingreso de personal (`CURP`, `ACTA_NACIMIENTO`, `COMPROBANTE_DOMICILIO`, `CONSTANCIA_NSS`, `PASAPORTE`, `CEDULA_PROFESIONAL`, `COMPROBANTE_ESTUDIOS` e `IDENTIFICACION`). Este último hace una lectura genérica mínima y requiere `documentType=IDENTIFICACION`; no certifica autenticidad. `PEDIMENTO_ERP` vive en `custom/erp/` porque su salida está acoplada al ERP; `PEDIMENTO_ADUANAL` conserva el contrato neutral. Cualquier subárbol llamado `save/` queda aparcado y no entra a build/sync.
 
 ## Documentación
 
@@ -86,6 +86,7 @@ pnpm build                            # catalogs/ → config/catalogs.json + pat
 pnpm run deploy / deploy:dev / deploy:prod
 pnpm run diff                         # cambios pendientes vs. lo desplegado
 pnpm sync                             # sube TODA la carpeta catalogs/ a DynamoDB DEV (hot-reload)
+pnpm sync -- --prune                 # además deshabilita filas remotas que ya no tienen JSON activo
 pnpm sync:one -- --type PEDIMENTO_ERP       # sube un solo tipo a dev (--dry-run para validar)
 pnpm sync:prod / sync:one:prod        # lo mismo contra la tabla de catálogo de PROD
 pnpm procesar -- mi_doc.pdf           # procesa localmente sin pasar por el stack (tus credenciales AWS)
@@ -104,13 +105,13 @@ Tabla completa de comandos (incluye `test:e2e:pedimento`, `schema:sensitivity`, 
 
 ## Catálogo de tipos documentales
 
-La carpeta **`catalogs/`** (un archivo JSON por tipo) es la única fuente de verdad — solo se leen archivos directos de esa carpeta, ninguna subcarpeta (por eso `catalogs/save/` está inactiva). `pnpm build` la combina en el catálogo empaquetado de la Lambda; `pnpm sync`/`sync:one` la sube a DynamoDB para cambios en caliente sin redeploy (DynamoDB gana siempre sobre lo empaquetado en runtime).
+La carpeta **`catalogs/`** (un archivo JSON por tipo) es la única fuente de verdad. `pnpm build` y `pnpm sync` recorren sus subcarpetas de forma recursiva, ignoran archivos `_*.json` y excluyen cualquier subárbol `save/`. Los tipos activos se agrupan en `base/<dominio>/` y `custom/<integración>/`; DynamoDB gana siempre sobre lo empaquetado en runtime.
 
 Agregar un tipo nuevo:
 
 ```bash
-cp catalogs/_TEMPLATE.json catalogs/MI_TIPO.json
-# edita MI_TIPO.json siguiendo el DSL field-centric — ver catalogs/README.md
+cp catalogs/_TEMPLATE.json catalogs/base/mi_dominio/MI_TIPO.json
+# edita el archivo siguiendo el DSL field-centric — ver catalogs/README.md
 pnpm sync:one -- --type MI_TIPO       # inmediato (DynamoDB), o
 pnpm run build && pnpm run deploy     # permanente (empaquetado)
 ```
@@ -145,15 +146,13 @@ documents-validator/
 ├── catalogs/
 │   ├── _shared.json                        # field_sets, reglas cross-documento, campos comunes
 │   ├── _TEMPLATE.json                      # plantilla DSL field-centric para tipos nuevos
-│   ├── PEDIMENTO_ADUANAL.json              # tipo activo: expediente aduanal
-│   ├── PEDIMENTO_ERP.json                   # tipo activo: salida con columnas del ERP
-│   ├── PEDIMENTO_ADUANAL_XML.json          # tipo activo: CFDI XML relacionado, exhaustivo
-│   ├── FACTURA_HONORARIOS.json              # tipo activo: CFDI de honorarios aduanales
-│   ├── FACTURA_HONORARIOS_XML.json         # tipo activo: CFDI XML determinístico
-│   ├── FACTURA_FLETE_EXTRANJERO.json        # tipo activo: factura de flete no-CFDI
-│   ├── CONSTANCIA_SITUACION_FISCAL.json    # tipo activo: constancia individual del SAT
-│   ├── INE.json                             # tipo activo: Credencial para Votar E–J
-│   ├── CERTIFICADO_POLIZA.json              # tipo activo: certificado/carátula de seguro
+│   ├── base/                               # contratos oficiales o reutilizables
+│   │   ├── aduanas/
+│   │   ├── fiscal/
+│   │   ├── identidad/                     # INE, IDENTIFICACION, CURP, pasaporte, etc.
+│   │   ├── recursos_humanos/
+│   │   └── seguros/
+│   ├── custom/erp/                        # contratos acoplados como PEDIMENTO_ERP
 │   ├── save/                               # tipos legacy aparcados (no leídos por build/sync)
 │   └── README.md                           # spec completa del DSL
 ├── scripts/                                # CLI: sync, enviar, procesar, resultado, tests, track

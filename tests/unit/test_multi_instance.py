@@ -28,12 +28,14 @@ LAMBDA_DIR = (
 )
 sys.path.insert(0, str(LAMBDA_DIR))
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+
+from catalog_paths import active_catalog_path  # noqa: E402
 from pipeline import page_selector  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
 FACTURA_SPEC = json.loads(
-    (REPO_ROOT / "catalogs" / "FACTURA_FLETE_EXTRANJERO.json").read_text(encoding="utf-8")
+    active_catalog_path(REPO_ROOT, "FACTURA_FLETE_EXTRANJERO").read_text(encoding="utf-8")
 )["FACTURA_FLETE_EXTRANJERO"]["page_selection"]
 FACTURA_SPEC_SIN_FLAG = {k: v for k, v in FACTURA_SPEC.items() if k != "multi_instance"}
 
@@ -292,7 +294,7 @@ def test_invoice_suffix_makes_a_different_identity():
 def test_duplicate_key_pattern_accepts_a_bare_string_too():
     """Retrocompatible: el pedimento la declara como un solo regex."""
     catalog = json.loads(
-        (REPO_ROOT / "catalogs" / "PEDIMENTO_ADUANAL.json").read_text(encoding="utf-8")
+        active_catalog_path(REPO_ROOT, "PEDIMENTO_ADUANAL").read_text(encoding="utf-8")
     )
     spec = catalog["PEDIMENTO_ADUANAL"]["page_selection"]
     assert isinstance(spec["duplicate_key_pattern"], str)

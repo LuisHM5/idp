@@ -2,11 +2,13 @@
 Document Catalog - Config-driven registry of document types.
 
 Loads document type definitions from:
-1. Local bundled catalog (config/catalogs.json) - built from catalogs/*.json
+1. Local bundled catalog (config/catalogs.json) - built recursively from the
+   active catalogs/base/ and catalogs/custom/ trees (excluding any save/ subtree)
 2. DynamoDB table (optional, runtime override) - set CATALOG_TABLE env var
 
 To add a new document type WITHOUT code changes:
-- Edit catalogs/<TYPE>.json then `pnpm run build` and redeploy, OR
+- Edit or add catalogs/base/**/<TYPE>.json or catalogs/custom/**/<TYPE>.json,
+  then `pnpm run build` and redeploy, OR
 - Insert a record in the DynamoDB catalog table (takes effect immediately)
 
 To add custom programmatic validation:
@@ -80,7 +82,7 @@ class FieldSpec:
     # dataclass change — e.g. `pipeline.liquidacion.build_liquidacion_normalizada`
     # reads `concept_aliases`/`source`/`value_field`/`filters`/`default` off a
     # LIQUIDACION_NORMALIZADA subfield's `params` instead of a separate
-    # form_mapping block (see catalogs/PEDIMENTO_ADUANAL.json).
+    # form_mapping block (see catalogs/base/aduanas/PEDIMENTO_ADUANAL.json).
     params: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -241,7 +243,7 @@ CURP_PATTERN = r"^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$"
 # --- Config Loading ---
 
 _CONFIG_DIR = Path(__file__).parent / "config"
-# Single bundled catalog, produced from catalogs/*.json by `pnpm build`
+# Single bundled catalog, produced recursively from active catalogs by `pnpm build`
 # (scripts/sync-catalogs.mjs). One base, one file.
 _CONFIG_FILE = _CONFIG_DIR / "catalogs.json"
 _CATALOG_TABLE = os.environ.get("CATALOG_TABLE")  # DynamoDB table name (optional)
@@ -807,10 +809,9 @@ def is_segmentation_candidate(doc_type: str) -> bool:
     upload that declared no type.
 
     This is deliberately NOT `is_customs_type`. That flag (`pipeline:
-    "expediente"`) was doing double duty, and against the live catalog it is
-    true for exactly two of nine types — so an unlabelled PDF holding a
-    pedimento could not be classified as `PEDIMENTO_ADUANAL` at all, because
-    the type was never in the candidate list to begin with.
+    "expediente"`) previously did double duty, so field-centric types such as
+    `PEDIMENTO_ADUANAL` could be absent from the candidate list for an
+    unlabelled upload.
 
     Candidacy is decided by SHAPE, never by TYPE_ID:
       1. the type has a field-centric tree — nothing else can be extracted from

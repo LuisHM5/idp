@@ -184,7 +184,8 @@ tags:
       Catálogo de tipos soportados: qué tipos existen, su nombre/descripción,
       y el schema (campos, tipos, dónde vive cada dato) que la extracción
       llena para cada uno. Útil para armar un selector de tipo o generar un
-      cliente sin tener que leer `catalogs/*.json` del repo.
+      cliente sin tener que leer los JSON activos de `catalogs/base/` y
+      `catalogs/custom/` del repo.
 paths:
   /{uploadUrl}:
     put:
@@ -1603,7 +1604,7 @@ components:
           type: object
           description: >
             Presente SOLO con `includeSchema=1`. El árbol de campos field-centric
-            del catálogo tal cual (`catalogs/<TYPE>.json` → `fields`): una clave
+            del catálogo tal cual (JSON activo → `fields`): una clave
             por campo, con su `type` (`string`/`number`/`boolean`/`date`/`object`/`array`),
             si es `required`, y `hint` (dónde vive el dato en el documento, en
             español) — `object`/`array` anidan `fields`/`item_fields` con la

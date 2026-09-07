@@ -1,0 +1,47 @@
+{
+  "CEDULA_PROFESIONAL": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Cédula Profesional",
+    "aliases": ["cédula profesional", "cedula SEP", "cédula profesional electrónica", "DGP"],
+    "description": "Cédula profesional mexicana física o electrónica emitida por la SEP/Dirección General de Profesiones. Se reconoce por el número de cédula, CURP, nombre del profesionista, carrera o grado, institución educativa y datos de registro o verificación. No confundir con título, certificado de estudios, credencial escolar, constancia de situación profesional ni identificación personal genérica.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "segmentation_candidate": false,
+    "min_confidence": 0.85,
+    "fields": {
+      "NUMERO_CEDULA": {
+        "type": "string",
+        "required": true,
+        "unique_key": { "normalize": "digits" },
+        "hint": "Número de cédula profesional. Extraer todos los dígitos como string; no confundir con clave de carrera, institución, libro o foja.",
+        "validation": [
+          { "rule_type": "regex", "pattern": "^\\d{5,12}$", "message": "El número de cédula debe contener entre 5 y 12 dígitos" }
+        ]
+      },
+      "CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP del profesionista cuando esté impresa. No reconstruirla.",
+        "validation": [
+          { "rule_type": "regex", "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$", "message": "La CURP no cumple el formato de 18 caracteres" }
+        ]
+      },
+      "NOMBRES": { "type": "string", "required": true, "hint": "Nombre o nombres propios del profesionista.", "validation": [] },
+      "PRIMER_APELLIDO": { "type": "string", "required": true, "hint": "Primer apellido del profesionista.", "validation": [] },
+      "SEGUNDO_APELLIDO": { "type": "string", "required": false, "hint": "Segundo apellido; dejar null si no aparece.", "validation": [] },
+      "PROGRAMA_O_GRADO": { "type": "string", "required": true, "hint": "Nombre completo de la profesión, carrera, especialidad o grado autorizado.", "validation": [] },
+      "CLAVE_CARRERA": { "type": "string", "required": false, "hint": "Clave oficial de carrera o programa. Conservar como string.", "validation": [] },
+      "INSTITUCION_EDUCATIVA": { "type": "string", "required": true, "hint": "Nombre de la institución educativa de procedencia.", "validation": [] },
+      "CLAVE_INSTITUCION": { "type": "string", "required": false, "hint": "Clave oficial de la institución educativa.", "validation": [] },
+      "ENTIDAD_REGISTRO": { "type": "string", "required": false, "hint": "Entidad de registro indicada en la cédula.", "validation": [] },
+      "TIPO_REGISTRO": { "type": "string", "required": false, "hint": "Tipo de registro o nivel profesional literal.", "validation": [] },
+      "LIBRO": { "type": "string", "required": false, "hint": "Libro del registro, conservado como string.", "validation": [] },
+      "FOJA": { "type": "string", "required": false, "hint": "Foja del registro, conservada como string.", "validation": [] },
+      "FECHA_EXPEDICION": { "type": "date", "required": false, "hint": "Fecha de expedición. Normalizar a YYYY-MM-DD; una cédula no se considera vencida por esta fecha.", "validation": [] },
+      "URL_VERIFICACION": { "type": "string", "required": false, "hint": "Dirección de verificación impresa o contenida de forma legible junto al QR. No inventar una URL estándar.", "validation": [] },
+      "SELLO_O_FIRMA_ELECTRONICA": { "type": "string", "required": false, "hint": "Identificador visible del sello, firma o cadena electrónica; conservarlo sin intentar validación criptográfica.", "validation": [] }
+    }
+  }
+}
