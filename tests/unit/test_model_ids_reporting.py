@@ -19,7 +19,7 @@ LAMBDA_DIR = (
 sys.path.insert(0, str(LAMBDA_DIR))
 
 import handler  # noqa: E402
-from pipeline import bedrock  # noqa: E402
+from pipeline import bedrock, model_fallback  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -41,8 +41,14 @@ def test_reports_only_phases_that_actually_ran(monkeypatch):
 
     # _model_ids() renames the registry's internal stage names ("segmenter"/
     # "extractor") to the same phase names expediente.py's own usage summary
-    # uses ("segmentation"/"extraction") — see _STAGE_TO_PHASE.
-    assert ids == {"segmentation": "base-model", "extraction": "base-model"}
+    # uses ("segmentation"/"extraction") — see _STAGE_TO_PHASE. segmenter's
+    # own default (no BEDROCK_SEGMENTER_MODEL_ID set here) is the most
+    # reliable fallback model, not the shared base — see
+    # bedrock._model_candidates's docstring, candidate 5.
+    assert ids == {
+        "segmentation": model_fallback.get_fallback_models()[-1],
+        "extraction": "base-model",
+    }
     assert "recovery" not in ids  # never invoked → must not be reported
 
 

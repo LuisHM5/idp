@@ -31,13 +31,17 @@ Referencia de todos los endpoints del API de la app de validación documental.
   En **prod** con dominio propio: `https://idp.alsuper.com`.
 - **Autenticación: manda siempre `x-api-key`.** Es el default del contrato, y
   el mismo código te sirve en los dos ambientes sin condicionales.
+
   ```bash
   curl -H "x-api-key: $KEY" ...
   ```
+
   Obtén el valor con:
+
   ```bash
   aws apigateway get-api-key --api-key <ApiKeyId> --include-value --query value --output text
   ```
+
   - **prod** (`DocumentValidationStack`): la exige **siempre**, en todos los endpoints.
   - **dev** (`DocumentValidationStack-Dev`): la exige si se desplegó con
     `DEV_API_KEY_REQUIRED=true`. Sin esa variable queda abierto — pero **también
@@ -46,6 +50,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
     Lambda** (no genera costo de backend). Ver `AMBIENTES_Y_SEGURIDAD.md`.
   - **No la mandes en el `PUT` a S3** (paso 2 de la subida): ese va firmado en la
     URL y no pasa por API Gateway.
+
 - **Autorización por app:** además de autenticar, la `x-api-key` decide qué documentos puede leer, reprocesar o editar esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 6 y `AMBIENTES_Y_SEGURIDAD.md`.
 - **Formato:** JSON. Errores devuelven `{ "error": "CODIGO", "message": "..." }`.
   Programa contra `error` (código estable), no contra `message`.
@@ -56,16 +61,16 @@ Referencia de todos los endpoints del API de la app de validación documental.
 
 ## Resumen de endpoints
 
-| Método | Ruta | Para qué |
-|---|---|---|
-| `POST` | `/documents` | **Paso 1 de 2:** registrar el documento y obtener la URL de subida (no recibe el archivo) |
-| `GET`  | `/documents/{id}` | Obtener el resultado completo de un documento por su id |
-| `POST` | `/documents/{id}/reprocess` | Crear un proceso nuevo reutilizando el archivo original ya almacenado en S3 |
-| `PATCH` | `/documents/{id}/metadata` | Crear, cambiar o borrar estados/marcas propios de la app sin alterar la validación |
-| `GET`  | `/documents/{id}/file` | Obtener una URL prefirmada de S3 para descargar el **archivo original** subido |
-| `GET`  | `/documents?docType=...` | Listar/filtrar documentos por tipo (indexado, sin Scan) |
-| `GET`  | `/documents?system=...&meta.<clave>=...` | Filtrar por qué **sistema** lo subió y por la **metadata** con la que se subió |
-| `GET`  | `/documents?field=...&value=...` | Buscar documentos por cualquier campo extraído |
+| Método  | Ruta                                     | Para qué                                                                                  |
+| ------- | ---------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `POST`  | `/documents`                             | **Paso 1 de 2:** registrar el documento y obtener la URL de subida (no recibe el archivo) |
+| `GET`   | `/documents/{id}`                        | Obtener el resultado completo de un documento por su id                                   |
+| `POST`  | `/documents/{id}/reprocess`              | Crear un proceso nuevo reutilizando el archivo original ya almacenado en S3               |
+| `PATCH` | `/documents/{id}/metadata`               | Crear, cambiar o borrar estados/marcas propios de la app sin alterar la validación        |
+| `GET`   | `/documents/{id}/file`                   | Obtener una URL prefirmada de S3 para descargar el **archivo original** subido            |
+| `GET`   | `/documents?docType=...`                 | Listar/filtrar documentos por tipo (indexado, sin Scan)                                   |
+| `GET`   | `/documents?system=...&meta.<clave>=...` | Filtrar por qué **sistema** lo subió y por la **metadata** con la que se subió            |
+| `GET`   | `/documents?field=...&value=...`         | Buscar documentos por cualquier campo extraído                                            |
 
 ---
 
@@ -74,12 +79,12 @@ Referencia de todos los endpoints del API de la app de validación documental.
 Un pedimento real, de la subida hasta tener los campos extraídos. Todo con
 `PEDIMENTO_ERP`; cambia el tipo y aplica igual.
 
-| # | Petición | Auth | Cuerpo | Respuesta |
-|---|---|---|---|---|
-| 1 | `POST $API/upload` | `x-api-key` | JSON o form con la metadata | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
-| 2 | `PUT {uploadUrl}` | **ninguna** (firmada en la URL) | los bytes crudos del archivo | `200` con **cuerpo vacío** — S3 no devuelve JSON |
-| 3 | `GET $API/documents/{documentId}` | `x-api-key` | — | `202` mientras procesa; `200` al terminar |
-| 4 | `GET $API/documents/{documentId}/file` | `x-api-key` | — | `200` · URL prefirmada para bajar el original |
+| #   | Petición                               | Auth                            | Cuerpo                       | Respuesta                                            |
+| --- | -------------------------------------- | ------------------------------- | ---------------------------- | ---------------------------------------------------- |
+| 1   | `POST $API/upload`                     | `x-api-key`                     | JSON o form con la metadata  | `200` · `documentId`, `uploadUrl`, `uploadExpiresAt` |
+| 2   | `PUT {uploadUrl}`                      | **ninguna** (firmada en la URL) | los bytes crudos del archivo | `200` con **cuerpo vacío** — S3 no devuelve JSON     |
+| 3   | `GET $API/documents/{documentId}`      | `x-api-key`                     | —                            | `202` mientras procesa; `200` al terminar            |
+| 4   | `GET $API/documents/{documentId}/file` | `x-api-key`                     | —                            | `200` · URL prefirmada para bajar el original        |
 
 El **paso 2 es el único sin `x-api-key`**, y el único que no pasa por API
 Gateway: va firmado en la URL, directo a S3. Entre el 2 y el 3 el pipeline
@@ -93,19 +98,9 @@ que usan el 2, el 3 y el 4.
 > En Scalar (`pnpm docs:api`) los cuatro pasos aparecen como operaciones
 > numeradas, cada una con su selector de lenguaje.
 
-### Paso 1 — `POST /documents`
-
 Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 
 ### Paso 1 — `POST /documents`
-
-Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
-
-### Paso 1 — `POST /documents`
-
-Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
-
-### Paso 1 — `POST /upload`
 
 Registra el documento y devuelve la URL de subida. **No lleva el archivo.**
 
@@ -143,7 +138,8 @@ const res = await fetch(`${API}/documents`, {
     documentType: "PEDIMENTO_ERP",
   }),
 });
-if (!res.ok) throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
+if (!res.ok)
+  throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
 
 // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
 const { documentId, uploadUrl } = await res.json();
@@ -204,7 +200,6 @@ var uploadUrl  = up.GetProperty("uploadUrl").GetString()!;
 ```
 
 </details>
-
 
 ### Paso 2 — `PUT` del archivo a S3
 
@@ -276,7 +271,6 @@ put.EnsureSuccessStatusCode();
 
 </details>
 
-
 ### Paso 3 — `GET /documents/{id}`
 
 El estado y, al terminar, el resultado. Mientras el pipeline corre responde
@@ -317,22 +311,41 @@ for (let i = 0; i < 60; i++) {
     headers: { "x-api-key": KEY },
   });
   const body = await r.json();
-  if (r.status === 200) { doc = body; break; }
-  if (r.status !== 202) throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
-  const minimum = Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
-  await new Promise((s) => setTimeout(s, Math.max(delayMs, minimum) + Math.random() * 1000));
+  if (r.status === 200) {
+    doc = body;
+    break;
+  }
+  if (r.status !== 202)
+    throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
+  const minimum =
+    Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
+  await new Promise((s) =>
+    setTimeout(s, Math.max(delayMs, minimum) + Math.random() * 1000),
+  );
   delayMs = Math.min(delayMs * 2, 30000);
 }
 
-if (doc.processingStatus === "FAILED") throw new Error("El procesamiento técnico falló");
+if (doc.processingStatus === "FAILED")
+  throw new Error("El procesamiento técnico falló");
 const result = doc.result;
-console.log(result.validation.status);         // APROBADO | REQUIERE_REVISION | RECHAZADO
+console.log(result.validation.status); // APROBADO | REQUIERE_REVISION | RECHAZADO
 // `documents` siempre está, traiga el PDF uno o veinte.
 for (const d of result.documents) {
-  console.log(`#${d.index}`, d.documentType, `págs ${d.pageStart}-${d.pageEnd}`);
+  console.log(
+    `#${d.index}`,
+    d.documentType,
+    `págs ${d.pageStart}-${d.pageEnd}`,
+  );
   for (const [campo, v] of Object.entries(d.fields ?? {})) {
     if (v.items) console.log("  ", campo, `= ${v.items.length} renglón(es)`);
-    else console.log("  ", campo, "=", v.value, `(conf ${v.confidence}, valid ${v.valid})`);
+    else
+      console.log(
+        "  ",
+        campo,
+        "=",
+        v.value,
+        `(conf ${v.confidence}, valid ${v.valid})`,
+      );
   }
 }
 ```
@@ -421,7 +434,6 @@ foreach (var d in result.GetProperty("documents").EnumerateArray())
 
 </details>
 
-
 ### Paso 4 — `GET /documents/{id}/file` (opcional)
 
 Devuelve una **URL prefirmada**, no los bytes: la descarga es una segunda petición, a S3.
@@ -446,9 +458,11 @@ curl -sS -o pedimento-original.pdf "$URL"
 import { writeFile } from "node:fs/promises";
 
 // Devuelve una URL prefirmada, NO los bytes.
-const meta = await (await fetch(`${API}/documents/${documentId}/file`, {
-  headers: { "x-api-key": KEY },
-})).json();
+const meta = await (
+  await fetch(`${API}/documents/${documentId}/file`, {
+    headers: { "x-api-key": KEY },
+  })
+).json();
 
 // La descarga va a S3: sin x-api-key.
 const bytes = Buffer.from(await (await fetch(meta.downloadUrl)).arrayBuffer());
@@ -492,27 +506,26 @@ await File.WriteAllBytesAsync("pedimento-original.pdf",
 
 </details>
 
-
 **Qué esperar en el paso 3.** El ciclo técnico es
 `AWAITING_UPLOAD → QUEUED → PROCESSING → FINISHED`; un error de infraestructura
 termina en `FAILED`. Los tres primeros devuelven `202`, los dos terminales
 devuelven `200`. Respeta `Retry-After`, duplica gradualmente la espera hasta un
-máximo de 30 s y agrega un pequeño *jitter* cuando tengas muchos clientes.
+máximo de 30 s y agrega un pequeño _jitter_ cuando tengas muchos clientes.
 `404` ya no se usa como estado transitorio.
 
 Texto recomendado para una interfaz: **“Documento recibido y en
 procesamiento. Puedes cerrar esta pantalla; el resultado se actualizará
 automáticamente.”** No muestres una duración prometida: las páginas, OCR y
 modelo cambian mucho el tiempo real. Si la app puede consumir EventBridge,
-úsalo como señal *push* y conserva este polling espaciado solo como respaldo.
+úsalo como señal _push_ y conserva este polling espaciado solo como respaldo.
 
 **Los tres estados que te van a importar** (`validation.status`):
 
-| Estado | Qué significa | Qué hacer |
-|---|---|---|
-| `APROBADO` | Todas las reglas del catálogo pasaron | Consumir los campos |
+| Estado              | Qué significa                                                                       | Qué hacer                                                        |
+| ------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `APROBADO`          | Todas las reglas del catálogo pasaron                                               | Consumir los campos                                              |
 | `REQUIERE_REVISION` | Algo quedó dudoso: confianza baja, un campo no encontrado, o el documento se truncó | Revisión humana; mira `warnings` y los campos con `valid: false` |
-| `RECHAZADO` | Una regla dura falló (p. ej. RFC del importador que no cuadra entre documentos) | No consumir como bueno; revisar `checks` |
+| `RECHAZADO`         | Una regla dura falló (p. ej. RFC del importador que no cuadra entre documentos)     | No consumir como bueno; revisar `checks`                         |
 
 **Dónde están los campos.** En `documents[]`, un elemento por documento
 detectado dentro del PDF. Para un pedimento declarado será uno solo — pero
@@ -528,22 +541,51 @@ y uno de tres:
     {
       "index": 1,
       "documentType": "PEDIMENTO_ERP",
-      "pageStart": 3, "pageEnd": 18,
+      "pageStart": 3,
+      "pageEnd": 18,
       "status": "APPROVED",
       "fields": {
-        "No_Pedimento": { "value": "260734356041248", "confidence": 0.98, "valid": true },
-        "FACTURAS": { "items": [
-          { "fields": {
-              "PROVEEDOR_ID_FISCAL": { "value": "334274279", "confidence": 0.95, "valid": true },
-              "PROVEEDOR_NOMBRE": { "value": "MNG DISTRIBUTOR LLC", "confidence": 0.95, "valid": true },
-              "Factura": { "value": "4099", "confidence": 0.95, "valid": true },
-              "Fecha_Factura": { "value": "2026-07-03", "confidence": 0.95, "valid": true },
-              "Total_factura": { "value": 155.00, "confidence": 0.95, "valid": true }
-          } }
-        ] }
-      }
-    }
-  ]
+        "No_Pedimento": {
+          "value": "260734356041248",
+          "confidence": 0.98,
+          "valid": true,
+        },
+        "FACTURAS": {
+          "items": [
+            {
+              "fields": {
+                "PROVEEDOR_ID_FISCAL": {
+                  "value": "334274279",
+                  "confidence": 0.95,
+                  "valid": true,
+                },
+                "PROVEEDOR_NOMBRE": {
+                  "value": "MNG DISTRIBUTOR LLC",
+                  "confidence": 0.95,
+                  "valid": true,
+                },
+                "Factura": {
+                  "value": "4099",
+                  "confidence": 0.95,
+                  "valid": true,
+                },
+                "Fecha_Factura": {
+                  "value": "2026-07-03",
+                  "confidence": 0.95,
+                  "valid": true,
+                },
+                "Total_factura": {
+                  "value": 155.0,
+                  "confidence": 0.95,
+                  "valid": true,
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ],
 }
 ```
 
@@ -553,12 +595,12 @@ Cada campo escalar trae un `confidence` entre 0 y 1 — **incluidos los
 calculados** (`LIQUIDACION_NORMALIZADA.*`, campos `derived`) y los que el
 documento no traía. Cómo se decide:
 
-| Caso | `confidence` |
-|---|---|
-| Campo leído del documento | Lo que reportó el modelo × qué tan bien se leyó la página. |
-| Campo calculado de varias celdas (un total del cuadro de liquidación) | El **promedio** de las celdas que sumó. |
-| Fila de un array | La de **esa** fila, no la del array completo. |
-| Campo que el documento no traía | `0.0` — "no lo sé" (con `value: null`; si era obligatorio, el `reason` lo dice). |
+| Caso                                                                  | `confidence`                                                                     |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Campo leído del documento                                             | Lo que reportó el modelo × qué tan bien se leyó la página.                       |
+| Campo calculado de varias celdas (un total del cuadro de liquidación) | El **promedio** de las celdas que sumó.                                          |
+| Fila de un array                                                      | La de **esa** fila, no la del array completo.                                    |
+| Campo que el documento no traía                                       | `0.0` — "no lo sé" (con `value: null`; si era obligatorio, el `reason` lo dice). |
 
 Y dos umbrales distintos, ambos por tipo en el catálogo:
 
@@ -591,7 +633,7 @@ invocación síncrona en 6 MB, ambos límites duros de AWS y no configurables. U
 `PUT` a S3 acepta hasta 5 GB, así que un CFDI de 200 KB y un expediente de 300 MB
 hacen exactamente lo mismo. No hay rama por tamaño que se pueda equivocar.
 
-> **Nota de migración.** El modo *inline* (`contentBase64` en el body) fue
+> **Nota de migración.** El modo _inline_ (`contentBase64` en el body) fue
 > **eliminado**. Un request que lo mande recibe `400 INLINE_UPLOAD_REMOVED`
 > explicando el flujo nuevo, en vez de fallar en silencio: base64 infla el
 > archivo ~33 %, así que reventaba alrededor de los ~4 MB reales y hacía que el
@@ -603,21 +645,22 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
 
 ```jsonc
 {
-  "fileName": "pedimento.pdf",           // requerido; pdf|jpg|jpeg|png|xml|xlsx|csv
-  "documentType": "PEDIMENTO_ERP",       // opcional (obligatorio en .xml/.xlsx/.csv).
-                                         // Varios separados por coma para que
-                                         // los busque y clasifique: ver §Notas
-  "occurrenceMode": "single",            // opcional: pisa defaults de catálogo.
-                                         // Omitido: catálogo; si no define,
-                                         // single con un tipo/multiple con varios
-  "metadata": { "lote": "A123" },        // opcional; se conserva con el documento
-                                         // y luego se puede filtrar con
-                                         // GET /documents?meta.lote=A123 (§6)
-  "modelId": "amazon.nova-pro-v1:0"      // opcional; SOLO DEV — ver notas
+  "fileName": "pedimento.pdf", // requerido; pdf|jpg|jpeg|png|xml|xlsx|csv
+  "documentType": "PEDIMENTO_ERP", // opcional (obligatorio en .xml/.xlsx/.csv).
+  // Varios separados por coma para que
+  // los busque y clasifique: ver §Notas
+  "occurrenceMode": "single", // opcional: pisa defaults de catálogo.
+  // Omitido: catálogo; si no define,
+  // single con un tipo/multiple con varios
+  "metadata": { "lote": "A123" }, // opcional; se conserva con el documento
+  // y luego se puede filtrar con
+  // GET /documents?meta.lote=A123 (§6)
+  "modelId": "amazon.nova-pro-v1:0", // opcional; SOLO DEV — ver notas
 }
 ```
 
 **Respuesta `200`:**
+
 ```json
 {
   "documentId": "e18d014a-...",
@@ -649,26 +692,26 @@ Esta petición **no va a esta API**: va a S3, con la `uploadUrl` del paso 1.
 curl -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
 ```
 
-| | |
-|---|---|
-| **Método** | `PUT` (viene en `uploadMethod`). No `POST`, no multipart, no form-data |
-| **Cuerpo** | Los bytes crudos del archivo, sin envolver ni codificar |
-| **Cabeceras** | **Ninguna.** La firma y la metadata ya van en la URL (ver aviso abajo) |
-| **La URL** | Úsala **completa y tal cual**. No separes parámetros. Al pegarla en shell, comillas **simples**: trae ~12 `&` en unos 1,900 caracteres |
-| **Auth** | Ninguna. La firma va en la URL; **no** mandes `x-api-key` aquí |
-| **Respuesta OK** | `200` con cuerpo vacío — S3 no devuelve JSON |
-| **Vencimiento** | 15 min (`uploadExpiresAt`). Si expira, repite el paso 1: no se renuevan |
-| **Tamaño** | Hasta 5 GB |
+|                  |                                                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Método**       | `PUT` (viene en `uploadMethod`). No `POST`, no multipart, no form-data                                                                 |
+| **Cuerpo**       | Los bytes crudos del archivo, sin envolver ni codificar                                                                                |
+| **Cabeceras**    | **Ninguna.** La firma y la metadata ya van en la URL (ver aviso abajo)                                                                 |
+| **La URL**       | Úsala **completa y tal cual**. No separes parámetros. Al pegarla en shell, comillas **simples**: trae ~12 `&` en unos 1,900 caracteres |
+| **Auth**         | Ninguna. La firma va en la URL; **no** mandes `x-api-key` aquí                                                                         |
+| **Respuesta OK** | `200` con cuerpo vacío — S3 no devuelve JSON                                                                                           |
+| **Vencimiento**  | 15 min (`uploadExpiresAt`). Si expira, repite el paso 1: no se renuevan                                                                |
+| **Tamaño**       | Hasta 5 GB                                                                                                                             |
 
 > ⚠️ **No mandes ninguna cabecera `x-amz-*` en el `PUT`.** Al prefirmar, SigV4
-> *hoistea* esas cabeceras al **query string**, así que la metadata del
+> _hoistea_ esas cabeceras al **query string**, así que la metadata del
 > documento (`model-id`, `app-origin`) ya viaja dentro de `uploadUrl` y está
 > cubierta por la firma — fíjate en que la URL trae `X-Amz-SignedHeaders=host`,
 > o sea que la única cabecera firmada es `host`.
 >
 > Si además las mandas como header, S3 rechaza la subida con
 > **`403 AccessDenied: There were headers present in the request which were not
-> signed`**, y lista las culpables en `<HeadersNotSigned>`. Un 403 que parece de
+signed`**, y lista las culpables en `<HeadersNotSigned>`. Un 403 que parece de
 > permisos y en realidad es de firma.
 
 No hace falta ninguna credencial de AWS: la URL prefirmada concede permiso
@@ -709,13 +752,13 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 - **`documentType` decide entre tres modos**, según cuántos tipos mandes. Es **un solo campo**: varios tipos van separados por coma, igual que en `GET /documents?docType=A,B`.
 
-  | Mandas | `classificationMode` | Qué hace |
-  |---|---|---|
-  | **Un** tipo (`PEDIMENTO_ERP`) | `manual` | Se salta la clasificación automática **y se HONRA tu tipo**: el archivo entero se trata como ese tipo único y **no se re-clasifica ni se segmenta** (un PDF de varias páginas declarado `PEDIMENTO_ERP` es un solo pedimento, no un `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). |
-  | **Varios** (`PEDIMENTO_ADUANAL,FACTURA_HONORARIOS`) | `guided` | El archivo **sí se segmenta y se clasifica**, pero la lista es **CERRADA**: `documents[]` sólo contiene los tipos declarados. Cada documento encontrado lleva su tipo, `pageStart`/`pageEnd` y su propio esquema; los demás segmentos se omiten. |
-  | **Nada** (omites el campo) | `auto` | El clasificador elige contra todo el catálogo. |
+  | Mandas                                              | `classificationMode` | Qué hace                                                                                                                                                                                                                                                                  |
+  | --------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **Un** tipo (`PEDIMENTO_ERP`)                       | `manual`             | Se salta la clasificación automática **y se HONRA tu tipo**: el archivo entero se trata como ese tipo único y **no se re-clasifica ni se segmenta** (un PDF de varias páginas declarado `PEDIMENTO_ERP` es un solo pedimento, no un `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`). |
+  | **Varios** (`PEDIMENTO_ADUANAL,FACTURA_HONORARIOS`) | `guided`             | El archivo **sí se segmenta y se clasifica**, pero la lista es **CERRADA**: `documents[]` sólo contiene los tipos declarados. Cada documento encontrado lleva su tipo, `pageStart`/`pageEnd` y su propio esquema; los demás segmentos se omiten.                          |
+  | **Nada** (omites el campo)                          | `auto`               | El clasificador elige contra todo el catálogo.                                                                                                                                                                                                                            |
 
-- **Cuándo usar la lista.** Cuando sabes qué *debería* traer el archivo pero no cuántos ni en qué orden — un expediente con un pedimento y sus facturas de honorarios. Sale **más barato y más preciso** que omitir el tipo: el prompt del clasificador sólo lleva los tipos que pediste (en un caso real, 2,552 caracteres contra 4,649), y no hay tipos parecidos del resto del catálogo con los que confundirse. Para forzar la segmentación multi-documento sin acotar nada, sigue estando `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
+- **Cuándo usar la lista.** Cuando sabes qué _debería_ traer el archivo pero no cuántos ni en qué orden — un expediente con un pedimento y sus facturas de honorarios. Sale **más barato y más preciso** que omitir el tipo: el prompt del clasificador sólo lleva los tipos que pediste (en un caso real, 2,552 caracteres contra 4,649), y no hay tipos parecidos del resto del catálogo con los que confundirse. Para forzar la segmentación multi-documento sin acotar nada, sigue estando `documentType=EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`.
 
 - **Cuántos documentos de cada tipo buscar: `TIPO:N`.** Cada tipo admite un sufijo opcional que dice cuántos documentos de ese tipo debe buscar el pipeline:
 
@@ -759,6 +802,7 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 - El resultado final se publica en **EventBridge** (broker `idp-broker`, source `document-validation-pipeline`) y se persiste (ver GET abajo).
 
 **Ejemplo (atajo del repo, siempre mediante URL prefirmada):**
+
 ```bash
 pnpm enviar pedimento.pdf PEDIMENTO_ERP              # dev por default
 pnpm enviar pedimento.pdf PEDIMENTO_ERP --env prod   # API key desde .env.production
@@ -820,15 +864,15 @@ abreviados deliberadamente:
 {
   "documentId": "e18d014a-...",
   "processingStatus": "FINISHED",
-  "workflowStatus": "complete",             // interno; no usar para polling
+  "workflowStatus": "complete", // interno; no usar para polling
   "documentType": "FACTURA_FLETE_EXTRANJERO",
   "result": {
     "envelopeVersion": 2,
     "documentClassification": "FACTURA_FLETE_EXTRANJERO",
     "documentCount": 1,
     "validation": {
-      "status": "APROBADO",                 // o REQUIERE_REVISION / RECHAZADO
-      "reviewRequired": false
+      "status": "APROBADO", // o REQUIERE_REVISION / RECHAZADO
+      "reviewRequired": false,
     },
     "documents": [
       {
@@ -839,23 +883,40 @@ abreviados deliberadamente:
         "status": "APPROVED",
         "confidence": 0.94,
         "fields": {
-          "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.98, "valid": true },
+          "NUMERO_FACTURA": {
+            "value": "SJ191703",
+            "confidence": 0.98,
+            "valid": true,
+          },
           "TOTAL": { "value": 14612.4, "confidence": 0.93, "valid": true },
           "CONCEPTOS": {
             "items": [
-              { "fields": {
-                "DESCRIPCION": { "value": "CA Valencia...", "confidence": 0.93, "valid": true },
-                "IMPORTE": { "value": 14612.4, "confidence": 0.93, "valid": true }
-              } }
-            ]
-          }
-        }
-      }
+              {
+                "fields": {
+                  "DESCRIPCION": {
+                    "value": "CA Valencia...",
+                    "confidence": 0.93,
+                    "valid": true,
+                  },
+                  "IMPORTE": {
+                    "value": 14612.4,
+                    "confidence": 0.93,
+                    "valid": true,
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
     ],
-    "tracking": { "processingSeconds": 60.71, "modelIds": { "extraction": "..." } },
+    "tracking": {
+      "processingSeconds": 60.71,
+      "modelIds": { "extraction": "..." },
+    },
     "sourceFile": "factura.pdf",
-    "pages": { "totalPages": 1, "ocrPages": 1 }
-  }
+    "pages": { "totalPages": 1, "ocrPages": 1 },
+  },
 }
 ```
 
@@ -881,72 +942,102 @@ opcionales importantes del envelope:
 ```jsonc
 {
   "documentId": "PEDIMENTO-ADUANAL-4ff224be-...",
-  "processingStatus": "FINISHED",         // contrato técnico público
-  "workflowStatus": "complete",           // detalle interno; no usar para polling
+  "processingStatus": "FINISHED", // contrato técnico público
+  "workflowStatus": "complete", // detalle interno; no usar para polling
   "result": {
     "documentId": "...",
-    "envelopeVersion": 2,                 // ausente = envelope viejo (ver abajo)
+    "envelopeVersion": 2, // ausente = envelope viejo (ver abajo)
     // Cuando TODOS los documentos son del mismo tipo, ese es el tipo — aunque
     // sean varios. EXPEDIENTE_ADUANAL_MULTIDOCUMENTO queda solo para paquetes
     // de tipos mixtos.
     "documentClassification": "FACTURA_FLETE_EXTRANJERO",
-    "documentCount": 2,                   // encontrados: excluye OTRO y marcadores sin rango
+    "documentCount": 2, // encontrados: excluye OTRO y marcadores sin rango
 
     // Procedencia/procesamiento — presente en TODO resultado (flujo estándar y
     // expediente por igual). createdAt siempre está; modelIds/appOrigin/
     // modelFallbacks/segmentationDegraded/timings solo si hay algo que reportar.
     "tracking": {
       "createdAt": "2026-07-27T13:19:04.231Z",
-      "processingStartedAt": "...", "processingCompletedAt": "...",
-      "processingSeconds": 45.23, "processingMs": 45231.7,
+      "processingStartedAt": "...",
+      "processingCompletedAt": "...",
+      "processingSeconds": 45.23,
+      "processingMs": 45231.7,
       // Milisegundos por etapa: en qué se fue el tiempo, sin volver a correr
       // el documento. Solo en los pipelines que lo miden.
-      "timings": { "pageLoad": 3120.4, "segmentation": 0.0, "extraction": 41200.1, "validation": 911.2 },
+      "timings": {
+        "pageLoad": 3120.4,
+        "segmentation": 0.0,
+        "extraction": 41200.1,
+        "validation": 911.2,
+      },
       // Modelo que REALMENTE corrió por fase — ya refleja cualquier fallback.
       "modelIds": { "extraction": "minimax.minimax-m2.5" },
-      "appOrigin": "CEDIS",               // app que subió el documento; ausente si no hay api key registrada
-      "schema": { "pipelineVersion": "1.0.0", "typeVersions": { "FACTURA_FLETE_EXTRANJERO": "5.1.0" } },
+      "appOrigin": "CEDIS", // app que subió el documento; ausente si no hay api key registrada
+      "schema": {
+        "pipelineVersion": "1.0.0",
+        "typeVersions": { "FACTURA_FLETE_EXTRANJERO": "5.1.0" },
+      },
       // Ausente salvo que ALGUNA fase haya cambiado de modelo.
       "modelFallbacks": {
         "extractor": {
           "expectedModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
           "actualModel": "minimax.minimax-m2.5",
           "retries": 1,
-          "attempts": [{ "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "error": "AccessDeniedException" }]
-        }
+          "attempts": [
+            {
+              "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "error": "AccessDeniedException",
+            },
+          ],
+        },
       },
       // Ausente salvo que la segmentación se haya rendido en algún rango de
       // páginas (respuesta vacía/truncada pese al reintento — ver
       // GUIA_DESPLIEGUE_Y_USO.md §5.6.1). Un "marked_otro" fuerza reviewRequired.
       "segmentationDegraded": [
         {
-          "pageStart": 1, "pageEnd": 31,
-          "reason": "empty_response", "resolution": "marked_otro",
+          "pageStart": 1,
+          "pageEnd": 31,
+          "reason": "empty_response",
+          "resolution": "marked_otro",
           "attempts": [
-            { "modelId": "minimax.minimax-m2.5", "maxTokens": 8192, "stopReason": "max_tokens", "outputTokens": 8192, "reason": "empty_response" },
-            { "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "maxTokens": 8192, "stopReason": "max_tokens", "outputTokens": 8192, "reason": "empty_response" }
-          ]
-        }
-      ]
+            {
+              "modelId": "minimax.minimax-m2.5",
+              "maxTokens": 8192,
+              "stopReason": "max_tokens",
+              "outputTokens": 8192,
+              "reason": "empty_response",
+            },
+            {
+              "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "maxTokens": 8192,
+              "stopReason": "max_tokens",
+              "outputTokens": 8192,
+              "reason": "empty_response",
+            },
+          ],
+        },
+      ],
     },
-    "metadata": { "lote": "A123" },       // la que mandaste en el POST, verbatim
+    "metadata": { "lote": "A123" }, // la que mandaste en el POST, verbatim
 
     "validation": {
-      "status": "APROBADO",               // APROBADO | REQUIERE_REVISION | RECHAZADO
+      "status": "APROBADO", // APROBADO | REQUIERE_REVISION | RECHAZADO
       "reviewRequired": false,
       "summary": "2 documento(s) — 2 APPROVED",
-      "counts": { "APPROVED": 2 }         // por status de documento
+      "counts": { "APPROVED": 2 }, // por status de documento
     },
 
     "documents": [
       {
         "index": 1,
         "documentType": "FACTURA_FLETE_EXTRANJERO",
-        "documentSubtype": null,          // presente solo si lo hay
+        "documentSubtype": null, // presente solo si lo hay
         "businessDestination": "PAGO_FLETE_AMERICANO",
-        "pageStart": 1, "pageEnd": 1,
-        "status": "APPROVED",             // APPROVED | PARTIALLY_APPROVED | REVIEW_REQUIRED | REJECTED | PROCESSING_ERROR
-        "confidence": 0.9229,             // qué tan bien se leyó ESTE documento (promedio)
+        "pageStart": 1,
+        "pageEnd": 1,
+        "status": "APPROVED", // APPROVED | PARTIALLY_APPROVED | REVIEW_REQUIRED | REJECTED | PROCESSING_ERROR
+        "confidence": 0.9229, // qué tan bien se leyó ESTE documento (promedio)
         // Resumen compatible: confianza más repetida entre los campos con
         // valor. Cada campo conserva además su propia confidence; no se hereda.
         // Ausente si ningún valor se repite al menos tres veces.
@@ -955,18 +1046,50 @@ opcionales importantes del envelope:
         // "status": "PROCESSING_ERROR", "error": "mensaje truncado a 300 caracteres",
         // "errorType": "ValueError" (nombre de la excepción Python)
         "fields": {
-          "NUMERO_FACTURA": { "value": "SJ191703", "confidence": 0.9826, "valid": true },
-          "TOTAL":          { "value": 14612.4, "confidence": 0.9335, "valid": true },  // excepción
+          "NUMERO_FACTURA": {
+            "value": "SJ191703",
+            "confidence": 0.9826,
+            "valid": true,
+          },
+          "TOTAL": { "value": 14612.4, "confidence": 0.9335, "valid": true }, // excepción
           // Objeto anidado
-          "DATOS_PAGO": { "fields": { "BANCO": { "value": "WELLS FARGO BANK, NA", "confidence": 0.93, "valid": true } } },
+          "DATOS_PAGO": {
+            "fields": {
+              "BANCO": {
+                "value": "WELLS FARGO BANK, NA",
+                "confidence": 0.93,
+                "valid": true,
+              },
+            },
+          },
           // Arreglo: TODOS los renglones, de TODOS los documentos
-          "CONCEPTOS": { "items": [
-            { "fields": { "DESCRIPCION": { "value": "CA Valencia...", "confidence": 0.93, "valid": true },
-                          "IMPORTE":     { "value": 14612.4, "confidence": 0.93, "valid": true } } }
-          ] }
-        }
+          "CONCEPTOS": {
+            "items": [
+              {
+                "fields": {
+                  "DESCRIPCION": {
+                    "value": "CA Valencia...",
+                    "confidence": 0.93,
+                    "valid": true,
+                  },
+                  "IMPORTE": {
+                    "value": 14612.4,
+                    "confidence": 0.93,
+                    "valid": true,
+                  },
+                },
+              },
+            ],
+          },
+        },
       },
-      { "index": 2, "documentType": "FACTURA_FLETE_EXTRANJERO", "pageStart": 2, "pageEnd": 2, "...": "..." }
+      {
+        "index": 2,
+        "documentType": "FACTURA_FLETE_EXTRANJERO",
+        "pageStart": 2,
+        "pageEnd": 2,
+        "...": "...",
+      },
     ],
 
     // Reglas de nivel documento que REALMENTE corrieron: entre documentos en el
@@ -975,19 +1098,37 @@ opcionales importantes del envelope:
     // (incluidas las saltadas) está en `fullResult.crossDocumentChecks`. Si no
     // corrió ninguna, `checks` no viene. Las reglas POR CAMPO viven en
     // `documents[i].fields[*].valid`/`reason`.
-    "checks": [ { "rule": "expected_importer_rfc", "valid": true, "severity": "warning", "message": "..." } ],
+    "checks": [
+      {
+        "rule": "expected_importer_rfc",
+        "valid": true,
+        "severity": "warning",
+        "message": "...",
+      },
+    ],
     "warnings": [],
 
     // Datos del ARCHIVO
     "processingId": "890c9bb0-...",
-    "sourceFile": "factura.pdf",          // el NOMBRE; los bytes con GET /documents/{id}/file
-    "sourceFormat": "pdf",                // "pdf" | "jpg"/"jpeg"/"png" | "xml" | "xlsx" | "csv" — para xml/xlsx/csv, `pages` solo trae totalPages
-    "pages": { "totalPages": 2, "nativePages": 0, "ocrPages": 2, "emptyPages": 0 },
-    "usage": { "segmentation": null, "extraction": { "modelId": "...", "usage": { "inputTokens": 18697, "outputTokens": 3952 } } },
+    "sourceFile": "factura.pdf", // el NOMBRE; los bytes con GET /documents/{id}/file
+    "sourceFormat": "pdf", // "pdf" | "jpg"/"jpeg"/"png" | "xml" | "xlsx" | "csv" — para xml/xlsx/csv, `pages` solo trae totalPages
+    "pages": {
+      "totalPages": 2,
+      "nativePages": 0,
+      "ocrPages": 2,
+      "emptyPages": 0,
+    },
+    "usage": {
+      "segmentation": null,
+      "extraction": {
+        "modelId": "...",
+        "usage": { "inputTokens": 18697, "outputTokens": 3952 },
+      },
+    },
 
     "resultLocation": { "bucket": "...", "key": "results/{id}.json" },
-    "processedAt": "2026-07-27T13:19:04.231Z"
-  }
+    "processedAt": "2026-07-27T13:19:04.231Z",
+  },
 }
 ```
 
@@ -998,13 +1139,13 @@ opcionales importantes del envelope:
 **Se omite un campo solo cuando el documento no lo traía Y no era obligatorio.**
 Cualquier otra cosa viaja, con su explicación:
 
-| Situación | Cómo se ve |
-|---|---|
-| No estaba y era opcional | **el campo no aparece** |
-| No estaba y era obligatorio | `{ "value": null, "confidence": 0.0, "valid": false, "reason": "required field 'X' missing or empty" }` |
+| Situación                                      | Cómo se ve                                                                                                                    |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| No estaba y era opcional                       | **el campo no aparece**                                                                                                       |
+| No estaba y era obligatorio                    | `{ "value": null, "confidence": 0.0, "valid": false, "reason": "required field 'X' missing or empty" }`                       |
 | Se leyó con confianza bajo el piso de descarte | `{ "value": null, "confidence": 0.31, "valid": false, "reason": "value discarded: confidence 0.31 below discard floor 0.5" }` |
-| Se leyó pero no pasó una regla | `{ "value": "...", "confidence": 0.9, "valid": false, "reason": "..." }` |
-| El pipeline lo derivó o lo recuperó del QR | se agrega `"source": "NORMALIZED"` \| `"QR_RECOVERY"` \| ... |
+| Se leyó pero no pasó una regla                 | `{ "value": "...", "confidence": 0.9, "valid": false, "reason": "..." }`                                                      |
+| El pipeline lo derivó o lo recuperó del QR     | se agrega `"source": "NORMALIZED"` \| `"QR_RECOVERY"` \| ...                                                                  |
 
 `reason` solo aparece cuando `valid` es falso, y `source` solo cuando **no** es
 `MODEL_EXTRACTION`: repetir el default en cada uno de 66 campos era el 20% de la
@@ -1065,17 +1206,18 @@ consulte documentos históricos debe checar `envelopeVersion` antes de asumir
   "documentCount": 0,
   "documents": [],
   "sourceFormat": "jpeg",
-  "warnings": ["unreadable jpeg image: ..."],       // mensaje libre, siempre presente (compatibilidad hacia atrás)
+  "warnings": ["unreadable jpeg image: ..."], // mensaje libre, siempre presente (compatibilidad hacia atrás)
   "error": {
     "message": "unreadable jpeg image: ...",
-    "stage": "page_load",                            // "page_load" | "parse" | "declared_type" — dónde falló
-    "type": "ClientError",                            // nombre de la clase de excepción Python
-    "sourceFormat": "jpeg"
-  }
+    "stage": "page_load", // "page_load" | "parse" | "declared_type" — dónde falló
+    "type": "ClientError", // nombre de la clase de excepción Python
+    "sourceFormat": "jpeg",
+  },
 }
 ```
 
 Query params:
+
 - `full=1` → agrega **`fullResult`**: el detalle más profundo desde S3 (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`, más `value`/`valid`/`reason` (vista simple: valor resuelto, booleano y motivo si `valid` es falso)). El `result` del envelope trae las entidades y `liquidacionNormalizada`, pero el detalle por-campo solo está en `fullResult`.
 
 Un trabajo creado por `POST /documents/{id}/reprocess` incluye además
@@ -1085,10 +1227,12 @@ pendiente como cuando ya terminó.
 **Errores:** `404 NOT_FOUND` si no hay documento con ese id/prefijo, **o si existe pero la app que llama no tiene permiso de verlo** (ver "Seguridad — acceso por app" más abajo) — misma respuesta en ambos casos, a propósito: no confirma que un documento fuera de tu alcance exista.
 
 **Ejemplo:**
+
 ```bash
 curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224be" | python3 -m json.tool
 curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224be?full=1"   # + detalle por campo de S3
 ```
+
 Atajo del repo (equivalente, formateado): `pnpm resultado -- --id 4ff224be`.
 
 ---
@@ -1108,11 +1252,11 @@ trae `uploadUrl`.
 
 Body opcional, en JSON o `application/x-www-form-urlencoded`:
 
-| Campo | Comportamiento |
-|---|---|
-| `documentType` | Uno o varios TYPE_ID separados por coma, con el mismo contrato `:N`/`:all` de §1. Si se **omite**, hereda los tipos explícitos del proceso anterior; si el anterior era automático, vuelve a ser automático. Enviar `null` o `""` fuerza auto aunque antes hubiera tipo |
-| `occurrenceMode` | `single` o `multiple`; también acepta `occurrence_mode`. Pisa catálogo/default para los tipos sin sufijo; `:N`/`:all` sigue ganando |
-| `modelId` | Override sólo para la ejecución nueva y sólo efectivo en dev. Si se omite, se usa la configuración actual, no el override viejo |
+| Campo            | Comportamiento                                                                                                                                                                                                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `documentType`   | Uno o varios TYPE_ID separados por coma, con el mismo contrato `:N`/`:all` de §1. Si se **omite**, hereda los tipos explícitos del proceso anterior; si el anterior era automático, vuelve a ser automático. Enviar `null` o `""` fuerza auto aunque antes hubiera tipo |
+| `occurrenceMode` | `single` o `multiple`; también acepta `occurrence_mode`. Pisa catálogo/default para los tipos sin sufijo; `:N`/`:all` sigue ganando                                                                                                                                     |
+| `modelId`        | Override sólo para la ejecución nueva y sólo efectivo en dev. Si se omite, se usa la configuración actual, no el override viejo                                                                                                                                         |
 
 La metadata vigente del documento anterior se copia al trabajo nuevo. La app
 que llama debe poder ver el documento fuente según `AccessScope` y
@@ -1259,6 +1403,7 @@ Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo t
 **Cómo se localiza el archivo:** el key de S3 del original **no es estático** — mientras se procesa vive en `raw/{TIPO?}/{documentId}/{archivo}`, pero al terminar la ejecución el blueprint lo mueve a `processed/{documentId}/{archivo}` (caso normal, incluida una validación RECHAZADA) o a `failed/{documentId}/{archivo}` (solo si la propia ejecución de Step Functions revienta). Como este endpoint solo responde para documentos que `GET /documents/{id}` ya puede resolver (es decir, ya salieron de `raw/`), el handler busca primero en `processed/{documentId}/` y si no hay nada, en `failed/{documentId}/` — un `ListObjectsV2` de una sola key por prefijo, no una reconstrucción a ciegas del nombre de archivo.
 
 **Respuesta `200`:**
+
 ```json
 {
   "documentId": "PEDIMENTO-ADUANAL-4ff224be-...",
@@ -1278,10 +1423,12 @@ Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo t
 | `expiresIn` | `900` (15 min) | Segundos de validez de la URL. Se acota entre `60` y `3600` (1h) — un valor fuera de rango se recorta, no da error. |
 
 **Errores:**
+
 - `404 NOT_FOUND` — no hay documento con ese id/prefijo, **o la app que llama no tiene permiso de verlo** (igual que `GET /documents/{id}` — ver "Seguridad — acceso por app" abajo).
 - `404 FILE_NOT_FOUND` — el documento existe (y es visible para esta app) pero no se encontró el objeto original en `processed/`/`failed/` (documento aún en `PROCESSING`, o el objeto se borró de S3 por fuera del sistema).
 
 **Ejemplo:**
+
 ```bash
 curl -sS "$API/documents/PEDIMENTO-ADUANAL-4ff224be/file"
 # → { "downloadUrl": "https://...", ... }
@@ -1304,12 +1451,12 @@ Este endpoint expone **bytes del archivo original** (posible PII: fotos de ident
 Cuatro filtros, **todos combinables entre sí y todos en AND**: un documento
 tiene que cumplirlos todos para salir en `matches`. Basta con mandar uno.
 
-| Filtro | Qué acota | De dónde sale el dato |
-|---|---|---|
-| **`docType`** | El **tipo de documento** | Columna indexada `DocumentType`. Se resuelve **dentro de DynamoDB** contra el GSI `DocumentTypeIndex` (partición `DocumentType`, orden `ProcessedAt`): solo se leen los documentos de ese tipo, **sin Scan**. |
-| **`system`** | Qué **sistema lo subió** | `tracking.appOrigin`, que sale de la **API key** con la que se hizo el `POST /documents` — no de nada que mande el cliente en el body. Alias: `appOrigin`, `sistema`. |
-| **`meta.<clave>`** | La **metadata actual** del documento | El objeto del `POST /documents` (§1), incluyendo cambios posteriores hechos por `PATCH /documents/{id}/metadata` (§4), sin interpretarlo. |
-| **`field` + `value`** | Cualquier **campo extraído** del documento | El envelope del resultado, por dot-path o por búsqueda profunda. **Se puede repetir** para exigir varios campos a la vez. |
+| Filtro                | Qué acota                                  | De dónde sale el dato                                                                                                                                                                                         |
+| --------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`docType`**         | El **tipo de documento**                   | Columna indexada `DocumentType`. Se resuelve **dentro de DynamoDB** contra el GSI `DocumentTypeIndex` (partición `DocumentType`, orden `ProcessedAt`): solo se leen los documentos de ese tipo, **sin Scan**. |
+| **`system`**          | Qué **sistema lo subió**                   | `tracking.appOrigin`, que sale de la **API key** con la que se hizo el `POST /documents` — no de nada que mande el cliente en el body. Alias: `appOrigin`, `sistema`.                                         |
+| **`meta.<clave>`**    | La **metadata actual** del documento       | El objeto del `POST /documents` (§1), incluyendo cambios posteriores hechos por `PATCH /documents/{id}/metadata` (§4), sin interpretarlo.                                                                     |
+| **`field` + `value`** | Cualquier **campo extraído** del documento | El envelope del resultado, por dot-path o por búsqueda profunda. **Se puede repetir** para exigir varios campos a la vez.                                                                                     |
 
 Solo `docType` se filtra dentro de DynamoDB; los otros tres se aplican en la
 Lambda sobre los documentos que ese primer filtro dejó pasar. Por eso **manda
@@ -1461,7 +1608,7 @@ curl -sS -H "x-api-key: $KEY" \
 // Una LISTA de pares, no un objeto: `field`/`value` se pueden repetir y
 // URLSearchParams los manda en ese mismo orden, que es como se emparejan.
 async function buscar(pares) {
-  const qs = new URLSearchParams(pares);            // encodea espacios y acentos
+  const qs = new URLSearchParams(pares); // encodea espacios y acentos
   const r = await fetch(`${API}/documents?${qs}`, {
     headers: { "x-api-key": KEY },
   });
@@ -1473,10 +1620,11 @@ async function buscar(pares) {
 // metadata del upload + un campo extraído del documento.
 const delLote = await buscar([
   ["docType", "PEDIMENTO_ERP"],
-  ["system", "ERP"],                                // quién lo subió, por su API key
-  ["meta.lote", "A123"],                            // metadata del POST /documents
+  ["system", "ERP"], // quién lo subió, por su API key
+  ["meta.lote", "A123"], // metadata del POST /documents
   ["meta.sucursal", "CHIH"],
-  ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
+  ["field", "PROVEEDOR_ID_FISCAL"],
+  ["value", "OFU910626UQ0"],
   ["summary", "1"],
 ]);
 for (const m of delLote.matches)
@@ -1487,15 +1635,18 @@ for (const m of delLote.matches)
 // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
 const porNumero = await buscar([
   ["docType", "PEDIMENTO_ERP"],
-  ["field", "No_Pedimento"], ["value", "26 07 0823 6001630"],
+  ["field", "No_Pedimento"],
+  ["value", "26 07 0823 6001630"],
 ]);
-console.log(porNumero.lookup, porNumero.count);     // "uniqueKey" 1
+console.log(porNumero.lookup, porNumero.count); // "uniqueKey" 1
 
 // Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
 const porRfcYPatente = await buscar([
   ["docType", "PEDIMENTO_ERP"],
-  ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
-  ["field", "PATENTE"], ["value", "3456"],
+  ["field", "PROVEEDOR_ID_FISCAL"],
+  ["value", "OFU910626UQ0"],
+  ["field", "PATENTE"],
+  ["value", "3456"],
 ]);
 for (const m of porRfcYPatente.matches)
   for (const hit of m.matched)
@@ -1621,82 +1772,98 @@ Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("co
 
 **Errores de forma de los filtros:**
 
-| Qué mandaste | Respuesta |
-|---|---|
-| Ningún filtro | `400 MISSING_PARAMS` |
-| `field` sin `value` | `400 MISSING_PARAMS` — `'field' requires 'value'` |
-| Distinto número de `field` y de `value` | `400 MISSING_PARAMS` — se emparejan por posición, una lista desbalanceada es ambigua y no se adivina |
-| Varios `op`, pero ni uno solo ni uno por filtro | `400 INVALID_PARAMS` |
-| Un `docType` fuera de tu `AllowedDocTypes` | `403 FORBIDDEN` |
-| `field`/`value` sin `AllowFieldSearch` | `403 FORBIDDEN` (`system`/`meta.<clave>` **no** requieren ese permiso) |
+| Qué mandaste                                    | Respuesta                                                                                            |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Ningún filtro                                   | `400 MISSING_PARAMS`                                                                                 |
+| `field` sin `value`                             | `400 MISSING_PARAMS` — `'field' requires 'value'`                                                    |
+| Distinto número de `field` y de `value`         | `400 MISSING_PARAMS` — se emparejan por posición, una lista desbalanceada es ambigua y no se adivina |
+| Varios `op`, pero ni uno solo ni uno por filtro | `400 INVALID_PARAMS`                                                                                 |
+| Un `docType` fuera de tu `AllowedDocTypes`      | `403 FORBIDDEN`                                                                                      |
+| `field`/`value` sin `AllowFieldSearch`          | `403 FORBIDDEN` (`system`/`meta.<clave>` **no** requieren ese permiso)                               |
 
 **Expedientes multi-documento (`expand`):** un archivo con documentos de tipos **distintos** se guarda con el tipo de nivel superior `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`, pero contiene pedimentos, facturas, etc. (si TODOS son del mismo tipo, el archivo se guarda con ese tipo y la consulta directa ya lo encuentra). Por eso `docType=FACTURA` devuelve **también** los expedientes que contienen una factura: además de la consulta por tipo se lanza otra sobre los expedientes filtrando por la columna `ContainedDocumentTypes` (también del lado de DynamoDB). Con `expand=0` solo se considera el tipo de nivel superior.
 
 **Por defecto** cada match es el **envelope completo** (mismo shape que `GET /documents/{id}`): `documentId`, `documentClassification`, `documentCount`, `validation`, `documents[...]` (todos los documentos con sus campos, sus renglones y su `liquidacionNormalizada`), `tracking`, `metadata` (la del upload, si la hubo), más `matched[]` cuando hubo filtros por campo.
 
 **Respuesta `200`** — cada match es el **envelope completo** + dónde coincidió:
+
 ```jsonc
 {
-  "docTypes": ["PEDIMENTO_ERP"],  // tipos ya resueltos a TYPE_ID
-  "resolvedTypes": [                  // cómo se resolvió lo que mandaste
-    { "typeId": "PEDIMENTO_ERP", "input": "Pedimento (mapeo ERP)", "resolvedBy": "exact" }
+  "docTypes": ["PEDIMENTO_ERP"], // tipos ya resueltos a TYPE_ID
+  "resolvedTypes": [
+    // cómo se resolvió lo que mandaste
+    {
+      "typeId": "PEDIMENTO_ERP",
+      "input": "Pedimento (mapeo ERP)",
+      "resolvedBy": "exact",
+    },
   ],
-  "expandedContainers": true,         // se buscó también dentro de expedientes
+  "expandedContainers": true, // se buscó también dentro de expedientes
 
   // --- eco de los filtros que se aplicaron ---
-  "filters": [                        // todos los field/value, en orden
-    { "field": "No_Pedimento", "value": "260708236001187", "op": "eq" }
+  "filters": [
+    // todos los field/value, en orden
+    { "field": "No_Pedimento", "value": "260708236001187", "op": "eq" },
   ],
-  "field": "No_Pedimento",            // = filters[0],
-  "value": "260708236001187",         // por compatibilidad con cuando solo
-  "op": "eq",                         // podía haber un filtro
-  "system": ["ERP"],                  // solo si mandaste system=
-  "metaFilters": [                    // solo si mandaste meta.<clave>=
-    { "key": "lote", "values": ["A123"] }
+  "field": "No_Pedimento", // = filters[0],
+  "value": "260708236001187", // por compatibilidad con cuando solo
+  "op": "eq", // podía haber un filtro
+  "system": ["ERP"], // solo si mandaste system=
+  "metaFilters": [
+    // solo si mandaste meta.<clave>=
+    { "key": "lote", "values": ["A123"] },
   ],
   "metaOp": "eq",
 
   "order": "desc",
   "summary": false,
   "full": false,
-  "indexed": true,                    // true = Query indexada; false = Scan
-  "lookup": "uniqueKey",              // qué camino contestó: "uniqueKey" (una
-                                      // Query a TIPODOC#valor), "typeIndex"
-                                      // (Query al GSI + filtro en la Lambda)
-                                      // o "scan" (sin docType)
-  "restrictedToApp": "CEDIS",         // solo si la app que llama tiene AccessScope=own (ver abajo)
+  "indexed": true, // true = Query indexada; false = Scan
+  "lookup": "uniqueKey", // qué camino contestó: "uniqueKey" (una
+  // Query a TIPODOC#valor), "typeIndex"
+  // (Query al GSI + filtro en la Lambda)
+  // o "scan" (sin docType)
+  "restrictedToApp": "CEDIS", // solo si la app que llama tiene AccessScope=own (ver abajo)
   "restrictedToDocTypes": ["FACTURA_HONORARIOS_XML"], // solo si tiene AllowedDocTypes configurado
   "count": 1,
-  "scanned": 2,                       // cuántos documentos se revisaron
+  "scanned": 2, // cuántos documentos se revisaron
   "matches": [
     {
       "documentId": "PEDIMENTO-ADUANAL-4ff224be-...",
-      "documentClassification": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO",  // qué trae
-      "documentType": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO",  // columna indexada (ver nota)
+      "documentClassification": "PEDIMENTO_ERP,FACTURA_FLETE_EXTRANJERO", // qué trae
+      "documentType": "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO", // columna indexada (ver nota)
       "documentTypeName": "Expediente Aduanal Multidocumento",
       "documentName": "expediente-2026.pdf",
       "validationStatus": "REQUIERE_REVISION",
       "documentCount": 23,
       "validation": { "status": "REQUIERE_REVISION", "...": "..." },
-      "documents": [ /* TODOS los documentos, con sus campos y sus renglones */ ],
-      "tracking": { "appOrigin": "ERP", "...": "..." },   // qué sistema lo subió
-      "metadata": { "lote": "A123", "sucursal": "chih" }, // la del POST /documents
-      "matched": [                    // uno por cada filtro field/value
-        { "field": "No_Pedimento",
-          "matchedValue": "260708236001187",
-          "matchedAt": "*.No_Pedimento" }  // "*." = búsqueda profunda
+      "documents": [
+        /* TODOS los documentos, con sus campos y sus renglones */
       ],
-      "matchedValue": "260708236001187",              // = matched[0], por
-      "matchedAt": "*.No_Pedimento",  // compatibilidad
-      "fullResult": { /* SOLO con full=1: detalle por-campo de S3 */ }
-    }
-  ]
+      "tracking": { "appOrigin": "ERP", "...": "..." }, // qué sistema lo subió
+      "metadata": { "lote": "A123", "sucursal": "chih" }, // la del POST /documents
+      "matched": [
+        // uno por cada filtro field/value
+        {
+          "field": "No_Pedimento",
+          "matchedValue": "260708236001187",
+          "matchedAt": "*.No_Pedimento",
+        }, // "*." = búsqueda profunda
+      ],
+      "matchedValue": "260708236001187", // = matched[0], por
+      "matchedAt": "*.No_Pedimento", // compatibilidad
+      "fullResult": {
+        /* SOLO con full=1: detalle por-campo de S3 */
+      },
+    },
+  ],
 }
 ```
 
 > **Completitud:** por defecto cada match trae el envelope completo (con `documents[...]`). Con **`summary=1`** trae solo un resumen ligero — `documentCount`, los campos del PRIMER documento y sus conteos de renglones — que **incluye `appOrigin` y `metadata`**, para no tener que volver a pedir el documento solo para ver por qué entró. Con **`full=1`** agrega `fullResult` (el detalle por-campo `fields[]` desde S3).
 
 **Ejemplos:**
+
 ```bash
 # Todos los pedimentos, del más reciente al más viejo (indexado, sin Scan)
 curl -sS "$API/documents?docType=PEDIMENTO_ERP&summary=1"
@@ -1742,6 +1909,7 @@ curl -sS -G "$API/documents" \
 ```
 
 **Nota de rendimiento:**
+
 - **Dónde se aplica cada filtro:** `docType`, `status`, `since`/`until` y el filtro de expedientes se evalúan **en DynamoDB**; `system`, `meta.<clave>` y `field`/`value` se evalúan **en la Lambda**, sobre los envelopes que el primer grupo dejó pasar. Añadir un `system=` o un `meta.*` a una consulta que ya trae `docType` no cuesta lecturas extra: filtra lo que de todos modos se iba a traer. Lo que sí cuesta es **omitir `docType`**, que manda la consulta a un Scan.
 - **`system`/`meta.<clave>` vs. `field`/`value`:** los dos primeros leen **una clave conocida** del envelope (`tracking.appOrigin`, `metadata.<clave>`); `field`/`value` puede acabar recorriéndolo entero (búsqueda profunda). Por eso los dos primeros no están detrás de `AllowFieldSearch` y son la forma barata de reencontrar un documento propio.
 - **Por unique key** (`"lookup": "uniqueKey"`): **una** Query a `document-validation-keys[-dev]` sobre `TIPODOC#<valor normalizado>` + un BatchGet de los envelopes que devolvió. Costo constante: no depende de cuántos documentos tenga el tipo. Requiere `docType`, `op=eq` y que **alguno** de los `field` sea el declarado `unique_key`; los demás filtros se aplican después, solo sobre lo que esa Query devolvió.
@@ -1792,34 +1960,34 @@ El resultado se guarda en **dos lugares con distinto nivel de detalle** — esto
 
 Además del `EnrichmentResult`, cada item lleva columnas de primer nivel que escribe el enrichment Lambda (`enrichment-lambda/indexing.py`) al terminar de validar:
 
-| Columna | Ejemplo | Para qué |
-|---|---|---|
-| `DocumentType` | `PEDIMENTO_ERP` | **Partición del GSI `DocumentTypeIndex`.** Es la clasificación FINAL (la del segmentador), no la de la clasificación previa de Bedrock. |
-| `ProcessedAt` | `2026-07-24T11:30:00+00:00` | **Orden del GSI**: resultados por fecha y rangos `since`/`until`. |
-| `DocumentTypeName` | `Pedimento Aduanal` | Nombre legible del tipo (del catálogo o derivado del id). |
-| `ValidationStatus` | `REQUIERE_REVISION` | Filtro `status=` evaluado en DynamoDB. |
-| `ContainedDocumentTypes` | `["EXPEDIENTE_...", "PEDIMENTO_ERP", "FACTURA"]` | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente. |
-| `DocumentName` | `expediente-2026.pdf` | Nombre del archivo original. |
-| `Tracking` | `{CreatedAt, UpdatedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, Timings, Schema, AppOrigin, ModelIds, ModelFallbacks}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. Misma paridad de campos que `result.tracking` (ver §2 y `indexing.py::_TRACKING_FIELD_MAP`), solo que en PascalCase para combinar con el resto de estas columnas — nunca un subconjunto recortado. `AppOrigin` es lo que filtra `?system=`, pero el filtro se evalúa sobre el envelope, no sobre esta columna. |
-| `Metadata` | `{lote: "A123", estado_externo: "EN_REVISION"}` | **Map mutable**: nace del `metadata` del `POST /documents` (§1), se hereda al reprocesar (§3) y `PATCH /documents/{id}/metadata` (§4) la puede crear o cambiar. Es la fuente actual que la API superpone al snapshot de `EnrichmentResult`/S3 y lo que filtra `?meta.<clave>=`. |
-| `MetadataVersion`, `MetadataUpdatedAt`, `MetadataUpdatedBy` | `3`, fecha ISO, `ERP` | Auditoría/concurrencia de la última edición de metadata; no forman parte de la metadata del usuario ni de sus filtros. |
+| Columna                                                     | Ejemplo                                                                                                                                                       | Para qué                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DocumentType`                                              | `PEDIMENTO_ERP`                                                                                                                                               | **Partición del GSI `DocumentTypeIndex`.** Es la clasificación FINAL (la del segmentador), no la de la clasificación previa de Bedrock.                                                                                                                                                                                                                                                                                                                                 |
+| `ProcessedAt`                                               | `2026-07-24T11:30:00+00:00`                                                                                                                                   | **Orden del GSI**: resultados por fecha y rangos `since`/`until`.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `DocumentTypeName`                                          | `Pedimento Aduanal`                                                                                                                                           | Nombre legible del tipo (del catálogo o derivado del id).                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `ValidationStatus`                                          | `REQUIERE_REVISION`                                                                                                                                           | Filtro `status=` evaluado en DynamoDB.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `ContainedDocumentTypes`                                    | `["EXPEDIENTE_...", "PEDIMENTO_ERP", "FACTURA"]`                                                                                                              | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente.                                                                                                                                                                                                                                                                                                                                                                 |
+| `DocumentName`                                              | `expediente-2026.pdf`                                                                                                                                         | Nombre del archivo original.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `Tracking`                                                  | `{CreatedAt, UpdatedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, Timings, Schema, AppOrigin, ModelIds, ModelFallbacks}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. Misma paridad de campos que `result.tracking` (ver §2 y `indexing.py::_TRACKING_FIELD_MAP`), solo que en PascalCase para combinar con el resto de estas columnas — nunca un subconjunto recortado. `AppOrigin` es lo que filtra `?system=`, pero el filtro se evalúa sobre el envelope, no sobre esta columna. |
+| `Metadata`                                                  | `{lote: "A123", estado_externo: "EN_REVISION"}`                                                                                                               | **Map mutable**: nace del `metadata` del `POST /documents` (§1), se hereda al reprocesar (§3) y `PATCH /documents/{id}/metadata` (§4) la puede crear o cambiar. Es la fuente actual que la API superpone al snapshot de `EnrichmentResult`/S3 y lo que filtra `?meta.<clave>=`.                                                                                                                                                                                         |
+| `MetadataVersion`, `MetadataUpdatedAt`, `MetadataUpdatedBy` | `3`, fecha ISO, `ERP`                                                                                                                                         | Auditoría/concurrencia de la última edición de metadata; no forman parte de la metadata del usuario ni de sus filtros.                                                                                                                                                                                                                                                                                                                                                  |
 
 Documentos procesados antes de esto no tienen las columnas: `pnpm backfill:index` las reconstruye desde `EnrichmentResult` (idempotente, `--dry-run` disponible).
 
 Cómo lo devuelve cada endpoint:
 
-| Llamada | De dónde lee | Nivel |
-|---|---|---|
-| `GET /documents/{id}` | DynamoDB (`result`) | Envelope completo (con `documents[...]`) |
-| `GET /documents/{id}?full=1` | DynamoDB + S3 (`fullResult`) | Envelope + detalle por-campo `fields[]` |
-| `POST /documents/{id}/reprocess` | DynamoDB + S3 (`HeadObject` + `CopyObject`) | Trabajo nuevo desde el original; no modifica el id viejo — ver §3 |
-| `PATCH /documents/{id}/metadata` | DynamoDB (`UpdateItem` condicional) | Mapa completo actualizado; no toca S3 ni la validación — ver §4 |
-| `GET /documents/{id}/file` | DynamoDB (resolver id) + S3 (`ListObjectsV2` + URL prefirmada) | El **archivo original**, no el resultado — ver §5 |
-| `GET /documents?docType=...` | DynamoDB (Query al GSI + BatchGet) | Envelope completo por match |
-| `GET /documents?docType=...&system=...&meta.<clave>=...` | DynamoDB (Query al GSI + BatchGet) + filtro en la Lambda | Envelope completo por match; los dos filtros no añaden lecturas |
-| `GET /documents?field=...` | DynamoDB (Scan) | Envelope completo por match |
-| `GET /documents?docType=...&field=<unique key>` | DynamoDB (1 Query a `TIPODOC#valor` + BatchGet) | Envelope completo por match |
-| `GET /documents?...&summary=1` | DynamoDB (Query o Scan) | Resumen ligero por match |
-| `GET /documents?...&full=1` | DynamoDB + S3 por match | Envelope + `fullResult` por match |
+| Llamada                                                  | De dónde lee                                                   | Nivel                                                             |
+| -------------------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `GET /documents/{id}`                                    | DynamoDB (`result`)                                            | Envelope completo (con `documents[...]`)                          |
+| `GET /documents/{id}?full=1`                             | DynamoDB + S3 (`fullResult`)                                   | Envelope + detalle por-campo `fields[]`                           |
+| `POST /documents/{id}/reprocess`                         | DynamoDB + S3 (`HeadObject` + `CopyObject`)                    | Trabajo nuevo desde el original; no modifica el id viejo — ver §3 |
+| `PATCH /documents/{id}/metadata`                         | DynamoDB (`UpdateItem` condicional)                            | Mapa completo actualizado; no toca S3 ni la validación — ver §4   |
+| `GET /documents/{id}/file`                               | DynamoDB (resolver id) + S3 (`ListObjectsV2` + URL prefirmada) | El **archivo original**, no el resultado — ver §5                 |
+| `GET /documents?docType=...`                             | DynamoDB (Query al GSI + BatchGet)                             | Envelope completo por match                                       |
+| `GET /documents?docType=...&system=...&meta.<clave>=...` | DynamoDB (Query al GSI + BatchGet) + filtro en la Lambda       | Envelope completo por match; los dos filtros no añaden lecturas   |
+| `GET /documents?field=...`                               | DynamoDB (Scan)                                                | Envelope completo por match                                       |
+| `GET /documents?docType=...&field=<unique key>`          | DynamoDB (1 Query a `TIPODOC#valor` + BatchGet)                | Envelope completo por match                                       |
+| `GET /documents?...&summary=1`                           | DynamoDB (Query o Scan)                                        | Resumen ligero por match                                          |
+| `GET /documents?...&full=1`                              | DynamoDB + S3 por match                                        | Envelope + `fullResult` por match                                 |
 
 > El envelope de DynamoDB ya trae, POR DOCUMENTO, sus campos, sus renglones y su `liquidacionNormalizada`. Lo único que **solo** está en S3 es el detalle por-campo (`documents[].fields[]` con `extractedValue`/`normalizedValue`/`confidence`/`status`/`checks`, más `value`/`valid`/`reason` (vista simple: valor resuelto, booleano y motivo si `valid` es falso)), que se obtiene con `full=1`.

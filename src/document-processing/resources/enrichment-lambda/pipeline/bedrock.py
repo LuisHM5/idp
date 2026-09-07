@@ -216,17 +216,53 @@ def _model_candidates(
          for this stage.
       4. stage env var — `BEDROCK_<STAGE>_MODEL_ID` (`_STAGE_ENV`), the
          deployment-wide override for this one stage, same for every type.
-      5. base model — `base_model_id()`: `BEDROCK_MODEL_ID`, or the hardcoded
+      5. segmenter's own default — ONLY for `stage == "segmenter"`: the last
+         (best-verified/most-compatible, by `model_fallback`'s own design)
+         entry of `get_fallback_models()`, instead of the shared base model.
+         Segmentation is a different task shape from extraction/recovery —
+         open-ended multi-document JSON with disambiguation rules, not a
+         schema-constrained tool call — and the base model in this
+         deployment (`minimax.minimax-m2.5`, chosen for extraction's cost)
+         has verified real trouble with it: it reliably exhausts its whole
+         output budget (8K, confirmed on its Bedrock model card) without
+         emitting any answer text on exactly this shape, recovered only by
+         `pipeline/segmenter.py::_classify_pages`'s own retry — at the cost
+         of a wasted call every time. `extractor`/`recovery` are untouched:
+         they keep falling through to the base model, where minimax has a
+         track record of working (documentacion/COSTOS.md). Still only a
+         DEFAULT — every layer above it (including a plain
+         `BEDROCK_SEGMENTER_MODEL_ID`) wins over it exactly as before.
+      6. base model — `base_model_id()`: `BEDROCK_MODEL_ID`, or the hardcoded
          fallback. Always non-empty, so resolution can never come up short.
     """
     env_var = _STAGE_ENV.get(stage)
-    return [
+    candidates: List[Tuple[str, Optional[str]]] = [
         ("request override", _MODEL_OVERRIDE),
         ("catalog model_ids[stage]", type_entry.model_ids.get(stage) if type_entry else None),
         ("catalog model_id", type_entry.model_id if type_entry else None),
         ("stage env var", os.environ.get(env_var) if env_var else None),
-        ("base model", base_model_id()),
     ]
+    # Only `segmenter` gets its own default layer, between the stage env var
+    # and the shared base model — see this function's docstring, candidate 5.
+    # Omitted entirely (not present-with-None) for every other stage, so
+    # `explain_model_resolution`'s candidate list stays exactly what it was
+    # for extractor/recovery.
+    if stage == "segmenter":
+        candidates.append(("segmenter default", _segmenter_default_model()))
+    candidates.append(("base model", base_model_id()))
+    return candidates
+
+
+def _segmenter_default_model() -> Optional[str]:
+    """The most reliable known model, for the segmenter stage's own default
+    — see candidate 5 in `_model_candidates`'s docstring for why this stage
+    doesn't just fall through to the shared base model like the others.
+    `None` (falls through to the base model like before) when the fallback
+    list is empty, which never happens with the hardcoded
+    `model_fallback.DEFAULT_FALLBACK_MODELS` but is defensive against a
+    misconfigured/empty DynamoDB override table."""
+    models = get_fallback_models()
+    return models[-1] if models else None
 
 
 def resolve_model(stage: str, type_entry: Optional[TypeRegistryEntry] = None) -> str:
@@ -276,10 +312,26 @@ _RETRYABLE = {
 # rejection — see `_invoke_with_retry`.
 _NO_CACHE_SUPPORT: set = set()
 
-# Per-model output-token ceiling, learned from Bedrock's own rejection message.
-# Ceilings differ widely (Nova caps at 10k where Claude allows 16k+), so a
-# single MAX_OUTPUT_TOKENS constant can't fit every model.
-_MODEL_MAX_TOKENS: Dict[str, int] = {}
+# Per-model output-token ceiling, verified against each model's own Bedrock
+# model card (not inferred), seeded in `_MODEL_MAX_TOKENS` at import time so
+# the very first request already respects a ceiling that's public knowledge
+# instead of spending one wasted rejected call to learn it reactively (see
+# `_max_tokens_limit` below for the general, any-model learning path this
+# complements — most models have no entry here and rely on that instead).
+_KNOWN_MODEL_MAX_TOKENS: Dict[str, int] = {
+    # "Max output tokens: 8K" — https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-minimax-minimax-m2-5.html
+    "minimax.minimax-m2.5": 8192,
+}
+
+# Per-model output-token ceiling actually enforced by `_clamp_max_tokens`:
+# `_KNOWN_MODEL_MAX_TOKENS`'s entries up front, plus whatever gets LEARNED at
+# runtime from Bedrock's own rejection message (see `_max_tokens_limit`) the
+# first time some OTHER model's request asks for too much — ceilings differ
+# widely (Nova caps at 10k where Claude allows 16k+), so a single constant
+# can't fit every model. Never cleared by `reset_used_models()`, same as
+# `_NO_CACHE_SUPPORT`: what a model's real ceiling is doesn't change between
+# invocations in the same container, seeded or learned.
+_MODEL_MAX_TOKENS: Dict[str, int] = dict(_KNOWN_MODEL_MAX_TOKENS)
 _MAX_TOKENS_RE = re.compile(r"model limit of (\d+)")
 
 # Set MODEL_RESPONSE_DUMP_DIR to write every request/response pair to disk, one

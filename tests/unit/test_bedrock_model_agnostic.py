@@ -108,10 +108,28 @@ def fake(monkeypatch):
 # --- per-stage model resolution ---------------------------------------------
 
 
-def test_stages_share_the_base_model_by_default(monkeypatch):
+def test_extractor_and_recovery_share_the_base_model_by_default(monkeypatch):
     monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
-    for stage in ("segmenter", "extractor", "recovery"):
+    for stage in ("extractor", "recovery"):
         assert bedrock.resolve_model(stage) == "base-model"
+
+
+def test_segmenter_defaults_to_the_most_reliable_fallback_model_not_the_base_one(monkeypatch):
+    """Unlike extractor/recovery, segmenter's own default (absent any
+    override) is the LAST entry of `model_fallback.get_fallback_models()` —
+    not the shared base model. See `_model_candidates`'s docstring: this
+    stage's task shape (open-ended multi-document JSON) has verified real
+    trouble with the base model this deployment picked for cost
+    (`minimax.minimax-m2.5`), so its own default should not inherit that
+    choice blindly."""
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    # bedrock.py did `from .model_fallback import get_fallback_models` — a
+    # direct name binding into ITS namespace, so patching `model_fallback`'s
+    # own attribute would not reach it; patch the bound name instead.
+    monkeypatch.setattr(bedrock, "get_fallback_models", lambda: ["a", "b", "most-reliable"])
+    assert bedrock.resolve_model("segmenter") == "most-reliable"
+    # extractor/recovery are untouched by this — still the shared base model.
+    assert bedrock.resolve_model("extractor") == "base-model"
 
 
 def test_override_affects_only_its_own_stage(monkeypatch):
@@ -125,7 +143,10 @@ def test_legacy_extractor_var_still_acts_as_base(monkeypatch):
     """Deployments predating per-stage config set only this variable."""
     monkeypatch.setenv("BEDROCK_EXTRACTOR_MODEL_ID", "legacy-model")
     assert bedrock.base_model_id() == "legacy-model"
-    assert bedrock.resolve_model("segmenter") == "legacy-model"
+    assert bedrock.resolve_model("extractor") == "legacy-model"
+    # segmenter still resolves to its OWN default (the most reliable
+    # fallback model), not the legacy base — same as with BEDROCK_MODEL_ID.
+    assert bedrock.resolve_model("segmenter") == model_fallback.get_fallback_models()[-1]
 
 
 def test_falls_back_to_a_known_model_with_no_config():
@@ -187,6 +208,30 @@ def test_explain_model_resolution_reports_every_candidate_and_the_winner(monkeyp
     bedrock.reset_used_models()
     bedrock.explain_model_resolution("extractor", entry)
     assert bedrock.used_models() == {}
+
+
+def test_explain_model_resolution_for_segmenter_includes_its_own_default_layer(monkeypatch):
+    """Only `segmenter` gets the extra "segmenter default" candidate,
+    between the stage env var and the base model — never present (not even
+    with a `None` value) for any other stage, which is what
+    `test_explain_model_resolution_reports_every_candidate_and_the_winner`
+    just pinned above."""
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "base-model")
+    monkeypatch.setattr(bedrock, "get_fallback_models", lambda: ["a", "most-reliable"])
+
+    report = bedrock.explain_model_resolution("segmenter")
+
+    assert report["resolved"] == "most-reliable"
+    labels = [label for label, _ in report["candidates"]]
+    assert labels == [
+        "request override",
+        "catalog model_ids[stage]",
+        "catalog model_id",
+        "stage env var",
+        "segmenter default",
+        "base model",
+    ]
+    assert dict(report["candidates"])["segmenter default"] == "most-reliable"
 
 
 # --- caching degradation -----------------------------------------------------
@@ -316,6 +361,31 @@ def test_a_smaller_request_is_left_alone(fake):
     bedrock.converse("hola", model_id="capped-model", max_tokens=4096)
 
     assert client.calls[0]["inferenceConfig"]["maxTokens"] == 4096
+
+
+def test_known_model_max_tokens_has_minimax_seeded_with_its_real_bedrock_ceiling():
+    """Verified against MiniMax M2.5's own Bedrock model card ("Max output
+    tokens: 8K"), not inferred — see the constant's own comment for the
+    source. This is the RECIPE (`_KNOWN_MODEL_MAX_TOKENS`), not the mutable
+    per-container cache (`_MODEL_MAX_TOKENS`, which other tests in this file
+    freely `.clear()` for isolation) — checking the recipe here is what
+    survives that clearing."""
+    assert bedrock._KNOWN_MODEL_MAX_TOKENS["minimax.minimax-m2.5"] == 8192
+
+
+def test_a_known_model_is_clamped_on_the_very_first_call_no_rejection_needed(fake):
+    """On a genuinely fresh container `_MODEL_MAX_TOKENS` starts seeded from
+    `_KNOWN_MODEL_MAX_TOKENS` (this file's autouse fixture clears it for
+    isolation between tests, so re-seed it here the same way module import
+    does, to prove the FIRST call already respects it — no wasted rejected
+    call like `test_clamps_max_tokens_to_the_limit_the_model_reports`)."""
+    bedrock._MODEL_MAX_TOKENS.update(bedrock._KNOWN_MODEL_MAX_TOKENS)
+    client = fake()
+
+    bedrock.converse("hola", model_id="minimax.minimax-m2.5", max_tokens=32000)
+
+    assert len(client.calls) == 1  # no rejection round-trip
+    assert client.calls[0]["inferenceConfig"]["maxTokens"] == 8192
 
 
 def test_dump_writes_the_exchange_when_enabled(fake, tmp_path, monkeypatch):

@@ -408,7 +408,14 @@ Los códigos con reintento "Sí" primero agotan sus reintentos sobre el MISMO mo
 2. `model_ids[fase]` del catálogo del tipo (ver `catalogs/README.md`).
 3. `model_id` del catálogo del tipo.
 4. `BEDROCK_<FASE>_MODEL_ID` de entorno.
-5. `BEDROCK_MODEL_ID` de entorno / fallback fijo en código.
+5. **Solo para la fase `segmenter`:** el último elemento de la tabla de
+   fallback de abajo (el "mejor verificado/compatible" por diseño de esa
+   tabla) en vez de caer directo al modelo base — ver §5.6.1. La
+   segmentación es una tarea distinta a extracción/recovery (JSON abierto
+   con reglas de desambiguación, no una llamada con schema forzado), y el
+   modelo base de este deployment puede tener problemas reales con ESA
+   forma de tarea aunque funcione bien en extracción.
+6. `BEDROCK_MODEL_ID` de entorno / fallback fijo en código.
 
 Esto decide **qué modelo se intenta primero**. Si ESE modelo falla por indisponibilidad, entra el mecanismo de esta sección para decidir **a qué modelo cambiar después** — son dos listas independientes: el catálogo nunca aparece como candidato de fallback, y la tabla de fallback nunca decide qué se intenta primero.
 
@@ -472,9 +479,10 @@ aws dynamodb put-item --table-name document-validation-fallback-models \
 
 Distinto del fallback de la sección anterior (que reacciona a un `ClientError` — el modelo está caído/no disponible): aquí la llamada a Bedrock responde 200 OK pero con texto vacío o truncado (`stopReason: "max_tokens"`) — típicamente porque el presupuesto de salida se agotó antes de que el modelo escribiera el JSON, en un expediente con muchas páginas o muchos documentos a listar (ej. `FACTURA_FLETE_EXTRANJERO`, donde cada factura cuenta como documento separado). `_invoke_with_fallback` no ve nada anómalo en esa respuesta, así que `pipeline/segmenter.py` lo detecta y maneja por su cuenta:
 
-1. El presupuesto de tokens de la llamada de segmentación ya NO es un `4096` fijo — escala con el número de páginas (piso 8192, techo configurable `SEGMENTER_MAX_TOKENS_CEILING`, default 32000).
+1. El presupuesto de tokens de la llamada de segmentación ya NO es un `4096` fijo — escala con el número de páginas (piso 8192, techo configurable `SEGMENTER_MAX_TOKENS_CEILING`, default 32000). Para modelos con techo real conocido más bajo (hoy solo `minimax.minimax-m2.5`, verificado en 8K contra su propia ficha de modelo en Bedrock — `pipeline/bedrock.py::_KNOWN_MODEL_MAX_TOKENS`), la primera llamada YA respeta ese techo, sin gastar una llamada rechazada en aprenderlo.
 2. Si aun así la respuesta sale vacía, no parsea, o `stopReason` dice `max_tokens`, se reintenta UNA vez con el modelo más confiable conocido (el último de `model_fallback.get_fallback_models()`, hoy Haiku).
-3. Para expedientes grandes (por encima de `SEGMENTER_WINDOW_THRESHOLD` páginas, default 40 — el tope normal de 50 páginas sube a 500 cuando algún tipo declarado usa `page_selection`), la clasificación se reparte en ventanas de páginas (`SEGMENTER_WINDOW_SIZE`, default 25, con solape `SEGMENTER_WINDOW_OVERLAP`, default 3) clasificadas en paralelo (`SEGMENTER_WINDOW_WORKERS`, default 4) y luego fusionadas.
+3. La fase `segmenter` además tiene su PROPIO default (candidato 5 de la lista de precedencia de arriba): a falta de cualquier override, cae en ese mismo modelo más confiable en vez de heredar el modelo base compartido con extracción/recovery — verificado que `minimax.minimax-m2.5` agota su presupuesto de salida completo sin escribir texto en esta tarea (JSON abierto de clasificación multi-documento), aunque funcione bien en extracción. Sigue siendo un default: cualquier override (catálogo, `BEDROCK_SEGMENTER_MODEL_ID`, o el de request en dev) lo gana igual que antes.
+4. Para expedientes grandes (por encima de `SEGMENTER_WINDOW_THRESHOLD` páginas, default 40 — el tope normal de 50 páginas sube a 500 cuando algún tipo declarado usa `page_selection`), la clasificación se reparte en ventanas de páginas (`SEGMENTER_WINDOW_SIZE`, default 25, con solape `SEGMENTER_WINDOW_OVERLAP`, default 3) clasificadas en paralelo (`SEGMENTER_WINDOW_WORKERS`, default 4) y luego fusionadas.
 
 Todas configurables por variable de entorno (redeploy, no hot-reload):
 
