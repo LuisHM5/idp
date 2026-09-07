@@ -1287,6 +1287,7 @@ function render() {
   const overall = aggOverall(rows);
   document.getElementById('kpis').innerHTML = [
     kpiTile(num(overall.n), 'Documentos'),
+    kpiTile(num(overall.totalPages), 'Páginas procesadas'),
     kpiTile(num(overall.nCompleted), 'Ejecuciones completas'),
     kpiTile(pctFmt(overall.approvalRate), 'Tasa de aprobación'),
     kpiTile(pctFmt(overall.avgConfidence), 'Confianza promedio'),
