@@ -62,7 +62,7 @@
     "destroy": "npx cdk destroy",
     "destroy:full": "node scripts/destroy-full.mjs",
     "preview-prompts": "node scripts/preview-prompts.mjs",
-    "docs:api": "node scripts/serve-api-docs.mjs",
+    "docs:api": "node documentacion/api-docs/serve.mjs",
     "backfill:index": "node scripts/backfill-index.mjs",
     "backfill:keys": "node scripts/backfill-keys.mjs",
     "test-local": "node scripts/test-local.mjs",

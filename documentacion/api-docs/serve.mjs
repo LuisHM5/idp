@@ -1,16 +1,25 @@
 #!/usr/bin/env node
 /**
- * Sirve la documentación del API REST (documentacion/api-docs/openapi.yaml) localmente.
- * Prioriza Scalar (UI moderna, "/") pero deja Swagger UI disponible como
- * alternativa compatible ("/swagger") sobre el mismo spec — ninguna build,
- * solo un servidor HTTP mínimo con Node core + los bundles de Scalar/Swagger
- * UI vía CDN (jsdelivr/unpkg), apuntando siempre al YAML local.
+ * Sirve la documentación del API REST (./openapi.yaml, mismo directorio)
+ * localmente. Prioriza Scalar (UI moderna, "/") pero deja Swagger UI
+ * disponible como alternativa compatible ("/swagger") sobre el mismo spec —
+ * ninguna build, solo un servidor HTTP mínimo con Node core (sin
+ * dependencias que instalar) + los bundles de Scalar/Swagger UI vía CDN
+ * (jsdelivr/unpkg), apuntando siempre al YAML local.
+ *
+ * Standalone a propósito: este archivo no importa nada de `scripts/` ni
+ * depende de estar dentro del repo completo — es parte del paquete
+ * autocontenido `documentacion/api-docs/` (ver su README.md), así que corre
+ * igual si alguien solo tiene esta carpeta (sin pnpm, sin el resto del repo,
+ * sin `npm install`).
  *
  * Uso:
- *   pnpm docs:api                  # sirve y abre Scalar en el navegador
- *   pnpm docs:api -- --swagger     # abre Swagger UI en vez de Scalar
- *   pnpm docs:api -- --port 4500
- *   pnpm docs:api -- --no-open     # no abrir navegador, solo imprime las URLs
+ *   pnpm docs:api                       # desde la raíz del repo (Scalar)
+ *   node serve.mjs                      # parado en documentacion/api-docs/
+ *   node documentacion/api-docs/serve.mjs   # desde cualquier otro lado
+ *   ... -- --swagger                    # abre Swagger UI en vez de Scalar
+ *   ... -- --port 4500
+ *   ... -- --no-open                    # no abrir navegador, solo imprime las URLs
  */
 
 import { createServer } from "http";
@@ -21,7 +30,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SPEC_PATH = path.join(__dirname, "..", "documentacion", "api-docs", "openapi.yaml");
+const SPEC_PATH = path.join(__dirname, "openapi.yaml");
 
 function parseArgs(argv) {
   const o = { port: 4001, open: true, swagger: false };

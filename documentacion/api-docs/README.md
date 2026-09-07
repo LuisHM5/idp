@@ -20,6 +20,7 @@ funciona desde cualquier lenguaje que pueda hacer un request.
 | --- | --- | --- |
 | **[`API_USO.md`](API_USO.md)** | Referencia completa: los 8 endpoints de subida/consulta más el catálogo de tipos, cada uno con su request/response anotado y ejemplos en **curl, Node.js, Python y C#** (selector de lenguaje por paso). | Tu documento de cabecera. Empieza aquí. |
 | **[`openapi.yaml`](openapi.yaml)** | El mismo API como contrato OpenAPI 3.1 — tipado, machine-readable. | Generar un cliente automático (Postman, `openapi-generator`, etc.) o cargarlo en tu editor de OpenAPI favorito. |
+| **[`serve.mjs`](serve.mjs)** | Visor local del contrato: **Scalar** (UI moderna) y **Swagger UI**, sobre `openapi.yaml`. Sin dependencias que instalar. | Quieres explorar el API interactivamente en el navegador en vez de leer el YAML. |
 | **[`API_RESUMEN.md`](API_RESUMEN.md)** | Chuleta de una página: solo verbos, parámetros y forma de la respuesta, sin prosa. | Ya conoces el API y solo quieres recordar un shape rápido. |
 | **[`ejemplos/curl.md`](ejemplos/curl.md)** | Runbook curl copiar-y-pegar, paso a paso, con tabla de errores de API Gateway traducidos. | No te importa el lenguaje, o solo quieres probar el flujo desde la terminal primero. |
 | **[`ejemplos/csharp.md`](ejemplos/csharp.md)** | Programa C#/.NET completo en un solo archivo: registrar, subir, esperar el resultado, actualizar metadata, buscar y descargar el original. | Integras desde .NET y quieres un ejemplo end-to-end, no solo fragmentos. |
@@ -27,6 +28,35 @@ funciona desde cualquier lenguaje que pueda hacer un request.
 > Node.js y Python **también tienen ejemplo para cada paso** — están dentro de
 > `API_USO.md`, en el selector de lenguaje de cada sección (no en un archivo
 > aparte). Si integras en esos lenguajes, ese es el lugar.
+
+### Ver el contrato interactivo (Scalar / Swagger)
+
+Necesitas **Node.js** — nada más, cero `npm install`: el servidor solo usa
+Node core y carga Scalar/Swagger UI desde CDN en el navegador. Funciona
+igual en Windows, macOS y Linux.
+
+Parado en esta carpeta (`documentacion/api-docs/`), sola, sin el resto del repo:
+
+```bash
+npm start
+```
+
+(`npm run docs` y `npm run serve` hacen lo mismo — usa el que te resulte más
+natural. `node serve.mjs` directo también funciona si prefieres no usar npm.)
+
+Si en cambio tienes el repo completo clonado, desde la raíz:
+
+```bash
+pnpm docs:api
+```
+
+Cualquiera de las dos abre **Scalar** en `http://localhost:4001/` (default) y
+deja **Swagger UI** en `/swagger`. Para otro puerto o sin abrir el navegador:
+
+```bash
+npm start -- --port 4500
+npm start -- --no-open
+```
 
 ## Antes de empezar
 

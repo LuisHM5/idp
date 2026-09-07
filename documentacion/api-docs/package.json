@@ -1,0 +1,16 @@
+{
+  "name": "documents-validator-api-docs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Documentación del API IDP para integradores — visor local (Scalar/Swagger) sobre openapi.yaml. Standalone: cero dependencias, funciona con solo esta carpeta.",
+  "type": "module",
+  "main": "serve.mjs",
+  "scripts": {
+    "start": "node serve.mjs",
+    "docs": "node serve.mjs",
+    "serve": "node serve.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
