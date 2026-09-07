@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Convierte un Markdown de documentacion/ a PDF.
 #
-#   pnpm doc:pdf                                 # documentacion/API_RESUMEN.md
-#   pnpm doc:pdf documentacion/API_USO.md        # otro archivo
-#   pnpm doc:pdf documentacion/API_USO.md /tmp/api.pdf
+#   pnpm doc:pdf                                          # documentacion/api-docs/API_RESUMEN.md
+#   pnpm doc:pdf documentacion/api-docs/API_USO.md         # otro archivo
+#   pnpm doc:pdf documentacion/api-docs/API_USO.md /tmp/api.pdf
 #
 # Dos pasos: pandoc arma un HTML autocontenido (respeta tablas y bloques de
 # código del Markdown) y Chrome headless lo imprime a PDF. No usa LaTeX, que
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-IN="${1:-documentacion/API_RESUMEN.md}"
+IN="${1:-documentacion/api-docs/API_RESUMEN.md}"
 OUT="${2:-}"
 
 [[ -f "$IN" ]] || { echo "No existe: $IN" >&2; exit 1; }

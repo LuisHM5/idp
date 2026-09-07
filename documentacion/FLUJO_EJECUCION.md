@@ -37,7 +37,7 @@ flowchart TD
 
 Puntos clave:
 - La **Step Function la crea el blueprint** (`@cdklabs/cdk-appmod-catalog-blueprints`); este repo aporta el paso de **enrichment**, upload/query y las Lambdas que sustituyen clasificación/procesamiento del modelo.
-- En las rutas field-centric/XML/tabular el resultado se guarda en **dos lugares**: DynamoDB (envelope compacto, límite 256 KB de Step Functions) y S3 (`results/{id}.json`, completo). El flujo legacy solo persiste el envelope. Ver `API_USO.md`.
+- En las rutas field-centric/XML/tabular el resultado se guarda en **dos lugares**: DynamoDB (envelope compacto, límite 256 KB de Step Functions) y S3 (`results/{id}.json`, completo). El flujo legacy solo persiste el envelope. Ver `api-docs/API_USO.md`.
 
 ## Recorrido paso a paso (con referencias a código)
 
@@ -161,7 +161,7 @@ Ordenadas por impacto (⭐ = mayor).
 
 4. **⭐ Doble representación del resultado.** El resultado crudo de `process_pdf`
    (sin wrapper) va a S3 y el envelope (con `expediente`) a DynamoDB — dos shapes
-   distintos que confunden a los consumidores (ver `API_USO.md`). *Mejora:*
+   distintos que confunden a los consumidores (ver `api-docs/API_USO.md`). *Mejora:*
    unificar el shape entre S3 y DynamoDB.
 
 5. **⭐ Escrituras finales parcialmente independientes.** S3 full, columnas

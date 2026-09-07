@@ -15,7 +15,7 @@
  *       file (the PDF/image/XML/XLSX itself, not the extraction result).
  *       Bytes never pass through this Lambda or API Gateway — see
  *       `findSourceObject`/`getFileById` below and
- *       documentacion/API_USO.md for why (size limits) and the access-control
+ *       documentacion/api-docs/API_USO.md for why (size limits) and the access-control
  *       implications of a presigned URL / a single shared API key.
  *
  *   POST /documents/{id}/reprocess
@@ -165,6 +165,14 @@ import {
   userMetadataForReprocess,
   validateSourceFile,
 } from "./reprocess-request.mjs";
+import {
+  findDocumentType,
+  mergeDocumentTypes,
+  paginateDocumentTypes,
+  parseIncludeSchema,
+  parsePage,
+  scopeToAllowedDocTypes,
+} from "./document-type-catalog.mjs";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -389,6 +397,79 @@ function bundledTypes() {
   } catch {
     return [];
   }
+}
+
+/**
+ * Live DynamoDB catalog rows for `GET /document-types` — `type_id`,
+ * `display_name`, `description`, `fields` (the schema) and `enabled`. A
+ * fresh Scan on every call, deliberately NOT cached like `knownTypesCache`
+ * below: the whole point of this endpoint is to reflect a `pnpm sync:one`
+ * hot-reload immediately, without waiting for the Lambda container to
+ * recycle. Fail-open to bundled-only on any error, same as `knownTypes()`.
+ */
+async function catalogOverrideRows() {
+  if (!CATALOG_TABLE) return [];
+  const rows = [];
+  try {
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new ScanCommand({
+          TableName: CATALOG_TABLE,
+          ProjectionExpression: "#tid, #dn, #desc, #fld, #en",
+          ExpressionAttributeNames: {
+            "#tid": "type_id",
+            "#dn": "display_name",
+            "#desc": "description",
+            "#fld": "fields",
+            "#en": "enabled",
+          },
+          ExclusiveStartKey,
+        })
+      );
+      rows.push(...(page.Items || []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+  } catch (err) {
+    console.warn("document-types catalog scan failed, falling back to bundled only:", err.message);
+  }
+  return rows;
+}
+
+/** `GET /document-types` — paginated (5/page) catalog listing, `schema`
+ *  omitted unless `?includeSchema=1`. */
+async function listDocumentTypes(params, caller) {
+  const merged = scopeToAllowedDocTypes(
+    mergeDocumentTypes(bundledTypes(), await catalogOverrideRows()),
+    caller.allowedDocTypes
+  );
+  return json(
+    200,
+    paginateDocumentTypes(merged, {
+      page: parsePage(params.page),
+      includeSchema: parseIncludeSchema(params.includeSchema),
+    })
+  );
+}
+
+/** `GET /document-types/{type}` — one type by its exact TYPE_ID
+ *  (case-insensitive, no alias resolution — see document-type-catalog.mjs).
+ *  404, not an empty object, when the type doesn't exist or isn't in the
+ *  caller's AllowedDocTypes — same "don't confirm what you can't see"
+ *  principle as getById. */
+async function getDocumentTypeByKey(typeId, params, caller) {
+  const merged = scopeToAllowedDocTypes(
+    mergeDocumentTypes(bundledTypes(), await catalogOverrideRows()),
+    caller.allowedDocTypes
+  );
+  const found = findDocumentType(merged, typeId, parseIncludeSchema(params.includeSchema));
+  if (!found) {
+    return json(404, {
+      error: "DOCUMENT_TYPE_NOT_FOUND",
+      message: `No existe (o no está visible para esta app) el tipo de documento '${typeId}'`,
+    });
+  }
+  return json(200, found);
 }
 
 let knownTypesCache = null;
@@ -1252,7 +1333,7 @@ async function query(params, caller, multi) {
   const built = buildFilters(params, multi);
   // buildFilters reports `{code, message}` (it is HTTP-agnostic, like
   // body-parser.mjs); the wire shape is `{error, message}` — see ErrorResponse
-  // in openapi.yaml, which callers program against.
+  // in documentacion/api-docs/openapi.yaml, which callers program against.
   if (built.error) return json(400, { error: built.error.code, message: built.error.message });
   const filters = built.filters;
   const metaFilters = buildMetaFilters(params, multi);
@@ -1540,8 +1621,14 @@ export async function handler(event) {
   const isFileRoute = event.resource === "/documents/{id}/file";
   const isMetadataRoute = event.resource === "/documents/{id}/metadata";
   const isReprocessRoute = event.resource === "/documents/{id}/reprocess";
+  const isDocumentTypesListRoute = event.resource === "/document-types";
+  const isDocumentTypesByKeyRoute = event.resource === "/document-types/{type}";
   try {
     const caller = await resolveCallerApp(event);
+    if (isDocumentTypesByKeyRoute) {
+      return await getDocumentTypeByKey(decodeURIComponent(event.pathParameters.type), params, caller);
+    }
+    if (isDocumentTypesListRoute) return await listDocumentTypes(params, caller);
     if (id && isFileRoute) return await getFileById(decodeURIComponent(id), params, caller);
     if (id && isReprocessRoute && event.httpMethod === "POST") {
       return await reprocessById(decodeURIComponent(id), event, caller);

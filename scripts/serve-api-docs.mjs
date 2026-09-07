@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Sirve la documentación del API REST (openapi/openapi.yaml) localmente.
+ * Sirve la documentación del API REST (documentacion/api-docs/openapi.yaml) localmente.
  * Prioriza Scalar (UI moderna, "/") pero deja Swagger UI disponible como
  * alternativa compatible ("/swagger") sobre el mismo spec — ninguna build,
  * solo un servidor HTTP mínimo con Node core + los bundles de Scalar/Swagger
@@ -21,7 +21,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SPEC_PATH = path.join(__dirname, "..", "openapi", "openapi.yaml");
+const SPEC_PATH = path.join(__dirname, "..", "documentacion", "api-docs", "openapi.yaml");
 
 function parseArgs(argv) {
   const o = { port: 4001, open: true, swagger: false };

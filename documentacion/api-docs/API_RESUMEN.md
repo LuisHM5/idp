@@ -391,4 +391,31 @@ curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
 
 ---
 
-Detalle completo: `API_USO.md` · C#/.NET: `API_EJEMPLO_CS.md` · Runbook curl: `SUBIR_DOC_CURL.md` · Contrato: `openapi/openapi.yaml`
+## 8. `GET /document-types` [`/{type}`] — catálogo de tipos
+
+Auth: `x-api-key` · Hot-reload (refleja `pnpm sync:one` sin redeploy)
+
+| | `GET /document-types` | `GET /document-types/{type}` |
+|---|---|---|
+| Devuelve | Página, **5 fijo por página** | Un tipo |
+| Param de paginación | `page` (default `1`, fuera de rango se recorta) | — |
+| `includeSchema` | `1`/`true` agrega `schema` a cada tipo de la página | `1`/`true` agrega `schema` |
+| `404` | — | `DOCUMENT_TYPE_NOT_FOUND` — no existe, o fuera de `AllowedDocTypes` |
+
+```bash
+curl -sS "$API/document-types" -H "x-api-key: $KEY" | jq .
+curl -sS -G "$API/document-types/PEDIMENTO_ERP" -H "x-api-key: $KEY" \
+  --data-urlencode "includeSchema=1" | jq .
+```
+
+| `200` | |
+|---|---|
+| `type` · `displayName` · `description` | siempre |
+| `schema` | solo con `includeSchema=1` — el árbol `fields` del catálogo tal cual |
+| `page` · `pageSize` · `total` · `totalPages` · `types[]` | solo en la lista |
+
+Sin `AllowedDocTypes` en la app: catálogo completo. Con él: acotado a esos tipos, en ambos endpoints.
+
+---
+
+Detalle completo: `API_USO.md` · C#/.NET: `ejemplos/csharp.md` · Runbook curl: `ejemplos/curl.md` · Contrato: `openapi.yaml`

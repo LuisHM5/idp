@@ -448,7 +448,7 @@ originally requested us.anthropic.claude-haiku-4-5-20251001-v1:0)
 
 Si se agotan los reintentos (o toda la lista) sin éxito, un `ERROR` final antes de propagar la excepción original: `bedrock: stage=<fase> giving up after N fallback switch(es) starting from <modelo original> (last error on <último modelo>: <código>)`. Una fase que nunca tuvo que cambiar de modelo no genera ningún log de esta sección — solo lo inusual queda registrado.
 
-**En los datos finales:** `tracking.modelIds` siempre refleja el modelo que REALMENTE corrió (no el configurado) — eso ya pasa aunque hubo un cambio. Además, solo para las fases donde hubo un cambio, `tracking.modelFallbacks` (promovido también a la columna DynamoDB `Tracking.ModelFallbacks`, ver `documentacion/API_USO.md`) reporta el detalle completo:
+**En los datos finales:** `tracking.modelIds` siempre refleja el modelo que REALMENTE corrió (no el configurado) — eso ya pasa aunque hubo un cambio. Además, solo para las fases donde hubo un cambio, `tracking.modelFallbacks` (promovido también a la columna DynamoDB `Tracking.ModelFallbacks`, ver `documentacion/api-docs/API_USO.md`) reporta el detalle completo:
 
 ```jsonc
 "modelFallbacks": {

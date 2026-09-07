@@ -12,9 +12,11 @@ El motor es genérico, pero **desde 2026-07-24 el proyecto está enfocado princi
 | [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Diagrama de arquitectura AWS + diagrama de flujo de ejecución, y qué modelo de Bedrock se usa. |
 | [`documentacion/RESUMEN_EJECUTIVO.md`](documentacion/RESUMEN_EJECUTIVO.md) | 👔 Versión para directivos: el proceso explicado en una imagen, sin nombres de servicios ni tecnicismos. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
-| [`documentacion/API_USO.md`](documentacion/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
-| [`documentacion/API_EJEMPLO_CS.md`](documentacion/API_EJEMPLO_CS.md) | Integración completa en C#/.NET: upload, consulta, metadata, búsqueda y descarga. |
-| [`openapi/openapi.yaml`](openapi/openapi.yaml) | Contrato OpenAPI 3.1 del mismo API. Ver localmente con `pnpm docs:api` (Scalar en `/`, Swagger UI en `/swagger`). |
+| [`documentacion/api-docs/`](documentacion/api-docs/README.md) | 📦 **Paquete de documentación del API para compartir** con quien conoce 0 el proyecto: guía de uso, contrato OpenAPI y ejemplos de código listos para copiar. |
+| [`documentacion/api-docs/API_USO.md`](documentacion/api-docs/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
+| [`documentacion/api-docs/ejemplos/curl.md`](documentacion/api-docs/ejemplos/curl.md) | Runbook curl copiar-y-pegar (funciona sin importar el lenguaje del consumidor). |
+| [`documentacion/api-docs/ejemplos/csharp.md`](documentacion/api-docs/ejemplos/csharp.md) | Integración completa en C#/.NET: upload, consulta, metadata, búsqueda y descarga. |
+| [`documentacion/api-docs/openapi.yaml`](documentacion/api-docs/openapi.yaml) | Contrato OpenAPI 3.1 del mismo API. Ver localmente con `pnpm docs:api` (Scalar en `/`, Swagger UI en `/swagger`). |
 | [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
 | [`documentacion/TESTS.md`](documentacion/TESTS.md) | Qué comando de test correr para cada caso, costos, cómo diagnosticar un bug. |
@@ -166,7 +168,7 @@ Dos stacks aislados y completos por `-c env=dev|prod`: `DocumentValidationStack-
 
 ## Resultado de validación
 
-Cada documento procesado produce un resultado con `validation.status` (`APROBADO`/`RECHAZADO`/`REQUIERE_REVISION`) y, para tipos aduanales, el detalle completo del expediente (documentos detectados, campos con evidencia y confianza, checks cruzados). Shape completo, incluyendo dónde vive cada nivel de detalle (DynamoDB compacto vs. S3 completo): [`documentacion/API_USO.md`](documentacion/API_USO.md).
+Cada documento procesado produce un resultado con `validation.status` (`APROBADO`/`RECHAZADO`/`REQUIERE_REVISION`) y, para tipos aduanales, el detalle completo del expediente (documentos detectados, campos con evidencia y confianza, checks cruzados). Shape completo, incluyendo dónde vive cada nivel de detalle (DynamoDB compacto vs. S3 completo): [`documentacion/api-docs/API_USO.md`](documentacion/api-docs/API_USO.md).
 
 ## Autores
 

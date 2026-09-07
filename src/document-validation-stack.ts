@@ -825,8 +825,17 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     documentByIdResource.addResource("reprocess").addMethod("POST", queryIntegration, methodOptions);
     documentByIdResource.addResource("metadata").addMethod("PATCH", queryIntegration, methodOptions);
 
+    // GET /document-types                 → catálogo de tipos, paginado (5/página)
+    // GET /document-types/{type}           → un tipo por su TYPE_ID exacto
+    // Mismo queryFn: ya tiene CATALOG_TABLE + catalogTable.grantReadData desde
+    // la resolución de nombres de `?docType=` (ver knownTypes() en index.mjs)
+    // — no hace falta ningún permiso ni variable de entorno nueva.
+    const documentTypesResource = api.root.addResource("document-types");
+    documentTypesResource.addMethod("GET", queryIntegration, methodOptions);
+    documentTypesResource.addResource("{type}").addMethod("GET", queryIntegration, methodOptions);
+
     // Alias NO DOCUMENTADO de `POST /documents`, a propósito: la documentación
-    // (openapi.yaml, API_USO.md) describe únicamente `/documents`, y esta ruta
+    // (documentacion/api-docs/openapi.yaml, API_USO.md) describe únicamente `/documents`, y esta ruta
     // existe solo para que las integraciones que ya usaban `/upload` sigan
     // funcionando. El nombre dejó de ser cierto cuando el endpoint dejó de
     // recibir el archivo. Misma Lambda, misma respuesta. Retirarlo es borrar

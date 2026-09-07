@@ -840,8 +840,8 @@ La precedencia completa, de mayor a menor, es:
 
 Un valor de catálogo distinto de `single`/`multiple` hace fallar `pnpm build`.
 Si un override inválido entra directamente por DynamoDB, el runtime lo trata
-como ausente y usa el default global. Consulta `documentacion/API_USO.md` o
-`documentacion/API_RESUMEN.md` para el parámetro del POST.
+como ausente y usa el default global. Consulta `documentacion/api-docs/API_USO.md` o
+`documentacion/api-docs/API_RESUMEN.md` para el parámetro del POST.
 
 `FACTURA_FLETE_EXTRANJERO` declara `occurrence_mode: "multiple"`, así que una
 subida que pida únicamente ese tipo encuentra todas sus facturas aun sin mandar

@@ -365,6 +365,6 @@ Envía `{}` para heredar los tipos explícitos del trabajo anterior. Enviar
 - Un 404 significa que el documento no existe o queda fuera del alcance de la
   app. Ya no se usa para representar procesamiento pendiente.
 
-Referencia completa: [API_USO.md](API_USO.md). Resumen:
-[API_RESUMEN.md](API_RESUMEN.md). Contrato:
-[openapi/openapi.yaml](../openapi/openapi.yaml).
+Referencia completa: [API_USO.md](../API_USO.md). Resumen:
+[API_RESUMEN.md](../API_RESUMEN.md). Contrato:
+[openapi.yaml](../openapi.yaml).

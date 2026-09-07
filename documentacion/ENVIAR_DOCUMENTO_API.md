@@ -205,7 +205,7 @@ pnpm resultado -- --id "$NEW_DOC_ID" --wait
 
 En prod agrega `-H "x-api-key: $KEY"`. Un body `{}` hereda la declaración de
 tipos anterior; `{"documentType":null}` vuelve a clasificación automática.
-La referencia completa está en `API_USO.md` §3.
+La referencia completa está en `api-docs/API_USO.md` §3.
 
 ---
 

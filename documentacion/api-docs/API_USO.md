@@ -4,8 +4,8 @@
   `src/document-validation-stack.ts` (RestApi "DocumentUploadApi") y con los
   handlers en `src/document-processing/resources/{upload,query}-lambda/`.
   Si agregas, quitas o cambias un endpoint (ruta, método, params, body o
-  respuesta), ACTUALIZA este archivo Y `openapi/openapi.yaml` en el mismo
-  cambio. Ver AGENTS.md.
+  respuesta), ACTUALIZA este archivo Y `openapi.yaml` (mismo directorio) en
+  el mismo cambio. Ver AGENTS.md.
 -->
 
 # API REST — Guía de uso
@@ -13,7 +13,7 @@
 Referencia de todos los endpoints del API de la app de validación documental.
 
 > **Documentación interactiva local (Scalar/Swagger):** `pnpm docs:api` sirve
-> el contrato formal [`openapi/openapi.yaml`](../openapi/openapi.yaml) en
+> el contrato formal [`openapi.yaml`](openapi.yaml) en
 > `http://localhost:4001` — Scalar por default (`/`), Swagger UI en
 > `/swagger`. Esta guía sigue siendo la referencia narrativa con ejemplos
 > curl; el YAML es el contrato tipado de request/response.
@@ -71,6 +71,8 @@ Referencia de todos los endpoints del API de la app de validación documental.
 | `GET`   | `/documents?docType=...`                 | Listar/filtrar documentos por tipo (indexado, sin Scan)                                   |
 | `GET`   | `/documents?system=...&meta.<clave>=...` | Filtrar por qué **sistema** lo subió y por la **metadata** con la que se subió            |
 | `GET`   | `/documents?field=...&value=...`         | Buscar documentos por cualquier campo extraído                                            |
+| `GET`   | `/document-types`                        | Catálogo de tipos soportados, paginado (5 por página)                                     |
+| `GET`   | `/document-types/{type}`                 | Un tipo de documento por su TYPE_ID exacto, con su schema opcional                         |
 
 ---
 
@@ -1946,6 +1948,93 @@ Para dar de alta/quitar estos permisos: `pnpm apps:register`/`reconfigure`
 (fijan el valor completo) o `pnpm apps:grant`/`apps:deny --doctype A,B`
 (suman/restan tipos sin pisar los que ya tenía la app) — ver
 `AMBIENTES_Y_SEGURIDAD.md` → "Acceso por app".
+
+---
+
+## 7. `GET /document-types` — Catálogo de tipos de documento
+
+Qué tipos existen, para armar un selector o generar un cliente sin tener que
+leer `catalogs/*.json` del repo. Dos formas:
+
+| Petición | Para qué |
+| --- | --- |
+| `GET /document-types` | Lista paginada (**5 por página, fijo**), ordenada por `type`. |
+| `GET /document-types/{type}` | Un solo tipo, por su TYPE_ID exacto (case-insensitive). |
+
+Cada tipo trae `type` (el mismo valor que usas en `documentType`/`docType`),
+`displayName` y `description`. El **schema** — el árbol completo de campos
+que la extracción llena, con su `type`, si es `required` y su `hint` (dónde
+vive el dato en el documento) — **se omite por default** y solo aparece con
+`includeSchema=1`: un tipo como `PEDIMENTO_ADUANAL` tiene decenas de campos
+anidados, así que una página sin él es liviana a propósito.
+
+Refleja el catálogo **hot-reload**: un tipo que acabas de sincronizar con
+`pnpm sync:one` aparece aquí de inmediato, sin esperar un redeploy — misma
+fuente que usa el pipeline para clasificar y extraer.
+
+<details open>
+<summary><b>curl — listar</b></summary>
+
+```bash
+# Página 1, sin schema (liviano — solo type/displayName/description).
+curl -sS "$API/document-types" -H "x-api-key: $KEY" | jq .
+
+# Página 2, con el schema completo de cada tipo de esa página.
+curl -sS -G "$API/document-types" -H "x-api-key: $KEY" \
+  --data-urlencode "page=2" --data-urlencode "includeSchema=1" | jq .
+```
+
+```jsonc
+{
+  "page": 1,
+  "pageSize": 5,
+  "total": 9,
+  "totalPages": 2,
+  "types": [
+    {
+      "type": "PEDIMENTO_ERP",
+      "displayName": "Pedimento (mapeo ERP)",
+      "description": "Pedimento aduanal extraído con los nombres de campo de la tabla del ERP, listo para insertar sin traducción intermedia."
+    }
+  ]
+}
+```
+
+</details>
+
+<details>
+<summary><b>curl — un tipo por su key, con schema</b></summary>
+
+```bash
+curl -sS -G "$API/document-types/PEDIMENTO_ERP" -H "x-api-key: $KEY" \
+  --data-urlencode "includeSchema=1" | jq .
+```
+
+```jsonc
+{
+  "type": "PEDIMENTO_ERP",
+  "displayName": "Pedimento (mapeo ERP)",
+  "description": "Pedimento aduanal extraído con los nombres de campo de la tabla del ERP...",
+  "schema": {
+    "No_Pedimento": {
+      "type": "string",
+      "required": true,
+      "hint": "Número de pedimento de 15 dígitos, en el encabezado."
+    }
+    // ... el resto de los campos del tipo, mismo shape que catalogs/*.json → "fields"
+  }
+}
+```
+
+`404 DOCUMENT_TYPE_NOT_FOUND` si el TYPE_ID no existe, o existe pero está
+fuera del `AllowedDocTypes` de tu app — sin distinción entre ambos casos,
+mismo principio que `GET /documents/{id}` con un id fuera de alcance (§2).
+
+</details>
+
+Sin `AllowedDocTypes` configurado en tu app ves el catálogo completo; con él,
+tanto la lista como la búsqueda por key se acotan a esos tipos — igual que
+`GET /documents` sin `docType` (§6).
 
 ---
 

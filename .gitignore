@@ -77,3 +77,4 @@ data/responses*/
 
 # PDFs generados desde los .md (pnpm doc:pdf) — el .md es la fuente
 documentacion/*.pdf
+documentacion/**/*.pdf

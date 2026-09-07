@@ -6,7 +6,7 @@
   `upload-lambda`/`query-lambda`, o agregas una llamada nueva a un servicio
   de AWS (nuevo cliente boto3/@aws-sdk en `enrichment-lambda`, `upload-lambda`
   o `query-lambda`), actualiza este documento en el mismo cambio. El detalle
-  técnico exhaustivo del API REST interno vive en `API_USO.md` — este
+  técnico exhaustivo del API REST interno vive en `api-docs/API_USO.md` — este
   documento no lo duplica, solo lo resume y lo pone en contexto junto con las
   dependencias externas.
 -->
@@ -24,7 +24,7 @@ Inventario de las interfaces de programación necesarias para integrar este sist
 
 ## 1. APIs internas (expuestas por este proyecto)
 
-Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema externo (ERP, portal, otro backend) las consume para integrarse con el pipeline de validación. Documentación técnica completa (bodies, ejemplos curl, códigos de error): **[`API_USO.md`](API_USO.md)**.
+Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema externo (ERP, portal, otro backend) las consume para integrarse con el pipeline de validación. Documentación técnica completa (bodies, ejemplos curl, códigos de error): **[`api-docs/API_USO.md`](api-docs/API_USO.md)**.
 
 ### 1.1 Resumen de endpoints
 
@@ -36,8 +36,10 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 | 4 | `GET` | `/documents/{id}/file` | **Descargar** el archivo original (el PDF/imagen/XML/XLSX/CSV que se subió, no el resultado) vía URL prefirmada de S3 | `query-lambda/index.mjs` |
 | 5 | `POST` | `/documents/{id}/reprocess` | **Reprocesar** el archivo original con un id nuevo y, opcionalmente, otros tipos/cardinalidad/modelo | `query-lambda/index.mjs` |
 | 6 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata actual y/o cualquier campo extraído | `query-lambda/index.mjs` |
+| 7 | `GET` | `/document-types` | **Catálogo de tipos**: lista paginada (5/página) de los tipos soportados, con nombre y descripción | `query-lambda/index.mjs` |
+| 8 | `GET` | `/document-types/{type}` | Un tipo del catálogo por su TYPE_ID exacto, con su `schema` de campos opcional (`?includeSchema=1`) | `query-lambda/index.mjs` |
 
-**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.8 y en `API_USO.md` §5.
+**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.8 y en `api-docs/API_USO.md` §5.
 
 ### 1.2 `POST /documents` — Iniciar el proceso de subida
 
@@ -73,7 +75,7 @@ reales chocaba con el tope de payload de Lambda (6 MB, límite duro de AWS).
 }
 ```
 
-**Respuesta 200**: `{ "documentId", "bucket", "key", "documentType", "classificationMode", "uploadUrl", "processingStatus": "AWAITING_UPLOAD", "statusUrl", "retryAfterSeconds" }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3). El registro ligero ya existe antes del PUT.
+**Respuesta 200** (campos principales — shape completo y anotado en `api-docs/API_USO.md` §1): `{ "documentId", "bucket", "key", "documentType", "occurrenceMode", "documentTypeCounts", "classificationMode", "uploadUrl", "uploadMethod", "uploadExpiresAt", "processingStatus": "AWAITING_UPLOAD", "statusUrl", "retryAfterSeconds" }`. El `documentId` es lo que el sistema externo debe guardar para consultar el resultado después (endpoint 1.3). El registro ligero ya existe antes del PUT.
 
 `documentType` es opcional y admite **uno o varios tipos separados por coma**:
 
@@ -137,7 +139,7 @@ Devuelve, en JSON, una **URL prefirmada de S3** (`downloadUrl`, no los bytes) pa
 
 No proxya los bytes por Lambda/API Gateway a propósito: **API Gateway topa cualquier respuesta a 10 MB** (límite duro de AWS), y los expedientes reales de este sistema llegan a decenas de MB — proxyear no era viable. El cliente descarga directo de S3 con la URL prefirmada, igual que `POST /documents` (1.2) pero en sentido inverso (`GetObjectCommand` en vez de `PutObjectCommand`).
 
-`404 NOT_FOUND` si el id no existe o queda fuera del alcance de la app; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las implicaciones de la URL temporal (ver 1.8): [`API_USO.md`](API_USO.md) §5.
+`404 NOT_FOUND` si el id no existe o queda fuera del alcance de la app; `404 FILE_NOT_FOUND` si el documento existe pero no se encontró el objeto original (aún `PROCESSING`, o borrado de S3 por fuera del sistema). Detalle completo, incluidas las implicaciones de la URL temporal (ver 1.8): [`api-docs/API_USO.md`](api-docs/API_USO.md) §5.
 
 ### 1.5 `POST /documents/{id}/reprocess` — Crear otro proceso desde el original
 
@@ -209,7 +211,7 @@ restringir más. `AccessScope=all` es un grant administrativo explícito. Dos
 casos conservan lectura irrestricta por compatibilidad — dev sin key y una key
 válida todavía no adoptada — pero una key no registrada **no puede escribir
 metadata ni iniciar reprocesos**. Una URL de descarga ya emitida sigue siendo una credencial de vida
-corta y debe tratarse como secreto. Ver `API_USO.md` §3/§4/§5 y
+corta y debe tratarse como secreto. Ver `api-docs/API_USO.md` §3/§4/§5 y
 `AMBIENTES_Y_SEGURIDAD.md`.
 
 ---
@@ -311,18 +313,18 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 
 | API | Tipo | Dirección | Dependencia de proveedor | Documentación técnica |
 |---|---|---|---|---|
-| `POST /documents` | Interna | Entrante (terceros → nosotros) | — | `API_USO.md` §1 |
-| `GET /documents/{id}` | Interna | Entrante | — | `API_USO.md` §2 |
-| `POST /documents/{id}/reprocess` | Interna | Entrante | — | `API_USO.md` §3 |
-| `PATCH /documents/{id}/metadata` | Interna | Entrante | — | `API_USO.md` §4 |
-| `GET /documents/{id}/file` | Interna | Entrante | — | `API_USO.md` §5 |
-| `GET /documents` | Interna | Entrante | — | `API_USO.md` §6 |
+| `POST /documents` | Interna | Entrante (terceros → nosotros) | — | `api-docs/API_USO.md` §1 |
+| `GET /documents/{id}` | Interna | Entrante | — | `api-docs/API_USO.md` §2 |
+| `POST /documents/{id}/reprocess` | Interna | Entrante | — | `api-docs/API_USO.md` §3 |
+| `PATCH /documents/{id}/metadata` | Interna | Entrante | — | `api-docs/API_USO.md` §4 |
+| `GET /documents/{id}/file` | Interna | Entrante | — | `api-docs/API_USO.md` §5 |
+| `GET /documents` | Interna | Entrante | — | `api-docs/API_USO.md` §6 |
 | Amazon Bedrock (Converse/InvokeModel) | Externa | Saliente (nosotros → AWS) | Alta — es el motor de IA del producto | `ARQUITECTURA.md`, `COSTOS.md` |
 | Amazon Textract | Externa | Saliente | Media — solo OCR de páginas escaneadas | `ARQUITECTURA.md` |
 | Amazon S3 | Externa | Saliente | Alta — almacenamiento de todo el pipeline | `ARQUITECTURA.md` |
 | Amazon DynamoDB | Externa | Saliente | Alta — catálogo y tracking | `ARQUITECTURA.md`, `catalogs/README.md` |
 | AWS Step Functions | Externa | Saliente (vía blueprint) | Media — orquestación, reemplazable | `FLUJO_EJECUCION.md` |
-| Amazon EventBridge | Externa | Saliente (vía blueprint) | Media — notificación, un consumidor externo depende de esto | `API_USO.md` §1 |
+| Amazon EventBridge | Externa | Saliente (vía blueprint) | Media — notificación, un consumidor externo depende de esto | `api-docs/API_USO.md` §1 |
 | Amazon SQS | Externa | Entrante (consumo, vía blueprint) | Baja — desacople interno | `FLUJO_EJECUCION.md` |
 | AWS ACM | Externa | Operación manual | Baja — solo prod, renovación de cert | `AMBIENTES_Y_SEGURIDAD.md` |
 

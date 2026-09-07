@@ -471,7 +471,7 @@ Del lado de **procesar un documento** (no del script, corre en cada request):
 5. El enrichment Lambda la copia tal cual al JSON final, dentro del objeto
    `tracking` de nivel superior (`tracking.appOrigin`, junto a `tracking.modelIds`/
    `tracking.createdAt`) — tanto en el flujo estándar como en el de expediente,
-   mismo shape en ambos. Ver `documentacion/API_USO.md`.
+   mismo shape en ambos. Ver `documentacion/api-docs/API_USO.md`.
 
 Si algo de esa cadena falla (permiso, key no registrada, S3 metadata perdida),
 el diseño es **fail-open a nivel de trazabilidad**: el documento se procesa

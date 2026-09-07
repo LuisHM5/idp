@@ -1,9 +1,15 @@
-# MANTENIMIENTO: este archivo es el contrato formal del API REST, derivado de
-# `documentacion/API_USO.md` (la referencia narrativa con ejemplos curl). Si
-# agregas, quitas o cambias un endpoint (ruta, método, params, body o
-# respuesta) en `src/document-validation-stack.ts` o en los handlers de
-# `upload-lambda`/`query-lambda`, actualiza AMBOS archivos en el mismo cambio.
-# Ver AGENTS.md → "API Documentation".
+# MANTENIMIENTO: este archivo es el contrato formal del API REST; `API_USO.md`
+# (mismo directorio) es la referencia narrativa con los ejemplos curl/Node/
+# Python/C# completos por paso. Si agregas, quitas o cambias un endpoint
+# (ruta, método, params, body o respuesta) en `src/document-validation-stack.ts`
+# o en los handlers de `upload-lambda`/`query-lambda`, actualiza AMBOS archivos
+# en el mismo cambio. Ver AGENTS.md → "API Documentation".
+#
+# NO agregues `x-codeSamples` por operación: vivieron aquí hasta que una
+# auditoría encontró ~525 líneas duplicadas byte a byte contra `API_USO.md`
+# (2026-09-07) — los ejemplos completos son responsabilidad exclusiva de
+# `API_USO.md`; este spec solo linkea a él (`externalDocs` y en cada
+# `description` relevante).
 #
 # Ver localmente con Scalar (por default) o Swagger UI: `pnpm docs:api`.
 openapi: 3.1.0
@@ -25,10 +31,11 @@ info:
     sino a S3. Es el único punto del contrato que no se ve entero en este
     documento, así que va explícito.
 
-    **Los cuatro pasos están documentados como operaciones**, en orden, y cada
-    uno trae su ejemplo en **curl, Node.js, Python y C#** — usa el selector de
-    lenguaje de esa operación. Los ejemplos encadenan: el paso 1 deja las
-    variables que usan el 2, el 3 y el 4.
+    **Los cuatro pasos están documentados como operaciones**, en orden. Este
+    spec es el contrato tipado (paths, params, schemas); los ejemplos
+    completos en **curl, Node.js, Python y C#** para cada paso — que
+    encadenan, el paso 1 deja las variables que usan el 2, el 3 y el 4 — viven
+    en [`API_USO.md`](./API_USO.md), un click aparte.
 
     | # | Operación | Auth | Cuerpo | Respuesta |
     |---|---|---|---|---|
@@ -51,11 +58,14 @@ info:
     responde `202` con `Retry-After` mientras trabaja; `404` sí significa que
     el id no existe o no es visible para la app que consulta.
 
-    ### Paso 2 — el `PUT` a S3 (no está en `paths`, va a otro host)
+    ### Paso 2 — el `PUT` a S3 (documentado como operación, pero va a otro host)
 
     `uploadUrl` es una URL prefirmada de S3: un `PUT` con el archivo en el
-    cuerpo, **sin credenciales de AWS** y sin pasar por esta API. Por eso no
-    aparece como operación aquí — el host es S3, no el API Gateway.
+    cuerpo, **sin credenciales de AWS** y sin pasar por esta API. Se
+    documenta como operación (`PUT /{uploadUrl}` abajo) para que aparezca en
+    el flujo de 4 pasos, pero con `servers` propio apuntando a S3 y
+    `security: []` — el "Try it" del visor no funciona ahí porque cada URL es
+    de un solo uso y ya viene firmada, no se arma a mano.
 
     ```bash
     # $RESP es la respuesta del paso 1
@@ -126,11 +136,11 @@ info:
 
     Este spec es el contrato formal de la API; la guía narrativa con ejemplos
     curl completos, notas de seguridad y el apéndice de "dónde queda el
-    resultado" vive en `documentacion/API_USO.md`. Para un runbook de copiar y
-    pegar paso a paso: `documentacion/SUBIR_DOC_CURL.md`.
+    resultado" vive en `API_USO.md` (mismo directorio). Para un runbook de
+    copiar y pegar paso a paso: `ejemplos/curl.md`.
 externalDocs:
   description: Guía de uso completa (español, con ejemplos curl)
-  url: ../documentacion/API_USO.md
+  url: ./API_USO.md
 servers:
   - url: https://idp.alsuper.com
     description: >
@@ -169,57 +179,16 @@ tags:
       NO recibe el archivo en ningún momento.
   - name: Consultar documentos
     description: Resultados, reproceso, archivo original y búsqueda por campo.
+  - name: Tipos de documento
+    description: >
+      Catálogo de tipos soportados: qué tipos existen, su nombre/descripción,
+      y el schema (campos, tipos, dónde vive cada dato) que la extracción
+      llena para cada uno. Útil para armar un selector de tipo o generar un
+      cliente sin tener que leer `catalogs/*.json` del repo.
 paths:
   /{uploadUrl}:
     put:
       operationId: putFileToPresignedUrl
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            # UPLOAD_URL viene del paso 1. Si la pegas a mano, usa comillas SIMPLES: una
-            # URL prefirmada real lleva ~12 `&` y sin comillas el shell la parte en el
-            # primero, mandando el resto a segundo plano.
-            UPLOAD_URL='https://...s3.us-east-1.amazonaws.com/raw/PEDIMENTO_ERP/10c7f624-.../pedimento.pdf?X-Amz-Algorithm=...&X-Amz-Signature=...&x-amz-meta-lote=A123&x-id=PutObject'
-
-            # NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL (mira los
-            # `x-amz-meta-*` de arriba). Sin x-api-key: esto no pasa por el API.
-            curl -sS --fail -X PUT --upload-file pedimento.pdf "$UPLOAD_URL"
-            # 200 con cuerpo vacío = subido. El pipeline arranca solo.
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            import { readFile } from "node:fs/promises";
-
-            // uploadUrl viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
-            // ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
-            const put = await fetch(uploadUrl, {
-              method: "PUT",
-              body: await readFile("pedimento.pdf"),
-            });
-            if (!put.ok) throw new Error(`PUT S3 → ${put.status}: ${await put.text()}`);
-            // 200 con cuerpo vacío = subido. El pipeline arranca solo.
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            # upload_url viene del paso 1. NINGUNA cabecera extra: la firma y la metadata
-            # ya viajan en el query string de la URL. Sin x-api-key: no pasa por el API.
-            with open("pedimento.pdf", "rb") as fh:
-                put = requests.put(upload_url, data=fh, timeout=300)  # data=fh → streaming
-            put.raise_for_status()
-            # 200 con cuerpo vacío = subido. El pipeline arranca solo.
-        - lang: C#
-          label: .NET 6+
-          source: |
-            // uploadUrl viene del paso 1. Cliente SEPARADO: el del API lleva x-api-key en
-            // DefaultRequestHeaders y esta petición no debe llevarla.
-            // NINGUNA cabecera extra: la firma y la metadata ya viajan en la URL.
-            using var s3 = new HttpClient();
-            using var content = new StreamContent(File.OpenRead("pedimento.pdf"));
-
-            var put = await s3.PutAsync(uploadUrl, content);
-            put.EnsureSuccessStatusCode();
-            // 200 con cuerpo vacío = subido. El pipeline arranca solo.
       tags: [Subir un documento]
       summary: "Paso 2 de 4: subir el archivo a la uploadUrl (host S3)"
       servers:
@@ -301,131 +270,12 @@ paths:
   /documents/{id}:
     get:
       operationId: getDocumentById
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            # 202 = sigue procesando; Retry-After marca la espera mínima.
-            delay=5
-            while :; do
-              code=$(curl -sS -o result.json -w '%{http_code}' \
-                "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
-              [ "$code" = 200 ] && break
-              [ "$code" = 202 ] || { cat result.json; exit 1; }
-              sleep $((delay + RANDOM % 3))
-              delay=$((delay < 15 ? delay * 2 : 30))
-            done
-
-            jq '.validation.status' result.json
-            jq '.documents[] | {index, documentType, pageStart, pageEnd, fields}' result.json
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            // 202 = trabajo conocido pero todavía no terminal.
-            let doc;
-            let delayMs = 5000;
-            for (let i = 0; i < 60; i++) {
-              const r = await fetch(`${API}/documents/${documentId}`, {
-                headers: { "x-api-key": KEY },
-              });
-              const body = await r.json();
-              if (r.status === 200) { doc = body; break; }
-              if (r.status !== 202) throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
-              const minimum = Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
-              const jitter = Math.random() * 1000;
-              await new Promise((s) => setTimeout(s, Math.max(delayMs, minimum) + jitter));
-              delayMs = Math.min(delayMs * 2, 30000);
-            }
-
-            if (doc.processingStatus === "FAILED") throw new Error("El procesamiento técnico falló");
-            const result = doc.result;
-            console.log(result.validation.status);         // APROBADO | REQUIERE_REVISION | RECHAZADO
-            // `documents` siempre está, traiga el PDF uno o veinte.
-            for (const d of result.documents) {
-              console.log(`#${d.index}`, d.documentType, `págs ${d.pageStart}-${d.pageEnd}`);
-              for (const [campo, v] of Object.entries(d.fields ?? {})) {
-                if (v.items) console.log("  ", campo, `= ${v.items.length} renglón(es)`);
-                else console.log("  ", campo, "=", v.value, `(conf ${v.confidence}, valid ${v.valid})`);
-              }
-            }
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            import random
-            import time
-
-            # 202 = trabajo conocido pero todavía no terminal.
-            doc = None
-            delay = 5
-            for _ in range(60):
-                r = requests.get(f"{API}/documents/{document_id}",
-                                 headers={"x-api-key": KEY}, timeout=30)
-                body = r.json()
-                if r.status_code == 200:
-                    doc = r.json()
-                    break
-                if r.status_code != 202:
-                    r.raise_for_status()
-                minimum = int(r.headers.get("Retry-After", body.get("retryAfterSeconds", 5)))
-                time.sleep(max(delay, minimum) + random.random())
-                delay = min(delay * 2, 30)
-
-            if doc["processingStatus"] == "FAILED":
-                raise RuntimeError("El procesamiento técnico falló")
-            result = doc["result"]
-            print(result["validation"]["status"]) # APROBADO | REQUIERE_REVISION | RECHAZADO
-            # `documents` siempre está, traiga el PDF uno o veinte.
-            for d in result["documents"]:
-                print(f"#{d['index']}", d["documentType"], f"págs {d['pageStart']}-{d['pageEnd']}")
-                for campo, v in (d.get("fields") or {}).items():
-                    if "items" in v:
-                        print("  ", campo, f"= {len(v['items'])} renglón(es)")
-                    else:
-                        print("  ", campo, "=", v["value"], f"(conf {v.get('confidence')}, valid {v['valid']})")
-        - lang: C#
-          label: .NET 6+
-          source: |
-            using System.Net;
-
-            // 202 = trabajo conocido pero todavía no terminal.
-            JsonElement doc = default;
-            var delay = TimeSpan.FromSeconds(5);
-            for (var i = 0; i < 60; i++)
-            {
-                var r = await http.GetAsync($"{api}/documents/{documentId}");
-                var body = await r.Content.ReadFromJsonAsync<JsonElement>();
-                if (r.StatusCode == HttpStatusCode.OK)
-                {
-                    doc = body;
-                    break;
-                }
-                if (r.StatusCode != HttpStatusCode.Accepted) r.EnsureSuccessStatusCode();
-                await Task.Delay(delay + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)));
-                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
-            }
-
-            if (doc.GetProperty("processingStatus").GetString() == "FAILED")
-                throw new Exception("El procesamiento técnico falló");
-            var result = doc.GetProperty("result");
-            // APROBADO | REQUIERE_REVISION | RECHAZADO
-            Console.WriteLine(result.GetProperty("validation").GetProperty("status"));
-            // `documents` siempre está, traiga el PDF uno o veinte.
-            foreach (var d in result.GetProperty("documents").EnumerateArray())
-            {
-                var tipo  = d.GetProperty("documentType");
-                var desde = d.GetProperty("pageStart");
-                var hasta = d.GetProperty("pageEnd");
-                Console.WriteLine($"{tipo} págs {desde}-{hasta}");
-                foreach (var campo in d.GetProperty("fields").EnumerateObject())
-                    if (campo.Value.TryGetProperty("value", out var v))
-                        Console.WriteLine($"   {campo.Name} = {v}");
-            }
       tags: [Consultar documentos]
       summary: "Paso 3 de 4: consultar el resultado del documento"
       description: >
         `{id}` puede ser el id completo o un prefijo (gana el primer match).
         `result` es el envelope completo, el mismo que se guarda en DynamoDB
-        y se publica en EventBridge — ver `documentacion/API_USO.md` §2 para
+        y se publica en EventBridge — ver `API_USO.md` §2 para
         el shape anotado campo por campo.
       parameters:
         - $ref: "#/components/parameters/DocumentIdPath"
@@ -520,58 +370,6 @@ paths:
         `modelId` tienen el mismo contrato que en `POST /documents` y sólo
         afectan la ejecución nueva. La metadata vigente del documento anterior
         se conserva.
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            RESP=$(curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
-              -H "x-api-key: $KEY" \
-              -H "Content-Type: application/json" \
-              -d '{
-                "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
-                "occurrenceMode": "multiple"
-              }')
-            NEW_DOC_ID=$(echo "$RESP" | jq -r .documentId)
-            echo "$NEW_DOC_ID"
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            const r = await fetch(`${API}/documents/${oldDocumentId}/reprocess`, {
-              method: "POST",
-              headers: { "x-api-key": KEY, "content-type": "application/json" },
-              body: JSON.stringify({
-                documentType: "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
-                occurrenceMode: "multiple",
-              }),
-            });
-            if (!r.ok) throw new Error(`reprocess → ${r.status}: ${await r.text()}`);
-            const { documentId: newDocumentId } = await r.json();
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            r = requests.post(
-                f"{API}/documents/{old_document_id}/reprocess",
-                headers={"x-api-key": KEY},
-                json={
-                    "documentType": "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
-                    "occurrenceMode": "multiple",
-                },
-                timeout=30,
-            )
-            r.raise_for_status()
-            new_document_id = r.json()["documentId"]
-        - lang: C#
-          label: .NET 6+
-          source: |
-            var response = await http.PostAsJsonAsync(
-                $"{api}/documents/{oldDocumentId}/reprocess",
-                new {
-                    documentType = "PEDIMENTO_ERP:1,FACTURA_FLETE_EXTRANJERO:all",
-                    occurrenceMode = "multiple"
-                });
-            response.EnsureSuccessStatusCode();
-            var job = await response.Content.ReadFromJsonAsync<JsonElement>();
-            var newDocumentId = job.GetProperty("documentId").GetString();
       parameters:
         - $ref: "#/components/parameters/DocumentIdPath"
       requestBody:
@@ -696,53 +494,6 @@ paths:
   /documents/{id}/file:
     get:
       operationId: getDocumentFile
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            # Devuelve una URL prefirmada, NO los bytes. Dos peticiones:
-            URL=$(curl -sS "$API/documents/$DOC_ID/file" -H "x-api-key: $KEY" | jq -r .downloadUrl)
-
-            # La descarga va a S3: sin x-api-key.
-            curl -sS -o pedimento-original.pdf "$URL"
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            import { writeFile } from "node:fs/promises";
-
-            // Devuelve una URL prefirmada, NO los bytes.
-            const meta = await (await fetch(`${API}/documents/${documentId}/file`, {
-              headers: { "x-api-key": KEY },
-            })).json();
-
-            // La descarga va a S3: sin x-api-key.
-            const bytes = Buffer.from(await (await fetch(meta.downloadUrl)).arrayBuffer());
-            await writeFile("pedimento-original.pdf", bytes);
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            # Devuelve una URL prefirmada, NO los bytes.
-            meta = requests.get(f"{API}/documents/{document_id}/file",
-                                headers={"x-api-key": KEY}, timeout=30).json()
-
-            # La descarga va a S3: sin x-api-key, y en streaming por si pesa cientos de MB.
-            with requests.get(meta["downloadUrl"], stream=True, timeout=300) as resp:
-                resp.raise_for_status()
-                with open("pedimento-original.pdf", "wb") as fh:
-                    for chunk in resp.iter_content(1 << 20):
-                        fh.write(chunk)
-        - lang: C#
-          label: .NET 6+
-          source: |
-            // Devuelve una URL prefirmada, NO los bytes.
-            var meta = await http.GetFromJsonAsync<JsonElement>(
-                $"{api}/documents/{documentId}/file");
-
-            // La descarga va a S3: cliente sin x-api-key.
-            using var s3 = new HttpClient();
-            var url = meta.GetProperty("downloadUrl").GetString();
-            await File.WriteAllBytesAsync("pedimento-original.pdf",
-                await s3.GetByteArrayAsync(url));
       tags: [Consultar documentos]
       summary: "Paso 4 de 4: obtener el archivo original (URL de descarga)"
       description: >
@@ -814,83 +565,6 @@ paths:
         metadata del documento viajan en el query string de `uploadUrl`; añadir
         cabeceras `x-amz-*` hace que S3 rechace la subida.
 
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
-            KEY="tu-api-key"
-
-            RESP=$(curl -sS -X POST "$API/documents" \
-              -H "Content-Type: application/json" \
-              -H "x-api-key: $KEY" \
-              -d '{"fileName":"pedimento.pdf","documentType":"PEDIMENTO_ERP"}')
-
-            # Guarda los dos: el uploadUrl para el paso 2, el documentId para el 3.
-            DOC_ID=$(echo "$RESP"     | jq -r .documentId)
-            UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            const API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
-            const KEY = "tu-api-key";
-
-            const res = await fetch(`${API}/documents`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-api-key": KEY },
-              body: JSON.stringify({
-                fileName: "pedimento.pdf",
-                documentType: "PEDIMENTO_ERP",
-              }),
-            });
-            if (!res.ok) throw new Error(`POST /documents → ${res.status}: ${await res.text()}`);
-
-            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
-            const { documentId, uploadUrl } = await res.json();
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            import requests
-
-            API = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
-            KEY = "tu-api-key"
-
-            res = requests.post(
-                f"{API}/documents",
-                headers={"x-api-key": KEY},
-                json={"fileName": "pedimento.pdf", "documentType": "PEDIMENTO_ERP"},
-                timeout=30,
-            )
-            res.raise_for_status()
-
-            # Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
-            up = res.json()
-            document_id = up["documentId"]
-            upload_url = up["uploadUrl"]
-        - lang: C#
-          label: .NET 6+
-          source: |
-            using System.Net.Http.Json;
-            using System.Text.Json;
-
-            const string api = "https://xxxx.execute-api.us-east-1.amazonaws.com/prod";
-            const string key = "tu-api-key";
-
-            // Cliente del API: siempre con x-api-key.
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Add("x-api-key", key);
-
-            var res = await http.PostAsJsonAsync($"{api}/documents", new
-            {
-                fileName = "pedimento.pdf",
-                documentType = "PEDIMENTO_ERP",
-            });
-            res.EnsureSuccessStatusCode();
-
-            // Guarda los dos: uploadUrl para el paso 2, documentId para el 3.
-            var up = await res.Content.ReadFromJsonAsync<JsonElement>();
-            var documentId = up.GetProperty("documentId").GetString()!;
-            var uploadUrl  = up.GetProperty("uploadUrl").GetString()!;
       requestBody:
         required: true
         content:
@@ -1027,189 +701,6 @@ paths:
 
     get:
       operationId: searchDocuments
-      x-codeSamples:
-        - lang: Shell
-          label: curl
-          source: |
-            # --- Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió
-            #     + metadata del upload + un campo extraído del documento.
-            #     -G/--data-urlencode encodea espacios y acentos, y evita que el shell
-            #     parta la URL en el primer `&`.
-            curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-              --data-urlencode "docType=PEDIMENTO_ERP" \
-              --data-urlencode "system=ERP" \
-              --data-urlencode "meta.lote=A123" \
-              --data-urlencode "meta.sucursal=CHIH" \
-              --data-urlencode "field=PROVEEDOR_ID_FISCAL" \
-              --data-urlencode "value=OFU910626UQ0" \
-              --data-urlencode "summary=1" \
-              | jq '{lookup, count, ids: [.matches[].documentId]}'
-
-            # --- Camino rápido: campo declarado `unique_key` (una sola Query).
-            #     Da igual con espacios o sin ellos: la normalización es la misma al
-            #     escribir y al buscar (`digits` en este tipo).
-            curl -sS -H "x-api-key: $KEY" \
-              "$API/documents?docType=PEDIMENTO_ERP&field=No_Pedimento&value=26%2007%200823%206001630" \
-              | jq '{lookup, count, ids: [.matches[].documentId]}'
-
-            # --- Cualquier otro campo: basta el NOMBRE, no el dot-path completo.
-            #     Si el path no resuelve en la raíz, busca en profundidad por esa clave.
-            curl -sS -H "x-api-key: $KEY" \
-              "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_ID_FISCAL&value=OFU910626UQ0&summary=1" \
-              | jq '.matches[] | {documentId, matchedValue, matchedAt}'
-
-            # --- Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
-            #     `matched` en cada resultado dice qué coincidió y dónde, por filtro.
-            curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-              --data-urlencode "docType=PEDIMENTO_ERP" \
-              --data-urlencode "field=PROVEEDOR_ID_FISCAL" --data-urlencode "value=OFU910626UQ0" \
-              --data-urlencode "field=PATENTE"                   --data-urlencode "value=3456" \
-              | jq '.matches[] | {documentId, matched}'
-
-            # --- Repetir un filtro es OR; filtros distintos siguen siendo AND.
-            #     Esto es "(ERP o PORTAL) y (sucursal CHIH o JRZ)".
-            curl -sS -G "$API/documents" -H "x-api-key: $KEY" \
-              --data-urlencode "docType=PEDIMENTO_ERP" \
-              --data-urlencode "system=ERP,PORTAL" \
-              --data-urlencode "meta.sucursal=CHIH,JRZ" \
-              --data-urlencode "summary=1"
-
-            # --- Subcadena, y acotando por fecha y estado. `op` afecta a field/value;
-            #     `metaOp` hace lo mismo con todos los meta.<clave>.
-            curl -sS -H "x-api-key: $KEY" \
-              "$API/documents?docType=PEDIMENTO_ERP&field=PROVEEDOR_NOMBRE&value=GAVANTI&op=contains&status=APROBADO&since=2026-07-01&limit=50"
-        - lang: JavaScript
-          label: Node.js 18+
-          source: |
-            // Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
-            // consulta cae a un Scan de toda la tabla.
-            // Una LISTA de pares, no un objeto: `field`/`value` se pueden repetir y
-            // URLSearchParams los manda en ese mismo orden, que es como se emparejan.
-            async function buscar(pares) {
-              const qs = new URLSearchParams(pares);            // encodea espacios y acentos
-              const r = await fetch(`${API}/documents?${qs}`, {
-                headers: { "x-api-key": KEY },
-              });
-              if (!r.ok) throw new Error(`GET /documents → ${r.status}: ${await r.text()}`);
-              return r.json();
-            }
-
-            // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
-            // metadata del upload + un campo extraído del documento.
-            const delLote = await buscar([
-              ["docType", "PEDIMENTO_ERP"],
-              ["system", "ERP"],                                // quién lo subió, por su API key
-              ["meta.lote", "A123"],                            // metadata del POST /documents
-              ["meta.sucursal", "CHIH"],
-              ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
-              ["summary", "1"],
-            ]);
-            for (const m of delLote.matches)
-              console.log(m.documentId, m.appOrigin, m.metadata, m.matched);
-
-            // Camino rápido: campo declarado `unique_key` → una sola Query.
-            // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
-            // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-            const porNumero = await buscar([
-              ["docType", "PEDIMENTO_ERP"],
-              ["field", "No_Pedimento"], ["value", "26 07 0823 6001630"],
-            ]);
-            console.log(porNumero.lookup, porNumero.count);     // "uniqueKey" 1
-
-            // Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
-            const porRfcYPatente = await buscar([
-              ["docType", "PEDIMENTO_ERP"],
-              ["field", "PROVEEDOR_ID_FISCAL"], ["value", "OFU910626UQ0"],
-              ["field", "PATENTE"], ["value", "3456"],
-            ]);
-            for (const m of porRfcYPatente.matches)
-              for (const hit of m.matched)
-                console.log(m.documentId, hit.field, hit.matchedValue, "←", hit.matchedAt);
-        - lang: Python
-          label: Python 3 (requests)
-          source: |
-            # Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
-            # consulta cae a un Scan de toda la tabla.
-            # Una LISTA de pares, no un dict: `field`/`value` se pueden repetir y requests
-            # los manda en ese mismo orden, que es como se emparejan.
-            def buscar(pares):
-                r = requests.get(f"{API}/documents", params=pares,   # requests encodea solo
-                                 headers={"x-api-key": KEY}, timeout=30)
-                r.raise_for_status()
-                return r.json()
-
-            # Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
-            # metadata del upload + un campo extraído del documento.
-            del_lote = buscar([
-                ("docType", "PEDIMENTO_ERP"),
-                ("system", "ERP"),                               # quién lo subió, por su API key
-                ("meta.lote", "A123"),                           # metadata del POST /documents
-                ("meta.sucursal", "CHIH"),
-                ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
-                ("summary", "1"),
-            ])
-            for m in del_lote["matches"]:
-                print(m["documentId"], m.get("appOrigin"), m.get("metadata"), m["matched"])
-
-            # Camino rápido: campo declarado `unique_key` → una sola Query.
-            # El valor se normaliza igual al escribir y al buscar, así que da lo mismo
-            # mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-            por_numero = buscar([("docType", "PEDIMENTO_ERP"),
-                                 ("field", "No_Pedimento"),
-                                 ("value", "26 07 0823 6001630")])
-            print(por_numero["lookup"], por_numero["count"])      # "uniqueKey" 1
-
-            # Dos campos extraídos a la vez: se emparejan POR POSICIÓN y son AND.
-            por_rfc_y_patente = buscar([
-                ("docType", "PEDIMENTO_ERP"),
-                ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
-                ("field", "PATENTE"), ("value", "3456"),
-            ])
-            for m in por_rfc_y_patente["matches"]:
-                for hit in m["matched"]:
-                    print(m["documentId"], hit["field"], hit["matchedValue"], "<-", hit["matchedAt"])
-        - lang: C#
-          label: .NET 6+
-          source: |
-            using System.Web;
-
-            // Manda SIEMPRE docType: acota la búsqueda dentro de DynamoDB. Sin él, la
-            // consulta cae a un Scan de toda la tabla.
-            // `Add` (no el indexador `qs[k] = v`): repite la clave en vez de pisarla, que
-            // es lo que hace falta para mandar varios field/value — se emparejan por
-            // posición — o varios valores del mismo filtro.
-            async Task<JsonElement> BuscarAsync(params (string k, string v)[] parametros)
-            {
-                var qs = HttpUtility.ParseQueryString(string.Empty);
-                foreach (var (k, v) in parametros) qs.Add(k, v);
-                return await http.GetFromJsonAsync<JsonElement>($"{api}/documents?{qs}");
-            }
-
-            // Los cuatro filtros a la vez, todos en AND: tipo + sistema que lo subió +
-            // metadata del upload + un campo extraído del documento.
-            var delLote = await BuscarAsync(
-                ("docType", "PEDIMENTO_ERP"),
-                ("system", "ERP"),                                 // quién lo subió, por su API key
-                ("meta.lote", "A123"),                             // metadata del POST /documents
-                ("meta.sucursal", "CHIH"),
-                ("field", "PROVEEDOR_ID_FISCAL"), ("value", "OFU910626UQ0"),
-                ("summary", "1"));
-            foreach (var m in delLote.GetProperty("matches").EnumerateArray())
-            {
-                Console.WriteLine(m.GetProperty("documentId"));
-                foreach (var hit in m.GetProperty("matched").EnumerateArray())
-                    Console.WriteLine($"  {hit.GetProperty("field")} = {hit.GetProperty("matchedValue")}"
-                                      + $" <- {hit.GetProperty("matchedAt")}");
-            }
-
-            // Camino rápido: campo declarado `unique_key` → una sola Query.
-            // El valor se normaliza igual al escribir y al buscar, así que da lo mismo
-            // mandarlo con espacios ("26 07 0823 6001630") o sin ellos.
-            var porNumero = await BuscarAsync(
-                ("docType", "PEDIMENTO_ERP"),
-                ("field", "No_Pedimento"),
-                ("value", "26 07 0823 6001630"));
-            Console.WriteLine($"{porNumero.GetProperty("lookup")} {porNumero.GetProperty("count")}");
       tags: [Consultar documentos]
       summary: Buscar documentos por tipo, sistema, metadata y campos extraídos
       # Bloque LITERAL (`|`), no plegado (`>`): las tablas markdown de abajo
@@ -1431,6 +922,78 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /document-types:
+    get:
+      operationId: listDocumentTypes
+      tags: [Tipos de documento]
+      summary: Listar los tipos de documento del catálogo (paginado)
+      description: >
+        Página del catálogo de tipos, 5 por página, ordenados por `type`. Cada
+        entrada trae `type` (el `documentType` que usas en `POST /documents`
+        y en `?docType=`), `displayName` y `description`. El campo `schema`
+        —el árbol de campos completo que la extracción llena— **se omite a
+        menos que lo pidas explícitamente** con `includeSchema=1`: puede ser
+        grande (decenas de campos anidados en un tipo como
+        `PEDIMENTO_ADUANAL`), así que una página sin él es liviana por
+        default.
+
+
+        Refleja el catálogo **hot-reload**: un tipo sincronizado con
+        `pnpm sync:one` aparece aquí de inmediato, sin esperar un redeploy. Si
+        la app llamante tiene `AllowedDocTypes` configurado, la lista se
+        acota a esos tipos — igual que en `GET /documents` sin `docType`.
+      parameters:
+        - name: page
+          in: query
+          description: Página, 1-indexada. Fuera de rango se recorta a la última página válida.
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: includeSchema
+          in: query
+          description: "`1`/`true` agrega `schema` a cada tipo de la página."
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Página del catálogo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentTypesPage" }
+
+  /document-types/{type}:
+    get:
+      operationId: getDocumentType
+      tags: [Tipos de documento]
+      summary: Un tipo de documento por su TYPE_ID exacto
+      description: >
+        Igual que una fila de `GET /document-types`, pero para un solo tipo.
+        `{type}` es el TYPE_ID exacto (case-insensitive) — el mismo valor de
+        `documentType`/`docType` que usas en el resto del API. No resuelve
+        alias ni nombres legibles (esos son pistas de clasificación para
+        Bedrock, no un identificador estable): un TYPE_ID que no existe, o que
+        existe pero está fuera de `AllowedDocTypes` de la app, responde `404`
+        — no hay diferencia observable entre ambos casos, mismo principio que
+        `GET /documents/{id}` con un id fuera de alcance.
+      parameters:
+        - name: type
+          in: path
+          required: true
+          description: TYPE_ID exacto (p. ej. `PEDIMENTO_ERP`), case-insensitive.
+          schema: { type: string }
+        - name: includeSchema
+          in: query
+          description: "`1`/`true` agrega `schema` (el árbol de campos completo) a la respuesta."
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: El tipo de documento.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentTypeEntry" }
+        "404":
+          description: "`DOCUMENT_TYPE_NOT_FOUND` — no existe, o no es visible para esta app."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1484,7 +1047,8 @@ components:
             Consulta/escritura: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS,
             FORBIDDEN, FORBIDDEN_DOCUMENT_TYPE, EMPTY_PATCH,
             METADATA_CONFLICT, SOURCE_NOT_READY, FILE_NOT_FOUND,
-            REPROCESS_COPY_FAILED.
+            REPROCESS_COPY_FAILED. Tipos de documento:
+            DOCUMENT_TYPE_NOT_FOUND.
         message: { type: string }
     UploadRequest:
       type: object
@@ -1809,7 +1373,7 @@ components:
             Envelope completo. Los datos extraídos viven en `documents[]`, un
             elemento por documento encontrado en el archivo — siempre un
             arreglo, con uno o con varios. Los campos de cada documento
-            dependen del catálogo de su tipo. Ver documentacion/API_USO.md §2
+            dependen del catálogo de su tipo. Ver API_USO.md §2
             para un ejemplo anotado completo.
           properties:
             documentId: { type: string }
@@ -2023,3 +1587,37 @@ components:
               `{field, matchedValue, matchedAt}` por filtro — y
               `matchedValue`/`matchedAt` sueltos, que son los del primero.
             additionalProperties: true
+    DocumentTypeEntry:
+      type: object
+      required: [type, displayName, description]
+      properties:
+        type:
+          type: string
+          description: TYPE_ID — el mismo valor que `documentType`/`docType` en el resto del API.
+          example: PEDIMENTO_ERP
+        displayName: { type: string, example: "Pedimento (mapeo ERP)" }
+        description:
+          type: [string, "null"]
+          description: Descripción libre de qué documento es y cómo se distingue de otros.
+        schema:
+          type: object
+          description: >
+            Presente SOLO con `includeSchema=1`. El árbol de campos field-centric
+            del catálogo tal cual (`catalogs/<TYPE>.json` → `fields`): una clave
+            por campo, con su `type` (`string`/`number`/`boolean`/`date`/`object`/`array`),
+            si es `required`, y `hint` (dónde vive el dato en el documento, en
+            español) — `object`/`array` anidan `fields`/`item_fields` con la
+            misma forma. Es la fuente cruda del catálogo, no una traducción:
+            spec completa del DSL en `catalogs/README.md` (interno al repo).
+          additionalProperties: true
+    DocumentTypesPage:
+      type: object
+      required: [page, pageSize, total, totalPages, types]
+      properties:
+        page: { type: integer, description: Página devuelta (1-indexada). }
+        pageSize: { type: integer, description: "Fijo en 5 — no configurable por el caller." }
+        total: { type: integer, description: Total de tipos en el catálogo (o dentro de AllowedDocTypes de la app). }
+        totalPages: { type: integer }
+        types:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentTypeEntry" }

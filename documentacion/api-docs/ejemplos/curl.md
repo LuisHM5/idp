@@ -4,7 +4,7 @@ Guía práctica para copiar y pegar. Ejemplo con `./test-docs/pages.pdf` como
 `PEDIMENTO_ERP`.
 
 > Referencia completa de la API (todos los endpoints, params y respuestas):
-> `API_USO.md`. Este archivo es solo el camino corto para subir un documento.
+> [`API_USO.md`](../API_USO.md). Este archivo es solo el camino corto para subir un documento.
 
 **Subir son SIEMPRE dos peticiones**, sin importar el tamaño del archivo. La
 segunda no va a la API: va directo a S3.
@@ -124,7 +124,7 @@ query string, ya firmada. Por eso el `PUT` no lleva ninguna cabecera.
 
 Esa misma metadata es con la que después puedes reencontrar el documento sin
 haber guardado su `documentId`: `GET /documents?docType=...&meta.lote=A123`
-(ver `API_USO.md` §4). `app-origin` no lo mandaste tú — sale de tu API key, y
+(ver [`API_USO.md`](../API_USO.md) §4). `app-origin` no lo mandaste tú — sale de tu API key, y
 se filtra con `?system=`.
 
 Qué NO lleva esta petición:

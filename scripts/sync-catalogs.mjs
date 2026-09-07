@@ -33,9 +33,11 @@ const CONFIG_DIR = join(
   "src/document-processing/resources/enrichment-lambda/config"
 );
 const OUTPUT = join(CONFIG_DIR, "catalogs.json");
-// Lista ligera de tipos (id + nombre + alias) que se empaqueta con el query
-// Lambda para resolver `?docType=pedimento aduanal` → PEDIMENTO_ADUANAL sin
-// leer el catálogo completo.
+// Índice de tipos que se empaqueta con el query Lambda: resuelve
+// `?docType=pedimento aduanal` → PEDIMENTO_ADUANAL sin leer el catálogo
+// completo (id + nombre + alias), y además sirve de respaldo bundled para
+// `GET /document-types` (id + nombre + descripción + `fields` = schema) —
+// mismo archivo, dos usos; ver document-type-catalog.mjs.
 const TYPES_OUTPUT = join(
   repo,
   "src/document-processing/resources/query-lambda/document-types.json"
@@ -64,9 +66,12 @@ function titleize(typeId) {
 }
 
 /**
- * Escribe la lista de tipos que el query Lambda usa para resolver el parámetro
- * `docType` cuando viene como nombre en vez de TYPE_ID. `display_name` y
- * `aliases` son opcionales en cada entrada del catálogo.
+ * Escribe la lista de tipos que el query Lambda usa para (a) resolver el
+ * parámetro `docType` cuando viene como nombre en vez de TYPE_ID, y (b)
+ * responder `GET /document-types` como respaldo bundled cuando un tipo aún no
+ * se sincronizó a DynamoDB (o el catálogo hot-reload no está disponible) —
+ * mismo archivo para los dos, ver `document-type-catalog.mjs`. `display_name`
+ * y `description` son opcionales en cada entrada del catálogo.
  *
  * Lleva también las unique keys declaradas por cada tipo (`uniqueKeys`), que
  * son lo que le permite al query Lambda reconocer que `field=NUMERO_PEDIMENTO`
@@ -74,6 +79,11 @@ function titleize(typeId) {
  * entero — ver `_unique_keys.mjs` y `enrichment-lambda/unique_keys.py`. Solo
  * se emite cuando el tipo declara alguna, así el archivo no crece para los
  * tipos que no la usan.
+ *
+ * `fields` va tal cual (el árbol DSL field-centric completo, o `null` para un
+ * tipo legacy-DSL que no lo declara) — es el "schema" que expone
+ * `GET /document-types`, deliberadamente sin recortar ni traducir: la fuente
+ * de verdad de esa forma sigue siendo `catalogs/README.md`.
  */
 function writeTypeIndex(documentTypes) {
   const types = Object.entries(documentTypes).map(([typeId, entry]) => {
@@ -81,8 +91,10 @@ function writeTypeIndex(documentTypes) {
     return {
       typeId,
       displayName: entry.display_name || titleize(typeId),
+      description: entry.description || null,
       aliases: entry.aliases || [],
       ...(uniqueKeys.length && { uniqueKeys }),
+      fields: entry.fields || null,
     };
   });
   writeFileSync(

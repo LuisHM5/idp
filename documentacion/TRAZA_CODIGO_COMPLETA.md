@@ -19,7 +19,7 @@ La fuente de verdad de la orquestación es una combinación de:
 
 Las referencias `archivo:línea` corresponden al código de este repositorio al
 momento de escribir esta guía. Para el contrato REST público, usar
-[`API_USO.md`](API_USO.md); para el DSL de catálogo, usar
+[`api-docs/API_USO.md`](api-docs/API_USO.md); para el DSL de catálogo, usar
 [`../catalogs/README.md`](../catalogs/README.md).
 
 ## 1. Resultado final en una frase
@@ -1059,7 +1059,7 @@ Para un `documentId`:
 
 ## 24. Resumen mental para modificar el código
 
-- Cambiar carga/API: `upload-lambda` + `API_USO.md`.
+- Cambiar carga/API: `upload-lambda` + `api-docs/API_USO.md`.
 - Cambiar estados, recursos o permisos: `document-validation-stack.ts`, el
   subclass del blueprint y `ARQUITECTURA.md`/diagramas.
 - Cambiar formato del evento inicial: patch del consumidor SQS.
@@ -1139,7 +1139,7 @@ idea debe entrar y qué contrato podría afectar.
 | Detectar `documentType` inexistente antes de subir bytes | `upload-lambda/index.mjs:72-110` y una lectura del catálogo | XML/XLSX/CSV siguen requiriendo tipo; decidir qué hacer si DynamoDB está caído |
 | Reducir riesgo de throttling por concurrencia anidada | `pdf_pages.py:165-194`, `expediente.py:174-371`, `text_extractor.py:514-672` | `OCR_WORKERS`, `EXTRACT_WORKERS`, `CHUNK_WORKERS`, reintentos y tiempo máximo de 15 min |
 | Volver coherentes las cuatro escrituras finales | `handler.py:715-740`, `handler.py:514-530`, `indexing.py:170-206`, `unique_keys.py:234-262`, estados posteriores de Step Functions | tolerancia best-effort actual, reintentos idempotentes y recuperación tras una escritura parcial |
-| Dar el mismo contrato de resultado al flujo legacy y al nuevo | `_process()` en `handler.py`, `pipeline/envelope.py::build`/`build_standard` y `query-lambda.fetchFullResult()` | clientes existentes, `API_USO.md` y tamaño del estado de Step Functions |
+| Dar el mismo contrato de resultado al flujo legacy y al nuevo | `_process()` en `handler.py`, `pipeline/envelope.py::build`/`build_standard` y `query-lambda.fetchFullResult()` | clientes existentes, `api-docs/API_USO.md` y tamaño del estado de Step Functions |
 | Publicar más contexto en EventBridge | estado terminal del blueprint/construct y consumidores externos | no exceder tamaño del evento; evitar duplicar el resultado completo o filtrar datos sensibles |
 | Mejorar observabilidad por fase | `tracking` en `pipeline/result_common.py`, registry de `pipeline/bedrock.py`, `indexing.py` y `cost_audit.py` | mantener paridad camelCase/PascalCase y serialización Decimal compatible con DynamoDB |
 | Procesar expedientes que excedan 15 minutos | frontera `_run_expediente()` → `process_pdf()` y definición de la Task | cambiar a fan-out/asíncrono altera idempotencia, shape del estado y momento de mover `raw/` |
