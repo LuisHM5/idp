@@ -1,0 +1,358 @@
+{
+  "PEDIMENTO_ERP_XML": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "display_name": "CFDI con pedimento (mapeo ERP XML)",
+    "aliases": [
+      "pedimento erp xml",
+      "factura con pedimento xml",
+      "cfdi con pedimento"
+    ],
+    "description": "CFDI 4.0 de una factura que referencia uno o más pedimentos mediante cfdi:InformacionAduanera/@NumeroPedimento. Produce únicamente la parte del contrato PEDIMENTO_ERP demostrable desde la factura: número y componentes del pedimento, una fila FACTURAS y las partidas fiscales. No es el XML integral del pedimento y no inventa clave de pedimento, fechas aduanales, valores en aduana, incrementables ni liquidación.",
+    "business_destination": "PEDIMENTO_ERP",
+    "occurrence_mode": "single",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "namespaces": {
+      "cfdi": "http://www.sat.gob.mx/cfd/4",
+      "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital"
+    },
+    "__COMENTARIO_fuente__": "Este catálogo corresponde a una FACTURA CFDI que cita un pedimento, no a la transmisión electrónica completa del pedimento. El número oficial tiene la forma AA AA NNNN NNNNNNN. xpath_regex separa sus cuatro grupos sin acoplar el extractor al TYPE_ID.",
+    "__COMENTARIO_campos_no_disponibles__": "No se declaran Cve_Pedimento, Referencia, Fecha_Entrada, Tipo, Tipo_Cambio aduanal, Tipo_Pago, Pais_Origen, valores comerciales/aduanales, GI_*, CUADRO_LIQUIDACION, LIQUIDACION_NORMALIZADA, QR_PEDIMENTO ni ACUSES_VALOR porque InformacionAduanera no los contiene. El TipoCambio del CFDI tampoco se copia al Tipo_Cambio del pedimento: tienen semántica distinta.",
+    "fields": {
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Version",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "El comprobante debe corresponder a CFDI versión 4.0"
+          }
+        ]
+      },
+      "UUID_CFDI": {
+        "type": "string",
+        "required": true,
+        "unique_key": {
+          "normalize": "upper"
+        },
+        "xpath": ".//tfd:TimbreFiscalDigital/@UUID",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$",
+            "message": "El UUID del CFDI no tiene un formato válido"
+          }
+        ]
+      },
+      "No_Pedimento": {
+        "type": "string",
+        "required": true,
+        "unique_key": {
+          "normalize": "digits"
+        },
+        "xpath": ".//cfdi:InformacionAduanera/@NumeroPedimento",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}\\s+\\d{2}\\s+\\d{4}\\s+\\d{7}$",
+            "message": "NumeroPedimento debe usar el formato AA AA NNNN NNNNNNN"
+          }
+        ]
+      },
+      "ANIO_PEDIMENTO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//cfdi:InformacionAduanera/@NumeroPedimento",
+        "xpath_regex": {
+          "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+          "group": 1
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "El año del pedimento debe contener 2 dígitos"
+          }
+        ]
+      },
+      "ADUANA_DESPACHO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//cfdi:InformacionAduanera/@NumeroPedimento",
+        "xpath_regex": {
+          "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+          "group": 2
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{2}$",
+            "message": "La aduana debe contener 2 dígitos"
+          }
+        ]
+      },
+      "Patente": {
+        "type": "string",
+        "required": true,
+        "pedimento_role": "patente",
+        "xpath": ".//cfdi:InformacionAduanera/@NumeroPedimento",
+        "xpath_regex": {
+          "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+          "group": 3
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}$",
+            "message": "La patente debe contener 4 dígitos"
+          }
+        ]
+      },
+      "NUMERO_CONSECUTIVO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//cfdi:InformacionAduanera/@NumeroPedimento",
+        "xpath_regex": {
+          "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+          "group": 4
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{7}$",
+            "message": "El consecutivo debe contener 7 dígitos"
+          }
+        ]
+      },
+      "PEDIMENTOS_REFERENCIADOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": ".//cfdi:InformacionAduanera",
+        "validation": [],
+        "item_fields": {
+          "No_Pedimento": {
+            "type": "string",
+            "required": true,
+            "xpath": "@NumeroPedimento",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{2}\\s+\\d{2}\\s+\\d{4}\\s+\\d{7}$",
+                "message": "NumeroPedimento debe usar el formato AA AA NNNN NNNNNNN"
+              }
+            ]
+          },
+          "ANIO_PEDIMENTO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@NumeroPedimento",
+            "xpath_regex": {
+              "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+              "group": 1
+            },
+            "validation": []
+          },
+          "ADUANA_DESPACHO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@NumeroPedimento",
+            "xpath_regex": {
+              "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+              "group": 2
+            },
+            "validation": []
+          },
+          "Patente": {
+            "type": "string",
+            "required": true,
+            "xpath": "@NumeroPedimento",
+            "xpath_regex": {
+              "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+              "group": 3
+            },
+            "validation": []
+          },
+          "NUMERO_CONSECUTIVO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@NumeroPedimento",
+            "xpath_regex": {
+              "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+              "group": 4
+            },
+            "validation": []
+          }
+        }
+      },
+      "FACTURAS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": ".",
+        "validation": [],
+        "item_fields": {
+          "PROVEEDOR_ID_FISCAL": {
+            "type": "string",
+            "required": true,
+            "xpath": "cfdi:Emisor/@Rfc",
+            "validation": []
+          },
+          "PROVEEDOR_NOMBRE": {
+            "type": "string",
+            "required": true,
+            "xpath": "cfdi:Emisor/@Nombre",
+            "validation": []
+          },
+          "Factura": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Folio",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Za-z0-9._-]+$",
+                "message": "El folio de la factura contiene caracteres no admitidos por el ERP"
+              }
+            ]
+          },
+          "Fecha_Factura": {
+            "type": "date",
+            "required": true,
+            "xpath": "@Fecha",
+            "validation": []
+          },
+          "Total_factura": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Total",
+            "validation": [
+              {
+                "rule_type": "greater_than",
+                "value": 0,
+                "message": "El total de la factura debe ser mayor que cero"
+              }
+            ]
+          },
+          "MONEDA_FACTURA": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Moneda",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^[A-Z]{3}$",
+                "message": "La moneda de la factura debe ser un código de tres letras"
+              }
+            ]
+          }
+        }
+      },
+      "PARTIDAS_CFDI": {
+        "type": "array",
+        "required": true,
+        "item_xpath": "cfdi:Conceptos/cfdi:Concepto",
+        "validation": [],
+        "item_fields": {
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveProdServ",
+            "validation": []
+          },
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "xpath": "@NoIdentificacion",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Cantidad",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveUnidad",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": []
+          },
+          "VALOR_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "xpath": "@ValorUnitario",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          },
+          "PEDIMENTOS": {
+            "type": "array",
+            "required": true,
+            "item_xpath": "cfdi:InformacionAduanera",
+            "validation": [],
+            "item_fields": {
+              "No_Pedimento": {
+                "type": "string",
+                "required": true,
+                "xpath": "@NumeroPedimento",
+                "validation": []
+              },
+              "ANIO_PEDIMENTO": {
+                "type": "string",
+                "required": true,
+                "xpath": "@NumeroPedimento",
+                "xpath_regex": {
+                  "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+                  "group": 1
+                },
+                "validation": []
+              },
+              "ADUANA_DESPACHO": {
+                "type": "string",
+                "required": true,
+                "xpath": "@NumeroPedimento",
+                "xpath_regex": {
+                  "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+                  "group": 2
+                },
+                "validation": []
+              },
+              "Patente": {
+                "type": "string",
+                "required": true,
+                "xpath": "@NumeroPedimento",
+                "xpath_regex": {
+                  "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+                  "group": 3
+                },
+                "validation": []
+              },
+              "NUMERO_CONSECUTIVO": {
+                "type": "string",
+                "required": true,
+                "xpath": "@NumeroPedimento",
+                "xpath_regex": {
+                  "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+                  "group": 4
+                },
+                "validation": []
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

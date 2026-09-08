@@ -8,6 +8,9 @@ mantiene separado lo que no pertenece a una invocación concreta:
   están desplegados (WAF y claves KMS administradas por el cliente);
 * gasto MTD etiquetado por ``CostStack``, cuando la cuenta pagadora activó esa
   clave de asignación en Cost Explorer;
+* fallback manual: cruza los tipos físicos del stack con el gasto por servicio
+  de la cuenta. Sólo suma lo que puede atribuir de forma exclusiva; el resto se
+  conserva como contexto de cuenta, nunca se hace pasar por costo del stack;
 * recursos sin renta fija (S3, DynamoDB, API Gateway/API keys), que se cobran
   por consumo y por tanto no deben inventarse como un reparto por documento.
 
@@ -30,6 +33,25 @@ PRICE_SOURCES = {
 WAF_ACL_MONTHLY_USD = 5.0
 WAF_RULE_MONTHLY_USD = 1.0
 KMS_KEY_MONTHLY_USD = 1.0
+
+# Cost Explorer no conoce CloudFormation si la etiqueta de asignación no está
+# activa. Este mapa permite hacer el cruce contrario: primero se demuestra que
+# el servicio existe en el stack y después se muestra su cargo de cuenta como
+# contexto. ``scopedMtdUsd`` sólo se llena cuando además hay evidencia de
+# exclusividad (hoy WAF y almacenamiento de CMK).
+SERVICE_RESOURCE_TYPES = {
+    "AWS WAF": ("AWS::WAFv2::WebACL",),
+    "AWS Key Management Service": ("AWS::KMS::Key",),
+    "Amazon Simple Storage Service": ("AWS::S3::Bucket",),
+    "Amazon DynamoDB": ("AWS::DynamoDB::Table",),
+    "Amazon API Gateway": ("AWS::ApiGateway::RestApi",),
+    "AWS Lambda": ("AWS::Lambda::Function",),
+    "AWS Step Functions": ("AWS::StepFunctions::StateMachine",),
+    "Amazon Simple Queue Service": ("AWS::SQS::Queue",),
+    "AmazonCloudWatch": ("AWS::Logs::LogGroup", "AWS::CloudWatch::Alarm"),
+    "CloudWatch Events": ("AWS::Events::EventBus", "AWS::Events::Rule"),
+    "Amazon Simple Notification Service": ("AWS::SNS::Topic",),
+}
 
 
 def _pages(client: Any, operation: str, result_key: str, **kwargs: Any) -> Iterable[Any]:
@@ -135,6 +157,33 @@ def _tagged_cost(ce: Any, stack_name: str, start: str, end: str) -> Dict[str, An
             "services": services, "estimated": estimated}
 
 
+def _account_service_costs(ce: Any, start: str, end: str) -> Dict[str, Any]:
+    """Read real MTD charges for infra service families, before attribution.
+
+    These values are account-wide. They are useful evidence when ``CostStack``
+    is unavailable, but are deliberately not called stack costs here.
+    """
+    response = ce.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost"],
+        Filter={"Dimensions": {"Key": "SERVICE", "Values": list(SERVICE_RESOURCE_TYPES)}},
+        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+    )
+    costs = {service: 0.0 for service in SERVICE_RESOURCE_TYPES}
+    estimated = False
+    for period in response.get("ResultsByTime", []):
+        estimated = estimated or bool(period.get("Estimated"))
+        for group in period.get("Groups", []):
+            service = (group.get("Keys") or [""])[0]
+            if service not in costs:
+                continue
+            costs[service] += float(
+                ((((group.get("Metrics") or {}).get("UnblendedCost") or {}).get("Amount")) or 0)
+            )
+    return {"costs": costs, "estimated": estimated}
+
+
 def _count(resources: Sequence[Dict[str, Any]], resource_type: str) -> int:
     return len(_resources_of(resources, resource_type))
 
@@ -151,6 +200,8 @@ def empty_infrastructure_snapshot(stack_name: str, region: str, message: str) ->
         "fixedItems": [],
         "usageOnlyItems": [],
         "taggedMtd": {"available": False, "totalUsd": None, "services": [], "estimated": False},
+        "manualMtd": {"available": False, "totalScopedUsd": None, "services": []},
+        "environmentExplanation": message,
         "warnings": [message],
     }
 
@@ -254,26 +305,40 @@ def collect_infrastructure_costs(
         if not tagged["available"]:
             warnings.append(
                 "Cost Explorer no devolvió cargos para CostStack; la clave puede no estar activa en la cuenta pagadora. "
-                "No se presenta $0 como si fuera gasto variable medido."
+                "Se usó el cruce manual CloudFormation + servicios de cuenta."
             )
     except Exception as exc:
         warnings.append(f"No se pudo leer el gasto etiquetado de Cost Explorer: {exc}")
 
+    account_service_costs: Optional[Dict[str, Any]] = None
+    try:
+        account_service_costs = _account_service_costs(clients["ce"], start, end)
+    except Exception as exc:
+        warnings.append(f"No se pudo leer el gasto por servicio para el fallback manual: {exc}")
+
     # Cost Explorer no ofrece RESOURCE_ID sin el opt-in del payer. Sólo usamos
     # sus cargos de WAF/KMS cuando el inventario demuestra que todos los
     # recursos facturables activos de esa clase pertenecen a este stack.
-    fixed_mtd_actual: Optional[float] = None
+    fixed_mtd_actual: Optional[float] = 0.0 if not fixed_items else None
+    fixed_mtd_by_service: Dict[str, float] = {}
     actual_scope: List[str] = []
     try:
         usage_rows, ce_estimated = _ce_usage_rows(clients["ce"], start, end)
         actual = 0.0
-        has_actual = False
+        # Un stack que no declara ningún componente de renta fija tiene un
+        # fijo real de $0. No depende de CostStack ni debe mostrarse como dato
+        # ausente: es una conclusión del inventario CloudFormation.
+        has_actual = not fixed_items
+        if has_actual:
+            actual_scope.append("sin recursos de renta fija en el stack")
         all_wafs = _all_waf_arns(clients["waf"], clients["cloudfront_waf"])
         if stack_waf_arns and all_wafs == stack_waf_arns:
-            actual += sum(
+            waf_actual = sum(
                 row["cost"] for row in usage_rows
                 if row["usageType"].endswith("RuleV2") or row["usageType"].endswith("WebACLV2")
             )
+            actual += waf_actual
+            fixed_mtd_by_service["AWS WAF"] = waf_actual
             has_actual = True
             actual_scope.append("WAF exclusivo de la cuenta")
         elif stack_waf_arns:
@@ -281,7 +346,9 @@ def collect_infrastructure_costs(
 
         all_customer_keys = _enabled_customer_keys(clients["kms"])
         if stack_key_ids and all_customer_keys == stack_key_ids:
-            actual += sum(row["cost"] for row in usage_rows if row["usageType"].endswith("KMS-Keys"))
+            kms_actual = sum(row["cost"] for row in usage_rows if row["usageType"].endswith("KMS-Keys"))
+            actual += kms_actual
+            fixed_mtd_by_service["AWS Key Management Service"] = kms_actual
             has_actual = True
             actual_scope.append("CMK activa exclusiva de la cuenta/región")
         elif stack_key_ids:
@@ -291,6 +358,50 @@ def collect_infrastructure_costs(
         ce_estimated = False
         warnings.append(f"No se pudo comprobar el fijo prorrateado en Cost Explorer: {exc}")
 
+    resource_counts = {
+        service: sum(_count(resources, resource_type) for resource_type in resource_types)
+        for service, resource_types in SERVICE_RESOURCE_TYPES.items()
+    }
+    manual_services: List[Dict[str, Any]] = []
+    if account_service_costs is not None:
+        for service, resource_types in SERVICE_RESOURCE_TYPES.items():
+            count = resource_counts[service]
+            if not count:
+                continue
+            scoped = fixed_mtd_by_service.get(service)
+            manual_services.append({
+                "service": service,
+                "resources": count,
+                "resourceTypes": list(resource_types),
+                "accountMtdUsd": account_service_costs["costs"].get(service, 0.0),
+                "scopedMtdUsd": scoped,
+                "scope": (
+                    "atribuido: inventario exclusivo"
+                    if scoped is not None
+                    else "contexto de cuenta; no sumado sin evidencia por recurso"
+                ),
+            })
+        manual_services.sort(key=lambda row: (-row["accountMtdUsd"], row["service"]))
+
+    fixed_monthly = sum(item["monthlyUsd"] for item in fixed_items)
+    if fixed_monthly == 0:
+        excluded = []
+        if account_service_costs is not None:
+            for service in ("AWS WAF", "AWS Key Management Service"):
+                value = account_service_costs["costs"].get(service, 0.0)
+                if value and resource_counts[service] == 0:
+                    excluded.append(f"{service} ${value:.4f} MTD")
+        suffix = f" Los cargos de cuenta ({'; '.join(excluded)}) pertenecen a otros recursos/ambientes." if excluded else ""
+        environment_explanation = (
+            f"{stack_name} ({environment}) no declara Web ACL ni clave KMS propia; por eso su piso fijo es $0."
+            f"{suffix}"
+        )
+    else:
+        environment_explanation = (
+            f"{stack_name} ({environment}) declara {len(stack_waf_arns)} Web ACL, {waf_rules} reglas WAF y "
+            f"{len(stack_key_ids)} clave(s) KMS: piso ${fixed_monthly:.2f}/mes."
+        )
+
     return {
         "stack": stack_name,
         "environment": environment,
@@ -299,13 +410,24 @@ def collect_infrastructure_costs(
         "monthToDate": {"start": start, "endExclusive": end},
         "pricingAsOf": PRICING_AS_OF,
         "priceSources": PRICE_SOURCES,
-        "fixedMonthlyUsd": sum(item["monthlyUsd"] for item in fixed_items),
+        "fixedMonthlyUsd": fixed_monthly,
         "fixedMtdActualUsd": fixed_mtd_actual,
         "fixedMtdEstimated": ce_estimated,
         "fixedActualScope": actual_scope,
         "fixedItems": fixed_items,
         "usageOnlyItems": usage_only,
         "taggedMtd": tagged,
+        "manualMtd": {
+            "available": account_service_costs is not None,
+            "totalScopedUsd": (
+                round(sum(row["scopedMtdUsd"] for row in manual_services if row["scopedMtdUsd"] is not None), 12)
+                if account_service_costs is not None else None
+            ),
+            "services": manual_services,
+            "estimated": account_service_costs["estimated"] if account_service_costs is not None else False,
+            "note": "Los importes de cuenta no se suman al stack salvo que la exclusividad del recurso esté demostrada.",
+        },
+        "environmentExplanation": environment_explanation,
         "resourceCount": len(resources),
         "warnings": warnings,
     }

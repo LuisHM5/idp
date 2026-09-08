@@ -365,6 +365,18 @@ mira el TYPE_ID para decidir el pipeline.
       "FOLIO": { "type": "string", "required": true, "xpath": "@Folio", "validation": [] },
       "EMISOR_RFC": { "type": "string", "required": true, "xpath": "cfdi:Emisor/@Rfc", "validation": [] },
 
+      // xpath_regex separa un dato compuesto ya resuelto por xpath. El
+      // patrón y el grupo viven en catálogo; el extractor no conoce TYPE_IDs.
+      "PATENTE": {
+        "type": "string", "required": true,
+        "xpath": ".//cfdi:InformacionAduanera/@NumeroPedimento",
+        "xpath_regex": {
+          "pattern": "^(\\d{2})\\s+(\\d{2})\\s+(\\d{4})\\s+(\\d{7})$",
+          "group": 3
+        },
+        "validation": []
+      },
+
       // type == "array": item_xpath ubica cada fila; item_fields usa xpath
       // RELATIVO a esa fila.
       "CONCEPTOS": {
@@ -385,6 +397,14 @@ mira el TYPE_ID para decidir el pipeline.
   rutas se concatenan (unión — ElementTree no soporta el operador `|` de
   XPath real, así que esta es la forma de expresar "esta tabla viene de dos
   elementos hermanos distintos", ej. `Traslados` + `Retenciones`).
+- `xpath_regex` es opcional en campos escalares y se aplica **después** de
+  resolver `xpath`, antes de convertir el tipo. Acepta
+  `{"pattern": "...", "group": 2}` o un patrón string (grupo 1). Sirve para
+  separar atributos compuestos — por ejemplo año, aduana, patente y
+  consecutivo desde `NumeroPedimento`— sin crear lógica por `TYPE_ID`. Si el
+  patrón no coincide, el grupo no existe o la expresión es inválida, el campo
+  queda ausente y las reglas `required`/`validation` lo reportan; nunca se
+  devuelve silenciosamente el atributo completo como si fuera el subcampo.
 - Los predicados simples de ElementTree funcionan tal cual:
   `cfdi:Retenciones/cfdi:Retencion[@Impuesto='001']/@Importe` selecciona la
   fila correcta sin necesitar código nuevo.

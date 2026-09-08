@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -54,9 +55,20 @@ def test_report_marks_actual_bedrock_usage_and_sorts_no_ai_first() -> None:
     assert overall["no_ai_docs_cost"] == 0.0001
     assert [name for name, _ in report.sorted_types(report.by_key_snapshot(rows, "type"))] == ["XML", "PDF"]
 
-    html = report.render_html(rows, "dev", infrastructure={"fixedMonthlyUsd": 0, "taggedMtd": {}})
+    catalog_types = [f"TYPE_{i}" for i in range(8)]
+    html = report.render_html(
+        rows, "dev", infrastructure={"fixedMonthlyUsd": 0, "taggedMtd": {}},
+        catalog_types=catalog_types,
+    )
     assert "Procesamiento con y sin IA" in html
     assert 'id="f-modes"' in html
+    assert 'id="f-types-more"' in html
+    assert 'id="f-type-search"' in html
+    assert "Buscar tipo o nombre" in html
+    assert "typeNames.get(type)" in html
+    assert "TYPE_FILTER_PRIMARY_LIMIT = 6" in html
+    payload = html.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
+    assert json.loads(payload)["catalogTypes"] == catalog_types
     assert "sortedTypeAgg" in html
     assert "Costo de docs sin IA" in html
 
@@ -124,5 +136,51 @@ def test_live_inventory_builds_scoped_prod_floor_and_ce_mtd() -> None:
     assert snapshot["fixedMonthlyUsd"] == 10
     assert snapshot["fixedMtdActualUsd"] == 2.4
     assert snapshot["taggedMtd"]["available"] is False
+    assert snapshot["manualMtd"]["available"] is True
+    assert snapshot["manualMtd"]["totalScopedUsd"] == 2.4
     assert any("no devolvió cargos" in warning for warning in snapshot["warnings"])
     assert next(item for item in snapshot["usageOnlyItems"] if item["service"] == "Amazon S3")["fixedMonthlyUsd"] == 0
+
+
+def test_dev_zero_fixed_is_explained_and_account_charges_are_not_misattributed() -> None:
+    prod_waf_arn = "arn:aws:wafv2:us-east-1:123:regional/webacl/prod/id"
+    cfn = FakeClient(list_stack_resources={"StackResourceSummaries": [
+        {"ResourceType": "AWS::S3::Bucket", "PhysicalResourceId": "dev-bucket"},
+    ]})
+    waf = FakeClient(list_web_acls={"WebACLs": [{"ARN": prod_waf_arn}]})
+    cloudfront = FakeClient(list_web_acls={"WebACLs": []})
+    kms = FakeClient(
+        list_keys={"Keys": [{"KeyId": "prod-key"}]},
+        describe_key={"KeyMetadata": {"KeyId": "prod-key", "KeyManager": "CUSTOMER", "KeyState": "Enabled"}},
+    )
+
+    def ce_get(**kwargs):
+        if kwargs["GroupBy"][0]["Key"] == "USAGE_TYPE":
+            return {"ResultsByTime": [{"Estimated": True, "Groups": []}]}
+        if "Tags" in kwargs["Filter"]:
+            return {"ResultsByTime": [{"Estimated": True, "Groups": []}]}
+        return {"ResultsByTime": [{"Estimated": True, "Groups": [
+            {"Keys": ["AWS WAF"], "Metrics": {"UnblendedCost": {"Amount": "2.16"}}},
+            {"Keys": ["AWS Key Management Service"], "Metrics": {"UnblendedCost": {"Amount": ".24"}}},
+            {"Keys": ["Amazon Simple Storage Service"], "Metrics": {"UnblendedCost": {"Amount": ".02"}}},
+        ]}]}
+
+    snapshot = infra_costs.collect_infrastructure_costs(
+        "DocumentValidationStack-Dev", "us-east-1", environment="dev", now=date(2026, 9, 8),
+        clients={"cfn": cfn, "waf": waf, "cloudfront_waf": cloudfront, "kms": kms,
+                 "ce": FakeClient(get_cost_and_usage=ce_get)},
+    )
+
+    assert snapshot["fixedMonthlyUsd"] == 0
+    assert snapshot["fixedMtdActualUsd"] == 0
+    assert snapshot["manualMtd"]["totalScopedUsd"] == 0
+    assert snapshot["manualMtd"]["services"] == [{
+        "service": "Amazon Simple Storage Service",
+        "resources": 1,
+        "resourceTypes": ["AWS::S3::Bucket"],
+        "accountMtdUsd": 0.02,
+        "scopedMtdUsd": None,
+        "scope": "contexto de cuenta; no sumado sin evidencia por recurso",
+    }]
+    assert "AWS WAF $2.1600 MTD" in snapshot["environmentExplanation"]
+    assert "pertenecen a otros recursos/ambientes" in snapshot["environmentExplanation"]

@@ -27,6 +27,7 @@ bundling feature, out of scope for this module.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -90,6 +91,40 @@ def _resolve_xpath(node: ET.Element, xpath: Any, ns: Dict[str, str]) -> Optional
         if value is not None:
             return value
     return None
+
+
+def _apply_xpath_regex(raw: str, config: Any, field_path: str) -> Optional[str]:
+    """Select one capture group from a resolved XPath value.
+
+    Some structured standards encode several atomic business values in one
+    attribute. A CFDI ``NumeroPedimento`` is the canonical example: the SAT
+    publishes it as ``AA AA NNNN NNNNNNN`` while consumers need year, customs
+    office, patent and sequence separately. The regex lives in the catalog so
+    this extractor remains generic and never branches on a TYPE_ID.
+
+    ``xpath_regex`` accepts either a pattern string (capture group 1) or
+    ``{"pattern": "...", "group": 2}``. A bad pattern, missing match or
+    missing group resolves to no value and is logged without exposing the XML
+    contents.
+    """
+    if not config:
+        return raw
+    if isinstance(config, str):
+        pattern, group = config, 1
+    elif isinstance(config, dict):
+        pattern, group = config.get("pattern"), config.get("group", 1)
+    else:
+        logger.warning("invalid xpath_regex config for %s", field_path)
+        return None
+    if not pattern:
+        logger.warning("xpath_regex missing pattern for %s", field_path)
+        return None
+    try:
+        match = re.search(str(pattern), raw)
+        return match.group(group) if match else None
+    except (IndexError, TypeError, re.error):
+        logger.warning("invalid xpath_regex pattern/group for %s", field_path)
+        return None
 
 
 def _resolve_items(node: ET.Element, item_xpath: Any, ns: Dict[str, str]) -> List[ET.Element]:
@@ -158,6 +193,8 @@ def _extract_node(
         else:
             xpath = spec.params.get("xpath")
             raw = _resolve_xpath(node, xpath, ns) if xpath else None
+            if raw is not None:
+                raw = _apply_xpath_regex(raw, spec.params.get("xpath_regex"), path)
             if not raw:
                 entity[name] = None
                 continue

@@ -98,6 +98,13 @@ def _concept_values(entities):
     ]
 
 
+def _row_values(array_node):
+    return [
+        {name: field["value"] for name, field in item["fields"].items()}
+        for item in array_node["items"]
+    ]
+
+
 def test_faa_fixture_maps_every_declared_business_field(monkeypatch):
     entities = _assert_approved_mapping(
         _process_fixture(monkeypatch, "faa.xml", "FACTURA_HONORARIOS_XML"),
@@ -342,6 +349,96 @@ def test_oli_fixture_maps_every_declared_business_field(monkeypatch):
         "IMPORTE": 6368.83,
         "OBJETO_IMPUESTO": "02",
     }]
+
+
+def test_pedimento_erp_xml_fixture_maps_cfdi_reference_to_erp_contract(monkeypatch):
+    """Pin every value the XML catalog promises from the official CFDI
+    InformacionAduanera shape. The fixture is synthetic, but its pedimento
+    number matches the supplied PDF so the four captured components are
+    checked against the real source document rather than guessed values.
+    """
+    entities = _assert_approved_mapping(
+        _process_fixture(monkeypatch, "pedimento_erp.xml", "PEDIMENTO_ERP_XML"),
+        "PEDIMENTO_ERP_XML",
+        "PEDIMENTO_ERP",
+    )
+
+    assert _values(
+        entities,
+        "VERSION_CFDI", "UUID_CFDI", "No_Pedimento", "ANIO_PEDIMENTO",
+        "ADUANA_DESPACHO", "Patente", "NUMERO_CONSECUTIVO",
+    ) == {
+        "VERSION_CFDI": "4.0",
+        "UUID_CFDI": "00000000-0000-4000-8000-000000000105",
+        "No_Pedimento": "260708236001630",
+        "ANIO_PEDIMENTO": "26",
+        "ADUANA_DESPACHO": "07",
+        "Patente": "0823",
+        "NUMERO_CONSECUTIVO": "6001630",
+    }
+
+    assert _row_values(entities["PEDIMENTOS_REFERENCIADOS"]) == [{
+        "No_Pedimento": "260708236001630",
+        "ANIO_PEDIMENTO": "26",
+        "ADUANA_DESPACHO": "07",
+        "Patente": "0823",
+        "NUMERO_CONSECUTIVO": "6001630",
+    }]
+    assert _row_values(entities["FACTURAS"]) == [{
+        "PROVEEDOR_ID_FISCAL": "EMIT800101AB1",
+        "PROVEEDOR_NOMBRE": "PROVEEDOR EXTRANJERO DE PRUEBA",
+        "Factura": "PED-TEST-1",
+        "Fecha_Factura": "2026-07-09",
+        "Total_factura": 421841.0,
+        "MONEDA_FACTURA": "USD",
+    }]
+
+    partidas = entities["PARTIDAS_CFDI"]["items"]
+    assert len(partidas) == 1
+    partida_fields = partidas[0]["fields"]
+    assert {
+        name: partida_fields[name]["value"]
+        for name in (
+            "CLAVE_PRODUCTO_SERVICIO", "NUMERO_IDENTIFICACION", "CANTIDAD",
+            "CLAVE_UNIDAD", "DESCRIPCION", "VALOR_UNITARIO", "IMPORTE",
+        )
+    } == {
+        "CLAVE_PRODUCTO_SERVICIO": "50305000",
+        "NUMERO_IDENTIFICACION": "NARANJA-TEST-1",
+        "CANTIDAD": 1730.0,
+        "CLAVE_UNIDAD": "KGM",
+        "DESCRIPCION": "NARANJA FRESCA DE PRUEBA",
+        "VALOR_UNITARIO": 243.838728,
+        "IMPORTE": 421841.0,
+    }
+    assert _row_values(partida_fields["PEDIMENTOS"]) == [{
+        "No_Pedimento": "260708236001630",
+        "ANIO_PEDIMENTO": "26",
+        "ADUANA_DESPACHO": "07",
+        "Patente": "0823",
+        "NUMERO_CONSECUTIVO": "6001630",
+    }]
+
+    assert entities["No_Pedimento"]["source"] == "NORMALIZED"
+    assert entities["Patente"]["source"] == "XML_EXTRACTION"
+
+
+def test_xpath_regex_extracts_selected_capture_group_without_type_hardcoding():
+    assert xml_document._apply_xpath_regex(
+        "26 07 0823 6001630",
+        {
+            "pattern": r"^(\d{2})\s+(\d{2})\s+(\d{4})\s+(\d{7})$",
+            "group": 3,
+        },
+        "Patente",
+    ) == "0823"
+
+    assert xml_document._apply_xpath_regex(
+        "valor sin el formato esperado", r"^(\d+)$", "Patente"
+    ) is None
+    assert xml_document._apply_xpath_regex(
+        "26 07", {"pattern": r"^(\d{2})\s+(\d{2})$", "group": 3}, "Patente"
+    ) is None
 
 
 def test_extracts_and_validates_a_well_formed_cfdi(monkeypatch):

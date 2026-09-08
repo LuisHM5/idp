@@ -6,10 +6,11 @@ todo en un archivo. `pnpm reporte:costos` y `pnpm reporte:documentos` se
 quedan como reportes independientes (mismo dato, cada uno enfocado en su
 tema); este es el que junta todo para no tener que abrir dos.
 
-También separa ejecuciones con y sin uso real de Bedrock, ordena los tipos por
-ruta de procesamiento y agrega el costo de plataforma que no es atribuible a
-un documento: piso mensual WAF/KMS desde el inventario CloudFormation y gasto
-MTD por la etiqueta CostStack cuando Cost Explorer la tiene activa.
+También separa ejecuciones con y sin IA usando la forma del catálogo y el uso
+real de Bedrock, ordena los tipos por ruta de procesamiento y agrega el costo
+de plataforma que no es atribuible a un documento: piso mensual WAF/KMS desde
+el inventario CloudFormation y gasto MTD por CostStack o, si la etiqueta no
+responde, por un cruce manual entre servicios facturados y recursos del stack.
 
 El HTML es una página autocontenida (sin librerías externas, sin servidor):
 los datos van embebidos como JSON y todo el filtrado/orden/detalle corre en
@@ -95,13 +96,13 @@ def _has_structured_selector(value: Any) -> bool:
     return False
 
 
-def deterministic_catalog_types() -> set[str]:
-    """Types whose active catalog extracts structured XML/tabular data.
+def active_catalogs() -> Dict[str, Dict[str, Any]]:
+    """Load active types for dynamic filters and processing classification.
 
     Mirrors the DSL's shape-based routing rule and recursively ignores every
     ``save/`` subtree plus ``_*.json`` templates, just like the catalog build.
     """
-    types: set[str] = set()
+    types: Dict[str, Dict[str, Any]] = {}
     for path in (REPO / "catalogs").rglob("*.json"):
         if "save" in path.relative_to(REPO / "catalogs").parts or path.name.startswith("_"):
             continue
@@ -110,12 +111,17 @@ def deterministic_catalog_types() -> set[str]:
         except (OSError, json.JSONDecodeError):
             continue
         for type_id, config in (raw.items() if isinstance(raw, dict) else []):
-            if isinstance(config, dict) and _has_structured_selector(config.get("fields") or {}):
-                types.add(type_id)
+            if isinstance(config, dict):
+                types[type_id] = config
     return types
 
 
-DETERMINISTIC_TYPES = deterministic_catalog_types()
+ACTIVE_CATALOGS = active_catalogs()
+ACTIVE_CATALOG_TYPES = set(ACTIVE_CATALOGS)
+DETERMINISTIC_TYPES = {
+    type_id for type_id, config in ACTIVE_CATALOGS.items()
+    if _has_structured_selector(config.get("fields") or {})
+}
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +640,8 @@ def render_markdown(
             f"capturado {str(infra.get('capturedAt', ''))[:19]}. El costo fijo no se reparte entre "
             "documentos ni cambia con los filtros del dashboard.",
             "",
+            f"**Ambiente seleccionado:** {infra.get('environmentExplanation', '—')}",
+            "",
             "| Métrica | Valor |",
             "| --- | ---: |",
             f"| Piso fijo mensual actual | **{money(infra.get('fixedMonthlyUsd'))}** |",
@@ -651,7 +659,24 @@ def render_markdown(
         if not infra.get("fixedItems"):
             lines.append("| Ninguno en este ambiente | 0 | $0.0000 | $0.0000 |")
         lines += ["", "S3, DynamoDB, API Gateway/API keys y los demás recursos serverless no tienen renta fija; "
-                  "se muestran como consumo variable y sólo se totalizan cuando `CostStack` devuelve gasto atribuible.", ""]
+                  "se cobran por uso. Si `CostStack` no devuelve datos, el reporte cruza manualmente los servicios "
+                  "presentes en CloudFormation con los cargos reales de la cuenta.", ""]
+        manual = infra.get("manualMtd") or {}
+        if manual.get("services"):
+            lines += [
+                "### Fallback manual por servicio", "",
+                "`Cuenta MTD` es contexto real de facturación. Sólo `Atribuido al stack` entra como costo scopeado; "
+                "un cargo de cuenta compartido no se reparte artificialmente.", "",
+                "| Servicio presente en el stack | Recursos | Cuenta MTD | Atribuido al stack | Alcance |",
+                "| --- | ---: | ---: | ---: | --- |",
+            ]
+            for item in manual["services"]:
+                scoped = item.get("scopedMtdUsd")
+                lines.append(
+                    f"| {item['service']} | {item['resources']} | {money(item.get('accountMtdUsd'))} | "
+                    f"{money(scoped) if scoped is not None else '—'} | {item.get('scope', '')} |"
+                )
+            lines.append("")
         for warning in infra.get("warnings") or []:
             lines.append(f"> {warning}")
             lines.append("")
@@ -885,6 +910,7 @@ def write_excel(
     infra_rows: List[List[Any]] = [
         ["Resumen", "Piso fijo mensual", None, None, infra.get("fixedMonthlyUsd"), "Inventario CloudFormation"],
         ["Resumen", "Fijo real MTD", None, None, infra.get("fixedMtdActualUsd"), "Cost Explorer, sólo con exclusividad comprobada"],
+        ["Resumen", "Ambiente seleccionado", None, None, None, infra.get("environmentExplanation")],
         ["Resumen", "Gasto MTD etiquetado", None, None,
          (infra.get("taggedMtd") or {}).get("totalUsd") if (infra.get("taggedMtd") or {}).get("available") else None,
          "CostStack"],
@@ -898,6 +924,11 @@ def write_excel(
         infra_rows.append([
             item.get("service"), item.get("billing"), item.get("resources"), None,
             item.get("fixedMonthlyUsd"), "Costo variable por consumo",
+        ])
+    for item in (infra.get("manualMtd") or {}).get("services") or []:
+        infra_rows.append([
+            item.get("service"), "Fallback manual; cuenta MTD " + str(item.get("accountMtdUsd")),
+            item.get("resources"), None, item.get("scopedMtdUsd"), item.get("scope"),
         ])
     for warning in infra.get("warnings") or []:
         infra_rows.append(["Advertencia", warning, None, None, None, None])
@@ -947,9 +978,12 @@ EXTRA_CSS = '''
 .filter-group .fg-label { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
 .date-inputs { display: flex; gap: 8px; align-items: center; }
 .date-inputs input[type=date] { background: var(--plane); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+.filter-search { width: min(100%, 360px); background: var(--plane); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; }
+.filter-search:focus { border-color: var(--accent); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; max-width: 480px; }
 .chip { border: 1px solid var(--border); background: var(--plane); color: var(--text-secondary); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none; white-space: nowrap; }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip-more { border-style: dashed; color: var(--accent); font-weight: 600; }
 #f-reset { background: var(--plane); border: 1px solid var(--border); color: var(--text-secondary); border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
 #f-reset:hover { color: var(--text-primary); }
 .filters-summary { color: var(--text-secondary); font-size: 12.5px; margin-left: auto; text-align: right; }
@@ -1014,6 +1048,7 @@ td.delta-bad { color: #d03b3b; }
 JS_TEMPLATE = r'''
 const DATA = JSON.parse(document.getElementById('report-data').textContent);
 const ROWS = DATA.rows;
+const CATALOG_TYPES = DATA.catalogTypes || [];
 const COST_REF = DATA.costRef;
 const INFRA = DATA.infrastructure || {};
 const ROWS_BY_ID = new Map(ROWS.map(r => [r.id, r]));
@@ -1088,7 +1123,13 @@ const state = {
   sortKey: 'processedAt', sortDir: -1,
   docLimit: 200,
   filtersOpen: false,   // el panel arranca cerrado — ver setFiltersOpen()
+  typesExpanded: false,
 };
+
+// Los principales se calculan en cada generación por volumen real, no son una
+// lista de TYPE_IDs. Un tipo nuevo aparece automáticamente en el universo y en
+// el contador +N; si entra al top por volumen se vuelve principal solo.
+const TYPE_FILTER_PRIMARY_LIMIT = 6;
 
 function distinct(key) { return [...new Set(ROWS.map(r => r[key]).filter(Boolean))].sort(); }
 
@@ -1343,7 +1384,31 @@ function renderFilters() {
     const el = document.getElementById(containerId);
     el.innerHTML = values.map(v => `<span class="chip${activeSet.has(v)?' active':''}" data-value="${esc(v)}">${esc(v)}</span>`).join('');
   };
-  mk('f-types', distinct('type'), state.types);
+  const typeCounts = new Map();
+  const typeNames = new Map();
+  CATALOG_TYPES.forEach(type => typeCounts.set(type, 0));
+  ROWS.forEach(r => {
+    if (!r.type) return;
+    typeCounts.set(r.type, (typeCounts.get(r.type)||0) + 1);
+    if (r.typeName) typeNames.set(r.type, r.typeName);
+  });
+  const typeOptions = [...typeCounts].map(([type,count]) => [type,count,typeNames.get(type)||''])
+    .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+  const primary = new Set(typeOptions.slice(0, TYPE_FILTER_PRIMARY_LIMIT).map(([type]) => type));
+  const query = (document.getElementById('f-type-search').value || '').trim().toLocaleLowerCase('es');
+  const matching = query
+    ? typeOptions.filter(([type,,name]) => `${type} ${name}`.toLocaleLowerCase('es').includes(query))
+    : typeOptions;
+  // Un filtro activo nunca desaparece al contraer la lista.
+  const visible = query || state.typesExpanded
+    ? matching
+    : matching.filter(([type]) => primary.has(type) || state.types.has(type));
+  const hidden = query ? 0 : typeOptions.filter(([type]) => !visible.some(([shown]) => shown === type)).length;
+  const typeEl = document.getElementById('f-types');
+  typeEl.innerHTML = visible.map(([type,count,name]) => `<span class="chip${state.types.has(type)?' active':''}" data-value="${esc(type)}" title="${esc(name || type)} · ${count} documento(s)">${esc(type)} · ${num(count)}</span>`).join('')
+    + (!visible.length ? '<span class="muted">Sin tipos coincidentes.</span>' : '')
+    + (hidden ? `<button type="button" class="chip chip-more" id="f-types-more">+${hidden} ver todos</button>`
+      : (!query && typeOptions.length > TYPE_FILTER_PRIMARY_LIMIT ? '<button type="button" class="chip chip-more" id="f-types-more">− ver principales</button>' : ''));
   mk('f-modes', distinct('processingMode'), state.modes);
   mk('f-apps', [...new Set(ROWS.map(appOf))].sort(), state.apps);
   mk('f-models', distinct('model'), state.models);
@@ -1372,7 +1437,9 @@ function setFiltersOpen(open) {
 }
 
 function attachChipHandlers() {
-  document.querySelectorAll('#f-types .chip').forEach(el => el.addEventListener('click', () => { toggle(state.types, el.dataset.value); render(); }));
+  document.querySelectorAll('#f-types .chip[data-value]').forEach(el => el.addEventListener('click', () => { toggle(state.types, el.dataset.value); render(); }));
+  const typeMore = document.getElementById('f-types-more');
+  if (typeMore) typeMore.onclick = () => { state.typesExpanded = !state.typesExpanded; render(); };
   document.querySelectorAll('#f-modes .chip').forEach(el => el.addEventListener('click', () => { toggle(state.modes, el.dataset.value); render(); }));
   document.querySelectorAll('#f-apps .chip').forEach(el => el.addEventListener('click', () => { toggle(state.apps, el.dataset.value); render(); }));
   document.querySelectorAll('#f-models .chip').forEach(el => el.addEventListener('click', () => { toggle(state.models, el.dataset.value); render(); }));
@@ -1425,19 +1492,26 @@ function renderAiSection(rows) {
 function renderInfrastructureSection() {
   const fixed = INFRA.fixedMonthlyUsd;
   const tagged = INFRA.taggedMtd || {};
+  const manual = INFRA.manualMtd || {};
   document.getElementById('infra-kpis').innerHTML = [
-    kpiTile(fixed === null || fixed === undefined ? '—' : money(fixed), 'Piso fijo / mes', 'inventario real del stack'),
+    kpiTile(fixed === null || fixed === undefined ? '—' : money(fixed), 'Piso fijo / mes', `${INFRA.environment || 'ambiente desconocido'} · inventario del stack`),
     kpiTile(INFRA.fixedMtdActualUsd === null || INFRA.fixedMtdActualUsd === undefined ? '—' : money(INFRA.fixedMtdActualUsd), 'Fijo facturado MTD', INFRA.fixedMtdEstimated ? 'Cost Explorer · estimado del mes abierto' : 'Cost Explorer'),
-    kpiTile(tagged.available ? money(tagged.totalUsd) : 'No disponible', 'Gasto variable MTD', 'CostStack en Cost Explorer'),
+    kpiTile(tagged.available ? money(tagged.totalUsd) : 'No disponible', 'CostStack MTD', tagged.available ? 'etiqueta de asignación' : 'se usa fallback manual'),
     kpiTile(num(INFRA.resourceCount), 'Recursos del stack', `${INFRA.stack || 'sin inventario'} · ${INFRA.region || ''}`),
   ].join('');
+  document.getElementById('infra-env-note').innerHTML = INFRA.environmentExplanation
+    ? `<p class="infra-note"><strong>Ambiente seleccionado:</strong> ${esc(INFRA.environmentExplanation)}</p>` : '';
   const fixedRows = (INFRA.fixedItems || []).map(item => `<tr><td>${esc(item.service)}</td><td>${esc(item.component)}</td><td class="num">${num(item.quantity)}</td><td class="num">${money(item.unitMonthlyUsd)}</td><td class="num">${money(item.monthlyUsd)}</td></tr>`).join('')
     || '<tr><td colspan="5">Este ambiente no tiene recursos con renta fija.</td></tr>';
   document.getElementById('infra-fixed-table').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Servicio</th><th>Componente</th><th class="num">Cantidad</th><th class="num">Tarifa / mes</th><th class="num">Total / mes</th></tr></thead><tbody>${fixedRows}</tbody></table></div>`;
   const usageRows = (INFRA.usageOnlyItems || []).map(item => `<tr><td>${esc(item.service)}</td><td class="num">${num(item.resources)}</td><td class="num">${money(item.fixedMonthlyUsd)}</td><td>${esc(item.billing)}</td></tr>`).join('');
   document.getElementById('infra-usage-table').innerHTML = usageRows ? `<div class="table-wrap"><table><thead><tr><th>Servicio</th><th class="num">Recursos</th><th class="num">Renta fija</th><th>Qué se cobra</th></tr></thead><tbody>${usageRows}</tbody></table></div>` : '';
+  const manualRows = (manual.services || []).map(item => `<tr><td>${esc(item.service)}</td><td class="num">${num(item.resources)}</td><td class="num">${money(item.accountMtdUsd)}</td><td class="num">${item.scopedMtdUsd === null || item.scopedMtdUsd === undefined ? '—' : money(item.scopedMtdUsd)}</td><td>${esc(item.scope)}</td></tr>`).join('');
+  document.getElementById('infra-manual-table').innerHTML = manualRows
+    ? `<p class="section-sub">Cruce automático entre recursos físicos de CloudFormation y cargos reales por servicio. “Cuenta MTD” sólo da contexto; no se suma al stack si AWS no permite demostrar el recurso que lo originó.</p><div class="table-wrap"><table><thead><tr><th>Servicio presente en el stack</th><th class="num">Recursos</th><th class="num">Cuenta MTD</th><th class="num">Atribuido al stack</th><th>Alcance</th></tr></thead><tbody>${manualRows}</tbody></table></div>`
+    : '<p class="empty-hint">No fue posible ejecutar el cruce manual de servicios.</p>';
   const taggedRows = (tagged.services || []).map(item => `<tr><td>${esc(item.service)}</td><td class="num">${money(item.cost)}</td></tr>`).join('');
-  document.getElementById('infra-tagged-table').innerHTML = taggedRows ? `<div class="table-wrap"><table><thead><tr><th>Servicio etiquetado</th><th class="num">Costo MTD</th></tr></thead><tbody>${taggedRows}</tbody></table></div>` : '<p class="empty-hint">Sin gasto atribuible devuelto por la etiqueta CostStack.</p>';
+  document.getElementById('infra-tagged-table').innerHTML = taggedRows ? `<div class="table-wrap"><table><thead><tr><th>Servicio etiquetado</th><th class="num">Costo MTD</th></tr></thead><tbody>${taggedRows}</tbody></table></div>` : '<p class="empty-hint">CostStack no devolvió datos; el reporte continuó con el cruce manual de arriba.</p>';
   document.getElementById('infra-warnings').innerHTML = (INFRA.warnings || []).map(w => `<p class="infra-note">${esc(w)}</p>`).join('');
 }
 
@@ -1811,11 +1885,13 @@ function render() {
 
 document.getElementById('f-desde').addEventListener('change', e => { state.desde = e.target.value; render(); });
 document.getElementById('f-hasta').addEventListener('change', e => { state.hasta = e.target.value; render(); });
+document.getElementById('f-type-search').addEventListener('input', () => { renderFilters(); attachChipHandlers(); });
 document.getElementById('f-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));
 document.getElementById('f-reset').addEventListener('click', () => {
   state.desde = ''; state.hasta = '';
+  state.typesExpanded = false;
   state.types.clear(); state.modes.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
-  document.getElementById('f-desde').value = ''; document.getElementById('f-hasta').value = '';
+  document.getElementById('f-desde').value = ''; document.getElementById('f-hasta').value = ''; document.getElementById('f-type-search').value = '';
   render();
 });
 
@@ -1890,6 +1966,7 @@ def render_quality_html(quality: Dict[str, Any]) -> str:
 def render_html(
     rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None,
     infrastructure: Optional[Dict[str, Any]] = None,
+    catalog_types: Optional[List[str]] = None,
 ) -> str:
     from _report_lib import BASE_CSS
 
@@ -1918,7 +1995,7 @@ def render_html(
               <input type="date" id="f-desde"> <span class="muted">a</span> <input type="date" id="f-hasta">
             </div>
           </div>
-          <div class="filter-group"><span class="fg-label">Tipo de documento</span><div class="chip-row" id="f-types"></div></div>
+          <div class="filter-group"><label class="fg-label" for="f-type-search">Tipo de documento</label><input class="filter-search" type="search" id="f-type-search" placeholder="Buscar tipo o nombre…" autocomplete="off"><div class="chip-row" id="f-types"></div></div>
           <div class="filter-group"><span class="fg-label">Procesamiento</span><div class="chip-row" id="f-modes"></div></div>
           <div class="filter-group"><span class="fg-label">Sistema</span><div class="chip-row" id="f-apps"></div></div>
           <div class="filter-group"><span class="fg-label">Modelo</span><div class="chip-row" id="f-models"></div></div>
@@ -1941,10 +2018,13 @@ def render_html(
         <summary>Infraestructura del stack</summary>
         <p class="section-sub">Inventario AWS en vivo y separado del costo por documento. El piso mensual no cambia con los filtros; S3, DynamoDB, API Gateway y API keys no tienen renta fija y se cobran por consumo.</p>
         <div class="kpi-row dense" id="infra-kpis"></div>
+        <div id="infra-env-note"></div>
         <div class="sub-head">Piso fijo desplegado</div>
         <div id="infra-fixed-table"></div>
         <div class="sub-head">Servicios sin renta fija</div>
         <div id="infra-usage-table"></div>
+        <div class="sub-head">Fallback manual por servicios de la infraestructura</div>
+        <div id="infra-manual-table"></div>
         <div class="sub-head">Consumo MTD atribuido por CostStack</div>
         <div id="infra-tagged-table"></div>
         <div id="infra-warnings"></div>
@@ -2046,7 +2126,7 @@ def render_html(
 
       <footer>Generado por <code>pnpm reporte</code> (scripts/reporte.py) · une la tabla de costos y la de tracking de documentos por <code>DocumentId</code> · datos crudos en <code>datos_raw.xlsx</code> · reportes individuales: <code>pnpm reporte:costos</code> / <code>pnpm reporte:documentos</code>.</footer>
     </div>
-    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "costRef": COST_REFERENCE, "infrastructure": infrastructure or {}}, ensure_ascii=False, default=_json_default)}</script>
+    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "catalogTypes": sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types), "costRef": COST_REFERENCE, "infrastructure": infrastructure or {}}, ensure_ascii=False, default=_json_default)}</script>
     <script>{JS_TEMPLATE}</script>'''
 
     return f'''<!doctype html>
@@ -2068,15 +2148,20 @@ def render_html(
 def write_report_bundle(
     out_dir: Path, rows: List[Dict[str, Any]], quality: Dict[str, Any], env: str,
     infrastructure: Optional[Dict[str, Any]] = None,
+    catalog_types: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
+    report_catalog_types = sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types)
     hydrate_processing_fields(rows)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "reporte.md").write_text(render_markdown(rows, env, quality, infrastructure), encoding="utf-8")
-    (out_dir / "reporte.html").write_text(render_html(rows, env, quality, infrastructure), encoding="utf-8")
+    (out_dir / "reporte.html").write_text(
+        render_html(rows, env, quality, infrastructure, report_catalog_types), encoding="utf-8"
+    )
     write_excel(out_dir / "datos_raw.xlsx", rows, quality, infrastructure)
     shutil.copy2(out_dir / "datos_raw.xlsx", out_dir / "reporte_ejecutivo.xlsx")
-    snapshot = {"schemaVersion": 2, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
-                "rows": rows, "quality": quality, "infrastructure": infrastructure or {}}
+    snapshot = {"schemaVersion": 3, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
+                "catalogTypes": report_catalog_types, "rows": rows, "quality": quality,
+                "infrastructure": infrastructure or {}}
     snapshot_path = out_dir / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     os.chmod(snapshot_path, 0o600)
@@ -2107,7 +2192,9 @@ def main() -> int:
         )
         env = saved.get("environment") or args.env
         out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / env / datetime.now().strftime("%Y%m%d-%H%M%S")
-        overall = write_report_bundle(out_dir, rows, quality, env, infrastructure)
+        overall = write_report_bundle(
+            out_dir, rows, quality, env, infrastructure, saved.get("catalogTypes")
+        )
         print(f"Reporte reproducido desde {args.snapshot}: {overall['n']} documento(s) → {out_dir}/")
         if args.open:
             webbrowser.open((out_dir / "reporte.html").resolve().as_uri())

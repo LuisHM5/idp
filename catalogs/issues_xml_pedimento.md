@@ -2,6 +2,13 @@
 
 Fecha de revisión: 2026-08-12.
 
+> Actualización 2026-09-08: existe también
+> `catalogs/custom/erp/PEDIMENTO_ERP_XML.json`, diseñado para un CFDI 4.0 que
+> sí traiga `cfdi:InformacionAduanera/@NumeroPedimento`. Ese catálogo construye
+> la parte verificable de la salida ERP (número/componentes y fila de factura),
+> pero no cambia la conclusión de este documento: una factura CFDI no es el
+> pedimento electrónico completo.
+
 ## Resumen
 
 El archivo de referencia `data/xmlsx/factura-pedimento.xml` **no es un XML de
@@ -117,6 +124,28 @@ prueba y compararse ruta por ruta antes de ampliar
 `PEDIMENTO_ADUANAL_XML.json`. Los campos solo deben marcarse `required` cuando
 el nodo sea obligatorio y estable en todas las versiones que se pretenda
 soportar.
+
+## Alcance del mapeo `PEDIMENTO_ERP_XML`
+
+El estándar CFDI permite que un concepto contenga uno o más nodos
+`cfdi:InformacionAduanera`, cuyo atributo `NumeroPedimento` usa la forma
+`AA AA NNNN NNNNNNN`. Con esa única referencia sí es legítimo obtener:
+
+- `No_Pedimento` normalizado a 15 dígitos;
+- `ANIO_PEDIMENTO`, `ADUANA_DESPACHO`, `Patente` y
+  `NUMERO_CONSECUTIVO`, separando los cuatro grupos;
+- `PEDIMENTOS_REFERENCIADOS`, conservando todas las apariciones del CFDI;
+- una fila `FACTURAS` desde emisor, folio, fecha, total y moneda del propio
+  comprobante;
+- `PARTIDAS_CFDI`, manteniendo la relación entre cada concepto fiscal y sus
+  referencias de pedimento.
+
+No se trasladan atributos por mera similitud de nombre. En particular,
+`Comprobante/@TipoCambio` no llena el `Tipo_Cambio` aduanal, `Total` no se
+convierte en `ValorAduana`, y los impuestos CFDI no se presentan como cuadro
+de liquidación. El fixture `tests/unit/fixtures/xml_cfdi/pedimento_erp.xml` es
+sintético y anonimizado: conserva la forma oficial y usa el número visible en
+el PDF de referencia para probar el mapeo, sin incorporar sus demás datos.
 
 ## Consideraciones operativas
 

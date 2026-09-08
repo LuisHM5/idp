@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+    xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+    Version="4.0" Serie="P" Folio="PED-TEST-1"
+    Fecha="2026-07-09T10:30:00" NoCertificado="00000000000000000000"
+    SubTotal="421841.00" Moneda="USD" TipoCambio="17.495800"
+    Total="421841.00" TipoDeComprobante="I" Exportacion="01"
+    MetodoPago="PUE" LugarExpedicion="32300">
+  <cfdi:Emisor Rfc="EMIT800101AB1" Nombre="PROVEEDOR EXTRANJERO DE PRUEBA" RegimenFiscal="616"/>
+  <cfdi:Receptor Rfc="RECE850202CD2" Nombre="IMPORTADOR DE PRUEBA"
+      DomicilioFiscalReceptor="31125" RegimenFiscalReceptor="601" UsoCFDI="G01"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="50305000" NoIdentificacion="NARANJA-TEST-1"
+        Cantidad="1730.00" ClaveUnidad="KGM" Unidad="Kilogramo"
+        Descripcion="NARANJA FRESCA DE PRUEBA" ValorUnitario="243.838728"
+        Importe="421841.00" ObjetoImp="01">
+      <cfdi:InformacionAduanera NumeroPedimento="26 07 0823 6001630"/>
+    </cfdi:Concepto>
+  </cfdi:Conceptos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital Version="1.1"
+        UUID="00000000-0000-4000-8000-000000000105"
+        FechaTimbrado="2026-07-09T10:31:00" RfcProvCertif="PAC800101XX1"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

@@ -682,10 +682,16 @@ por-documento de eso sería precisión inventada, no una medición real.
 stack**, sin repartirlos por documento: inventaría CloudFormation en vivo,
 calcula el piso WAF/KMS desde los recursos efectivamente desplegados, comprueba
 el fijo MTD con Cost Explorer sólo cuando la exclusividad del recurso está
-demostrada y consulta el gasto variable por `CostStack`. El mismo reporte
+demostrada y consulta el gasto variable por `CostStack` o por el cruce manual
+descrito en la sección 8. El mismo reporte
 separa las ejecuciones **Con IA / Sin IA / Sin datos** por uso real de servicios
 Bedrock; no mantiene una lista hardcodeada de TYPE_IDs, por lo que XML/tabulares
-determinísticos y futuros pipelines sin modelo entran automáticamente.
+determinísticos y futuros pipelines sin modelo entran automáticamente. En el
+HTML, el filtro muestra los seis tipos principales por volumen y un botón
+`+N ver todos`, además de un buscador por `TYPE_ID` o nombre legible; el universo
+se reconstruye desde los catálogos activos y los datos en cada generación,
+incluyendo tipos con cero documentos, así que un tipo nuevo se incorpora sin
+modificar el reporte.
 
 **Cómo consultarlo:**
 
@@ -734,9 +740,20 @@ cuenta.
 
 Verificación del 2026-09-08: los recursos sí llevan la etiqueta, pero la cuenta
 vinculada no puede consultar su estado de activación y una consulta filtrada por
-`CostStack` devuelve cero grupos. `pnpm reporte` lo presenta como **No
-disponible**, no como `$0`, hasta que la cuenta pagadora active la clave y AWS
-empiece a devolver cargos atribuibles.
+`CostStack` devuelve cero grupos. Eso ya no detiene `pnpm reporte`: el reporte
+cruza los tipos y IDs físicos de CloudFormation del ambiente seleccionado con
+los cargos MTD por servicio de la cuenta. El cargo de cuenta se muestra como
+contexto sólo si ese servicio existe en el stack y se suma como **atribuido al
+stack** únicamente cuando el inventario demuestra exclusividad del recurso
+(actualmente WAF y almacenamiento de la CMK). Así se evita cargar a dev costos
+de prod o repartir arbitrariamente S3/Lambda/DynamoDB compartidos.
+
+El `$0` fijo de un reporte generado sin argumentos es correcto y corresponde a
+`--env dev`: ese stack no declara Web ACL ni clave KMS propia. No significa que
+la cuenta completa cueste cero. En el corte 2026-09-01—2026-09-08, los cargos
+de WAF (~$2.16 MTD) y almacenamiento KMS (~$0.24 MTD) pertenecen a prod. Para
+verlos scopeados se usa `pnpm reporte -- --env prod`; allí el inventario da un
+piso de **$10/mes** y el prorrateo real MTD aunque `CostStack` siga sin datos.
 
 ## Tráfico de pruebas reales
 

@@ -7,6 +7,7 @@ de negocio, no tipos disponibles para procesar de fábrica.
 | Documento de negocio | Tipo activo | Nota |
 |---|---|---|
 | Pedimento | `PEDIMENTO_ADUANAL` | Pedimento PDF/imagen. |
+| Factura CFDI que referencia un pedimento, con salida ERP | `PEDIMENTO_ERP_XML` | CFDI 4.0 con `InformacionAduanera/@NumeroPedimento`. Mapea número/componentes, factura y conceptos; no sustituye el pedimento completo. |
 | Credencial para votar / INE | `INE` | Identificación mexicana. |
 | Certificado, carátula o constancia de seguro | `CERTIFICADO_POLIZA` | Documento de póliza o cobertura. |
 | Factura de honorarios / honorarios de agencia aduanal | `FACTURA_HONORARIOS` o `FACTURA_HONORARIOS_XML` | El primero procesa PDF/impreso; el segundo procesa el CFDI XML nativo sin Bedrock. |
@@ -29,3 +30,8 @@ de negocio, no tipos disponibles para procesar de fábrica.
 Todos los tipos `_XML` exigen `documentType` explícito en la subida y usan
 extracción determinística por XPath, con costo Bedrock de extracción igual a
 cero. Ver `catalogs/README.md`, sección “Tipos con fuente XML”.
+
+`PEDIMENTO_ERP_XML` es deliberadamente distinto de `PEDIMENTO_ERP`: el segundo
+lee el pedimento PDF completo y puede poblar clave, fechas, valores aduanales,
+incrementables y liquidación; el primero lee una **factura** que solo cita el
+pedimento y deja fuera todo dato que no esté presente en el CFDI.
