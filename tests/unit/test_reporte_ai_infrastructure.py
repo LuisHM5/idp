@@ -23,6 +23,29 @@ report = _load("reporte_ai", "reporte.py")
 infra_costs = _load("infra_costs_test", "infrastructure_costs.py")
 
 
+def test_default_report_period_is_full_calendar_year() -> None:
+    assert report.resolve_report_period(2026, None, None) == (date(2026, 1, 1), date(2026, 12, 31))
+    assert report.resolve_report_period(2026, "2025-03-10", None) == (date(2025, 3, 10), date(2025, 12, 31))
+    assert report.resolve_report_period(2026, None, "2024-06-30") == (date(2024, 1, 1), date(2024, 6, 30))
+
+
+def test_monthly_spend_keeps_actual_separate_from_projection() -> None:
+    rows = report.join_rows([_cost("jan", bedrock=True)], [])
+    rows[0]["processedAt"] = "2026-01-15T12:00:00Z"
+    snapshot = report.monthly_spend_snapshot(rows, {
+        "fixedMonthlyHistory": {"rows": [
+            {"month": "2026-01", "status": "closed", "actualUsd": 1.0, "estimatedFullMonthUsd": 10.0, "projectedUsd": 1.0},
+            {"month": "2026-02", "status": "future", "actualUsd": None, "estimatedFullMonthUsd": 10.0, "projectedUsd": 10.0},
+        ]},
+    })
+
+    january, february = snapshot["rows"]
+    assert january["knownActualUsd"] == 1.0101
+    assert january["fixedProjectionUsd"] == 1.0
+    assert february["knownActualUsd"] is None
+    assert snapshot["knownActualUsd"] == 1.0101
+
+
 def _cost(document_id: str, *, bedrock: bool) -> dict:
     services = {
         "LambdaCompute": {"cost": 0.0001, "input_tokens": 0, "output_tokens": 0, "model_id": None},
@@ -70,6 +93,11 @@ def test_report_marks_actual_bedrock_usage_and_sorts_no_ai_first() -> None:
     assert "Significado de los colores" in html
     assert 'class="chart-legend"' in html
     assert 'id="ref-delta-legend"' in html
+    assert 'id="infra-fixed-history"' in html
+    assert 'id="monthly-spend-chart"' in html
+    assert "Mes actual · gastado MTD" in html
+    assert "Gastado real conocido" in html
+    assert "traffic: new Set()," in html
     assert "Requiere revisión" in html
     payload = html.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
     assert json.loads(payload)["catalogTypes"] == catalog_types
@@ -142,6 +170,8 @@ def test_live_inventory_builds_scoped_prod_floor_and_ce_mtd() -> None:
     assert snapshot["taggedMtd"]["available"] is False
     assert snapshot["manualMtd"]["available"] is True
     assert snapshot["manualMtd"]["totalScopedUsd"] == 2.4
+    assert len(snapshot["fixedMonthlyHistory"]["rows"]) == 12
+    assert next(row for row in snapshot["fixedMonthlyHistory"]["rows"] if row["month"] == "2026-09")["status"] == "mtd"
     assert any("no devolvió cargos" in warning for warning in snapshot["warnings"])
     assert next(item for item in snapshot["usageOnlyItems"] if item["service"] == "Amazon S3")["fixedMonthlyUsd"] == 0
 
@@ -178,6 +208,7 @@ def test_dev_zero_fixed_is_explained_and_account_charges_are_not_misattributed()
     assert snapshot["fixedMonthlyUsd"] == 0
     assert snapshot["fixedMtdActualUsd"] == 0
     assert snapshot["manualMtd"]["totalScopedUsd"] == 0
+    assert snapshot["fixedMonthlyHistory"]["actualToDateUsd"] == 0
     assert snapshot["manualMtd"]["services"] == [{
         "service": "Amazon Simple Storage Service",
         "resources": 1,

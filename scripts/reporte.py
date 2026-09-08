@@ -40,8 +40,9 @@ Salida en `reportes/<env>/<timestamp>/`:
     snapshot.json          corte reproducible de datos normalizados
 
 Uso:
-    pnpm reporte                              # dev, todo el historial
+    pnpm reporte                              # dev, año calendario actual completo
     pnpm reporte -- --env prod
+    pnpm reporte -- --year 2025
     pnpm reporte -- --desde 2026-08-01 --hasta 2026-08-17
     pnpm reporte -- --sistema CEDIS
     pnpm reporte -- --open
@@ -56,7 +57,7 @@ import shutil
 import sys
 import webbrowser
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -84,6 +85,18 @@ from infrastructure_costs import (  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_ROOT = REPO / "reportes"
+
+
+def resolve_report_period(year: int, desde: Optional[str], hasta: Optional[str]) -> tuple[date, date]:
+    """Resolve the loaded document window; default is one full calendar year."""
+    explicit_start = date.fromisoformat(desde) if desde else None
+    explicit_end = date.fromisoformat(hasta) if hasta else None
+    range_year = explicit_start.year if explicit_start else explicit_end.year if explicit_end else year
+    report_start = explicit_start or date(range_year, 1, 1)
+    report_end = explicit_end or date(range_year, 12, 31)
+    if report_end < report_start:
+        raise ValueError("--hasta no puede ser anterior a --desde")
+    return report_start, report_end
 
 
 def _has_structured_selector(value: Any) -> bool:
@@ -425,6 +438,64 @@ def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def monthly_spend_snapshot(
+    rows: List[Dict[str, Any]], infrastructure: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Actual known report spend by month; never mixes future projection into actual."""
+    fixed_history = (infrastructure or {}).get("fixedMonthlyHistory") or {}
+    fixed_by_month = {item.get("month"): item for item in fixed_history.get("rows") or []}
+    buckets: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"documents": 0, "documentsWithCost": 0, "processingActualUsd": 0.0}
+    )
+    for row in rows:
+        month = (row.get("processedAt") or "")[:7]
+        if not month:
+            continue
+        bucket = buckets[month]
+        bucket["documents"] += 1
+        if row.get("hasCost"):
+            bucket["documentsWithCost"] += 1
+            bucket["processingActualUsd"] += row.get("totalCost") or 0
+
+    months = sorted(set(buckets) | {month for month in fixed_by_month if month})
+    output_rows: List[Dict[str, Any]] = []
+    for month in months:
+        bucket = buckets[month]
+        fixed = fixed_by_month.get(month) or {}
+        status = fixed.get("status") or "closed"
+        fixed_actual = fixed.get("actualUsd")
+        processing_actual = round(bucket["processingActualUsd"], 12)
+        # Futuro se representa como ausencia, nunca como gasto real cero. Si el
+        # fijo no es atribuible, el total conocido conserva procesamiento pero
+        # se marca como parcial mediante fixedActualAvailable.
+        known_actual = None if status == "future" else round(processing_actual + (fixed_actual or 0), 12)
+        output_rows.append({
+            "month": month,
+            "status": status,
+            "documents": bucket["documents"],
+            "documentsWithCost": bucket["documentsWithCost"],
+            "processingActualUsd": processing_actual,
+            "fixedActualUsd": fixed_actual,
+            "fixedActualAvailable": fixed_actual is not None,
+            "knownActualUsd": known_actual,
+            "fixedProjectionUsd": fixed.get("projectedUsd"),
+        })
+
+    elapsed = [row for row in output_rows if row["status"] != "future"]
+    return {
+        "rows": output_rows,
+        "documents": sum(row["documents"] for row in elapsed),
+        "documentsWithCost": sum(row["documentsWithCost"] for row in elapsed),
+        "processingActualUsd": round(sum(row["processingActualUsd"] for row in elapsed), 12),
+        "fixedActualUsd": (
+            round(sum(row["fixedActualUsd"] or 0 for row in elapsed), 12)
+            if all(row["fixedActualAvailable"] for row in elapsed) else None
+        ),
+        "knownActualUsd": round(sum(row["knownActualUsd"] or 0 for row in elapsed), 12),
+        "note": "Real conocido = procesamiento con auditoría de costo + fijo atribuible; no incluye proyecciones ni consumo variable compartido.",
+    }
+
+
 def _page_sel_snapshot(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     active = [r["pageSelection"] for r in rows if r.get("pageSelection")]
     if not active:
@@ -485,12 +556,19 @@ def render_markdown(
     by_type = by_key_snapshot(rows, "type")
     by_model = by_key_snapshot(rows, "model")
     by_app = snapshot_by(rows, app_of)
+    monthly_spend = monthly_spend_snapshot(rows, infrastructure)
+    report_period = (infrastructure or {}).get("reportPeriod") or {}
+    report_period_text = (
+        f"{report_period.get('start')} a {report_period.get('end')}"
+        if report_period.get("start") and report_period.get("end") else "sin rango explícito"
+    )
 
     lines = [
         f"# Reporte — {env}",
         "",
         f"Generado {datetime.now():%Y-%m-%d %H:%M} · {overall['n']} documento(s)"
         + (f" · {overall['first_date'][:10]} a {overall['last_date'][:10]}" if overall["first_date"] else ""),
+        f"Periodo cargado por defecto: **{report_period_text}**.",
         "",
         "Este resumen es una foto fija sin filtrar. Para filtrar por fecha/tipo/sistema/modelo/"
         "estado y ver el detalle de un documento, abre `reporte.html`.",
@@ -658,6 +736,43 @@ def render_markdown(
             )
         if not infra.get("fixedItems"):
             lines.append("| Ninguno en este ambiente | 0 | $0.0000 | $0.0000 |")
+        fixed_history = infra.get("fixedMonthlyHistory") or {}
+        if fixed_history.get("rows"):
+            lines += [
+                "", "### Gasto fijo mes a mes", "",
+                f"Real acumulado: **{money(fixed_history.get('actualToDateUsd'))}** · "
+                f"proyección hasta {fixed_history.get('end', '—')}: "
+                f"**{money(fixed_history.get('projectedPeriodUsd'))}**.", "",
+                "| Mes | Estado | Real facturado | Piso actual de referencia | Usado en proyección |",
+                "| --- | --- | ---: | ---: | ---: |",
+            ]
+            status_labels = {"closed": "Cerrado", "mtd": "Mes actual · MTD", "future": "Futuro"}
+            for item in fixed_history["rows"]:
+                actual = item.get("actualUsd")
+                lines.append(
+                    f"| {item.get('month')} | {status_labels.get(item.get('status'), item.get('status'))} | "
+                    f"{money(actual) if actual is not None else '—'} | {money(item.get('estimatedFullMonthUsd'))} | "
+                    f"{money(item.get('projectedUsd'))} |"
+                )
+        if monthly_spend.get("rows"):
+            lines += [
+                "", "### Gasto real del reporte, mes a mes", "",
+                f"Gastado real conocido: **{money(monthly_spend.get('knownActualUsd'))}** = procesamiento "
+                f"{money(monthly_spend.get('processingActualUsd'))} + fijo "
+                f"{money(monthly_spend.get('fixedActualUsd'))}.",
+                "La proyección anterior permanece separada y nunca se suma en esta tabla.", "",
+                "| Mes | Estado | Procesamiento real | Fijo real | Total real conocido | Cobertura de costos |",
+                "| --- | --- | ---: | ---: | ---: | ---: |",
+            ]
+            for item in monthly_spend["rows"]:
+                if item.get("status") == "future":
+                    continue
+                fixed_actual = item.get("fixedActualUsd")
+                lines.append(
+                    f"| {item.get('month')} | {'Mes actual · MTD' if item.get('status') == 'mtd' else 'Cerrado'} | "
+                    f"{money(item.get('processingActualUsd'))} | {money(fixed_actual) if fixed_actual is not None else '—'} | "
+                    f"{money(item.get('knownActualUsd'))} | {item.get('documentsWithCost')}/{item.get('documents')} docs |"
+                )
         lines += ["", "S3, DynamoDB, API Gateway/API keys y los demás recursos serverless no tienen renta fija; "
                   "se cobran por uso. Si `CostStack` no devuelve datos, el reporte cruza manualmente los servicios "
                   "presentes en CloudFormation con los cargos reales de la cuenta.", ""]
@@ -766,17 +881,17 @@ def write_excel(
 
     operational = [r for r in rows if r.get("trafficKind") != "test"]
     tests_traffic = [r for r in rows if r.get("trafficKind") == "test"]
-    op = overall_snapshot(operational)
+    all_docs = overall_snapshot(rows)
     write_sheet(ws_exec, ["Indicador", "Valor", "Lectura"], [
         ["Ambiente operativo", len(operational), "Documentos sin test-run-id"],
-        ["Tráfico de prueba", len(tests_traffic), "Separado de los KPIs operativos"],
-        ["Éxito técnico", op["n_completed"] / op["n"] if op["n"] else None, "Ejecuciones completas / operativas"],
-        ["Aprobación de reglas", op["approval_rate"], "No equivale a exactitud humana"],
-        ["Costo total operativo USD", op["total_cost"], "Excluye tráfico E2E etiquetado"],
-        ["Documentos operativos sin IA", op["n_no_ai"], "Sin uso real de servicios Bedrock"],
-        ["Costo de documentos sin IA USD", op["no_ai_docs_cost"], "Lambda/otros servicios; componente IA = 0"],
+        ["Tráfico de prueba", len(tests_traffic), "Incluido por defecto; se puede filtrar en el HTML"],
+        ["Éxito técnico", all_docs["n_completed"] / all_docs["n"] if all_docs["n"] else None, "Todas las ejecuciones cargadas en el periodo"],
+        ["Aprobación de reglas", all_docs["approval_rate"], "Todos los documentos; no equivale a exactitud humana"],
+        ["Costo total de procesamiento USD", all_docs["total_cost"], "Incluye todo el tráfico cargado en el periodo"],
+        ["Documentos sin IA", all_docs["n_no_ai"], "Todos los documentos; sin uso real de servicios Bedrock"],
+        ["Costo de documentos sin IA USD", all_docs["no_ai_docs_cost"], "Lambda/otros servicios; componente IA = 0"],
         ["Piso fijo mensual del stack USD", (infrastructure or {}).get("fixedMonthlyUsd"), "No se reparte por documento"],
-        ["Latencia p95 segundos", op["p95_seconds"], "Punta a punta"],
+        ["Latencia p95 segundos", all_docs["p95_seconds"], "Punta a punta; todos los documentos del periodo"],
     ])
 
     agg_headers = [
@@ -934,6 +1049,29 @@ def write_excel(
         infra_rows.append(["Advertencia", warning, None, None, None, None])
     write_sheet(ws_infra, ["Servicio", "Componente/lectura", "Cantidad", "TarifaMensualUsd", "TotalUsd", "Fuente"], infra_rows)
 
+    fixed_history = infra.get("fixedMonthlyHistory") or {}
+    ws_fixed = wb.create_sheet("CostosFijosMensuales")
+    write_sheet(
+        ws_fixed,
+        ["Mes", "Estado", "RealFacturadoUsd", "PisoActualReferenciaUsd", "UsadoEnProyeccionUsd", "Alcance"],
+        [[
+            item.get("month"), item.get("status"), item.get("actualUsd"),
+            item.get("estimatedFullMonthUsd"), item.get("projectedUsd"), fixed_history.get("scope"),
+        ] for item in fixed_history.get("rows") or []],
+    )
+
+    monthly_spend = monthly_spend_snapshot(rows, infrastructure)
+    ws_monthly_spend = wb.create_sheet("GastoMensualReporte")
+    write_sheet(
+        ws_monthly_spend,
+        ["Mes", "Estado", "Documentos", "DocsConCosto", "ProcesamientoRealUsd", "FijoRealUsd", "TotalRealConocidoUsd", "FijoUsadoEnProyeccionUsd"],
+        [[
+            item.get("month"), item.get("status"), item.get("documents"), item.get("documentsWithCost"),
+            item.get("processingActualUsd"), item.get("fixedActualUsd"), item.get("knownActualUsd"),
+            item.get("fixedProjectionUsd"),
+        ] for item in monthly_spend.get("rows") or []],
+    )
+
     if quality:
         trend = quality.get("trend") or []
         ws_q = wb.create_sheet("CalidadPruebas")
@@ -1041,12 +1179,24 @@ td.delta-bad { color: #d03b3b; }
   background: repeating-linear-gradient(to bottom, transparent 0, transparent calc(25% - 1px), var(--gridline) 25%); }
 .volume-bars { height: 100%; display: flex; align-items: flex-end; gap: 3px; }
 .volume-axis-note { color: var(--text-muted); font-size: 11px; margin-top: 5px; }
+.monthly-cost-chart { display: grid; gap: 7px; }
+.monthly-cost-row { display: grid; grid-template-columns: 92px minmax(180px, 1fr) 230px; gap: 12px; align-items: center; padding: 7px 9px; border-radius: 8px; }
+.monthly-cost-row.current { background: rgba(42,120,214,.08); outline: 1px solid rgba(42,120,214,.22); }
+.monthly-name { font-size: 12.5px; font-weight: 600; text-transform: capitalize; }
+.monthly-status { display: block; color: var(--text-muted); font-size: 10px; font-weight: 500; margin-top: 2px; }
+.monthly-bars { display: grid; gap: 3px; }
+.monthly-track { height: 7px; background: var(--gridline); border-radius: 999px; overflow: hidden; }
+.monthly-fill { height: 100%; border-radius: 999px; }
+.monthly-stack-track { display: flex; height: 11px; background: var(--gridline); border-radius: 999px; overflow: hidden; }
+.monthly-stack-segment { height: 100%; }
+.monthly-values { color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
 .mode-badge { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 650; white-space: nowrap; }
 .mode-no-ai { background: rgba(27,175,122,.14); color: #0b855a; }
 .mode-ai { background: rgba(42,120,214,.14); color: #2367b5; }
 .mode-mixed { background: rgba(237,161,0,.16); color: #946600; }
 .mode-unknown { background: var(--plane); color: var(--text-muted); }
 .infra-note { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-secondary); font-size: 13px; }
+@media (max-width: 680px) { .monthly-cost-row { grid-template-columns: 76px minmax(110px, 1fr); } .monthly-values { grid-column: 1 / -1; } }
 @media (max-width: 560px) { .volume-plot { grid-template-columns: 38px minmax(0, 1fr); gap: 6px; } .volume-y { font-size: 10px; } }
 '''
 
@@ -1056,6 +1206,8 @@ const ROWS = DATA.rows;
 const CATALOG_TYPES = DATA.catalogTypes || [];
 const COST_REF = DATA.costRef;
 const INFRA = DATA.infrastructure || {};
+const MONTHLY_SPEND = DATA.monthlySpend || {rows:[]};
+const DEFAULT_RANGE = INFRA.reportPeriod || {};
 const ROWS_BY_ID = new Map(ROWS.map(r => [r.id, r]));
 const CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
 const STATUS_ROLE_COLOR = {good: "#0ca30c", warning: "#fab219", critical: "#d03b3b", neutral: "#898781"};
@@ -1128,9 +1280,9 @@ function appOf(r){ return r.appOrigin || '(sin sistema)'; }
 // Estado de filtros
 // ---------------------------------------------------------------------
 const state = {
-  desde: '', hasta: '',
+  desde: DEFAULT_RANGE.start || '', hasta: DEFAULT_RANGE.end || '',
   types: new Set(), modes: new Set(), apps: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
-  traffic: new Set(['operational']),
+  traffic: new Set(),
   hiddenServices: new Set(),
   sortKey: 'processedAt', sortDir: -1,
   docLimit: 200,
@@ -1516,6 +1668,7 @@ function renderInfrastructureSection() {
   const fixed = INFRA.fixedMonthlyUsd;
   const tagged = INFRA.taggedMtd || {};
   const manual = INFRA.manualMtd || {};
+  const fixedHistory = INFRA.fixedMonthlyHistory || {};
   document.getElementById('infra-kpis').innerHTML = [
     kpiTile(fixed === null || fixed === undefined ? '—' : money(fixed), 'Piso fijo / mes', `${INFRA.environment || 'ambiente desconocido'} · inventario del stack`),
     kpiTile(INFRA.fixedMtdActualUsd === null || INFRA.fixedMtdActualUsd === undefined ? '—' : money(INFRA.fixedMtdActualUsd), 'Fijo facturado MTD', INFRA.fixedMtdEstimated ? 'Cost Explorer · estimado del mes abierto' : 'Cost Explorer'),
@@ -1524,6 +1677,67 @@ function renderInfrastructureSection() {
   ].join('');
   document.getElementById('infra-env-note').innerHTML = INFRA.environmentExplanation
     ? `<p class="infra-note"><strong>Ambiente seleccionado:</strong> ${esc(INFRA.environmentExplanation)}</p>` : '';
+  const currentFixed = (fixedHistory.rows || []).find(row => row.status === 'mtd');
+  document.getElementById('infra-history-kpis').innerHTML = [
+    kpiTile(fixedHistory.actualToDateUsd === null || fixedHistory.actualToDateUsd === undefined ? '—' : money(fixedHistory.actualToDateUsd), 'Fijo real acumulado', `${fixedHistory.start || '—'} a hoy`),
+    kpiTile(fixedHistory.projectedPeriodUsd === null || fixedHistory.projectedPeriodUsd === undefined ? '—' : money(fixedHistory.projectedPeriodUsd), 'Proyección fija del periodo', `hasta ${fixedHistory.end || '—'}`),
+    kpiTile(!currentFixed || currentFixed.actualUsd === null ? '—' : money(currentFixed.actualUsd), 'Mes actual · gastado MTD', currentFixed ? currentFixed.month : 'fuera del rango'),
+    kpiTile(!currentFixed ? '—' : money(currentFixed.estimatedFullMonthUsd), 'Mes actual · cierre estimado', 'run-rate del inventario actual'),
+  ].join('');
+  const historyRows = fixedHistory.rows || [];
+  const historyMax = Math.max(1, ...historyRows.flatMap(row => [row.actualUsd || 0, row.projectedUsd || 0]));
+  const monthName = value => new Intl.DateTimeFormat('es-MX', {month:'short', year:'numeric', timeZone:'UTC'}).format(new Date(`${value}-01T00:00:00Z`));
+  const statusName = status => status === 'mtd' ? 'Mes actual · MTD' : status === 'future' ? 'Proyección futura' : 'Mes cerrado';
+  const monthlyRows = historyRows.map(row => {
+    const actualWidth = row.actualUsd === null || row.actualUsd === undefined ? 0 : row.actualUsd/historyMax*100;
+    const projectionWidth = (row.projectedUsd || 0)/historyMax*100;
+    const actualText = row.actualUsd === null || row.actualUsd === undefined ? '—' : money(row.actualUsd);
+    const projectionText = row.projectedUsd === null || row.projectedUsd === undefined ? '—' : money(row.projectedUsd);
+    return `<div class="monthly-cost-row${row.status === 'mtd' ? ' current' : ''}">
+      <div class="monthly-name">${esc(monthName(row.month))}<span class="monthly-status">${esc(statusName(row.status))}</span></div>
+      <div class="monthly-bars" aria-label="${esc(row.month)}: real ${actualText}, usado en proyección ${projectionText}">
+        <div class="monthly-track"><div class="monthly-fill" style="width:${actualWidth.toFixed(2)}%;background:${STATUS_ROLE_COLOR.good}"></div></div>
+        <div class="monthly-track"><div class="monthly-fill" style="width:${projectionWidth.toFixed(2)}%;background:#4a3aa7"></div></div>
+      </div>
+      <div class="monthly-values">Real ${actualText} · proyección ${projectionText}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('infra-fixed-history').innerHTML = historyRows.length
+    ? chartLegend([
+        {color:STATUS_ROLE_COLOR.good, label:'Real facturado (MTD en el mes actual)'},
+        {color:'#4a3aa7', label:'Valor usado en la proyección (real cerrado o estimado abierto/futuro)'},
+        {color:CATEGORICAL[0], label:'Fondo resaltado = mes en curso'},
+      ], 'Significado de los colores del gasto fijo mensual') + `<div class="monthly-cost-chart">${monthlyRows}</div><p class="section-sub">${esc(fixedHistory.scope || '')}</p>`
+    : '<p class="empty-hint">Sin histórico mensual de costo fijo disponible.</p>';
+  const spendRows = (MONTHLY_SPEND.rows || []).filter(row => row.status !== 'future');
+  const currentSpend = spendRows.find(row => row.status === 'mtd');
+  document.getElementById('monthly-spend-kpis').innerHTML = [
+    kpiTile(money(MONTHLY_SPEND.knownActualUsd), 'Gastado real conocido', 'sin mezclar ninguna proyección'),
+    kpiTile(money(MONTHLY_SPEND.processingActualUsd), 'Procesamiento real', `${MONTHLY_SPEND.documentsWithCost || 0} de ${MONTHLY_SPEND.documents || 0} docs con costo`),
+    kpiTile(MONTHLY_SPEND.fixedActualUsd === null || MONTHLY_SPEND.fixedActualUsd === undefined ? '—' : money(MONTHLY_SPEND.fixedActualUsd), 'Fijo real', 'facturado y atribuible al stack'),
+    kpiTile(!currentSpend || currentSpend.knownActualUsd === null ? '—' : money(currentSpend.knownActualUsd), 'Mes en curso · real MTD', currentSpend ? currentSpend.month : 'fuera del periodo'),
+  ].join('');
+  const spendMax = Math.max(1, ...spendRows.map(row => row.knownActualUsd || 0));
+  const reportSpendRows = spendRows.map(row => {
+    const processingWidth = (row.processingActualUsd || 0)/spendMax*100;
+    const fixedWidth = (row.fixedActualUsd || 0)/spendMax*100;
+    const coverage = `${row.documentsWithCost || 0}/${row.documents || 0} docs con costo`;
+    return `<div class="monthly-cost-row${row.status === 'mtd' ? ' current' : ''}">
+      <div class="monthly-name">${esc(monthName(row.month))}<span class="monthly-status">${row.status === 'mtd' ? 'Mes actual · MTD' : 'Mes cerrado'}</span></div>
+      <div class="monthly-stack-track" aria-label="${esc(row.month)}: procesamiento ${money(row.processingActualUsd)}, fijo ${row.fixedActualUsd === null ? 'no atribuible' : money(row.fixedActualUsd)}">
+        <div class="monthly-stack-segment" style="width:${processingWidth.toFixed(2)}%;background:${CATEGORICAL[0]}"></div>
+        <div class="monthly-stack-segment" style="width:${fixedWidth.toFixed(2)}%;background:${STATUS_ROLE_COLOR.good}"></div>
+      </div>
+      <div class="monthly-values">Real ${money(row.knownActualUsd)} · proceso ${money(row.processingActualUsd)} + fijo ${row.fixedActualUsd === null ? '—' : money(row.fixedActualUsd)} · ${coverage}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('monthly-spend-chart').innerHTML = spendRows.length
+    ? chartLegend([
+        {color:CATEGORICAL[0], label:'Procesamiento real registrado'},
+        {color:STATUS_ROLE_COLOR.good, label:'Costo fijo real atribuible'},
+        {color:'#4a3aa7', label:'La proyección se muestra aparte; nunca dentro de “real”'},
+      ], 'Composición del gasto real') + `<div class="monthly-cost-chart">${reportSpendRows}</div><p class="section-sub">${esc(MONTHLY_SPEND.note || '')}</p>`
+    : '<p class="empty-hint">Sin gasto real mensual dentro del periodo.</p>';
   const fixedRows = (INFRA.fixedItems || []).map(item => `<tr><td>${esc(item.service)}</td><td>${esc(item.component)}</td><td class="num">${num(item.quantity)}</td><td class="num">${money(item.unitMonthlyUsd)}</td><td class="num">${money(item.monthlyUsd)}</td></tr>`).join('')
     || '<tr><td colspan="5">Este ambiente no tiene recursos con renta fija.</td></tr>';
   document.getElementById('infra-fixed-table').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Servicio</th><th>Componente</th><th class="num">Cantidad</th><th class="num">Tarifa / mes</th><th class="num">Total / mes</th></tr></thead><tbody>${fixedRows}</tbody></table></div>`;
@@ -1836,7 +2050,7 @@ function render() {
 
   const overall = aggOverall(rows);
   document.getElementById('kpis').innerHTML = [
-    kpiTile(num(overall.n), 'Documentos'),
+    kpiTile(num(overall.n), 'Documentos', 'todos los procesados en el periodo'),
     kpiTile(num(overall.totalPages), 'Páginas procesadas'),
     kpiTile(num(overall.nCompleted), 'Ejecuciones completas'),
     kpiTile(pctFmt(overall.approvalRate), 'Tasa de aprobación'),
@@ -1925,14 +2139,16 @@ document.getElementById('f-hasta').addEventListener('change', e => { state.hasta
 document.getElementById('f-type-search').addEventListener('input', () => { renderFilters(); attachChipHandlers(); });
 document.getElementById('f-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));
 document.getElementById('f-reset').addEventListener('click', () => {
-  state.desde = ''; state.hasta = '';
+  state.desde = DEFAULT_RANGE.start || ''; state.hasta = DEFAULT_RANGE.end || '';
   state.typesExpanded = false;
   state.types.clear(); state.modes.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
-  document.getElementById('f-desde').value = ''; document.getElementById('f-hasta').value = ''; document.getElementById('f-type-search').value = '';
+  document.getElementById('f-desde').value = state.desde; document.getElementById('f-hasta').value = state.hasta; document.getElementById('f-type-search').value = '';
   render();
 });
 
 setFiltersOpen(state.filtersOpen);
+document.getElementById('f-desde').value = state.desde;
+document.getElementById('f-hasta').value = state.hasta;
 render();
 '''
 
@@ -2009,12 +2225,17 @@ def render_html(
 
     overall = overall_snapshot(rows)
     date_range = f"{overall['first_date'][:10]} a {overall['last_date'][:10]}" if overall["first_date"] else "sin datos"
+    report_period = (infrastructure or {}).get("reportPeriod") or {}
+    loaded_range = (
+        f"{report_period.get('start')} a {report_period.get('end')}"
+        if report_period.get("start") and report_period.get("end") else date_range
+    )
 
     quality_html = render_quality_html(quality or {})
     body = f'''<div class="wrap">
       <header class="page-head">
         <h1>Reporte — {esc(env)}</h1>
-        <div class="meta">Generado {datetime.now():%Y-%m-%d %H:%M} · rango: {esc(date_range)} · {overall['n']} documento(s)</div>
+        <div class="meta">Generado {datetime.now():%Y-%m-%d %H:%M} · periodo cargado: {esc(loaded_range)} · documentos existentes: {esc(date_range)} · {overall['n']} documento(s)</div>
       </header>
 
       <section class="card filters-card">
@@ -2058,6 +2279,12 @@ def render_html(
         <div id="infra-env-note"></div>
         <div class="sub-head">Piso fijo desplegado</div>
         <div id="infra-fixed-table"></div>
+        <div class="sub-head">Gasto fijo: real vs proyección, mes a mes</div>
+        <div class="kpi-row dense" id="infra-history-kpis"></div>
+        <div id="infra-fixed-history"></div>
+        <div class="sub-head">Gasto real del reporte, mes a mes</div>
+        <div class="kpi-row dense" id="monthly-spend-kpis"></div>
+        <div id="monthly-spend-chart"></div>
         <div class="sub-head">Servicios sin renta fija</div>
         <div id="infra-usage-table"></div>
         <div class="sub-head">Fallback manual por servicios de la infraestructura</div>
@@ -2164,7 +2391,7 @@ def render_html(
 
       <footer>Generado por <code>pnpm reporte</code> (scripts/reporte.py) · une la tabla de costos y la de tracking de documentos por <code>DocumentId</code> · datos crudos en <code>datos_raw.xlsx</code> · reportes individuales: <code>pnpm reporte:costos</code> / <code>pnpm reporte:documentos</code>.</footer>
     </div>
-    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "catalogTypes": sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types), "costRef": COST_REFERENCE, "infrastructure": infrastructure or {}}, ensure_ascii=False, default=_json_default)}</script>
+    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "catalogTypes": sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types), "costRef": COST_REFERENCE, "infrastructure": infrastructure or {}, "monthlySpend": monthly_spend_snapshot(rows, infrastructure)}, ensure_ascii=False, default=_json_default)}</script>
     <script>{JS_TEMPLATE}</script>'''
 
     return f'''<!doctype html>
@@ -2197,7 +2424,7 @@ def write_report_bundle(
     )
     write_excel(out_dir / "datos_raw.xlsx", rows, quality, infrastructure)
     shutil.copy2(out_dir / "datos_raw.xlsx", out_dir / "reporte_ejecutivo.xlsx")
-    snapshot = {"schemaVersion": 3, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
+    snapshot = {"schemaVersion": 4, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
                 "catalogTypes": report_catalog_types, "rows": rows, "quality": quality,
                 "infrastructure": infrastructure or {}}
     snapshot_path = out_dir / "snapshot.json"
@@ -2209,6 +2436,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env", choices=("dev", "prod"), default="dev", help="ambiente a consultar (default: dev)")
     parser.add_argument("--region", default="us-east-1")
+    parser.add_argument("--year", type=int, default=date.today().year,
+                        help="año calendario por defecto, de enero 1 a diciembre 31")
     parser.add_argument("--stack", help="nombre del stack (default: resuelto de --env)")
     parser.add_argument("--table", help="tabla de tracking de documentos, salta la resolución vía CloudFormation")
     parser.add_argument("--cost-table", help="tabla de costos (default: resuelta de --env)")
@@ -2220,6 +2449,11 @@ def main() -> int:
     parser.add_argument("--history-dir", default=str(DEFAULT_HISTORY), help="historial local de pruebas")
     parser.add_argument("--snapshot", help="regenera el reporte offline desde un snapshot.json anterior")
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
+
+    try:
+        report_start, report_end = resolve_report_period(args.year, args.desde, args.hasta)
+    except ValueError as exc:
+        parser.error(f"fecha inválida: {exc}")
 
     if args.snapshot:
         saved = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
@@ -2253,7 +2487,10 @@ def main() -> int:
         print(f"{RED}{e}{RESET}")
         return 1
 
-    print(f"Leyendo {doc_table} y {cost_table} en {args.region} (stack {stack})...")
+    print(
+        f"Leyendo {doc_table} y {cost_table} en {args.region} (stack {stack}) · "
+        f"periodo {report_start.isoformat()} a {report_end.isoformat()}..."
+    )
     try:
         doc_raw = scan_all(doc_table, args.region)
     except Exception as e:
@@ -2271,11 +2508,11 @@ def main() -> int:
     doc_rows = [normalize_doc_item(it) for it in doc_raw]
     rows = join_rows(cost_rows, doc_rows)
 
-    if args.desde or args.hasta:
-        rows = [r for r in rows if (not args.desde or r["processedAt"][:10] >= args.desde) and (not args.hasta or r["processedAt"][:10] <= args.hasta)]
-        if not rows:
-            print(f"{YELLOW}Ningún documento cae en el rango de fechas pedido.{RESET}")
-            return 0
+    report_start_text, report_end_text = report_start.isoformat(), report_end.isoformat()
+    rows = [r for r in rows if report_start_text <= r["processedAt"][:10] <= report_end_text]
+    if not rows:
+        print(f"{YELLOW}Ningún documento cae en {report_start_text} a {report_end_text}; "
+              f"el reporte continuará con infraestructura y costos fijos.{RESET}")
 
     if args.sistema:
         wanted = {s.strip().lower() for s in args.sistema.split(",") if s.strip()}
@@ -2286,20 +2523,30 @@ def main() -> int:
 
     try:
         print(f"Verificando infraestructura y gasto fijo de {stack}...")
-        infrastructure = collect_infrastructure_costs(stack, args.region, environment=args.env)
+        infrastructure = collect_infrastructure_costs(
+            stack, args.region, environment=args.env,
+            period_start=report_start, period_end=report_end,
+        )
     except Exception as e:
         infrastructure = empty_infrastructure_snapshot(
             stack, args.region, f"No se pudo inventariar/costear la infraestructura del stack: {e}"
         )
         print(f"{YELLOW}{infrastructure['warnings'][0]}{RESET}")
+    infrastructure["reportPeriod"] = {"start": report_start_text, "end": report_end_text}
 
     out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / args.env / datetime.now().strftime("%Y%m%d-%H%M%S")
     overall = write_report_bundle(out_dir, rows, quality, args.env, infrastructure)
+    monthly_spend = monthly_spend_snapshot(rows, infrastructure)
+    fixed_history = infrastructure.get("fixedMonthlyHistory") or {}
     print(
         f"\n{CYAN}{overall['n']} documento(s) ({overall['n_with_cost']} con costo) · "
         f"{overall['n_no_ai']} sin IA · aprobación {pct(overall['approval_rate'])} · "
-        f"procesamiento {money(overall['total_cost'])} · fijo mensual "
-        f"{money(infrastructure.get('fixedMonthlyUsd'))}{RESET}"
+        f"periodo {report_start.isoformat()} a {report_end.isoformat()}{RESET}\n"
+        f"{CYAN}Gastado real conocido {money(monthly_spend.get('knownActualUsd'))} = "
+        f"procesamiento real {money(monthly_spend.get('processingActualUsd'))} + "
+        f"fijo real {money(monthly_spend.get('fixedActualUsd'))}{RESET}\n"
+        f"{YELLOW}Proyección fija del periodo {money(fixed_history.get('projectedPeriodUsd'))} · "
+        f"piso fijo mensual actual {money(infrastructure.get('fixedMonthlyUsd'))}{RESET}"
     )
     print(f"Reporte → {out_dir}/")
     print("  reporte.md        (resumen estático)")

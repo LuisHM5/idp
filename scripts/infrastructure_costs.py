@@ -128,12 +128,96 @@ def _ce_usage_rows(ce: Any, start: str, end: str) -> tuple[List[Dict[str, Any]],
         for group in period.get("Groups", []):
             metrics = group.get("Metrics") or {}
             rows.append({
+                "periodStart": (period.get("TimePeriod") or {}).get("Start") or start,
                 "usageType": (group.get("Keys") or [""])[0],
                 "cost": float((metrics.get("UnblendedCost") or {}).get("Amount") or 0),
                 "quantity": float((metrics.get("UsageQuantity") or {}).get("Amount") or 0),
                 "unit": (metrics.get("UsageQuantity") or {}).get("Unit") or "",
             })
     return rows, estimated
+
+
+def _next_month(value: date) -> date:
+    return date(value.year + (1 if value.month == 12 else 0), 1 if value.month == 12 else value.month + 1, 1)
+
+
+def _fixed_cost_history(
+    ce: Any,
+    *,
+    period_start: date,
+    period_end: date,
+    today: date,
+    fixed_monthly_usd: float,
+    has_waf: bool,
+    waf_exclusive: bool,
+    has_kms: bool,
+    kms_exclusive: bool,
+) -> Dict[str, Any]:
+    """Reconstruct fixed actuals and a current-footprint projection by month."""
+    months: List[date] = []
+    cursor = period_start.replace(day=1)
+    last = period_end.replace(day=1)
+    while cursor <= last:
+        months.append(cursor)
+        cursor = _next_month(cursor)
+
+    actual_end = min(period_end + timedelta(days=1), today + timedelta(days=1))
+    rows: List[Dict[str, Any]] = []
+    estimated = False
+    if period_start < actual_end and ((not has_waf or waf_exclusive) and (not has_kms or kms_exclusive)):
+        rows, estimated = _ce_usage_rows(ce, period_start.isoformat(), actual_end.isoformat())
+
+    actual_by_month: Dict[str, float] = {month.strftime("%Y-%m"): 0.0 for month in months}
+    fully_scoped = (not has_waf or waf_exclusive) and (not has_kms or kms_exclusive)
+    if fully_scoped:
+        for row in rows:
+            usage_type = row["usageType"]
+            include = (
+                (has_waf and (usage_type.endswith("RuleV2") or usage_type.endswith("WebACLV2")))
+                or (has_kms and usage_type.endswith("KMS-Keys"))
+            )
+            if include:
+                month = str(row["periodStart"])[:7]
+                actual_by_month[month] = actual_by_month.get(month, 0.0) + row["cost"]
+
+    current_month = today.strftime("%Y-%m")
+    history_rows: List[Dict[str, Any]] = []
+    for month_date in months:
+        month = month_date.strftime("%Y-%m")
+        if month > current_month:
+            status = "future"
+            actual: Optional[float] = None
+        elif month == current_month:
+            status = "mtd"
+            actual = round(actual_by_month.get(month, 0.0), 12) if fully_scoped else None
+        else:
+            status = "closed"
+            actual = round(actual_by_month.get(month, 0.0), 12) if fully_scoped else None
+        projection = actual if status == "closed" and actual is not None else fixed_monthly_usd
+        history_rows.append({
+            "month": month,
+            "status": status,
+            "actualUsd": actual,
+            "estimatedFullMonthUsd": fixed_monthly_usd,
+            "projectedUsd": projection,
+        })
+
+    actual_values = [row["actualUsd"] for row in history_rows if row["actualUsd"] is not None]
+    projected_values = [row["projectedUsd"] for row in history_rows if row["projectedUsd"] is not None]
+    return {
+        "start": period_start.isoformat(),
+        "end": period_end.isoformat(),
+        "available": fully_scoped,
+        "estimated": estimated,
+        "actualToDateUsd": round(sum(actual_values), 12) if fully_scoped else None,
+        "projectedPeriodUsd": round(sum(projected_values), 12) if projected_values else 0.0,
+        "currentRunRateMonthlyUsd": fixed_monthly_usd,
+        "rows": history_rows,
+        "scope": (
+            "Cost Explorer por tipo de uso; exclusividad actual del inventario comprobada"
+            if fully_scoped else "No atribuible: existen recursos facturables ajenos al stack"
+        ),
+    }
 
 
 def _tagged_cost(ce: Any, stack_name: str, start: str, end: str) -> Dict[str, Any]:
@@ -197,6 +281,7 @@ def empty_infrastructure_snapshot(stack_name: str, region: str, message: str) ->
         "priceSources": PRICE_SOURCES,
         "fixedMonthlyUsd": None,
         "fixedMtdActualUsd": None,
+        "fixedMonthlyHistory": {"available": False, "actualToDateUsd": None, "projectedPeriodUsd": None, "rows": []},
         "fixedItems": [],
         "usageOnlyItems": [],
         "taggedMtd": {"available": False, "totalUsd": None, "services": [], "estimated": False},
@@ -212,6 +297,8 @@ def collect_infrastructure_costs(
     *,
     environment: str,
     now: Optional[date] = None,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
     clients: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return a JSON-serializable, stack-scoped infrastructure snapshot.
@@ -234,6 +321,10 @@ def collect_infrastructure_costs(
 
     captured = datetime.now(timezone.utc)
     today = now or captured.date()
+    period_start = period_start or date(today.year, 1, 1)
+    period_end = period_end or date(today.year, 12, 31)
+    if period_end < period_start:
+        raise ValueError("period_end must be on or after period_start")
     start = today.replace(day=1).isoformat()
     end = (today + timedelta(days=1)).isoformat()  # Cost Explorer end is exclusive.
     warnings: List[str] = []
@@ -322,6 +413,8 @@ def collect_infrastructure_costs(
     fixed_mtd_actual: Optional[float] = 0.0 if not fixed_items else None
     fixed_mtd_by_service: Dict[str, float] = {}
     actual_scope: List[str] = []
+    waf_exclusive = not stack_waf_arns
+    kms_exclusive = not stack_key_ids
     try:
         usage_rows, ce_estimated = _ce_usage_rows(clients["ce"], start, end)
         actual = 0.0
@@ -333,6 +426,7 @@ def collect_infrastructure_costs(
             actual_scope.append("sin recursos de renta fija en el stack")
         all_wafs = _all_waf_arns(clients["waf"], clients["cloudfront_waf"])
         if stack_waf_arns and all_wafs == stack_waf_arns:
+            waf_exclusive = True
             waf_actual = sum(
                 row["cost"] for row in usage_rows
                 if row["usageType"].endswith("RuleV2") or row["usageType"].endswith("WebACLV2")
@@ -346,6 +440,7 @@ def collect_infrastructure_costs(
 
         all_customer_keys = _enabled_customer_keys(clients["kms"])
         if stack_key_ids and all_customer_keys == stack_key_ids:
+            kms_exclusive = True
             kms_actual = sum(row["cost"] for row in usage_rows if row["usageType"].endswith("KMS-Keys"))
             actual += kms_actual
             fixed_mtd_by_service["AWS Key Management Service"] = kms_actual
@@ -384,6 +479,21 @@ def collect_infrastructure_costs(
         manual_services.sort(key=lambda row: (-row["accountMtdUsd"], row["service"]))
 
     fixed_monthly = sum(item["monthlyUsd"] for item in fixed_items)
+    try:
+        fixed_history = _fixed_cost_history(
+            clients["ce"], period_start=period_start, period_end=period_end, today=today,
+            fixed_monthly_usd=fixed_monthly,
+            has_waf=bool(stack_waf_arns), waf_exclusive=waf_exclusive,
+            has_kms=bool(stack_key_ids), kms_exclusive=kms_exclusive,
+        )
+    except Exception as exc:
+        fixed_history = {
+            "start": period_start.isoformat(), "end": period_end.isoformat(),
+            "available": False, "estimated": False, "actualToDateUsd": None,
+            "projectedPeriodUsd": None, "currentRunRateMonthlyUsd": fixed_monthly,
+            "rows": [], "scope": f"No se pudo reconstruir el histórico: {exc}",
+        }
+        warnings.append(f"No se pudo reconstruir el gasto fijo mensual: {exc}")
     if fixed_monthly == 0:
         excluded = []
         if account_service_costs is not None:
@@ -415,6 +525,7 @@ def collect_infrastructure_costs(
         "fixedMtdEstimated": ce_estimated,
         "fixedActualScope": actual_scope,
         "fixedItems": fixed_items,
+        "fixedMonthlyHistory": fixed_history,
         "usageOnlyItems": usage_only,
         "taggedMtd": tagged,
         "manualMtd": {

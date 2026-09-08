@@ -696,6 +696,27 @@ estados muestran color, nombre, cantidad y porcentaje; las series categóricas
 repiten su muestra de color junto a la etiqueta, y las referencias explican por
 separado corte actual, presupuesto, esperado, histórico y severidad del delta.
 
+El alcance por defecto es el **año calendario completo**: del 1 de enero al 31
+de diciembre del año actual (`--year` permite elegir otro). `--desde` y
+`--hasta` siguen siendo overrides; si sólo se indica uno, el otro extremo es el
+inicio o cierre de ese mismo año. Las tablas se cargan completas y después se
+aplica esa ventana, por lo que el rango interactivo inicia mostrando todos los
+documentos procesados dentro del periodo, no una muestra ni sólo el mes actual.
+
+La infraestructura incluye una vista de **gasto fijo mes a mes**. Los meses
+cerrados usan el cargo publicado por Cost Explorer, el mes en curso se destaca
+como MTD (gastado hasta la fecha del reporte) frente a su cierre estimado, y los
+meses futuros usan el run-rate del inventario actual. La proyección anual suma
+real cerrado + estimación del mes abierto y de los meses restantes; no convierte
+los cargos variables compartidos de S3/Lambda/DynamoDB en supuestos costos
+fijos.
+
+Una segunda vista, **Gasto real del reporte, mes a mes**, suma únicamente
+procesamiento con auditoría de costo y fijo realmente atribuible. Muestra la
+cobertura `documentos con costo / documentos procesados` y mantiene la
+proyección en otra serie/columna: ningún valor futuro o estimado se presenta
+como dinero ya gastado.
+
 **Cómo consultarlo:**
 
 ```
@@ -763,7 +784,8 @@ piso de **$10/mes** y el prorrateo real MTD aunque `CostStack` siga sin datos.
 `pnpm test:real` genera costos auténticos y persiste documentos igual que una
 integración externa. Sus uploads llevan `metadata.test-run-id` y
 `metadata.test-suite=real-e2e`; no se altera `TotalCostUsd` ni se inventa un
-descuento. `pnpm reporte` conserva esos cargos, pero abre sus KPIs operativos
-con el filtro `trafficKind=operational`; el usuario puede mostrar el tráfico
-de prueba o ambos grupos. Las corridas anteriores sin etiqueta se consideran
-operativas porque no existe evidencia segura para reclasificarlas.
+descuento. `pnpm reporte` conserva esos cargos y abre por defecto con **todo**
+el tráfico del periodo para que el total inicial coincida con todos los
+documentos procesados. El filtro de tráfico permite aislar operativos, pruebas
+o ambos grupos. Las corridas anteriores sin etiqueta se consideran operativas
+porque no existe evidencia segura para reclasificarlas.
