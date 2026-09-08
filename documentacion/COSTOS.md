@@ -691,7 +691,10 @@ HTML, el filtro muestra los seis tipos principales por volumen y un botón
 `+N ver todos`, además de un buscador por `TYPE_ID` o nombre legible; el universo
 se reconstruye desde los catálogos activos y los datos en cada generación,
 incluyendo tipos con cero documentos, así que un tipo nuevo se incorpora sin
-modificar el reporte.
+modificar el reporte. Las gráficas HTML llevan leyendas persistentes: los
+estados muestran color, nombre, cantidad y porcentaje; las series categóricas
+repiten su muestra de color junto a la etiqueta, y las referencias explican por
+separado corte actual, presupuesto, esperado, histórico y severidad del delta.
 
 **Cómo consultarlo:**
 

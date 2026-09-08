@@ -67,6 +67,10 @@ def test_report_marks_actual_bedrock_usage_and_sorts_no_ai_first() -> None:
     assert "Buscar tipo o nombre" in html
     assert "typeNames.get(type)" in html
     assert "TYPE_FILTER_PRIMARY_LIMIT = 6" in html
+    assert "Significado de los colores" in html
+    assert 'class="chart-legend"' in html
+    assert 'id="ref-delta-legend"' in html
+    assert "Requiere revisión" in html
     payload = html.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
     assert json.loads(payload)["catalogTypes"] == catalog_types
     assert "sortedTypeAgg" in html

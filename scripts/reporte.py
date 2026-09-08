@@ -1023,6 +1023,11 @@ td.delta-bad { color: #d03b3b; }
 .ref-line .ref-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-primary); }
 .ref-value { text-align: right; font-variant-numeric: tabular-nums; }
 .chart-point[data-tooltip]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 7px 16px; margin: 8px 0 12px; color: var(--text-secondary); font-size: 12px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-swatch, .series-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex: 0 0 11px; border: 1px solid rgba(0,0,0,.12); }
+.series-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; }
+.series-label-text { overflow: hidden; text-overflow: ellipsis; }
 .report-tooltip { position: fixed; z-index: 1000; max-width: min(360px, calc(100vw - 24px)); padding: 9px 11px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--text-primary); color: var(--surface);
   box-shadow: 0 8px 28px rgba(0,0,0,.24); font-size: 12.5px; line-height: 1.4; white-space: pre-line;
@@ -1056,6 +1061,13 @@ const CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#00
 const STATUS_ROLE_COLOR = {good: "#0ca30c", warning: "#fab219", critical: "#d03b3b", neutral: "#898781"};
 const VALIDATION_ROLE = {APROBADO: "good", REQUIERE_REVISION: "warning", RECHAZADO: "critical"};
 const WORKFLOW_ROLE = {"complete":"good","pending":"neutral","classification-complete":"neutral","processing-complete":"neutral","classification-failure":"critical","processing-failure":"critical","enrichment-failure":"critical"};
+const STATUS_LABEL = {
+  complete: 'Completa', pending: 'Pendiente',
+  'classification-complete': 'Clasificación completa', 'processing-complete': 'Procesamiento completo',
+  'classification-failure': 'Falló clasificación', 'processing-failure': 'Falló procesamiento',
+  'enrichment-failure': 'Falló enriquecimiento', APROBADO: 'Aprobado',
+  REQUIERE_REVISION: 'Requiere revisión', RECHAZADO: 'Rechazado',
+};
 const SERVICE_LABEL = {
   BedrockClassificationUpstream: "Bedrock · Clasificación (upstream)",
   BedrockProcessingUpstream: "Bedrock · Procesamiento (upstream)",
@@ -1362,10 +1374,16 @@ function worstFields(rows, limit) {
 function kpiTile(value, label, sub) {
   return `<div class="kpi-tile"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div>${sub?`<div class="kpi-sub">${esc(sub)}</div>`:''}</div>`;
 }
+function chartLegend(items, label='Leyenda de colores') {
+  if (!items.length) return '';
+  return `<div class="chart-legend" role="list" aria-label="${esc(label)}">${items.map(item =>
+    `<span class="legend-item" role="listitem"><span class="legend-swatch" style="background:${item.color}"></span><span>${esc(item.label)}${item.value ? ` · ${esc(item.value)}` : ''}</span></span>`
+  ).join('')}</div>`;
+}
 function hBar(value, maxValue, color, label, valueText, detail) {
   const w = maxValue <= 0 ? 0 : Math.max(2, value/maxValue*100);
   const tip = tooltipText(label, detail || `Valor exacto: ${exactNumber(value)}`, `Valor mostrado: ${valueText}`);
-  return `<div class="bar-row chart-point" ${tooltipAttrs(tip)} role="img"><div class="bar-label">${esc(label)}</div><div class="bar-track"><div class="bar-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div><div class="bar-value">${esc(valueText)}</div></div>`;
+  return `<div class="bar-row chart-point" ${tooltipAttrs(tip)} role="img"><div class="bar-label"><span class="series-label"><span class="series-swatch" style="background:${color}"></span><span class="series-label-text">${esc(label)}</span></span></div><div class="bar-track"><div class="bar-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div><div class="bar-value">${esc(valueText)}</div></div>`;
 }
 function stackBar(counts, n, roleMap) {
   if (!n) return '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
@@ -1376,7 +1394,12 @@ function stackBar(counts, n, roleMap) {
     const tip = tooltipText(status, `Valor exacto: ${exactNumber(count)} de ${exactNumber(n)} documentos`, `Participación: ${exactPct(count/n)}`);
     return `<div class="stack-seg chart-point" style="width:${w.toFixed(3)}%;background:${color}" ${tooltipAttrs(tip)} role="img"></div>`;
   }).join('');
-  return `<div class="stack-bar">${segs}</div>`;
+  const legend = chartLegend(entries.filter(([,count]) => count > 0).map(([status,count]) => ({
+    color: STATUS_ROLE_COLOR[roleMap[status] || 'neutral'],
+    label: STATUS_LABEL[status] || status,
+    value: `${count} · ${pctFmt(count/n)}`,
+  })), 'Significado de los colores');
+  return `<div class="stack-bar">${segs}</div>${legend}`;
 }
 
 function renderFilters() {
@@ -1529,7 +1552,8 @@ function renderDurationSection(rows) {
   const counts = durationHistogram(rows);
   const maxC = Math.max(0, ...counts);
   document.getElementById('duration-hist').innerHTML = a.nWithDuration
-    ? counts.map((c, i) => hBar(c, maxC, CATEGORICAL[0], DURATION_BUCKETS[i][0], `${c} doc${c === 1 ? '' : 's'}`,
+    ? chartLegend([{color:CATEGORICAL[0], label:'Cantidad de documentos en cada rango'}], 'Significado del color de duración')
+      + counts.map((c, i) => hBar(c, maxC, CATEGORICAL[0], DURATION_BUCKETS[i][0], `${c} doc${c === 1 ? '' : 's'}`,
       tooltipText(`Documentos: ${exactNumber(c)}`, `Proporción del corte con tiempo: ${exactPct(c/a.nWithDuration)}`))).join('')
     : '<p class="empty-hint">Ningún documento filtrado trae tiempo de proceso registrado (<code>Tracking.ProcessingSeconds</code>).</p>';
 
@@ -1590,15 +1614,27 @@ function renderReferenceSection(rows) {
   const line = (label, value, color, sub) => {
     const w = maxRef <= 0 ? 0 : Math.max(1, value / maxRef * 100);
     const tip = tooltipText(label, `Valor exacto: ${exactMoney(value)} por página`, sub ? `Fuente: ${sub}` : 'Datos del corte filtrado');
-    return `<div class="ref-line chart-point" ${tooltipAttrs(tip)} role="img"><div class="ref-label">${esc(label)}${sub ? ` <span class="muted">${esc(sub)}</span>` : ''}</div>
+    return `<div class="ref-line chart-point" ${tooltipAttrs(tip)} role="img"><div class="ref-label"><span class="series-label"><span class="series-swatch" style="background:${color}"></span><span class="series-label-text">${esc(label)}${sub ? ` <span class="muted">${esc(sub)}</span>` : ''}</span></span></div>
       <div class="ref-track"><div class="ref-fill" style="width:${w.toFixed(2)}%;background:${color}"></div></div>
       <div class="ref-value">${money5(value)}</div></div>`;
   };
   const rolesColor = {budget: STATUS_ROLE_COLOR.warning, cushion: STATUS_ROLE_COLOR.neutral, expected: '#4a3aa7', measured: STATUS_ROLE_COLOR.good};
-  document.getElementById('ref-bars').innerHTML = [
+  document.getElementById('ref-bars').innerHTML = chartLegend([
+    {color:CATEGORICAL[0], label:'Costo del corte actual'},
+    {color:rolesColor.budget, label:'Presupuesto'},
+    {color:rolesColor.cushion, label:'Colchón presupuestario'},
+    {color:rolesColor.expected, label:'Costo esperado'},
+    {color:rolesColor.measured, label:'Costo medido históricamente'},
+  ], 'Significado de los colores de referencia') + [
     a.avgCostPage === null ? '' : line('Este corte', a.avgCostPage, CATEGORICAL[0]),
     ...COST_REF.perPage.map(x => line(x.label, x.value, rolesColor[x.role], x.source)),
   ].join('');
+  document.getElementById('ref-delta-legend').innerHTML = chartLegend([
+    {color:STATUS_ROLE_COLOR.good, label:'Dentro de referencia (≤ 5 %)'},
+    {color:STATUS_ROLE_COLOR.warning, label:'Atención (≤ 30 % arriba)'},
+    {color:STATUS_ROLE_COLOR.critical, label:'Por encima (> 30 %)'},
+    {color:STATUS_ROLE_COLOR.neutral, label:'Sin referencia comparable'},
+  ], 'Significado de los colores de variación');
 
   const byType = sortedTypeAgg(rows);
   const refRows = byType.map(([t, m]) => {
@@ -1827,9 +1863,10 @@ function render() {
     const bars = volume.map(v => {
       const statuses = Object.entries(v.val).sort((a,b)=>b[1]-a[1]).map(([s,n]) => `${s}: ${exactNumber(n)}`);
       const tip = tooltipText(v.day, `Documentos: ${exactNumber(v.n)}`, `Costo exacto: ${exactMoney(v.cost)}`, statuses.length ? ['Resultado de negocio:', ...statuses] : 'Sin resultados de negocio completos');
-      return `<div class="vol-bar chart-point" style="height:${Math.max(2, v.n/axisMax*100).toFixed(1)}%" ${tooltipAttrs(tip)} role="img"></div>`;
+      return `<div class="vol-bar chart-point" style="height:${Math.max(2, v.n/axisMax*100).toFixed(1)}%;background:${CATEGORICAL[0]}" ${tooltipAttrs(tip)} role="img"></div>`;
     }).join('');
     document.getElementById('volume-chart').innerHTML =
+      chartLegend([{color:CATEGORICAL[0], label:'Altura = documentos procesados en el día'}], 'Significado del color de volumen') +
       `<div class="volume-plot" role="img" aria-label="Volumen diario de documentos, máximo ${axisNumber(maxN)} documentos">
         <div class="volume-y" aria-hidden="true">${yTicks.map(v => `<span>${axisNumber(v)}</span>`).join('')}</div>
         <div class="volume-main"><div class="volume-plot-area"><div class="volume-bars">${bars}</div></div>
@@ -2064,6 +2101,7 @@ def render_html(
       <details class="card" open>
         <summary>Costo contra las referencias medidas</summary>
         <p class="section-sub">Contraste del corte filtrado contra las mediciones reales de <code>documentacion/COSTOS.md</code> (Bedrock <code>usage</code> real + páginas reales, cruzados contra Cost Explorer). Δ verde ≤ 5 %, ámbar ≤ 30 %, rojo por encima.</p>
+        <div id="ref-delta-legend"></div>
         <div class="kpi-row dense" id="ref-kpis"></div>
         <div class="sub-head">Costo por página vs referencias</div>
         <div class="bars" id="ref-bars"></div>
