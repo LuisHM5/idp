@@ -300,7 +300,7 @@
           "PEDIMENTOS": {
             "type": "array",
             "required": true,
-            "item_xpath": "cfdi:InformacionAduanera",
+            "item_xpath": ".//cfdi:InformacionAduanera",
             "validation": [],
             "item_fields": {
               "No_Pedimento": {

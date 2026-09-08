@@ -386,10 +386,10 @@ def test_pedimento_erp_xml_fixture_maps_cfdi_reference_to_erp_contract(monkeypat
     }]
     assert _row_values(entities["FACTURAS"]) == [{
         "PROVEEDOR_ID_FISCAL": "EMIT800101AB1",
-        "PROVEEDOR_NOMBRE": "PROVEEDOR EXTRANJERO DE PRUEBA",
+        "PROVEEDOR_NOMBRE": "PROVEEDOR NACIONAL DE PRUEBA",
         "Factura": "PED-TEST-1",
         "Fecha_Factura": "2026-07-09",
-        "Total_factura": 421841.0,
+        "Total_factura": 1250.0,
         "MONEDA_FACTURA": "USD",
     }]
 
@@ -405,11 +405,11 @@ def test_pedimento_erp_xml_fixture_maps_cfdi_reference_to_erp_contract(monkeypat
     } == {
         "CLAVE_PRODUCTO_SERVICIO": "50305000",
         "NUMERO_IDENTIFICACION": "NARANJA-TEST-1",
-        "CANTIDAD": 1730.0,
+        "CANTIDAD": 50.0,
         "CLAVE_UNIDAD": "KGM",
         "DESCRIPCION": "NARANJA FRESCA DE PRUEBA",
-        "VALOR_UNITARIO": 243.838728,
-        "IMPORTE": 421841.0,
+        "VALOR_UNITARIO": 25.0,
+        "IMPORTE": 1250.0,
     }
     assert _row_values(partida_fields["PEDIMENTOS"]) == [{
         "No_Pedimento": "260708236001630",

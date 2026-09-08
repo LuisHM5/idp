@@ -147,10 +147,30 @@ de liquidación. El fixture `tests/unit/fixtures/xml_cfdi/pedimento_erp.xml` es
 sintético y anonimizado: conserva la forma oficial y usa el número visible en
 el PDF de referencia para probar el mapeo, sin incorporar sus demás datos.
 
+### Fuentes oficiales consultadas
+
+- La [especificación técnica CFDI publicada por el SAT](https://www.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461175118249&ssbinary=true)
+  define `InformacionAduanera` como hijo repetible del concepto y fija
+  `NumeroPedimento` con el patrón `[0-9]{2} [0-9]{2} [0-9]{4} [0-9]{7}`.
+- La [matriz de errores CFDI del SAT](https://wwwmatnp.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1705377073688&ssbinary=true)
+  aclara que esta referencia se usa en una venta nacional de primera mano y
+  no debe registrarse cuando el comprobante contiene el complemento de
+  comercio exterior. Por eso el fixture de este catálogo no mezcla ambos.
+- El [portal del complemento de Comercio Exterior del SAT](https://wwwmat.sat.gob.mx/consultas/61165/comprobante-de-comercio-exterior)
+  lo describe para exportaciones definitivas A1 y enumera campos como
+  `ClaveDePedimento`, `TipoCambioUSD` y `TotalUSD`; no se tomó ese complemento
+  como sustituto del pedimento PDF de importación.
+- La [página oficial de RGCE y anexos 2026](https://www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/normatividad_rmf_rgce2026.html)
+  es la referencia vigente para reglas, formatos e instructivos aduanales. En
+  las fuentes públicas revisadas no aparece un XSD de pedimento completo que
+  sea equivalente campo por campo al PDF usado como referencia.
+
 ## Consideraciones operativas
 
 - La carga del archivo debe declarar explícitamente
-  `documentType=PEDIMENTO_ADUANAL_XML`; no hay clasificación visual para XML
+  `documentType=PEDIMENTO_ADUANAL_XML` para un CFDI genérico o
+  `documentType=PEDIMENTO_ERP_XML` cuando contenga `NumeroPedimento` y se
+  requiera la salida parcial del ERP; no hay clasificación visual para XML
   crudo.
 - La extracción XML es determinística y no usa Bedrock.
 - Un valor ausente debe permanecer `null` o sin mapear; no debe copiarse desde
