@@ -1,14 +1,17 @@
 {
   "FACTURA_HONORARIOS_XML": {
     "catalog_status": "stable",
-    "schema_version": "1.0.0",
+    "schema_version": "1.1.0",
+    "occurrence_mode": "single",
     "display_name": "Factura de Honorarios (XML CFDI)",
     "aliases": [
+      "FAA XML",
+      "factura agencia aduanal xml",
       "cfdi honorarios xml",
       "xml factura honorarios",
       "cfdi de honorarios (xml)"
     ],
-    "description": "CFDI 4.0 nativo (XML timbrado por el SAT) de honorarios por servicios profesionales o por despacho aduanero. Mismo documento fiscal que FACTURA_HONORARIOS, pero leido directamente del XML en vez de su representacion impresa: solo trae los datos fiscales del comprobante (emisor, receptor, conceptos, impuestos, timbrado) y no las secciones que solo existen en el PDF de cortesia del agente aduanal (pagos por cuenta del cliente, total global, saldo a pagar, QR).",
+    "description": "CFDI 4.0 nativo (XML timbrado por el SAT) de honorarios nacionales por servicios profesionales o por despacho aduanero; incluye el archivo que la integracion identifica como FAA cuando el concepto corresponde a HONORARIOS. No es Honorarios Extranjeros (HE): el emisor es un contribuyente mexicano con RFC y el documento es un CFDI. Mismo documento fiscal que FACTURA_HONORARIOS, pero leido directamente del XML en vez de su representacion impresa: solo trae los datos fiscales del comprobante (emisor, receptor, conceptos, impuestos, timbrado) y no las secciones que solo existen en el PDF de cortesia del agente aduanal (pagos por cuenta del cliente, total global, saldo a pagar, QR).",
     "business_destination": "FACTURA_HONORARIOS",
     "min_confidence": 0.70,
     "namespaces": {
@@ -43,6 +46,7 @@
       "UUID": {
         "type": "string",
         "required": true,
+        "unique_key": true,
         "xpath": ".//tfd:TimbreFiscalDigital/@UUID",
         "validation": [
           {

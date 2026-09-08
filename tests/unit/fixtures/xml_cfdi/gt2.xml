@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+    Version="4.0" Serie="AXCR" Folio="24528" Fecha="2026-07-09T16:56:17"
+    FormaPago="03" LugarExpedicion="32695" MetodoPago="PUE" Moneda="MXN"
+    SubTotal="6550.00" TipoDeComprobante="I" Total="7598.00">
+  <cfdi:Emisor Nombre="PROVEEDOR OPERATIVO DE PRUEBA" RegimenFiscal="601" Rfc="EMIT800101AB1"/>
+  <cfdi:Receptor DomicilioFiscalReceptor="31125" Nombre="RECEPTOR DE PRUEBA"
+      RegimenFiscalReceptor="623" Rfc="RECE850202CD2" UsoCFDI="G03"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto Cantidad="1.00" ClaveProdServ="83112600" ClaveUnidad="E48"
+        Descripcion="DERECHO DE ACCESO POR VEHICULO" Importe="1400.00"
+        NoIdentificacion="1" ObjetoImp="02" Unidad="SERV" ValorUnitario="1400.00"/>
+    <cfdi:Concepto Cantidad="1.00" ClaveProdServ="78121601" ClaveUnidad="E48"
+        Descripcion="MANIOBRAS POR VEHICULO" Importe="3050.00"
+        NoIdentificacion="2" ObjetoImp="02" Unidad="SERV" ValorUnitario="3050.00"/>
+    <cfdi:Concepto Cantidad="1.00" ClaveProdServ="81141601" ClaveUnidad="E48"
+        Descripcion="MANIOBRAS DE MUESTREO X CARGA" Importe="2100.00"
+        NoIdentificacion="23" ObjetoImp="02" Unidad="SERV" ValorUnitario="2100.00"/>
+  </cfdi:Conceptos>
+  <cfdi:Impuestos TotalImpuestosTrasladados="1048.00">
+    <cfdi:Traslados>
+      <cfdi:Traslado Base="6550.00" Importe="1048.00" Impuesto="002"
+          TasaOCuota="0.160000" TipoFactor="Tasa"/>
+    </cfdi:Traslados>
+  </cfdi:Impuestos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+        Version="1.1" UUID="00000000-0000-4000-8000-000000000103"
+        FechaTimbrado="2026-07-09T17:56:22"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

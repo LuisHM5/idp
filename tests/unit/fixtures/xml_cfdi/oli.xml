@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+    Version="4.0" Serie="A" Folio="11184" Fecha="2026-07-10T09:21:10"
+    FormaPago="99" LugarExpedicion="32300" MetodoPago="PPD" Moneda="MXN"
+    SubTotal="6368.83" TipoDeComprobante="I" Total="7387.84">
+  <cfdi:Emisor Nombre="SERVICIOS DE COMERCIO EXTERIOR DE PRUEBA"
+      RegimenFiscal="601" Rfc="EMIT800101AB1"/>
+  <cfdi:Receptor DomicilioFiscalReceptor="31125" Nombre="RECEPTOR DE PRUEBA"
+      RegimenFiscalReceptor="623" Rfc="RECE850202CD2" UsoCFDI="G03"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto Cantidad="1.00" ClaveProdServ="81141601" ClaveUnidad="E48"
+        Descripcion="SERVICIOS POR LOGISTICA" Importe="6368.83"
+        NoIdentificacion="SERV007" ObjetoImp="02" Unidad="SERVICIO"
+        ValorUnitario="6368.83000"/>
+  </cfdi:Conceptos>
+  <cfdi:Impuestos TotalImpuestosTrasladados="1019.01">
+    <cfdi:Traslados>
+      <cfdi:Traslado Base="6368.83" Importe="1019.01" Impuesto="002"
+          TasaOCuota="0.160000" TipoFactor="Tasa"/>
+    </cfdi:Traslados>
+  </cfdi:Impuestos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+        Version="1.1" UUID="00000000-0000-4000-8000-000000000104"
+        FechaTimbrado="2026-07-10T10:21:16"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

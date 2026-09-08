@@ -288,15 +288,23 @@ Casos de referencia puros (un solo tipo, sin mezclar con expedientes):
 - **`pedimiento-scan.pdf`, 27 pág, 100% OCR (declarado, 1 solo doc):** ~$0.0988/doc → $0.0037/página.
 - **INE, 1 pág imagen, 100% OCR:** $0.0080/doc → $0.0080/página.
 
-## 0.1 Costo real en PROD (no dev) — recalculado 2026-08-04
+## 0.1 Costo real en PROD (no dev) — verificado 2026-09-08
 
-**Sólo existe el stack `DocumentValidationStack-Dev` desplegado** (no hay
-un stack `DocumentValidationStack` de prod corriendo en la cuenta —
-`aws cloudformation list-stacks` sólo lo muestra a él). Por eso este
-número no es "medido" como la sección 0 — es la sección 0 (que sí es
-100% real) **más** el costo fijo de lo que activa
-`src/document-validation-stack.ts` cuando `environment === "prod"`
-(línea 110, `isProd`), calculado con precios reales vía `aws-pricing` MCP.
+Ya están desplegados simultáneamente `DocumentValidationStack-Dev` y
+`DocumentValidationStack`. La verificación en vivo cruzó los recursos físicos
+de CloudFormation con WAFv2, KMS y Cost Explorer; no se atribuyó el total de la
+cuenta por parecido de nombre. Prod tiene exactamente **1 Web ACL con 4 reglas**
+y **1 CMK activa** pertenecientes al stack. En toda la cuenta sólo existe ese
+Web ACL y, en `us-east-1`, esa CMK es la única clave administrada por el cliente
+en estado `Enabled` (las anteriores están `PendingDeletion`). Esto permite
+atribuir con seguridad el cargo fijo prorrateado, aun cuando Cost Explorer no
+tenga granularidad `RESOURCE_ID` habilitada.
+
+Al corte abierto 2026-09-01 → 2026-09-09, Cost Explorer devuelve **$2.162506**
+de WAF fijo (Web ACL + reglas; se excluyen $0.000006 de 10 requests) y
+**$0.236111** de almacenamiento de la CMK: **$2.398617 MTD**, marcado por AWS
+como estimado mientras el mes sigue abierto. El run-rate mensual comprobado es
+el mismo piso de **$10.00/mes** documentado abajo.
 
 **Bedrock/Textract cuestan exactamente lo mismo en prod que en dev** — el
 precio de AWS no depende del nombre del stack. Lo que prod agrega es
@@ -304,7 +312,7 @@ infraestructura fija adicional, gateada por `isProd` (confirmado leyendo
 el código, líneas 552-667): Lambda usa el mismo `memorySize`/`timeout` en
 ambos ambientes, así que no hay diferencia de cómputo — sólo:
 
-| Extra sólo-prod                                                                                | Precio real (verificado con `aws-pricing` MCP, us-east-1)                                                                                                                  |
+| Extra sólo-prod                                                                                | Precio real (verificado contra precios públicos de AWS y Cost Explorer, us-east-1)                                                                                        |
 | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | WAFv2 Web ACL                                                                                  | $5.00/mes                                                                                                                                                                  |
 | Regla rate-based (`RateLimitPerIp`)                                                            | $1.00/mes                                                                                                                                                                  |
@@ -670,6 +678,15 @@ son ruido frente a Bedrock+Textract a este volumen (~$3.38 en dos semanas
 contra ~$18 de Bedrock+Textract en la misma ventana) — calcular un reparto
 por-documento de eso sería precisión inventada, no una medición real.
 
+`pnpm reporte` sí los muestra ahora en una sección de **Infraestructura del
+stack**, sin repartirlos por documento: inventaría CloudFormation en vivo,
+calcula el piso WAF/KMS desde los recursos efectivamente desplegados, comprueba
+el fijo MTD con Cost Explorer sólo cuando la exclusividad del recurso está
+demostrada y consulta el gasto variable por `CostStack`. El mismo reporte
+separa las ejecuciones **Con IA / Sin IA / Sin datos** por uso real de servicios
+Bedrock; no mantiene una lista hardcodeada de TYPE_IDs, por lo que XML/tabulares
+determinísticos y futuros pipelines sin modelo entran automáticamente.
+
 **Cómo consultarlo:**
 
 ```
@@ -714,6 +731,12 @@ los cuales el recurso ya tenía la etiqueta. Los cargos de servicios que no
 produzcan líneas facturables etiquetables permanecerán sin atribuir; por eso la
 suma por stack no se fuerza a coincidir artificialmente con el total de la
 cuenta.
+
+Verificación del 2026-09-08: los recursos sí llevan la etiqueta, pero la cuenta
+vinculada no puede consultar su estado de activación y una consulta filtrada por
+`CostStack` devuelve cero grupos. `pnpm reporte` lo presenta como **No
+disponible**, no como `$0`, hasta que la cuenta pagadora active la clave y AWS
+empiece a devolver cargos atribuibles.
 
 ## Tráfico de pruebas reales
 

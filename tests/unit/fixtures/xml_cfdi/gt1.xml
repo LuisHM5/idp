@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+    Version="4.0" Serie="B" Folio="2458119" Fecha="2026-07-14T14:06:00"
+    FormaPago="03" SubTotal="3356" Moneda="MXN" TipoCambio="1" Total="3356"
+    TipoDeComprobante="I" Exportacion="01" MetodoPago="PUE" LugarExpedicion="06100">
+  <cfdi:Emisor Rfc="EMIT800101AB1" Nombre="AUTORIDAD DE SANIDAD E INOCUIDAD DE PRUEBA"
+      RegimenFiscal="603"/>
+  <cfdi:Receptor Rfc="RECE850202CD2" Nombre="RECEPTOR DE PRUEBA"
+      DomicilioFiscalReceptor="31125" RegimenFiscalReceptor="623" UsoCFDI="G03"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="93161700" Cantidad="1" ClaveUnidad="E48"
+        Unidad="Servicio"
+        Descripcion="ARTÍCULO 86-A FRACC. V. POR CADA CERTIFICADO FITOSANITARIO INTERNACIONAL PARA LA IMPORTACION DE VEGETALES, SUS PRODUCTOS Y SUBPRODUCTOS"
+        ValorUnitario="3355.55" Importe="3356" ObjetoImp="01"/>
+  </cfdi:Conceptos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+        Version="1.1" UUID="00000000-0000-4000-8000-000000000102"
+        FechaTimbrado="2026-07-14T14:06:00"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

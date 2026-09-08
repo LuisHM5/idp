@@ -6,6 +6,11 @@ todo en un archivo. `pnpm reporte:costos` y `pnpm reporte:documentos` se
 quedan como reportes independientes (mismo dato, cada uno enfocado en su
 tema); este es el que junta todo para no tener que abrir dos.
 
+También separa ejecuciones con y sin uso real de Bedrock, ordena los tipos por
+ruta de procesamiento y agrega el costo de plataforma que no es atribuible a
+un documento: piso mensual WAF/KMS desde el inventario CloudFormation y gasto
+MTD por la etiqueta CostStack cuando Cost Explorer la tiene activa.
+
 El HTML es una página autocontenida (sin librerías externas, sin servidor):
 los datos van embebidos como JSON y todo el filtrado/orden/detalle corre en
 el navegador con JavaScript plano. Los filtros (fecha, tipo de documento,
@@ -71,9 +76,46 @@ from _report_lib import (  # noqa: E402
     scan_all,
     stack_id,
 )
+from infrastructure_costs import (  # noqa: E402
+    collect_infrastructure_costs,
+    empty_infrastructure_snapshot,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_ROOT = REPO / "reportes"
+
+
+def _has_structured_selector(value: Any) -> bool:
+    if isinstance(value, dict):
+        if any(key in value for key in ("xpath", "item_xpath", "cell", "column", "column_letter")):
+            return True
+        return any(_has_structured_selector(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_has_structured_selector(child) for child in value)
+    return False
+
+
+def deterministic_catalog_types() -> set[str]:
+    """Types whose active catalog extracts structured XML/tabular data.
+
+    Mirrors the DSL's shape-based routing rule and recursively ignores every
+    ``save/`` subtree plus ``_*.json`` templates, just like the catalog build.
+    """
+    types: set[str] = set()
+    for path in (REPO / "catalogs").rglob("*.json"):
+        if "save" in path.relative_to(REPO / "catalogs").parts or path.name.startswith("_"):
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for type_id, config in (raw.items() if isinstance(raw, dict) else []):
+            if isinstance(config, dict) and _has_structured_selector(config.get("fields") or {}):
+                types.add(type_id)
+    return types
+
+
+DETERMINISTIC_TYPES = deterministic_catalog_types()
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +180,39 @@ def _model_from_services(services: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _ai_cost(services: Dict[str, Any]) -> float:
+    """Costo de las fases Bedrock que realmente corrieron.
+
+    La ruta se decide por evidencia de ejecución, no por TYPE_ID: cualquier
+    tipo futuro con xpath/cell/column queda como ``Sin IA`` automáticamente y
+    un mismo tipo puede aparecer como mixto si cambió de ruta en el periodo.
+    """
+    return sum(
+        float(service.get("cost") or 0)
+        for name, service in (services or {}).items()
+        if name.startswith("Bedrock")
+    )
+
+
+def _uses_ai(has_cost: bool, services: Dict[str, Any]) -> Optional[bool]:
+    if not has_cost:
+        return None
+    for name, service in (services or {}).items():
+        if not name.startswith("Bedrock"):
+            continue
+        if (service.get("cost") or service.get("input_tokens") or service.get("output_tokens")):
+            return True
+    return False
+
+
+def processing_mode_label(uses_ai: Optional[bool], *, expected_no_ai: bool = False) -> str:
+    if uses_ai is True:
+        return "Con IA"
+    if uses_ai is False or expected_no_ai:
+        return "Sin IA"
+    return "Sin datos"
+
+
 def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Full outer join por DocumentId — un documento puede tener costo sin
     tracking indexado (raro) o tracking sin costo (tabla de costos vacía o
@@ -155,6 +230,11 @@ def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -
         doc_model = (d or {}).get("model")
         if not doc_model or doc_model == "(desconocido)":
             doc_model = _model_from_services((c or {}).get("services") or {}) or doc_model or "(desconocido)"
+        services = (c or {}).get("services") or {}
+        uses_ai = _uses_ai(c is not None, services)
+        expected_no_ai = base["document_type"] in DETERMINISTIC_TYPES
+        ai_cost = _ai_cost(services)
+        total_cost = (c or {}).get("total_cost")
         unified.append({
             "id": doc_id,
             "type": base["document_type"],
@@ -179,16 +259,46 @@ def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -
             "pagesNative": (c or {}).get("pages_native") or 0,
             "pagesOcr": (c or {}).get("pages_ocr") or 0,
             "pagesEmpty": (c or {}).get("pages_empty") or 0,
-            "totalCost": (c or {}).get("total_cost"),
+            "totalCost": total_cost,
             "costPerPage": (c or {}).get("cost_per_page"),
             "totalInputTokens": (c or {}).get("total_input_tokens"),
             "totalOutputTokens": (c or {}).get("total_output_tokens"),
-            "services": (c or {}).get("services") or {},
+            "services": services,
+            "usesAi": uses_ai,
+            "expectedNoAi": expected_no_ai,
+            "processingMode": processing_mode_label(uses_ai, expected_no_ai=expected_no_ai),
+            "processingEvidence": (
+                "Catálogo estructurado (xpath/cell/column)" if expected_no_ai
+                else "Servicios usados en la ejecución" if uses_ai is not None
+                else "Sin auditoría de costo"
+            ),
+            "aiCost": ai_cost if c is not None else None,
+            "nonAiCost": max(0.0, float(total_cost or 0) - ai_cost) if c is not None else None,
             # null cuando la selección de páginas no estuvo activa para ese
             # documento; el JS filtra por eso para no contar ceros.
             "pageSelection": (c or {}).get("page_selection"),
         })
     return unified
+
+
+def hydrate_processing_fields(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Upgrade rows from schema-v1 snapshots without changing their source data."""
+    for row in rows:
+        services = row.get("services") or {}
+        uses_ai = _uses_ai(bool(row.get("hasCost")), services)
+        expected_no_ai = row.get("type") in DETERMINISTIC_TYPES
+        ai_cost = _ai_cost(services)
+        row["usesAi"] = uses_ai
+        row["expectedNoAi"] = expected_no_ai
+        row["processingMode"] = processing_mode_label(uses_ai, expected_no_ai=expected_no_ai)
+        row["processingEvidence"] = (
+            "Catálogo estructurado (xpath/cell/column)" if expected_no_ai
+            else "Servicios usados en la ejecución" if uses_ai is not None
+            else "Sin auditoría de costo"
+        )
+        row["aiCost"] = ai_cost if row.get("hasCost") else None
+        row["nonAiCost"] = max(0.0, float(row.get("totalCost") or 0) - ai_cost) if row.get("hasCost") else None
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +308,9 @@ def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -
 # ---------------------------------------------------------------------------
 
 def money(x: Optional[float]) -> str:
-    return f"${x:,.4f}" if x is not None else "—"
+    if x is None:
+        return "—"
+    return f"${x:,.6f}" if 0 < abs(x) < 0.0001 else f"${x:,.4f}"
 
 
 def num(x: Optional[float]) -> str:
@@ -264,6 +376,9 @@ def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     total_cost = sum(r["totalCost"] or 0 for r in with_cost)
     total_pages = sum(r["pagesTotal"] or 0 for r in rows)
     dates = sorted(r["processedAt"] for r in rows if r["processedAt"])
+    ai_rows = [r for r in rows if r.get("processingMode") == "Con IA"]
+    no_ai_rows = [r for r in rows if r.get("processingMode") == "Sin IA"]
+    ai_unknown = [r for r in rows if r.get("processingMode") == "Sin datos"]
     return {
         "n": n,
         "n_completed": len(completed),
@@ -287,6 +402,16 @@ def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "first_date": dates[0] if dates else None,
         "last_date": dates[-1] if dates else None,
         "n_with_cost": len(with_cost),
+        "n_ai": len(ai_rows),
+        "n_no_ai": len(no_ai_rows),
+        "n_no_ai_with_cost": sum(bool(r.get("hasCost")) for r in no_ai_rows),
+        "n_ai_unknown": len(ai_unknown),
+        "ai_cost": sum(r.get("aiCost") or 0 for r in with_cost),
+        "non_ai_cost": sum(r.get("nonAiCost") or 0 for r in with_cost),
+        # Total completo de las ejecuciones que no invocaron Bedrock. No es lo
+        # mismo que non_ai_cost, que también contiene Textract/Lambda de las
+        # rutas que sí usaron IA.
+        "no_ai_docs_cost": sum(r.get("totalCost") or 0 for r in no_ai_rows),
         # Ahorro por selección de páginas. Se mantiene FUERA de total_cost:
         # `cost_avoided` valora una llamada que nunca se hizo, así que sumarlo
         # inflaría el gasto real del corte.
@@ -329,7 +454,27 @@ def by_key_snapshot(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str,
     return snapshot_by(rows, lambda r: r[key])
 
 
-def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None) -> str:
+def snapshot_mode(m: Dict[str, Any]) -> str:
+    present = sum(bool(m.get(key)) for key in ("n_ai", "n_no_ai", "n_ai_unknown"))
+    if present > 1:
+        return "Mixto"
+    if m.get("n_no_ai"):
+        return "Sin IA"
+    if m.get("n_ai"):
+        return "Con IA"
+    return "Sin datos"
+
+
+def sorted_types(by_type: Dict[str, Dict[str, Any]]) -> List[tuple[str, Dict[str, Any]]]:
+    """Determinísticos primero y luego nombre canónico, no volumen accidental."""
+    rank = {"Sin IA": 0, "Mixto": 1, "Con IA": 2, "Sin datos": 3}
+    return sorted(by_type.items(), key=lambda kv: (rank[snapshot_mode(kv[1])], kv[0].casefold()))
+
+
+def render_markdown(
+    rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None,
+    infrastructure: Optional[Dict[str, Any]] = None,
+) -> str:
     overall = overall_snapshot(rows)
     by_type = by_key_snapshot(rows, "type")
     by_model = by_key_snapshot(rows, "model")
@@ -353,8 +498,10 @@ def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict
         f"| Tasa de aprobación | {pct(overall['approval_rate'])} |",
         f"| Confianza promedio | {pct(overall['avg_confidence'])} |",
         f"| Documentos con datos de costo | {overall['n_with_cost']} |",
-        f"| Costo total | {money(overall['total_cost'])} |",
+        f"| Costo de procesamiento atribuible | {money(overall['total_cost'])} |",
         f"| Costo promedio / documento | {money(overall['avg_cost_doc'])} |",
+        f"| Documentos procesados sin IA | {overall['n_no_ai']} |",
+        f"| Costo total de documentos sin IA | {money(overall['no_ai_docs_cost'])} |",
         f"| Páginas procesadas | {num(overall['total_pages'])} |",
         f"| Tokens de entrada (total) | {num(overall['total_input_tokens'])} |",
         f"| Tokens de salida (total) | {num(overall['total_output_tokens'])} |",
@@ -385,6 +532,20 @@ def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict
         ]
 
     lines += [
+        "## Procesamiento con y sin IA",
+        "",
+        "La ruta se determina por la forma del catálogo (`xpath`/`cell`/`column` = determinística) y se "
+        "contrasta con los servicios realmente usados: cualquier cargo o token Bedrock significa **Con IA**. "
+        "Un tipo sin fuente estructurada y sin auditoría de costo queda como **Sin datos**.",
+        "",
+        "| Ruta | Documentos | Costo total de esos docs | Componente IA | Resto AWS |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        f"| Con IA | {overall['n_ai']} | {money(sum(r['totalCost'] or 0 for r in rows if r.get('processingMode') == 'Con IA'))} | "
+        f"{money(overall['ai_cost'])} | {money(sum(r['nonAiCost'] or 0 for r in rows if r.get('processingMode') == 'Con IA'))} |",
+        f"| **Sin IA** | **{overall['n_no_ai']}** ({overall['n_no_ai_with_cost']} con costo) | **{money(overall['no_ai_docs_cost'])}** | $0.0000 | "
+        f"{money(overall['no_ai_docs_cost'])} |",
+        f"| Sin datos suficientes | {overall['n_ai_unknown']} | — | — | — |",
+        "",
         "## Tiempo de proceso",
         "",
         f"Medido de punta a punta (`Tracking.ProcessingSeconds`): del inicio del enriquecimiento "
@@ -402,11 +563,14 @@ def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict
         "",
         "## Por tipo de documento",
         "",
-        "| Tipo | Docs | Aprobación | Confianza | Tiempo prom. | p95 | Costo total | $/doc |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Tipo | Ruta | Docs | Docs con IA | Aprobación | Tiempo prom. | Costo total | Costo IA | $/doc |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for t, m in sorted(by_type.items(), key=lambda kv: kv[1]["n"], reverse=True):
-        lines.append(f"| {t} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {secs(m['avg_seconds'])} | {secs(m['p95_seconds'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
+    for t, m in sorted_types(by_type):
+        lines.append(
+            f"| {t} | **{snapshot_mode(m)}** | {m['n']} | {m['n_ai']} | {pct(m['approval_rate'])} | "
+            f"{secs(m['avg_seconds'])} | {money(m['total_cost'])} | {money(m['ai_cost'])} | {money(m['avg_cost_doc'])} |"
+        )
 
     lines += ["", "## Por sistema", "",
               "Sistema/app que subió el documento (`AppOrigin`, resuelto de la API key del request).",
@@ -433,7 +597,9 @@ def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict
     ]
     for ref in COST_REFERENCE["perPage"]:
         lines.append(f"| {ref['label']} ({COST_REFERENCE['doc']} {ref['source']}) | {money5(ref['value'])} |")
-    projected = (cost_page_now * COST_REFERENCE["volume"]["pagesPerMonth"]) if cost_page_now is not None else None
+    projected_processing = (cost_page_now * COST_REFERENCE["volume"]["pagesPerMonth"]) if cost_page_now is not None else None
+    fixed_monthly = (infrastructure or {}).get("fixedMonthlyUsd")
+    projected = (projected_processing + (fixed_monthly or 0)) if projected_processing is not None else None
     lines += [
         "",
         f"Costo por documento de este corte: {money(overall['avg_cost_doc'])} "
@@ -441,19 +607,54 @@ def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict
         "",
         f"A {COST_REFERENCE['volume']['pagesPerMonth']:,} páginas/mes el corte actual proyecta "
         + (f"**${projected:,.2f}/mes**" if projected is not None else "—")
+        + (f" (procesamiento ${projected_processing:,.2f} + fijo {money(fixed_monthly)})" if projected_processing is not None else "")
         + f" contra el presupuesto acordado de ${COST_REFERENCE['volume']['budgetPerMonth']:,.2f}/mes "
         f"(${budget['value']:.4f}/página).",
         "",
         "| Tipo | Docs | $/doc hoy | $/doc ref. | $/pág hoy | $/pág ref. |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for t, m in sorted(by_type.items(), key=lambda kv: kv[1]["n"], reverse=True):
+    for t, m in sorted_types(by_type):
         ref = COST_REFERENCE["perDocByType"].get(t)
         page_now = (m["total_cost"] / m["total_pages"]) if m["total_pages"] else None
         lines.append(
             f"| {t} | {m['n']} | {money(m['avg_cost_doc'])} | {money(ref['costPerDoc']) if ref else '—'} | "
             f"{money5(page_now)} | {money5(ref['costPerPage']) if ref else '—'} |"
         )
+
+    infra = infrastructure or {}
+    lines += ["", "## Infraestructura del stack", ""]
+    if infra.get("fixedMonthlyUsd") is None:
+        lines.append("No se pudo obtener un inventario AWS atribuible al stack.")
+    else:
+        tagged = infra.get("taggedMtd") or {}
+        fixed_mtd = infra.get("fixedMtdActualUsd")
+        lines += [
+            f"Inventario en vivo de `{infra.get('stack', '—')}` / `{infra.get('region', '—')}`, "
+            f"capturado {str(infra.get('capturedAt', ''))[:19]}. El costo fijo no se reparte entre "
+            "documentos ni cambia con los filtros del dashboard.",
+            "",
+            "| Métrica | Valor |",
+            "| --- | ---: |",
+            f"| Piso fijo mensual actual | **{money(infra.get('fixedMonthlyUsd'))}** |",
+            f"| Fijo real MTD en Cost Explorer | {money(fixed_mtd) if fixed_mtd is not None else '—'} |",
+            f"| Gasto MTD etiquetado `CostStack` | {money(tagged.get('totalUsd')) if tagged.get('available') else 'No disponible'} |",
+            "",
+            "| Componente fijo | Cantidad | Tarifa / mes | Total / mes |",
+            "| --- | ---: | ---: | ---: |",
+        ]
+        for item in infra.get("fixedItems") or []:
+            lines.append(
+                f"| {item['service']} · {item['component']} | {item['quantity']} | "
+                f"{money(item['unitMonthlyUsd'])} | {money(item['monthlyUsd'])} |"
+            )
+        if not infra.get("fixedItems"):
+            lines.append("| Ninguno en este ambiente | 0 | $0.0000 | $0.0000 |")
+        lines += ["", "S3, DynamoDB, API Gateway/API keys y los demás recursos serverless no tienen renta fija; "
+                  "se muestran como consumo variable y sólo se totalizan cuando `CostStack` devuelve gasto atribuible.", ""]
+        for warning in infra.get("warnings") or []:
+            lines.append(f"> {warning}")
+            lines.append("")
 
     if quality:
         latest = quality.get("latestFree") or quality.get("latest") or {}
@@ -479,7 +680,10 @@ def render_markdown(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict
 # Excel (datos crudos)
 # ---------------------------------------------------------------------------
 
-def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Dict[str, Any]] = None) -> None:
+def write_excel(
+    out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Dict[str, Any]] = None,
+    infrastructure: Optional[Dict[str, Any]] = None,
+) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.chart import LineChart, Reference
@@ -513,9 +717,9 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Di
     ws_docs.title = "Documentos"
     headers = [
         "DocumentId", "DocumentType", "DocumentTypeName", "DocumentName", "AppOrigin", "ProcessedAt",
-        "WorkflowStatus", "ValidationStatus", "Model", "ProcessingSeconds", "AvgConfidence", "SubDocumentCount",
+        "WorkflowStatus", "ValidationStatus", "ProcessingMode", "ProcessingEvidence", "UsesAi", "Model", "ProcessingSeconds", "AvgConfidence", "SubDocumentCount",
         "PagesTotal", "PagesNative", "PagesOcr", "PagesEmpty",
-        "TotalCostUsd", "CostPerPageUsd", "TotalInputTokens", "TotalOutputTokens", "PricingVersion",
+        "TotalCostUsd", "AiCostUsd", "NonAiCostUsd", "CostPerPageUsd", "TotalInputTokens", "TotalOutputTokens", "PricingVersion",
         "HasCostData", "HasQualityData",
     ]
     for svc in service_names:
@@ -524,9 +728,9 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Di
     for r in rows:
         row = [
             r["id"], r["type"], r["typeName"], r["name"], r["appOrigin"], r["processedAt"],
-            r["workflowStatus"], r["validationStatus"], r["model"], r["processingSeconds"], r["avgConfidence"],
+            r["workflowStatus"], r["validationStatus"], r["processingMode"], r["processingEvidence"], r["usesAi"], r["model"], r["processingSeconds"], r["avgConfidence"],
             r["subDocCount"], r["pagesTotal"], r["pagesNative"], r["pagesOcr"], r["pagesEmpty"],
-            r["totalCost"], r["costPerPage"], r["totalInputTokens"], r["totalOutputTokens"], r["pricingVersion"],
+            r["totalCost"], r["aiCost"], r["nonAiCost"], r["costPerPage"], r["totalInputTokens"], r["totalOutputTokens"], r["pricingVersion"],
             r["hasCost"], r["hasQuality"],
         ]
         for svc in service_names:
@@ -544,12 +748,16 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Di
         ["Éxito técnico", op["n_completed"] / op["n"] if op["n"] else None, "Ejecuciones completas / operativas"],
         ["Aprobación de reglas", op["approval_rate"], "No equivale a exactitud humana"],
         ["Costo total operativo USD", op["total_cost"], "Excluye tráfico E2E etiquetado"],
+        ["Documentos operativos sin IA", op["n_no_ai"], "Sin uso real de servicios Bedrock"],
+        ["Costo de documentos sin IA USD", op["no_ai_docs_cost"], "Lambda/otros servicios; componente IA = 0"],
+        ["Piso fijo mensual del stack USD", (infrastructure or {}).get("fixedMonthlyUsd"), "No se reparte por documento"],
         ["Latencia p95 segundos", op["p95_seconds"], "Punta a punta"],
     ])
 
     agg_headers = [
         "Documentos", "TasaAprobacion", "ConfianzaPromedio",
         "DocsConTiempo", "SegundosPromedio", "SegundosP50", "SegundosP95", "SegundosMax", "SegundosPorPagina",
+        "DocsConIA", "DocsSinIA", "DocsSinIAConCosto", "DocsRutaDesconocida", "CostoIAUsd", "CostoNoIAUsd", "CostoDocsSinIAUsd",
         "CostoTotalUsd", "CostoPorDocUsd", "CostoPorPaginaUsd",
     ]
 
@@ -557,12 +765,16 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Di
         return [
             m["n"], m["approval_rate"], m["avg_confidence"],
             m["n_with_duration"], m["avg_seconds"], m["p50_seconds"], m["p95_seconds"], m["max_seconds"], m["seconds_per_page"],
+            m["n_ai"], m["n_no_ai"], m["n_no_ai_with_cost"], m["n_ai_unknown"], m["ai_cost"], m["non_ai_cost"], m["no_ai_docs_cost"],
             m["total_cost"], m["avg_cost_doc"], (m["total_cost"] / m["total_pages"]) if m["total_pages"] else None,
         ]
 
     ws_type = wb.create_sheet("PorTipo")
     by_type = by_key_snapshot(rows, "type")
-    write_sheet(ws_type, ["DocumentType"] + agg_headers, [[t] + agg_values(m) for t, m in by_type.items()])
+    write_sheet(
+        ws_type, ["DocumentType", "ProcessingMode"] + agg_headers,
+        [[t, snapshot_mode(m)] + agg_values(m) for t, m in sorted_types(by_type)],
+    )
 
     ws_app = wb.create_sheet("PorSistema")
     by_app = snapshot_by(rows, app_of)
@@ -648,6 +860,13 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Di
             ["Segundos por pagina", overall["seconds_per_page"]],
             ["Segundos acumulados", overall["total_seconds"]],
             ["Documentos con datos de costo", overall["n_with_cost"]],
+            ["Documentos con IA", overall["n_ai"]],
+            ["Documentos sin IA", overall["n_no_ai"]],
+            ["Documentos sin IA con costo registrado", overall["n_no_ai_with_cost"]],
+            ["Documentos sin dato de ruta IA", overall["n_ai_unknown"]],
+            ["Costo de componentes IA USD", overall["ai_cost"]],
+            ["Costo de componentes no IA USD", overall["non_ai_cost"]],
+            ["Costo total de documentos sin IA USD", overall["no_ai_docs_cost"]],
             ["Costo total USD", overall["total_cost"]],
             ["Costo promedio por documento USD", overall["avg_cost_doc"]],
             ["Costo por pagina USD", (overall["total_cost"] / overall["total_pages"]) if overall["total_pages"] else None],
@@ -660,6 +879,29 @@ def write_excel(out_path: Path, rows: List[Dict[str, Any]], quality: Optional[Di
             ["Ultimo documento", overall["last_date"]],
         ],
     )
+
+    infra = infrastructure or {}
+    ws_infra = wb.create_sheet("Infraestructura")
+    infra_rows: List[List[Any]] = [
+        ["Resumen", "Piso fijo mensual", None, None, infra.get("fixedMonthlyUsd"), "Inventario CloudFormation"],
+        ["Resumen", "Fijo real MTD", None, None, infra.get("fixedMtdActualUsd"), "Cost Explorer, sólo con exclusividad comprobada"],
+        ["Resumen", "Gasto MTD etiquetado", None, None,
+         (infra.get("taggedMtd") or {}).get("totalUsd") if (infra.get("taggedMtd") or {}).get("available") else None,
+         "CostStack"],
+    ]
+    for item in infra.get("fixedItems") or []:
+        infra_rows.append([
+            item.get("service"), item.get("component"), item.get("quantity"), item.get("unitMonthlyUsd"),
+            item.get("monthlyUsd"), item.get("source"),
+        ])
+    for item in infra.get("usageOnlyItems") or []:
+        infra_rows.append([
+            item.get("service"), item.get("billing"), item.get("resources"), None,
+            item.get("fixedMonthlyUsd"), "Costo variable por consumo",
+        ])
+    for warning in infra.get("warnings") or []:
+        infra_rows.append(["Advertencia", warning, None, None, None, None])
+    write_sheet(ws_infra, ["Servicio", "Componente/lectura", "Cantidad", "TarifaMensualUsd", "TotalUsd", "Fuente"], infra_rows)
 
     if quality:
         trend = quality.get("trend") or []
@@ -760,6 +1002,12 @@ td.delta-bad { color: #d03b3b; }
   background: repeating-linear-gradient(to bottom, transparent 0, transparent calc(25% - 1px), var(--gridline) 25%); }
 .volume-bars { height: 100%; display: flex; align-items: flex-end; gap: 3px; }
 .volume-axis-note { color: var(--text-muted); font-size: 11px; margin-top: 5px; }
+.mode-badge { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 650; white-space: nowrap; }
+.mode-no-ai { background: rgba(27,175,122,.14); color: #0b855a; }
+.mode-ai { background: rgba(42,120,214,.14); color: #2367b5; }
+.mode-mixed { background: rgba(237,161,0,.16); color: #946600; }
+.mode-unknown { background: var(--plane); color: var(--text-muted); }
+.infra-note { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-secondary); font-size: 13px; }
 @media (max-width: 560px) { .volume-plot { grid-template-columns: 38px minmax(0, 1fr); gap: 6px; } .volume-y { font-size: 10px; } }
 '''
 
@@ -767,6 +1015,7 @@ JS_TEMPLATE = r'''
 const DATA = JSON.parse(document.getElementById('report-data').textContent);
 const ROWS = DATA.rows;
 const COST_REF = DATA.costRef;
+const INFRA = DATA.infrastructure || {};
 const ROWS_BY_ID = new Map(ROWS.map(r => [r.id, r]));
 const CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
 const STATUS_ROLE_COLOR = {good: "#0ca30c", warning: "#fab219", critical: "#d03b3b", neutral: "#898781"};
@@ -788,7 +1037,11 @@ const DURATION_BUCKETS = [
 ];
 
 function esc(s){ const d=document.createElement('div'); d.textContent = (s===null||s===undefined) ? '' : String(s); return d.innerHTML; }
-function money(x){ return (x===null||x===undefined) ? '—' : '$'+Number(x).toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4}); }
+function money(x){
+  if (x===null||x===undefined) return '—';
+  const n = Number(x), digits = Math.abs(n) > 0 && Math.abs(n) < 0.0001 ? 6 : 4;
+  return '$'+n.toLocaleString('en-US',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+}
 function num(x){ return (x===null||x===undefined) ? '—' : Number(x).toLocaleString('en-US',{maximumFractionDigits:0}); }
 function pctFmt(x){ return (x===null||x===undefined) ? '—' : (x*100).toFixed(0)+'%'; }
 function exactNumber(x, maxDigits=12) {
@@ -829,7 +1082,7 @@ function appOf(r){ return r.appOrigin || '(sin sistema)'; }
 // ---------------------------------------------------------------------
 const state = {
   desde: '', hasta: '',
-  types: new Set(), apps: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
+  types: new Set(), modes: new Set(), apps: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
   traffic: new Set(['operational']),
   hiddenServices: new Set(),
   sortKey: 'processedAt', sortDir: -1,
@@ -844,6 +1097,7 @@ function filteredRows() {
     if (state.desde && (r.processedAt||'').slice(0,10) < state.desde) return false;
     if (state.hasta && (r.processedAt||'').slice(0,10) > state.hasta) return false;
     if (state.types.size && !state.types.has(r.type)) return false;
+    if (state.modes.size && !state.modes.has(r.processingMode)) return false;
     if (state.apps.size && !state.apps.has(appOf(r))) return false;
     if (state.models.size && !state.models.has(r.model)) return false;
     if (state.workflow.size && !state.workflow.has(r.workflowStatus)) return false;
@@ -893,6 +1147,13 @@ function aggOverall(rows) {
     avgCostDoc: withCost.length ? totalCost/withCost.length : null,
     avgCostPage: totalPages ? totalCost/totalPages : null,
     totalPages, totalInputTokens: totalIn, totalOutputTokens: totalOut,
+    nAi: rows.filter(r => r.processingMode === 'Con IA').length,
+    nNoAi: rows.filter(r => r.processingMode === 'Sin IA').length,
+    nNoAiWithCost: rows.filter(r => r.processingMode === 'Sin IA' && r.hasCost).length,
+    nAiUnknown: rows.filter(r => r.processingMode === 'Sin datos').length,
+    aiCost: withCost.reduce((a,r) => a + (r.aiCost||0), 0),
+    nonAiCost: withCost.reduce((a,r) => a + (r.nonAiCost||0), 0),
+    noAiDocsCost: rows.filter(r => r.processingMode === 'Sin IA').reduce((a,r) => a + (r.totalCost||0), 0),
     firstDate: dates[0]||null, lastDate: dates[dates.length-1]||null,
     pageSel: pageSelAgg(rows),
   };
@@ -952,6 +1213,27 @@ function aggBy(rows, keyFn) {
   const out = [];
   for (const [k, rs] of buckets) out.push([k, aggOverall(rs)]);
   return out;
+}
+
+function snapshotMode(m) {
+  const present = [m.nAi, m.nNoAi, m.nAiUnknown].filter(Boolean).length;
+  if (present > 1) return 'Mixto';
+  if (m.nNoAi) return 'Sin IA';
+  if (m.nAi) return 'Con IA';
+  return 'Sin datos';
+}
+
+function modeRank(mode) { return ({'Sin IA':0, 'Mixto':1, 'Con IA':2, 'Sin datos':3})[mode] ?? 4; }
+function modeBadge(mode) {
+  const cls = mode === 'Sin IA' ? 'mode-no-ai' : mode === 'Con IA' ? 'mode-ai' : mode === 'Mixto' ? 'mode-mixed' : 'mode-unknown';
+  return `<span class="mode-badge ${cls}">${esc(mode)}</span>`;
+}
+
+function sortedTypeAgg(rows) {
+  return aggBy(rows, r => r.type).sort((a,b) => {
+    const ma = snapshotMode(a[1]), mb = snapshotMode(b[1]);
+    return modeRank(ma) - modeRank(mb) || String(a[0]).localeCompare(String(b[0]), 'es');
+  });
 }
 
 function aggByService(rows) {
@@ -1062,6 +1344,7 @@ function renderFilters() {
     el.innerHTML = values.map(v => `<span class="chip${activeSet.has(v)?' active':''}" data-value="${esc(v)}">${esc(v)}</span>`).join('');
   };
   mk('f-types', distinct('type'), state.types);
+  mk('f-modes', distinct('processingMode'), state.modes);
   mk('f-apps', [...new Set(ROWS.map(appOf))].sort(), state.apps);
   mk('f-models', distinct('model'), state.models);
   mk('f-workflow', distinct('workflowStatus'), state.workflow);
@@ -1073,7 +1356,7 @@ function renderFilters() {
 
 function activeFilterCount() {
   return (state.desde ? 1 : 0) + (state.hasta ? 1 : 0)
-    + state.types.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size + state.traffic.size;
+    + state.types.size + state.modes.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size + state.traffic.size;
 }
 
 // Los filtros viven en un panel colapsado: la barra pegajosa de arriba se
@@ -1090,6 +1373,7 @@ function setFiltersOpen(open) {
 
 function attachChipHandlers() {
   document.querySelectorAll('#f-types .chip').forEach(el => el.addEventListener('click', () => { toggle(state.types, el.dataset.value); render(); }));
+  document.querySelectorAll('#f-modes .chip').forEach(el => el.addEventListener('click', () => { toggle(state.modes, el.dataset.value); render(); }));
   document.querySelectorAll('#f-apps .chip').forEach(el => el.addEventListener('click', () => { toggle(state.apps, el.dataset.value); render(); }));
   document.querySelectorAll('#f-models .chip').forEach(el => el.addEventListener('click', () => { toggle(state.models, el.dataset.value); render(); }));
   document.querySelectorAll('#f-workflow .chip').forEach(el => el.addEventListener('click', () => { toggle(state.workflow, el.dataset.value); render(); }));
@@ -1117,6 +1401,44 @@ function renderServiceSection(rows) {
       tooltipText(`Costo exacto: ${exactMoney(a.cost)}`, `Documentos: ${exactNumber(a.docs)}`, `Tokens entrada: ${exactNumber(a.inputTokens)}`, `Tokens salida: ${exactNumber(a.outputTokens)}`)))
     .join('');
   document.getElementById('by-service-bars').innerHTML = bars || '<p class="empty-hint">Sin datos de costo con los filtros actuales.</p>';
+}
+
+function renderAiSection(rows) {
+  const a = aggOverall(rows);
+  const aiDocsTotal = rows.filter(r => r.processingMode === 'Con IA').reduce((sum,r) => sum + (r.totalCost||0), 0);
+  const aiDocsOther = rows.filter(r => r.processingMode === 'Con IA').reduce((sum,r) => sum + (r.nonAiCost||0), 0);
+  document.getElementById('ai-kpis').innerHTML = [
+    kpiTile(num(a.nNoAi), 'Documentos sin IA', `${a.nAi} con IA · ${a.nAiUnknown} sin dato`),
+    kpiTile(money(a.noAiDocsCost), 'Costo de docs sin IA', 'componente Bedrock $0'),
+    kpiTile(money(a.aiCost), 'Costo IA', 'sólo fases Bedrock'),
+    kpiTile(money(a.nonAiCost), 'Otros servicios', 'Lambda, Textract y runtime'),
+  ].join('');
+  document.getElementById('ai-table').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Ruta</th><th class="num">Documentos</th><th class="num">Costo de esos docs</th><th class="num">Componente IA</th><th class="num">Resto AWS</th></tr></thead>
+    <tbody>
+      <tr><td>${modeBadge('Sin IA')}</td><td class="num">${a.nNoAi}<div class="muted">${a.nNoAiWithCost} con costo</div></td><td class="num">${money(a.noAiDocsCost)}</td><td class="num">$0.0000</td><td class="num">${money(a.noAiDocsCost)}</td></tr>
+      <tr><td>${modeBadge('Con IA')}</td><td class="num">${a.nAi}</td><td class="num">${money(aiDocsTotal)}</td><td class="num">${money(a.aiCost)}</td><td class="num">${money(aiDocsOther)}</td></tr>
+      <tr><td>${modeBadge('Sin datos')}</td><td class="num">${a.nAiUnknown}</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+    </tbody></table></div>`;
+}
+
+function renderInfrastructureSection() {
+  const fixed = INFRA.fixedMonthlyUsd;
+  const tagged = INFRA.taggedMtd || {};
+  document.getElementById('infra-kpis').innerHTML = [
+    kpiTile(fixed === null || fixed === undefined ? '—' : money(fixed), 'Piso fijo / mes', 'inventario real del stack'),
+    kpiTile(INFRA.fixedMtdActualUsd === null || INFRA.fixedMtdActualUsd === undefined ? '—' : money(INFRA.fixedMtdActualUsd), 'Fijo facturado MTD', INFRA.fixedMtdEstimated ? 'Cost Explorer · estimado del mes abierto' : 'Cost Explorer'),
+    kpiTile(tagged.available ? money(tagged.totalUsd) : 'No disponible', 'Gasto variable MTD', 'CostStack en Cost Explorer'),
+    kpiTile(num(INFRA.resourceCount), 'Recursos del stack', `${INFRA.stack || 'sin inventario'} · ${INFRA.region || ''}`),
+  ].join('');
+  const fixedRows = (INFRA.fixedItems || []).map(item => `<tr><td>${esc(item.service)}</td><td>${esc(item.component)}</td><td class="num">${num(item.quantity)}</td><td class="num">${money(item.unitMonthlyUsd)}</td><td class="num">${money(item.monthlyUsd)}</td></tr>`).join('')
+    || '<tr><td colspan="5">Este ambiente no tiene recursos con renta fija.</td></tr>';
+  document.getElementById('infra-fixed-table').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Servicio</th><th>Componente</th><th class="num">Cantidad</th><th class="num">Tarifa / mes</th><th class="num">Total / mes</th></tr></thead><tbody>${fixedRows}</tbody></table></div>`;
+  const usageRows = (INFRA.usageOnlyItems || []).map(item => `<tr><td>${esc(item.service)}</td><td class="num">${num(item.resources)}</td><td class="num">${money(item.fixedMonthlyUsd)}</td><td>${esc(item.billing)}</td></tr>`).join('');
+  document.getElementById('infra-usage-table').innerHTML = usageRows ? `<div class="table-wrap"><table><thead><tr><th>Servicio</th><th class="num">Recursos</th><th class="num">Renta fija</th><th>Qué se cobra</th></tr></thead><tbody>${usageRows}</tbody></table></div>` : '';
+  const taggedRows = (tagged.services || []).map(item => `<tr><td>${esc(item.service)}</td><td class="num">${money(item.cost)}</td></tr>`).join('');
+  document.getElementById('infra-tagged-table').innerHTML = taggedRows ? `<div class="table-wrap"><table><thead><tr><th>Servicio etiquetado</th><th class="num">Costo MTD</th></tr></thead><tbody>${taggedRows}</tbody></table></div>` : '<p class="empty-hint">Sin gasto atribuible devuelto por la etiqueta CostStack.</p>';
+  document.getElementById('infra-warnings').innerHTML = (INFRA.warnings || []).map(w => `<p class="infra-note">${esc(w)}</p>`).join('');
 }
 
 function renderDurationSection(rows) {
@@ -1180,12 +1502,14 @@ function deltaCell(actual, ref) {
 function renderReferenceSection(rows) {
   const a = aggOverall(rows);
   const budget = COST_REF.perPage.find(x => x.role === 'budget');
-  const projected = a.avgCostPage === null ? null : a.avgCostPage * COST_REF.volume.pagesPerMonth;
+  const projectedProcessing = a.avgCostPage === null ? null : a.avgCostPage * COST_REF.volume.pagesPerMonth;
+  const fixedMonthly = INFRA.fixedMonthlyUsd;
+  const projected = projectedProcessing === null ? null : projectedProcessing + (fixedMonthly || 0);
   document.getElementById('ref-kpis').innerHTML = [
     kpiTile(a.avgCostPage === null ? '—' : money5(a.avgCostPage), 'Costo / página (corte actual)', `${a.nWithCost} doc(s) con costo · ${num(a.totalPages)} pág`),
     kpiTile(money(a.avgCostDoc), 'Costo / documento (corte actual)', `referencia ${money(COST_REF.perDoc.value)} — ${COST_REF.perDoc.label}`),
     kpiTile(money5(budget.value), 'Presupuesto / página', `${COST_REF.doc} ${budget.source}`),
-    kpiTile(projected === null ? '—' : '$' + projected.toFixed(2), `Proyección / mes`, `a ${num(COST_REF.volume.pagesPerMonth)} pág/mes · presupuesto $${COST_REF.volume.budgetPerMonth.toFixed(2)}`),
+    kpiTile(projected === null ? '—' : '$' + projected.toFixed(2), `Proyección / mes + fijo`, `procesamiento ${projectedProcessing===null?'—':'$'+projectedProcessing.toFixed(2)} + fijo ${fixedMonthly===null||fixedMonthly===undefined?'—':money(fixedMonthly)}`),
   ].join('');
 
   const maxRef = Math.max(a.avgCostPage || 0, ...COST_REF.perPage.map(x => x.value));
@@ -1202,12 +1526,12 @@ function renderReferenceSection(rows) {
     ...COST_REF.perPage.map(x => line(x.label, x.value, rolesColor[x.role], x.source)),
   ].join('');
 
-  const byType = aggBy(rows, r => r.type).sort((x, y) => y[1].n - x[1].n);
+  const byType = sortedTypeAgg(rows);
   const refRows = byType.map(([t, m]) => {
     const ref = COST_REF.perDocByType[t];
     const actualPage = m.totalPages ? m.totalCost / m.totalPages : null;
     return `<tr>
-      <td>${esc(t)}</td>
+      <td>${esc(t)}</td><td>${modeBadge(snapshotMode(m))}</td>
       <td class="num">${m.n}</td>
       <td class="num">${money(m.avgCostDoc)}</td>
       <td class="num muted">${ref ? money(ref.costPerDoc) : '—'}</td>
@@ -1218,7 +1542,7 @@ function renderReferenceSection(rows) {
     </tr>`;
   }).join('');
   document.getElementById('ref-by-type').innerHTML = byType.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Tipo</th><th class="num">Docs</th><th class="num">$/doc hoy</th><th class="num">$/doc ref.</th><th class="num">Δ</th><th class="num">$/pág hoy</th><th class="num">$/pág ref.</th><th class="num">Δ</th></tr></thead>
+    <thead><tr><th>Tipo</th><th>Ruta</th><th class="num">Docs</th><th class="num">$/doc hoy</th><th class="num">$/doc ref.</th><th class="num">Δ</th><th class="num">$/pág hoy</th><th class="num">$/pág ref.</th><th class="num">Δ</th></tr></thead>
     <tbody>${refRows}</tbody></table></div>` : '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
 }
 
@@ -1234,7 +1558,7 @@ function renderDocumentsTable(rows) {
   const shown = sorted.slice(0, state.docLimit);
   document.getElementById('doc-count').textContent = rows.length;
   const cols = [
-    ['id','Documento'], ['typeName','Tipo'], ['appOrigin','Sistema'], ['workflowStatus','Ejecución'], ['validationStatus','Negocio'],
+    ['id','Documento'], ['typeName','Tipo'], ['processingMode','Procesamiento'], ['appOrigin','Sistema'], ['workflowStatus','Ejecución'], ['validationStatus','Negocio'],
     ['model','Modelo'], ['avgConfidence','Confianza'], ['processingSeconds','Tiempo'], ['totalCost','Costo'], ['processedAt','Procesado'],
   ];
   const head = cols.map(([key,label]) => {
@@ -1244,6 +1568,7 @@ function renderDocumentsTable(rows) {
   const body = shown.map(r => `<tr class="doc-row" data-id="${esc(r.id)}">
       <td class="mono">${esc(r.id)}</td>
       <td>${esc(r.typeName || r.type)}</td>
+      <td>${modeBadge(r.processingMode)}</td>
       <td class="muted">${esc(r.appOrigin || '—')}</td>
       <td>${esc(r.workflowStatus || '—')}</td>
       <td>${esc(r.validationStatus || '—')}</td>
@@ -1291,6 +1616,8 @@ function openDetail(id) {
       <div class="k">Estado de negocio</div><div>${esc(r.validationStatus||'—')}</div>
       <div class="k">Sistema (app de origen)</div><div>${esc(appOf(r))}</div>
       <div class="k">Modelo</div><div>${esc(r.model)}</div>
+      <div class="k">Ruta de procesamiento</div><div>${modeBadge(r.processingMode)}</div>
+      <div class="k">Evidencia de ruta</div><div>${esc(r.processingEvidence||'—')}</div>
       <div class="k">Confianza promedio</div><div>${pctFmt(r.avgConfidence)}</div>
       <div class="k">Tiempo de proceso</div><div>${secsFmt(r.processingSeconds)}</div>
       <div class="k">Documentos en el expediente</div><div>${r.subDocCount}</div>
@@ -1304,6 +1631,8 @@ function openDetail(id) {
     <h3>Costo</h3>
     ${r.hasCost ? `<div class="kv-grid">
       <div class="k">Costo total</div><div>${money(r.totalCost)}</div>
+      <div class="k">Componente IA</div><div>${money(r.aiCost)}</div>
+      <div class="k">Componente no IA</div><div>${money(r.nonAiCost)}</div>
       <div class="k">Costo por página</div><div>${r.costPerPage!==null&&r.costPerPage!==undefined?money(r.costPerPage):'—'}</div>
       <div class="k">Páginas</div><div>${r.pagesTotal} (${r.pagesNative} nativas, ${r.pagesOcr} OCR, ${r.pagesEmpty} vacías)</div>
       <div class="k">Tokens de entrada</div><div>${num(r.totalInputTokens)}</div>
@@ -1403,7 +1732,8 @@ function render() {
     kpiTile(pctFmt(overall.approvalRate), 'Tasa de aprobación'),
     kpiTile(pctFmt(overall.avgConfidence), 'Confianza promedio'),
     kpiTile(secsFmt(overall.avgDuration), 'Tiempo promedio', overall.nWithDuration ? `p95 ${secsFmt(overall.p95Duration)}` : 'sin dato de tiempo'),
-    kpiTile(money(overall.totalCost), 'Costo total', overall.nWithCost < overall.n ? `${overall.nWithCost} de ${overall.n} con dato de costo` : ''),
+    kpiTile(money(overall.totalCost), 'Costo de procesamiento', overall.nWithCost < overall.n ? `${overall.nWithCost} de ${overall.n} con dato de costo` : 'atribuible por documento'),
+    kpiTile(num(overall.nNoAi), 'Documentos sin IA', `${money(overall.noAiDocsCost)} en total`),
     kpiTile(money(overall.avgCostDoc), 'Costo promedio / doc', `referencia ${money(COST_REF.perDoc.value)}`),
     kpiTile(overall.avgCostPage === null ? '—' : money5(overall.avgCostPage), 'Costo / página', `presupuesto ${money5(0.0083)}`),
     kpiTile(num(overall.totalInputTokens), 'Tokens de entrada'),
@@ -1437,10 +1767,10 @@ function render() {
     document.getElementById('volume-chart').innerHTML = '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
   }
 
-  const byType = aggBy(rows, r => r.type).sort((a,b) => b[1].n - a[1].n);
+  const byType = sortedTypeAgg(rows);
   document.getElementById('by-type-table').innerHTML = byType.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Tipo</th><th class="num">Docs</th><th class="num">Aprobación</th><th class="num">Confianza</th><th class="num">Tiempo prom.</th><th class="num">p95</th><th class="num">Costo total</th><th class="num">$/doc</th></tr></thead>
-    <tbody>${byType.map(([t,m]) => `<tr><td>${esc(t)}</td><td class="num">${m.n}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${pctFmt(m.avgConfidence)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${secsFmt(m.p95Duration)}</td><td class="num">${money(m.totalCost)}</td><td class="num">${money(m.avgCostDoc)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th>Tipo</th><th>Ruta</th><th class="num">Docs</th><th class="num">Con IA</th><th class="num">Aprobación</th><th class="num">Tiempo prom.</th><th class="num">Costo total</th><th class="num">Costo IA</th><th class="num">$/doc</th></tr></thead>
+    <tbody>${byType.map(([t,m]) => `<tr><td>${esc(t)}</td><td>${modeBadge(snapshotMode(m))}</td><td class="num">${m.n}</td><td class="num">${m.nAi}</td><td class="num">${pctFmt(m.approvalRate)}</td><td class="num">${secsFmt(m.avgDuration)}</td><td class="num">${money(m.totalCost)}</td><td class="num">${money(m.aiCost)}</td><td class="num">${money(m.avgCostDoc)}</td></tr>`).join('')}</tbody>
   </table></div>` : '<p class="empty-hint">Sin datos con los filtros actuales.</p>';
 
   const byApp = aggBy(rows, appOf).sort((a,b) => b[1].n - a[1].n);
@@ -1464,8 +1794,10 @@ function render() {
   </table></div>` : '';
 
   renderDurationSection(rows);
+  renderAiSection(rows);
   renderReferenceSection(rows);
   renderServiceSection(rows);
+  renderInfrastructureSection();
   attachServiceChipHandlers();
 
   const wf = worstFields(rows, 25);
@@ -1482,7 +1814,7 @@ document.getElementById('f-hasta').addEventListener('change', e => { state.hasta
 document.getElementById('f-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));
 document.getElementById('f-reset').addEventListener('click', () => {
   state.desde = ''; state.hasta = '';
-  state.types.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
+  state.types.clear(); state.modes.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
   document.getElementById('f-desde').value = ''; document.getElementById('f-hasta').value = '';
   render();
 });
@@ -1555,7 +1887,10 @@ def render_quality_html(quality: Dict[str, Any]) -> str:
       </details>'''
 
 
-def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None) -> str:
+def render_html(
+    rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None,
+    infrastructure: Optional[Dict[str, Any]] = None,
+) -> str:
     from _report_lib import BASE_CSS
 
     overall = overall_snapshot(rows)
@@ -1584,6 +1919,7 @@ def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str
             </div>
           </div>
           <div class="filter-group"><span class="fg-label">Tipo de documento</span><div class="chip-row" id="f-types"></div></div>
+          <div class="filter-group"><span class="fg-label">Procesamiento</span><div class="chip-row" id="f-modes"></div></div>
           <div class="filter-group"><span class="fg-label">Sistema</span><div class="chip-row" id="f-apps"></div></div>
           <div class="filter-group"><span class="fg-label">Modelo</span><div class="chip-row" id="f-models"></div></div>
           <div class="filter-group"><span class="fg-label">Estado de ejecución</span><div class="chip-row" id="f-workflow"></div></div>
@@ -1593,6 +1929,26 @@ def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str
       </section>
 
       <div class="kpi-row" id="kpis"></div>
+
+      <details class="card" open>
+        <summary>Procesamiento con y sin IA</summary>
+        <p class="section-sub">Clasificación por forma del catálogo (<code>xpath</code>/<code>cell</code>/<code>column</code>) y uso real de Bedrock, nunca por una lista fija de TYPE_IDs. <strong>Sin IA</strong> conserva el costo de Lambda y otros servicios que sí hayan participado.</p>
+        <div class="kpi-row dense" id="ai-kpis"></div>
+        <div id="ai-table"></div>
+      </details>
+
+      <details class="card" open>
+        <summary>Infraestructura del stack</summary>
+        <p class="section-sub">Inventario AWS en vivo y separado del costo por documento. El piso mensual no cambia con los filtros; S3, DynamoDB, API Gateway y API keys no tienen renta fija y se cobran por consumo.</p>
+        <div class="kpi-row dense" id="infra-kpis"></div>
+        <div class="sub-head">Piso fijo desplegado</div>
+        <div id="infra-fixed-table"></div>
+        <div class="sub-head">Servicios sin renta fija</div>
+        <div id="infra-usage-table"></div>
+        <div class="sub-head">Consumo MTD atribuido por CostStack</div>
+        <div id="infra-tagged-table"></div>
+        <div id="infra-warnings"></div>
+      </details>
 
       {quality_html}
 
@@ -1690,7 +2046,7 @@ def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str
 
       <footer>Generado por <code>pnpm reporte</code> (scripts/reporte.py) · une la tabla de costos y la de tracking de documentos por <code>DocumentId</code> · datos crudos en <code>datos_raw.xlsx</code> · reportes individuales: <code>pnpm reporte:costos</code> / <code>pnpm reporte:documentos</code>.</footer>
     </div>
-    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "costRef": COST_REFERENCE}, ensure_ascii=False, default=_json_default)}</script>
+    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "costRef": COST_REFERENCE, "infrastructure": infrastructure or {}}, ensure_ascii=False, default=_json_default)}</script>
     <script>{JS_TEMPLATE}</script>'''
 
     return f'''<!doctype html>
@@ -1709,14 +2065,18 @@ def render_html(rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str
 # CLI
 # ---------------------------------------------------------------------------
 
-def write_report_bundle(out_dir: Path, rows: List[Dict[str, Any]], quality: Dict[str, Any], env: str) -> Dict[str, Any]:
+def write_report_bundle(
+    out_dir: Path, rows: List[Dict[str, Any]], quality: Dict[str, Any], env: str,
+    infrastructure: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    hydrate_processing_fields(rows)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "reporte.md").write_text(render_markdown(rows, env, quality), encoding="utf-8")
-    (out_dir / "reporte.html").write_text(render_html(rows, env, quality), encoding="utf-8")
-    write_excel(out_dir / "datos_raw.xlsx", rows, quality)
+    (out_dir / "reporte.md").write_text(render_markdown(rows, env, quality, infrastructure), encoding="utf-8")
+    (out_dir / "reporte.html").write_text(render_html(rows, env, quality, infrastructure), encoding="utf-8")
+    write_excel(out_dir / "datos_raw.xlsx", rows, quality, infrastructure)
     shutil.copy2(out_dir / "datos_raw.xlsx", out_dir / "reporte_ejecutivo.xlsx")
-    snapshot = {"schemaVersion": 1, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
-                "rows": rows, "quality": quality}
+    snapshot = {"schemaVersion": 2, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
+                "rows": rows, "quality": quality, "infrastructure": infrastructure or {}}
     snapshot_path = out_dir / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     os.chmod(snapshot_path, 0o600)
@@ -1741,9 +2101,13 @@ def main() -> int:
     if args.snapshot:
         saved = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
         rows, quality = saved.get("rows") or [], saved.get("quality") or quality_snapshot([])
+        infrastructure = saved.get("infrastructure") or empty_infrastructure_snapshot(
+            args.stack or stack_id(saved.get("environment") or args.env), args.region,
+            "El snapshot original no contenía inventario de infraestructura.",
+        )
         env = saved.get("environment") or args.env
         out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / env / datetime.now().strftime("%Y%m%d-%H%M%S")
-        overall = write_report_bundle(out_dir, rows, quality, env)
+        overall = write_report_bundle(out_dir, rows, quality, env, infrastructure)
         print(f"Reporte reproducido desde {args.snapshot}: {overall['n']} documento(s) → {out_dir}/")
         if args.open:
             webbrowser.open((out_dir / "reporte.html").resolve().as_uri())
@@ -1795,11 +2159,22 @@ def main() -> int:
             print(f"{YELLOW}Ningún documento del sistema pedido ({args.sistema}).{RESET}")
             return 0
 
+    try:
+        print(f"Verificando infraestructura y gasto fijo de {stack}...")
+        infrastructure = collect_infrastructure_costs(stack, args.region, environment=args.env)
+    except Exception as e:
+        infrastructure = empty_infrastructure_snapshot(
+            stack, args.region, f"No se pudo inventariar/costear la infraestructura del stack: {e}"
+        )
+        print(f"{YELLOW}{infrastructure['warnings'][0]}{RESET}")
+
     out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / args.env / datetime.now().strftime("%Y%m%d-%H%M%S")
-    overall = write_report_bundle(out_dir, rows, quality, args.env)
+    overall = write_report_bundle(out_dir, rows, quality, args.env, infrastructure)
     print(
         f"\n{CYAN}{overall['n']} documento(s) ({overall['n_with_cost']} con costo) · "
-        f"aprobación {pct(overall['approval_rate'])} · costo total {money(overall['total_cost'])}{RESET}"
+        f"{overall['n_no_ai']} sin IA · aprobación {pct(overall['approval_rate'])} · "
+        f"procesamiento {money(overall['total_cost'])} · fijo mensual "
+        f"{money(infrastructure.get('fixedMonthlyUsd'))}{RESET}"
     )
     print(f"Reporte → {out_dir}/")
     print("  reporte.md        (resumen estático)")

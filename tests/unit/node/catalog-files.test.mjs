@@ -93,9 +93,9 @@ test("stale-row detection ignores disabled and internal DynamoDB entries", () =>
   );
 });
 
-test("the repository ships 17 active catalogs with explicit maturity", () => {
+test("the repository ships 20 active catalogs with explicit maturity", () => {
   const types = discoverCatalogTypes(resolve("catalogs"));
-  assert.equal(types.length, 17);
+  assert.equal(types.length, 20);
   assert.ok(types.every(({ entry }) => ["stable", "beta"].includes(entry.catalog_status)));
 
   const beta = new Map(
@@ -106,10 +106,13 @@ test("the repository ships 17 active catalogs with explicit maturity", () => {
   assert.deepEqual([...beta.keys()].sort(), [
     "ACTA_NACIMIENTO",
     "CEDULA_PROFESIONAL",
+    "CFDI_GASTO_TERCERO_XML",
+    "CFDI_PAGO_DERECHOS_SANITARIOS_XML",
     "COMPROBANTE_DOMICILIO",
     "COMPROBANTE_ESTUDIOS",
     "CONSTANCIA_NSS",
     "CURP",
+    "FACTURA_LOGISTICA_XML",
     "IDENTIFICACION",
     "PASAPORTE",
   ]);

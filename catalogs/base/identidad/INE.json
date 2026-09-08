@@ -101,6 +101,12 @@
         ]
       }
     },
+    "TIENE_FOTOGRAFIA": {
+      "type": "boolean",
+      "required": false,
+      "hint": "True si se observa una fotografía del titular dentro del documento; false si el documento completo es legible y no contiene fotografía; null si la imagen está recortada, incompleta o no permite determinarlo.",
+      "validation": []
+    },
     "cross_field_validation": []
   }
 }

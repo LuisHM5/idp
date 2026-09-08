@@ -1,0 +1,316 @@
+{
+  "CFDI_PAGO_DERECHOS_SANITARIOS_XML": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "occurrence_mode": "single",
+    "display_name": "CFDI de Pago de Derechos Sanitarios (XML)",
+    "aliases": [
+      "GT1 XML",
+      "permiso salud xml",
+      "pago SENASICA xml",
+      "derechos fitosanitarios xml"
+    ],
+    "description": "CFDI 4.0 nativo emitido por SENASICA, COFEPRIS u otra autoridad por el pago de derechos o servicios relacionados con un permiso, certificado sanitario, fitosanitario o zoosanitario de importacion. El XML acredita el cobro; no contiene ni sustituye el permiso o certificado oficial emitido.",
+    "business_destination": "PERMISO_SALUD",
+    "min_confidence": 0.8,
+    "namespaces": {
+      "cfdi": "http://www.sat.gob.mx/cfd/4",
+      "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital"
+    },
+    "fields": {
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Version",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "El comprobante debe corresponder a CFDI version 4.0"
+          }
+        ]
+      },
+      "SERIE": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Serie",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Folio",
+        "validation": []
+      },
+      "UUID": {
+        "type": "string",
+        "required": true,
+        "unique_key": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@UUID",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "El UUID del CFDI tiene un formato invalido"
+          }
+        ]
+      },
+      "FECHA_EMISION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Fecha",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de emision debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "FECHA_TIMBRADO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@FechaTimbrado",
+        "validation": []
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "xpath": "@TipoDeComprobante",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^I$",
+            "message": "El pago de derechos debe ser un CFDI de ingreso"
+          }
+        ]
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@FormaPago",
+        "validation": []
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@MetodoPago",
+        "validation": []
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Moneda",
+        "validation": []
+      },
+      "TIPO_CAMBIO": {
+        "type": "number",
+        "required": false,
+        "xpath": "@TipoCambio",
+        "validation": []
+      },
+      "LUGAR_EXPEDICION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@LugarExpedicion",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El lugar de expedicion debe ser un codigo postal de cinco digitos"
+          }
+        ]
+      },
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del emisor tiene un formato invalido"
+          }
+        ]
+      },
+      "EMISOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Nombre",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "(?i).*(SENASICA|SANIDAD|INOCUIDAD|COFEPRIS|SALUD|GOBIERNO|SECRETAR[IÍ]A).*",
+            "message": "El emisor no parece ser una autoridad sanitaria o recaudadora"
+          }
+        ]
+      },
+      "EMISOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@RegimenFiscal",
+        "validation": []
+      },
+      "RECEPTOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC receptor no corresponde a la empresa configurada"
+          }
+        ]
+      },
+      "RECEPTOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Nombre",
+        "validation": []
+      },
+      "RECEPTOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@RegimenFiscalReceptor",
+        "validation": []
+      },
+      "RECEPTOR_CODIGO_POSTAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@DomicilioFiscalReceptor",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El codigo postal del receptor debe contener cinco digitos"
+          }
+        ]
+      },
+      "USO_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@UsoCFDI",
+        "validation": []
+      },
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": "cfdi:Conceptos/cfdi:Concepto",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "El CFDI debe contener al menos un concepto sanitario"
+          }
+        ],
+        "item_fields": {
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveProdServ",
+            "validation": []
+          },
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "xpath": "@NoIdentificacion",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Cantidad",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveUnidad",
+            "validation": []
+          },
+          "UNIDAD": {
+            "type": "string",
+            "required": false,
+            "xpath": "@Unidad",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "(?i).*(FITOSANITARI|ZOOSANITARI|SANITARI|CERTIFICADO|PERMISO|DERECHO|IMPORTACI[OÓ]N).*",
+                "message": "El concepto no parece corresponder al pago de un derecho sanitario"
+              }
+            ]
+          },
+          "VALOR_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "xpath": "@ValorUnitario",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          },
+          "OBJETO_IMPUESTO": {
+            "type": "string",
+            "required": false,
+            "xpath": "@ObjetoImp",
+            "validation": []
+          }
+        }
+      },
+      "SUBTOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@SubTotal",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El subtotal del CFDI no coincide con la suma de conceptos"
+          }
+        ]
+      },
+      "DESCUENTO_CFDI": {
+        "type": "number",
+        "required": false,
+        "xpath": "@Descuento",
+        "validation": []
+      },
+      "IVA_TRASLADADO": {
+        "type": "number",
+        "required": false,
+        "xpath": "cfdi:Impuestos/@TotalImpuestosTrasladados",
+        "validation": []
+      },
+      "IMPUESTOS_RETENIDOS": {
+        "type": "number",
+        "required": false,
+        "xpath": "cfdi:Impuestos/@TotalImpuestosRetenidos",
+        "validation": []
+      },
+      "TOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@Total",
+        "validation": [
+          {
+            "rule_type": "cfdi_total",
+            "formula": "SUBTOTAL_CFDI - DESCUENTO_CFDI + IVA_TRASLADADO - IMPUESTOS_RETENIDOS",
+            "tolerance": 0.02,
+            "message": "El total del CFDI no coincide con subtotal, descuento e impuestos"
+          }
+        ]
+      }
+    },
+    "cross_field_validation": []
+  }
+}

@@ -1,10 +1,10 @@
 """Tests for the deterministic XML extraction pipeline (pipeline/xml_document.py).
 
-Uses a synthetic CFDI fixture (fake RFCs/UUID/names) rather than a real
-document — real CFDIs carry PII and shouldn't land in the repo (see AGENTS.md:
-"keep any PII out of commits"). The synthetic fixture mirrors the real SAT
-CFDI 4.0 shape closely enough to exercise the same xpath/namespace/predicate
-paths declared in catalogs/base/fiscal/FACTURA_HONORARIOS_XML.json.
+Uses synthetic or sanitized CFDI fixtures (fake RFCs/UUID/names) rather than
+real documents — real CFDIs carry PII and shouldn't land in the repo (see
+AGENTS.md: "keep any PII out of commits"). The fixtures under
+fixtures/xml_cfdi preserve the structure, concepts and accounting amounts of
+the supplied FAA/GT1/GT2/OLI dataset so every catalog mapping is reproducible.
 """
 
 import json
@@ -25,7 +25,7 @@ import document_catalog  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import xml_document  # noqa: E402
 
-CATALOG_FILE = active_catalog_path(REPO_ROOT, "FACTURA_HONORARIOS_XML")
+FIXTURE_DIR = Path(__file__).parent / "fixtures/xml_cfdi"
 
 _SYNTHETIC_CFDI = """<?xml version="1.0" encoding="UTF-8"?>
 <cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
@@ -59,15 +59,289 @@ _SYNTHETIC_CFDI = """<?xml version="1.0" encoding="UTF-8"?>
 </cfdi:Comprobante>"""
 
 
-def _load_entry():
-    raw = json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
-    return _parse_entry("FACTURA_HONORARIOS_XML", raw["FACTURA_HONORARIOS_XML"])
+def _load_entry(type_id="FACTURA_HONORARIOS_XML"):
+    catalog_file = active_catalog_path(REPO_ROOT, type_id)
+    raw = json.loads(catalog_file.read_text(encoding="utf-8"))
+    return _parse_entry(type_id, raw[type_id])
 
 
 def _process(monkeypatch, xml_bytes: bytes, declared_type="FACTURA_HONORARIOS_XML"):
-    entry = _load_entry()
-    monkeypatch.setattr(document_catalog, "_CATALOG_CACHE", {declared_type: entry})
+    cache_type = declared_type or "FACTURA_HONORARIOS_XML"
+    entry = _load_entry(cache_type)
+    monkeypatch.setattr(document_catalog, "_CATALOG_CACHE", {cache_type: entry})
     return xml_document.process_xml(xml_bytes, declared_type=declared_type, source_name="test.xml")
+
+
+def _process_fixture(monkeypatch, fixture_name, type_id):
+    fixture = FIXTURE_DIR / fixture_name
+    return _process(monkeypatch, fixture.read_bytes(), declared_type=type_id)
+
+
+def _assert_approved_mapping(result, type_id, business_destination):
+    doc = result["documents"][0]
+    hard_failures = [c for c in doc["checks"] if not c["valid"] and not c["skipped"]]
+    assert result["status"] == "APPROVED"
+    assert doc["documentType"] == type_id
+    assert doc["businessDestination"] == business_destination
+    assert hard_failures == []
+    return doc["extractedEntities"]
+
+
+def _values(entities, *field_names):
+    return {name: entities[name]["value"] for name in field_names}
+
+
+def _concept_values(entities):
+    return [
+        {name: field["value"] for name, field in item["fields"].items()}
+        for item in entities["CONCEPTOS"]["items"]
+    ]
+
+
+def test_faa_fixture_maps_every_declared_business_field(monkeypatch):
+    entities = _assert_approved_mapping(
+        _process_fixture(monkeypatch, "faa.xml", "FACTURA_HONORARIOS_XML"),
+        "FACTURA_HONORARIOS_XML",
+        "FACTURA_HONORARIOS",
+    )
+
+    assert _values(
+        entities,
+        "VERSION_CFDI", "SERIE", "FOLIO", "UUID", "FECHA_EMISION",
+        "FECHA_TIMBRADO", "CERTIFICADO_EMISOR", "TIPO_COMPROBANTE", "FORMA_PAGO", "METODO_PAGO",
+        "MONEDA", "TIPO_CAMBIO", "LUGAR_EXPEDICION", "EMISOR_RFC",
+        "EMISOR_NOMBRE", "EMISOR_REGIMEN_FISCAL", "RECEPTOR_RFC",
+        "RECEPTOR_NOMBRE", "RECEPTOR_REGIMEN_FISCAL",
+        "RECEPTOR_CODIGO_POSTAL", "USO_CFDI", "SUBTOTAL_CFDI",
+        "IVA_TRASLADADO", "ISR_RETENIDO", "IVA_RETENIDO", "TOTAL_CFDI",
+    ) == {
+        "VERSION_CFDI": "4.0",
+        "SERIE": "A",
+        "FOLIO": "23268",
+        "UUID": "00000000-0000-4000-8000-000000000101",
+        "FECHA_EMISION": "2026-07-10",
+        "FECHA_TIMBRADO": "2026-07-10",
+        "CERTIFICADO_EMISOR": "00000000000000000001",
+        "TIPO_COMPROBANTE": "I",
+        "FORMA_PAGO": "99",
+        "METODO_PAGO": "PPD",
+        "MONEDA": "MXN",
+        "TIPO_CAMBIO": 1.0,
+        "LUGAR_EXPEDICION": "32310",
+        "EMISOR_RFC": "EMIT800101AB1",
+        "EMISOR_NOMBRE": "PERSONA EMISORA DE PRUEBA",
+        "EMISOR_REGIMEN_FISCAL": "612",
+        "RECEPTOR_RFC": "RECE850202CD2",
+        "RECEPTOR_NOMBRE": "RECEPTOR DE PRUEBA",
+        "RECEPTOR_REGIMEN_FISCAL": "623",
+        "RECEPTOR_CODIGO_POSTAL": "31125",
+        "USO_CFDI": "G03",
+        "SUBTOTAL_CFDI": 335.0,
+        "IVA_TRASLADADO": 53.6,
+        "ISR_RETENIDO": 33.5,
+        "IVA_RETENIDO": 35.73,
+        "TOTAL_CFDI": 319.37,
+    }
+    assert _concept_values(entities) == [{
+        "CANTIDAD": 1.0,
+        "CLAVE_UNIDAD": "E48",
+        "CLAVE_PRODUCTO_SERVICIO": "80151605",
+        "DESCRIPCION": "HONORARIOS",
+        "PRECIO_UNITARIO": 335.0,
+        "IMPORTE": 335.0,
+    }]
+
+
+def test_gt1_fixture_maps_every_declared_business_field(monkeypatch):
+    entities = _assert_approved_mapping(
+        _process_fixture(monkeypatch, "gt1.xml", "CFDI_PAGO_DERECHOS_SANITARIOS_XML"),
+        "CFDI_PAGO_DERECHOS_SANITARIOS_XML",
+        "PERMISO_SALUD",
+    )
+
+    assert _values(
+        entities,
+        "VERSION_CFDI", "SERIE", "FOLIO", "UUID", "FECHA_EMISION",
+        "FECHA_TIMBRADO", "TIPO_COMPROBANTE", "FORMA_PAGO", "METODO_PAGO",
+        "MONEDA", "TIPO_CAMBIO", "LUGAR_EXPEDICION", "EMISOR_RFC",
+        "EMISOR_NOMBRE", "EMISOR_REGIMEN_FISCAL", "RECEPTOR_RFC",
+        "RECEPTOR_NOMBRE", "RECEPTOR_REGIMEN_FISCAL",
+        "RECEPTOR_CODIGO_POSTAL", "USO_CFDI", "SUBTOTAL_CFDI",
+        "DESCUENTO_CFDI", "IVA_TRASLADADO", "IMPUESTOS_RETENIDOS", "TOTAL_CFDI",
+    ) == {
+        "VERSION_CFDI": "4.0",
+        "SERIE": "B",
+        "FOLIO": "2458119",
+        "UUID": "00000000-0000-4000-8000-000000000102",
+        "FECHA_EMISION": "2026-07-14",
+        "FECHA_TIMBRADO": "2026-07-14",
+        "TIPO_COMPROBANTE": "I",
+        "FORMA_PAGO": "03",
+        "METODO_PAGO": "PUE",
+        "MONEDA": "MXN",
+        "TIPO_CAMBIO": 1.0,
+        "LUGAR_EXPEDICION": "06100",
+        "EMISOR_RFC": "EMIT800101AB1",
+        "EMISOR_NOMBRE": "AUTORIDAD DE SANIDAD E INOCUIDAD DE PRUEBA",
+        "EMISOR_REGIMEN_FISCAL": "603",
+        "RECEPTOR_RFC": "RECE850202CD2",
+        "RECEPTOR_NOMBRE": "RECEPTOR DE PRUEBA",
+        "RECEPTOR_REGIMEN_FISCAL": "623",
+        "RECEPTOR_CODIGO_POSTAL": "31125",
+        "USO_CFDI": "G03",
+        "SUBTOTAL_CFDI": 3356.0,
+        "DESCUENTO_CFDI": None,
+        "IVA_TRASLADADO": None,
+        "IMPUESTOS_RETENIDOS": None,
+        "TOTAL_CFDI": 3356.0,
+    }
+    assert _concept_values(entities) == [{
+        "CLAVE_PRODUCTO_SERVICIO": "93161700",
+        "NUMERO_IDENTIFICACION": None,
+        "CANTIDAD": 1.0,
+        "CLAVE_UNIDAD": "E48",
+        "UNIDAD": "Servicio",
+        "DESCRIPCION": "ARTÍCULO 86-A FRACC. V. POR CADA CERTIFICADO FITOSANITARIO INTERNACIONAL PARA LA IMPORTACION DE VEGETALES, SUS PRODUCTOS Y SUBPRODUCTOS",
+        "VALOR_UNITARIO": 3355.55,
+        "IMPORTE": 3356.0,
+        "OBJETO_IMPUESTO": "01",
+    }]
+
+
+def test_gt2_fixture_maps_every_declared_business_field(monkeypatch):
+    entities = _assert_approved_mapping(
+        _process_fixture(monkeypatch, "gt2.xml", "CFDI_GASTO_TERCERO_XML"),
+        "CFDI_GASTO_TERCERO_XML",
+        "GASTOS_TERCEROS",
+    )
+
+    assert _values(
+        entities,
+        "VERSION_CFDI", "SERIE", "FOLIO", "UUID", "FECHA_EMISION", "FECHA_TIMBRADO",
+        "TIPO_COMPROBANTE", "FORMA_PAGO", "METODO_PAGO", "MONEDA", "TIPO_CAMBIO",
+        "LUGAR_EXPEDICION", "EMISOR_RFC", "EMISOR_NOMBRE",
+        "EMISOR_REGIMEN_FISCAL", "RECEPTOR_RFC", "RECEPTOR_NOMBRE",
+        "RECEPTOR_REGIMEN_FISCAL", "RECEPTOR_CODIGO_POSTAL", "USO_CFDI",
+        "SUBTOTAL_CFDI", "DESCUENTO_CFDI", "IVA_TRASLADADO",
+        "IMPUESTOS_RETENIDOS", "TOTAL_CFDI",
+    ) == {
+        "VERSION_CFDI": "4.0",
+        "SERIE": "AXCR",
+        "FOLIO": "24528",
+        "UUID": "00000000-0000-4000-8000-000000000103",
+        "FECHA_EMISION": "2026-07-09",
+        "FECHA_TIMBRADO": "2026-07-09",
+        "TIPO_COMPROBANTE": "I",
+        "FORMA_PAGO": "03",
+        "METODO_PAGO": "PUE",
+        "MONEDA": "MXN",
+        "TIPO_CAMBIO": None,
+        "LUGAR_EXPEDICION": "32695",
+        "EMISOR_RFC": "EMIT800101AB1",
+        "EMISOR_NOMBRE": "PROVEEDOR OPERATIVO DE PRUEBA",
+        "EMISOR_REGIMEN_FISCAL": "601",
+        "RECEPTOR_RFC": "RECE850202CD2",
+        "RECEPTOR_NOMBRE": "RECEPTOR DE PRUEBA",
+        "RECEPTOR_REGIMEN_FISCAL": "623",
+        "RECEPTOR_CODIGO_POSTAL": "31125",
+        "USO_CFDI": "G03",
+        "SUBTOTAL_CFDI": 6550.0,
+        "DESCUENTO_CFDI": None,
+        "IVA_TRASLADADO": 1048.0,
+        "IMPUESTOS_RETENIDOS": None,
+        "TOTAL_CFDI": 7598.0,
+    }
+    assert _concept_values(entities) == [
+        {
+            "CLAVE_PRODUCTO_SERVICIO": "83112600",
+            "NUMERO_IDENTIFICACION": "1",
+            "CANTIDAD": 1.0,
+            "CLAVE_UNIDAD": "E48",
+            "UNIDAD": "SERV",
+            "DESCRIPCION": "DERECHO DE ACCESO POR VEHICULO",
+            "VALOR_UNITARIO": 1400.0,
+            "IMPORTE": 1400.0,
+            "OBJETO_IMPUESTO": "02",
+        },
+        {
+            "CLAVE_PRODUCTO_SERVICIO": "78121601",
+            "NUMERO_IDENTIFICACION": "2",
+            "CANTIDAD": 1.0,
+            "CLAVE_UNIDAD": "E48",
+            "UNIDAD": "SERV",
+            "DESCRIPCION": "MANIOBRAS POR VEHICULO",
+            "VALOR_UNITARIO": 3050.0,
+            "IMPORTE": 3050.0,
+            "OBJETO_IMPUESTO": "02",
+        },
+        {
+            "CLAVE_PRODUCTO_SERVICIO": "81141601",
+            "NUMERO_IDENTIFICACION": "23",
+            "CANTIDAD": 1.0,
+            "CLAVE_UNIDAD": "E48",
+            "UNIDAD": "SERV",
+            "DESCRIPCION": "MANIOBRAS DE MUESTREO X CARGA",
+            "VALOR_UNITARIO": 2100.0,
+            "IMPORTE": 2100.0,
+            "OBJETO_IMPUESTO": "02",
+        },
+    ]
+
+
+def test_oli_fixture_maps_every_declared_business_field(monkeypatch):
+    entities = _assert_approved_mapping(
+        _process_fixture(monkeypatch, "oli.xml", "FACTURA_LOGISTICA_XML"),
+        "FACTURA_LOGISTICA_XML",
+        "OPERACIONES_LOGISTICAS_INTERNACIONALES",
+    )
+
+    assert _values(
+        entities,
+        "VERSION_CFDI", "SERIE", "FOLIO", "UUID", "FECHA_EMISION", "FECHA_TIMBRADO",
+        "TIPO_COMPROBANTE", "FORMA_PAGO", "METODO_PAGO", "MONEDA", "TIPO_CAMBIO",
+        "LUGAR_EXPEDICION", "EMISOR_RFC", "EMISOR_NOMBRE",
+        "EMISOR_REGIMEN_FISCAL", "RECEPTOR_RFC", "RECEPTOR_NOMBRE",
+        "RECEPTOR_REGIMEN_FISCAL", "RECEPTOR_CODIGO_POSTAL", "USO_CFDI",
+        "SUBTOTAL_CFDI", "DESCUENTO_CFDI", "IVA_TRASLADADO",
+        "IMPUESTOS_RETENIDOS", "TOTAL_CFDI",
+    ) == {
+        "VERSION_CFDI": "4.0",
+        "SERIE": "A",
+        "FOLIO": "11184",
+        "UUID": "00000000-0000-4000-8000-000000000104",
+        "FECHA_EMISION": "2026-07-10",
+        "FECHA_TIMBRADO": "2026-07-10",
+        "TIPO_COMPROBANTE": "I",
+        "FORMA_PAGO": "99",
+        "METODO_PAGO": "PPD",
+        "MONEDA": "MXN",
+        "TIPO_CAMBIO": None,
+        "LUGAR_EXPEDICION": "32300",
+        "EMISOR_RFC": "EMIT800101AB1",
+        "EMISOR_NOMBRE": "SERVICIOS DE COMERCIO EXTERIOR DE PRUEBA",
+        "EMISOR_REGIMEN_FISCAL": "601",
+        "RECEPTOR_RFC": "RECE850202CD2",
+        "RECEPTOR_NOMBRE": "RECEPTOR DE PRUEBA",
+        "RECEPTOR_REGIMEN_FISCAL": "623",
+        "RECEPTOR_CODIGO_POSTAL": "31125",
+        "USO_CFDI": "G03",
+        "SUBTOTAL_CFDI": 6368.83,
+        "DESCUENTO_CFDI": None,
+        "IVA_TRASLADADO": 1019.01,
+        "IMPUESTOS_RETENIDOS": None,
+        "TOTAL_CFDI": 7387.84,
+    }
+    assert _concept_values(entities) == [{
+        "CLAVE_PRODUCTO_SERVICIO": "81141601",
+        "NUMERO_IDENTIFICACION": "SERV007",
+        "CANTIDAD": 1.0,
+        "CLAVE_UNIDAD": "E48",
+        "UNIDAD": "SERVICIO",
+        "DESCRIPCION": "SERVICIOS POR LOGISTICA",
+        "VALOR_UNITARIO": 6368.83,
+        "IMPORTE": 6368.83,
+        "OBJETO_IMPUESTO": "02",
+    }]
 
 
 def test_extracts_and_validates_a_well_formed_cfdi(monkeypatch):

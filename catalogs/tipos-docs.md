@@ -1,12 +1,31 @@
-Pedimento PEDIMENTO_ADUANAL
-Credencial para Votar / INE INE
-Certificado, carátula o constancia de seguro CERTIFICADO_POLIZA
-Factura de Honorarios / Honorarios de Agencia Aduanal FACTURA_HONORARIOS (PDF/impreso) o FACTURA_HONORARIOS_XML (XML CFDI nativo, mapeo determinístico sin Bedrock — ver catalogs/README.md "Tipos con fuente XML")
-Factura Agencia Aduanal FACTURA_AGENCIA_ADUANAL o CUENTA_GASTOS_AGENTE_ADUANAL
-Honorarios Extranjeros FACTURA_PROVEEDOR_EXTRANJERO, con subtipo de honorarios, o crear FACTURA_HONORARIOS_EXTRANJEROS
-Operaciones Logísticas Internacionales FACTURA_LOGISTICA o DOCUMENTO_TRANSPORTE
-Factura Proveedores Extranjeros FACTURA_PROVEEDOR_EXTRANJERO — no existe como tipo propio; hoy lo cubre FACTURA_FLETE_EXTRANJERO (ver abajo)
-Gastos Terceros CFDI_GASTO_TERCERO
-Factura de Flete Extranjero / Freight Invoice / Pago Flete Americano FACTURA_FLETE_EXTRANJERO — el tipo cubre TODA factura extranjera no-CFDI, no solo flete: mercancía, transporte y servicios (almacenaje, maniobras). Declara `multi_instance`, así que un PDF con varias facturas produce un documento por factura y las copias repetidas colapsan (ver catalogs/README.md). El TYPE_ID conserva el nombre por compatibilidad con `raw/{TYPE}/` y los clientes de la API
-Permiso Salud PERMISO_CERTIFICADO_SANITARIO
-PDF completo con varios anexos EXPEDIENTE_ADUANAL_MULTIDOCUMENTO
+# Nombres de documentos y `TYPE_ID`
+
+Solo los JSON fuera de cualquier carpeta `save/` están activos. Los nombres
+históricos sin sufijo `_XML` que permanezcan en `catalogs/save/` son referencia
+de negocio, no tipos disponibles para procesar de fábrica.
+
+| Documento de negocio | Tipo activo | Nota |
+|---|---|---|
+| Pedimento | `PEDIMENTO_ADUANAL` | Pedimento PDF/imagen. |
+| Credencial para votar / INE | `INE` | Identificación mexicana. |
+| Certificado, carátula o constancia de seguro | `CERTIFICADO_POLIZA` | Documento de póliza o cobertura. |
+| Factura de honorarios / honorarios de agencia aduanal | `FACTURA_HONORARIOS` o `FACTURA_HONORARIOS_XML` | El primero procesa PDF/impreso; el segundo procesa el CFDI XML nativo sin Bedrock. |
+| Honorarios extranjeros | No hay un tipo activo específico | No usar `FACTURA_HONORARIOS_XML`: HE corresponde a un proveedor extranjero y normalmente no es CFDI mexicano. |
+| Operaciones logísticas | `FACTURA_LOGISTICA_XML` | CFDI XML por coordinación o servicios logísticos. No equivale automáticamente a flete. |
+| Gastos de terceros | `CFDI_GASTO_TERCERO_XML` | CFDI XML por acceso, maniobras, muestreo, almacenaje, inspección u otros gastos operativos del despacho. |
+| Pago de derechos sanitarios | `CFDI_PAGO_DERECHOS_SANITARIOS_XML` | CFDI XML que acredita el cobro de un derecho o servicio de SENASICA, COFEPRIS u otra autoridad. No es el permiso/certificado emitido. |
+| Factura de flete extranjero / Freight Invoice / Pago Flete Americano | `FACTURA_FLETE_EXTRANJERO` | Factura extranjera no-CFDI. El tipo cubre mercancía, transporte y servicios extranjeros; conserva el nombre por compatibilidad. |
+| PDF completo con varios anexos | No hay un tipo activo específico | El antiguo `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` está estacionado en `save/`; el pipeline puede procesar varios tipos declarados sin reactivarlo. |
+
+## Correspondencia de los XML de gastos aduanales
+
+| Identificador usado en el expediente | `TYPE_ID` que se debe declarar al subir | A qué se refiere |
+|---|---|---|
+| `FAA` | `FACTURA_HONORARIOS_XML` | Honorarios nacionales de agencia o servicio aduanal emitidos mediante CFDI mexicano. En la muestra, una persona física cobra el concepto `HONORARIOS`; las retenciones de ISR/IVA no lo convierten en honorario extranjero. |
+| `GT1` | `CFDI_PAGO_DERECHOS_SANITARIOS_XML` | Pago por un certificado/permiso sanitario o fitosanitario. En la muestra, SENASICA cobra el derecho por un certificado fitosanitario de importación; el XML es el comprobante fiscal del pago, no el certificado. |
+| `GT2` | `CFDI_GASTO_TERCERO_XML` | Gasto de un proveedor tercero necesario para el despacho. En la muestra: acceso de vehículo, maniobras y muestreo de carga. |
+| `OLI` | `FACTURA_LOGISTICA_XML` | Operación o servicio logístico ligado al comercio exterior. Solo debe tratarse como flete cuando el concepto declare transporte/flete de forma explícita. |
+
+Todos los tipos `_XML` exigen `documentType` explícito en la subida y usan
+extracción determinística por XPath, con costo Bedrock de extracción igual a
+cero. Ver `catalogs/README.md`, sección “Tipos con fuente XML”.

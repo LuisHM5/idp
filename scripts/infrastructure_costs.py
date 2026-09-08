@@ -1,0 +1,311 @@
+"""Inventario y costo de plataforma para ``pnpm reporte``.
+
+El costo por documento de ``cost_audit.py`` sólo puede atribuir Bedrock,
+Textract y una aproximación de la Lambda de enriquecimiento. Este módulo
+mantiene separado lo que no pertenece a una invocación concreta:
+
+* piso mensual, calculado desde los recursos que CloudFormation confirma que
+  están desplegados (WAF y claves KMS administradas por el cliente);
+* gasto MTD etiquetado por ``CostStack``, cuando la cuenta pagadora activó esa
+  clave de asignación en Cost Explorer;
+* recursos sin renta fija (S3, DynamoDB, API Gateway/API keys), que se cobran
+  por consumo y por tanto no deben inventarse como un reparto por documento.
+
+Las tarifas fijas son las públicas de AWS verificadas el 2026-09-08. Cost
+Explorer se usa además como comprobación del cargo fijo prorrateado cuando los
+recursos WAF/KMS del stack son los únicos facturables de su clase en la cuenta.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+
+PRICING_AS_OF = "2026-09-08"
+PRICE_SOURCES = {
+    "waf": "https://aws.amazon.com/waf/pricing/",
+    "kms": "https://aws.amazon.com/kms/pricing/",
+}
+WAF_ACL_MONTHLY_USD = 5.0
+WAF_RULE_MONTHLY_USD = 1.0
+KMS_KEY_MONTHLY_USD = 1.0
+
+
+def _pages(client: Any, operation: str, result_key: str, **kwargs: Any) -> Iterable[Any]:
+    """Yield a boto3 list operation whether or not it exposes a paginator."""
+    try:
+        paginator = client.get_paginator(operation)
+    except Exception:
+        paginator = None
+    if paginator is not None:
+        for response in paginator.paginate(**kwargs):
+            yield from response.get(result_key, [])
+        return
+    response = getattr(client, operation)(**kwargs)
+    yield from response.get(result_key, [])
+
+
+def _stack_resources(cfn: Any, stack_name: str) -> List[Dict[str, Any]]:
+    return list(_pages(cfn, "list_stack_resources", "StackResourceSummaries", StackName=stack_name))
+
+
+def _resources_of(resources: Sequence[Dict[str, Any]], resource_type: str) -> List[Dict[str, Any]]:
+    return [r for r in resources if r.get("ResourceType") == resource_type]
+
+
+def _waf_identity(physical_id: str) -> Optional[Dict[str, str]]:
+    # CloudFormation serializa WebACL como ``name|uuid|REGIONAL``.
+    parts = (physical_id or "").split("|")
+    if len(parts) != 3:
+        return None
+    return {"name": parts[0], "id": parts[1], "scope": parts[2]}
+
+
+def _all_waf_arns(waf: Any, cloudfront_waf: Any) -> set[str]:
+    arns = {
+        item.get("ARN", "")
+        for item in _pages(waf, "list_web_acls", "WebACLs", Scope="REGIONAL")
+        if item.get("ARN")
+    }
+    arns.update(
+        item.get("ARN", "")
+        for item in _pages(cloudfront_waf, "list_web_acls", "WebACLs", Scope="CLOUDFRONT")
+        if item.get("ARN")
+    )
+    return arns
+
+
+def _enabled_customer_keys(kms: Any) -> set[str]:
+    keys: set[str] = set()
+    for item in _pages(kms, "list_keys", "Keys"):
+        key_id = item.get("KeyId")
+        if not key_id:
+            continue
+        try:
+            meta = kms.describe_key(KeyId=key_id).get("KeyMetadata") or {}
+        except Exception:
+            continue
+        if meta.get("KeyManager") == "CUSTOMER" and meta.get("KeyState") == "Enabled":
+            keys.add(meta.get("KeyId") or key_id)
+    return keys
+
+
+def _ce_usage_rows(ce: Any, start: str, end: str) -> tuple[List[Dict[str, Any]], bool]:
+    response = ce.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost", "UsageQuantity"],
+        Filter={"Dimensions": {"Key": "SERVICE", "Values": ["AWS WAF", "AWS Key Management Service"]}},
+        GroupBy=[{"Type": "DIMENSION", "Key": "USAGE_TYPE"}],
+    )
+    rows: List[Dict[str, Any]] = []
+    estimated = False
+    for period in response.get("ResultsByTime", []):
+        estimated = estimated or bool(period.get("Estimated"))
+        for group in period.get("Groups", []):
+            metrics = group.get("Metrics") or {}
+            rows.append({
+                "usageType": (group.get("Keys") or [""])[0],
+                "cost": float((metrics.get("UnblendedCost") or {}).get("Amount") or 0),
+                "quantity": float((metrics.get("UsageQuantity") or {}).get("Amount") or 0),
+                "unit": (metrics.get("UsageQuantity") or {}).get("Unit") or "",
+            })
+    return rows, estimated
+
+
+def _tagged_cost(ce: Any, stack_name: str, start: str, end: str) -> Dict[str, Any]:
+    response = ce.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost"],
+        Filter={"Tags": {"Key": "CostStack", "Values": [stack_name], "MatchOptions": ["EQUALS"]}},
+        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+    )
+    services: List[Dict[str, Any]] = []
+    estimated = False
+    for period in response.get("ResultsByTime", []):
+        estimated = estimated or bool(period.get("Estimated"))
+        for group in period.get("Groups", []):
+            cost = float((((group.get("Metrics") or {}).get("UnblendedCost") or {}).get("Amount")) or 0)
+            if cost:
+                services.append({"service": (group.get("Keys") or [""])[0], "cost": cost})
+    services.sort(key=lambda row: row["cost"], reverse=True)
+    return {"available": bool(services), "totalUsd": sum(row["cost"] for row in services),
+            "services": services, "estimated": estimated}
+
+
+def _count(resources: Sequence[Dict[str, Any]], resource_type: str) -> int:
+    return len(_resources_of(resources, resource_type))
+
+
+def empty_infrastructure_snapshot(stack_name: str, region: str, message: str) -> Dict[str, Any]:
+    return {
+        "stack": stack_name,
+        "region": region,
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "pricingAsOf": PRICING_AS_OF,
+        "priceSources": PRICE_SOURCES,
+        "fixedMonthlyUsd": None,
+        "fixedMtdActualUsd": None,
+        "fixedItems": [],
+        "usageOnlyItems": [],
+        "taggedMtd": {"available": False, "totalUsd": None, "services": [], "estimated": False},
+        "warnings": [message],
+    }
+
+
+def collect_infrastructure_costs(
+    stack_name: str,
+    region: str,
+    *,
+    environment: str,
+    now: Optional[date] = None,
+    clients: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return a JSON-serializable, stack-scoped infrastructure snapshot.
+
+    Failing Cost Explorer never prevents the inventory/fixed estimate from
+    being returned. Failing CloudFormation does: without its physical resource
+    IDs there is no honest scope boundary.
+    """
+    if clients is None:
+        import boto3
+
+        clients = {
+            "cfn": boto3.client("cloudformation", region_name=region),
+            "waf": boto3.client("wafv2", region_name=region),
+            # CLOUDFRONT-scope WAF is always managed through us-east-1.
+            "cloudfront_waf": boto3.client("wafv2", region_name="us-east-1"),
+            "kms": boto3.client("kms", region_name=region),
+            "ce": boto3.client("ce", region_name="us-east-1"),
+        }
+
+    captured = datetime.now(timezone.utc)
+    today = now or captured.date()
+    start = today.replace(day=1).isoformat()
+    end = (today + timedelta(days=1)).isoformat()  # Cost Explorer end is exclusive.
+    warnings: List[str] = []
+    resources = _stack_resources(clients["cfn"], stack_name)
+
+    fixed_items: List[Dict[str, Any]] = []
+    stack_waf_arns: set[str] = set()
+    waf_rules = 0
+    for resource in _resources_of(resources, "AWS::WAFv2::WebACL"):
+        identity = _waf_identity(resource.get("PhysicalResourceId") or "")
+        if not identity:
+            warnings.append(f"No se pudo interpretar el Web ACL {resource.get('PhysicalResourceId', '')}.")
+            continue
+        response = clients["waf"].get_web_acl(Name=identity["name"], Id=identity["id"], Scope=identity["scope"])
+        acl = response.get("WebACL") or {}
+        if acl.get("ARN"):
+            stack_waf_arns.add(acl["ARN"])
+        waf_rules += len(acl.get("Rules") or [])
+
+    if stack_waf_arns:
+        fixed_items.append({
+            "service": "AWS WAF", "component": "Web ACL", "quantity": len(stack_waf_arns),
+            "unitMonthlyUsd": WAF_ACL_MONTHLY_USD,
+            "monthlyUsd": len(stack_waf_arns) * WAF_ACL_MONTHLY_USD,
+            "source": PRICE_SOURCES["waf"],
+        })
+    if waf_rules:
+        fixed_items.append({
+            "service": "AWS WAF", "component": "Reglas / managed rule groups", "quantity": waf_rules,
+            "unitMonthlyUsd": WAF_RULE_MONTHLY_USD,
+            "monthlyUsd": waf_rules * WAF_RULE_MONTHLY_USD,
+            "source": PRICE_SOURCES["waf"],
+        })
+
+    stack_key_ids: set[str] = set()
+    for resource in _resources_of(resources, "AWS::KMS::Key"):
+        key_id = resource.get("PhysicalResourceId")
+        if not key_id:
+            continue
+        meta = (clients["kms"].describe_key(KeyId=key_id).get("KeyMetadata") or {})
+        if meta.get("KeyManager") == "CUSTOMER" and meta.get("KeyState") == "Enabled":
+            stack_key_ids.add(meta.get("KeyId") or key_id)
+    if stack_key_ids:
+        fixed_items.append({
+            "service": "AWS KMS", "component": "Clave administrada por el cliente", "quantity": len(stack_key_ids),
+            "unitMonthlyUsd": KMS_KEY_MONTHLY_USD,
+            "monthlyUsd": len(stack_key_ids) * KMS_KEY_MONTHLY_USD,
+            "source": PRICE_SOURCES["kms"],
+        })
+
+    usage_only = [
+        {"service": "Amazon S3", "resources": _count(resources, "AWS::S3::Bucket"),
+         "fixedMonthlyUsd": 0.0, "billing": "almacenamiento, requests y transferencia"},
+        {"service": "Amazon DynamoDB", "resources": _count(resources, "AWS::DynamoDB::Table"),
+         "fixedMonthlyUsd": 0.0, "billing": "PAY_PER_REQUEST + almacenamiento"},
+        {"service": "Amazon API Gateway", "resources": _count(resources, "AWS::ApiGateway::RestApi"),
+         "fixedMonthlyUsd": 0.0, "billing": "requests; API keys y usage plans no tienen renta"},
+        {"service": "AWS Lambda", "resources": _count(resources, "AWS::Lambda::Function"),
+         "fixedMonthlyUsd": 0.0, "billing": "invocaciones y GB-segundo"},
+        {"service": "AWS Step Functions", "resources": _count(resources, "AWS::StepFunctions::StateMachine"),
+         "fixedMonthlyUsd": 0.0, "billing": "transiciones de estado"},
+        {"service": "Amazon SQS", "resources": _count(resources, "AWS::SQS::Queue"),
+         "fixedMonthlyUsd": 0.0, "billing": "requests"},
+    ]
+
+    tagged = {"available": False, "totalUsd": None, "services": [], "estimated": False}
+    try:
+        tagged = _tagged_cost(clients["ce"], stack_name, start, end)
+        if not tagged["available"]:
+            warnings.append(
+                "Cost Explorer no devolvió cargos para CostStack; la clave puede no estar activa en la cuenta pagadora. "
+                "No se presenta $0 como si fuera gasto variable medido."
+            )
+    except Exception as exc:
+        warnings.append(f"No se pudo leer el gasto etiquetado de Cost Explorer: {exc}")
+
+    # Cost Explorer no ofrece RESOURCE_ID sin el opt-in del payer. Sólo usamos
+    # sus cargos de WAF/KMS cuando el inventario demuestra que todos los
+    # recursos facturables activos de esa clase pertenecen a este stack.
+    fixed_mtd_actual: Optional[float] = None
+    actual_scope: List[str] = []
+    try:
+        usage_rows, ce_estimated = _ce_usage_rows(clients["ce"], start, end)
+        actual = 0.0
+        has_actual = False
+        all_wafs = _all_waf_arns(clients["waf"], clients["cloudfront_waf"])
+        if stack_waf_arns and all_wafs == stack_waf_arns:
+            actual += sum(
+                row["cost"] for row in usage_rows
+                if row["usageType"].endswith("RuleV2") or row["usageType"].endswith("WebACLV2")
+            )
+            has_actual = True
+            actual_scope.append("WAF exclusivo de la cuenta")
+        elif stack_waf_arns:
+            warnings.append("Hay Web ACLs ajenos al stack; el MTD de WAF de la cuenta no se atribuyó.")
+
+        all_customer_keys = _enabled_customer_keys(clients["kms"])
+        if stack_key_ids and all_customer_keys == stack_key_ids:
+            actual += sum(row["cost"] for row in usage_rows if row["usageType"].endswith("KMS-Keys"))
+            has_actual = True
+            actual_scope.append("CMK activa exclusiva de la cuenta/región")
+        elif stack_key_ids:
+            warnings.append("Hay CMK activas ajenas al stack; el MTD de almacenamiento KMS no se atribuyó.")
+        fixed_mtd_actual = round(actual, 12) if has_actual else None
+    except Exception as exc:
+        ce_estimated = False
+        warnings.append(f"No se pudo comprobar el fijo prorrateado en Cost Explorer: {exc}")
+
+    return {
+        "stack": stack_name,
+        "environment": environment,
+        "region": region,
+        "capturedAt": captured.isoformat(),
+        "monthToDate": {"start": start, "endExclusive": end},
+        "pricingAsOf": PRICING_AS_OF,
+        "priceSources": PRICE_SOURCES,
+        "fixedMonthlyUsd": sum(item["monthlyUsd"] for item in fixed_items),
+        "fixedMtdActualUsd": fixed_mtd_actual,
+        "fixedMtdEstimated": ce_estimated,
+        "fixedActualScope": actual_scope,
+        "fixedItems": fixed_items,
+        "usageOnlyItems": usage_only,
+        "taggedMtd": tagged,
+        "resourceCount": len(resources),
+        "warnings": warnings,
+    }

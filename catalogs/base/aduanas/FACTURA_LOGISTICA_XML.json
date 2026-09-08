@@ -1,0 +1,310 @@
+{
+  "FACTURA_LOGISTICA_XML": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "occurrence_mode": "single",
+    "display_name": "Factura de Servicios Logisticos (XML CFDI)",
+    "aliases": [
+      "OLI XML",
+      "operaciones logisticas xml",
+      "cfdi logistica xml",
+      "servicios de comercio exterior xml"
+    ],
+    "description": "CFDI 4.0 nativo por coordinacion u otros servicios logisticos asociados a una operacion de comercio exterior. Corresponde a la familia interna OLI. No se clasifica automaticamente como flete: transporte, freight, trucking o traslado deben estar declarados expresamente en los conceptos para que el gasto represente un flete.",
+    "business_destination": "OPERACIONES_LOGISTICAS_INTERNACIONALES",
+    "min_confidence": 0.8,
+    "namespaces": {
+      "cfdi": "http://www.sat.gob.mx/cfd/4",
+      "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital"
+    },
+    "fields": {
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Version",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "El comprobante debe corresponder a CFDI version 4.0"
+          }
+        ]
+      },
+      "SERIE": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Serie",
+        "validation": []
+      },
+      "FOLIO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Folio",
+        "validation": []
+      },
+      "UUID": {
+        "type": "string",
+        "required": true,
+        "unique_key": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@UUID",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "El UUID del CFDI tiene un formato invalido"
+          }
+        ]
+      },
+      "FECHA_EMISION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Fecha",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "message": "La fecha de emision debe usar el formato YYYY-MM-DDTHH:MM:SS"
+          }
+        ]
+      },
+      "FECHA_TIMBRADO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@FechaTimbrado",
+        "validation": []
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "xpath": "@TipoDeComprobante",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^I$",
+            "message": "La factura logistica debe ser un CFDI de ingreso"
+          }
+        ]
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@FormaPago",
+        "validation": []
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@MetodoPago",
+        "validation": []
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Moneda",
+        "validation": []
+      },
+      "TIPO_CAMBIO": {
+        "type": "number",
+        "required": false,
+        "xpath": "@TipoCambio",
+        "validation": []
+      },
+      "LUGAR_EXPEDICION": {
+        "type": "string",
+        "required": true,
+        "xpath": "@LugarExpedicion",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El lugar de expedicion debe ser un codigo postal de cinco digitos"
+          }
+        ]
+      },
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del emisor tiene un formato invalido"
+          }
+        ]
+      },
+      "EMISOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Nombre",
+        "validation": []
+      },
+      "EMISOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@RegimenFiscal",
+        "validation": []
+      },
+      "RECEPTOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC receptor no corresponde a la empresa configurada"
+          }
+        ]
+      },
+      "RECEPTOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Nombre",
+        "validation": []
+      },
+      "RECEPTOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@RegimenFiscalReceptor",
+        "validation": []
+      },
+      "RECEPTOR_CODIGO_POSTAL": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@DomicilioFiscalReceptor",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El codigo postal del receptor debe contener cinco digitos"
+          }
+        ]
+      },
+      "USO_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@UsoCFDI",
+        "validation": []
+      },
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": "cfdi:Conceptos/cfdi:Concepto",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "El CFDI debe contener al menos un servicio logistico"
+          }
+        ],
+        "item_fields": {
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveProdServ",
+            "validation": []
+          },
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "xpath": "@NoIdentificacion",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Cantidad",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveUnidad",
+            "validation": []
+          },
+          "UNIDAD": {
+            "type": "string",
+            "required": false,
+            "xpath": "@Unidad",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "(?i).*(LOG[IÍ]STIC|COMERCIO EXTERIOR|COORDINACI[OÓ]N|OPERACI[OÓ]N LOG[IÍ]STICA).*",
+                "message": "El concepto no parece corresponder a un servicio logistico"
+              }
+            ]
+          },
+          "VALOR_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "xpath": "@ValorUnitario",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          },
+          "OBJETO_IMPUESTO": {
+            "type": "string",
+            "required": false,
+            "xpath": "@ObjetoImp",
+            "validation": []
+          }
+        }
+      },
+      "SUBTOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@SubTotal",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El subtotal del CFDI no coincide con la suma de conceptos"
+          }
+        ]
+      },
+      "DESCUENTO_CFDI": {
+        "type": "number",
+        "required": false,
+        "xpath": "@Descuento",
+        "validation": []
+      },
+      "IVA_TRASLADADO": {
+        "type": "number",
+        "required": false,
+        "xpath": "cfdi:Impuestos/@TotalImpuestosTrasladados",
+        "validation": []
+      },
+      "IMPUESTOS_RETENIDOS": {
+        "type": "number",
+        "required": false,
+        "xpath": "cfdi:Impuestos/@TotalImpuestosRetenidos",
+        "validation": []
+      },
+      "TOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@Total",
+        "validation": [
+          {
+            "rule_type": "cfdi_total",
+            "formula": "SUBTOTAL_CFDI - DESCUENTO_CFDI + IVA_TRASLADADO - IMPUESTOS_RETENIDOS",
+            "tolerance": 0.02,
+            "message": "El total del CFDI no coincide con subtotal, descuento e impuestos"
+          }
+        ]
+      }
+    },
+    "cross_field_validation": []
+  }
+}

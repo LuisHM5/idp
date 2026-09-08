@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+    Version="4.0" Serie="A" Folio="23268" Fecha="2026-07-10T10:18:44"
+    FormaPago="99" NoCertificado="00000000000000000001"
+    SubTotal="335.00" Moneda="MXN" TipoCambio="1" Total="319.37"
+    TipoDeComprobante="I" Exportacion="01" MetodoPago="PPD" LugarExpedicion="32310">
+  <cfdi:Emisor Rfc="EMIT800101AB1" Nombre="PERSONA EMISORA DE PRUEBA" RegimenFiscal="612"/>
+  <cfdi:Receptor Rfc="RECE850202CD2" Nombre="RECEPTOR DE PRUEBA"
+      DomicilioFiscalReceptor="31125" RegimenFiscalReceptor="623" UsoCFDI="G03"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="80151605" Cantidad="1.00" ClaveUnidad="E48"
+        Unidad="SERVICIO" Descripcion="HONORARIOS" ValorUnitario="335.0000"
+        Importe="335.00" ObjetoImp="02"/>
+  </cfdi:Conceptos>
+  <cfdi:Impuestos TotalImpuestosRetenidos="69.23" TotalImpuestosTrasladados="53.60">
+    <cfdi:Retenciones>
+      <cfdi:Retencion Impuesto="002" Importe="35.73"/>
+      <cfdi:Retencion Impuesto="001" Importe="33.50"/>
+    </cfdi:Retenciones>
+    <cfdi:Traslados>
+      <cfdi:Traslado Base="335.00" Impuesto="002" TipoFactor="Tasa"
+          TasaOCuota="0.160000" Importe="53.60"/>
+    </cfdi:Traslados>
+  </cfdi:Impuestos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+        Version="1.1" UUID="00000000-0000-4000-8000-000000000101"
+        FechaTimbrado="2026-07-10T10:19:09"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>
