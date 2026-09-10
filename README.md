@@ -93,7 +93,7 @@ pnpm procesar -- mi_doc.pdf           # procesa localmente sin pasar por el stac
 pnpm enviar mi_doc.pdf PEDIMENTO_ERP          # sube al stack desplegado
 pnpm enviar facturas.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
 pnpm resultado -- --id <documentId>   # trae y formatea el resultado
-pnpm reporte -- --env dev             # HTML + Excel ejecutivo, operación/calidad/costos/histórico
+pnpm reporte                          # dev + prod juntos (filtro "Ambiente" en el HTML); -- --env dev|prod para uno solo
 pnpm test:unit                        # tests offline del motor de reglas ($0)
 pnpm test:quality                     # suite gratuita + JUnit + cobertura + histórico
 pnpm test:real -- --env dev           # todo el ground truth por el stack E2E real (con costo)

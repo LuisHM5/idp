@@ -30,9 +30,12 @@ contra las mediciones reales de `documentacion/COSTOS.md` (ver
 `COST_REFERENCE` abajo) — $/documento y $/página contra lo medido y contra
 el presupuesto acordado.
 
-Por default lee **dev**. Usa `--env prod` para el ambiente productivo.
+Sin `--env` lee **dev y prod** en un solo reporte: cada documento lleva su
+`environment`, el HTML agrega un filtro "Ambiente" (chips dev/prod) y la
+sección de infraestructura suma los dos stacks o muestra solo el ambiente
+elegido en el filtro. `--env dev|prod` acota a un ambiente (igual que antes).
 
-Salida en `reportes/<env>/<timestamp>/`:
+Salida en `reportes/<env>/<timestamp>/` (`reportes/dev-prod/` sin `--env`):
     reporte.md          resumen estático en texto/tablas
     reporte.html          dashboard interactivo (ábrelo en el navegador)
     datos_raw.xlsx         una fila por documento (costo + calidad) + hojas agregadas
@@ -40,8 +43,9 @@ Salida en `reportes/<env>/<timestamp>/`:
     snapshot.json          corte reproducible de datos normalizados
 
 Uso:
-    pnpm reporte                              # dev, año calendario actual completo
-    pnpm reporte -- --env prod
+    pnpm reporte                              # dev + prod, año calendario actual completo
+    pnpm reporte -- --env prod                # solo prod
+    pnpm reporte -- --env dev                 # solo dev
     pnpm reporte -- --year 2025
     pnpm reporte -- --desde 2026-08-01 --hasta 2026-08-17
     pnpm reporte -- --sistema CEDIS
@@ -85,6 +89,13 @@ from infrastructure_costs import (  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_ROOT = REPO / "reportes"
+ENVIRONMENTS = ("dev", "prod")  # orden en el que se leen y se muestran
+# Las proyecciones de gasto (piso de referencia, cierre estimado, proyección
+# del periodo y la proyección mensual contra presupuesto) se calculan con UN
+# solo ambiente: prod cuando está cargado. Dev es tráfico de pruebas pequeño y
+# proyectar sobre dev + prod inflaría o distorsionaría el número. Lo real
+# (facturado, procesado) sí se suma, porque es dinero que ya se gastó.
+PROJECTION_ENV = "prod"
 
 
 def resolve_report_period(year: int, desde: Optional[str], hasta: Optional[str]) -> tuple[date, date]:
@@ -232,7 +243,9 @@ def processing_mode_label(uses_ai: Optional[bool], *, expected_no_ai: bool = Fal
     return "Sin datos"
 
 
-def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def join_rows(
+    cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]], environment: str = "",
+) -> List[Dict[str, Any]]:
     """Full outer join por DocumentId — un documento puede tener costo sin
     tracking indexado (raro) o tracking sin costo (tabla de costos vacía o
     escritura best-effort que falló); ambos casos se marcan explícitos
@@ -256,6 +269,7 @@ def join_rows(cost_rows: List[Dict[str, Any]], doc_rows: List[Dict[str, Any]]) -
         total_cost = (c or {}).get("total_cost")
         unified.append({
             "id": doc_id,
+            "environment": environment,
             "type": base["document_type"],
             "typeName": base["document_type_name"],
             "name": (d or {}).get("document_name") or (c or {}).get("source_file") or "",
@@ -379,6 +393,136 @@ def app_of(row: Dict[str, Any]) -> str:
     entraron sin API key en dev) no lo traen; se agrupan explícitos en vez de
     desaparecer del corte."""
     return row["appOrigin"] or "(sin sistema)"
+
+
+def env_of(row: Dict[str, Any]) -> str:
+    return row.get("environment") or "(sin ambiente)"
+
+
+def environment_label(envs: List[str]) -> str:
+    """Etiqueta humana del corte: `dev`, `prod` o `dev + prod`."""
+    return " + ".join(envs)
+
+
+def environment_slug(envs: List[str]) -> str:
+    """Carpeta de salida: `dev`, `prod` o `dev-prod`."""
+    return "-".join(envs)
+
+
+def projection_environment(envs: List[str]) -> Optional[str]:
+    """Ambiente que sirve de base a las proyecciones: prod si está, si no el
+    único cargado; `None` sin ambientes."""
+    if not envs:
+        return None
+    return PROJECTION_ENV if PROJECTION_ENV in envs else envs[0]
+
+
+def merge_infrastructure_snapshots(by_env: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Suma los inventarios de varios stacks en una sola foto de infraestructura
+    (mismos campos que `collect_infrastructure_costs`). Con un solo ambiente
+    devuelve ese snapshot tal cual. Los renglones de detalle se prefijan con
+    `[env]` para no perder de qué stack vienen; los montos `None` (no
+    atribuibles) no se convierten en cero: un total es `None` solo cuando
+    ningún ambiente lo tiene, y el histórico mensual marca `None` el mes en el
+    que cualquier ambiente no pudo demostrar su real. Las proyecciones NO se
+    suman: vienen del ambiente de `projection_environment()` (prod) — ver
+    `PROJECTION_ENV`. El JS del dashboard replica esta misma lógica
+    (`mergeInfra`) para reaccionar al filtro."""
+    if not by_env:
+        return {}
+    if len(by_env) == 1:
+        return next(iter(by_env.values()))
+    snaps = [(env, snap or {}) for env, snap in by_env.items()]
+    proj_env = projection_environment([env for env, _ in snaps])
+    proj_snap = dict(by_env.get(proj_env) or {})
+    proj_history = proj_snap.get("fixedMonthlyHistory") or {}
+    proj_rows = {item["month"]: item for item in proj_history.get("rows") or []}
+
+    def total(key: str) -> Optional[float]:
+        values = [s.get(key) for _, s in snaps if s.get(key) is not None]
+        return round(sum(values), 12) if values else None
+
+    def tagged(env: str, items: Any) -> List[Dict[str, Any]]:
+        return [{**item, "service": f"[{env}] {item.get('service', '')}"} for item in (items or [])]
+
+    months: Dict[str, Dict[str, Any]] = {}
+    for env, s in snaps:
+        for item in (s.get("fixedMonthlyHistory") or {}).get("rows") or []:
+            m = months.setdefault(item["month"], {
+                "month": item["month"], "status": item.get("status"), "actualUsd": 0.0,
+                "estimatedFullMonthUsd": 0.0, "projectedUsd": 0.0, "_missing": False,
+            })
+            if item.get("actualUsd") is None:
+                m["_missing"] = True
+            else:
+                m["actualUsd"] += item["actualUsd"]
+    history_rows = []
+    for month in sorted(months):
+        m = months[month]
+        missing = m.pop("_missing")
+        m["actualUsd"] = None if missing else round(m["actualUsd"], 12)
+        # Proyección solo del ambiente base; un mes que prod no cubre queda en None.
+        proj_row = proj_rows.get(month) or {}
+        m["estimatedFullMonthUsd"] = proj_row.get("estimatedFullMonthUsd")
+        m["projectedUsd"] = proj_row.get("projectedUsd")
+        history_rows.append(m)
+    histories = [s.get("fixedMonthlyHistory") or {} for _, s in snaps]
+    all_available = all(h.get("available") for h in histories)
+    actuals = [r["actualUsd"] for r in history_rows if r["actualUsd"] is not None]
+    fixed_history = {
+        "start": next((h.get("start") for h in histories if h.get("start")), None),
+        "end": next((h.get("end") for h in histories if h.get("end")), None),
+        "available": all_available,
+        "estimated": any(h.get("estimated") for h in histories),
+        "actualToDateUsd": round(sum(actuals), 12) if all_available and history_rows else None,
+        "projectedPeriodUsd": proj_history.get("projectedPeriodUsd"),
+        "currentRunRateMonthlyUsd": proj_history.get("currentRunRateMonthlyUsd"),
+        "rows": history_rows,
+        "scope": " · ".join(f"{env}: {h.get('scope') or '—'}" for (env, _), h in zip(snaps, histories))
+                 + f" · proyección basada solo en {proj_env}",
+    }
+
+    taggeds = [(env, s.get("taggedMtd") or {}) for env, s in snaps]
+    manuals = [(env, s.get("manualMtd") or {}) for env, s in snaps]
+    tagged_totals = [t.get("totalUsd") for _, t in taggeds if t.get("available") and t.get("totalUsd") is not None]
+    manual_totals = [m.get("totalScopedUsd") for _, m in manuals if m.get("totalScopedUsd") is not None]
+    first = snaps[0][1]
+    return {
+        "stack": " + ".join(str(s.get("stack") or "—") for _, s in snaps),
+        "environment": environment_label([env for env, _ in snaps]),
+        "environments": [env for env, _ in snaps],
+        "region": " + ".join(sorted({str(s.get("region")) for _, s in snaps if s.get("region")})),
+        "capturedAt": max((str(s.get("capturedAt") or "") for _, s in snaps), default=""),
+        "pricingAsOf": first.get("pricingAsOf"),
+        "priceSources": first.get("priceSources"),
+        "reportPeriod": next((s.get("reportPeriod") for _, s in snaps if s.get("reportPeriod")), None),
+        "fixedMonthlyUsd": total("fixedMonthlyUsd"),
+        "projectionEnvironment": proj_env,
+        "projectionFixedMonthlyUsd": proj_snap.get("fixedMonthlyUsd"),
+        "fixedMtdActualUsd": total("fixedMtdActualUsd"),
+        "fixedMtdEstimated": any(s.get("fixedMtdEstimated") for _, s in snaps),
+        "fixedItems": [item for env, s in snaps for item in tagged(env, s.get("fixedItems"))],
+        "fixedMonthlyHistory": fixed_history,
+        "usageOnlyItems": [item for env, s in snaps for item in tagged(env, s.get("usageOnlyItems"))],
+        "taggedMtd": {
+            "available": any(t.get("available") for _, t in taggeds),
+            "totalUsd": round(sum(tagged_totals), 12) if tagged_totals else None,
+            "services": [item for env, t in taggeds for item in tagged(env, t.get("services"))],
+            "estimated": any(t.get("estimated") for _, t in taggeds),
+        },
+        "manualMtd": {
+            "available": any(m.get("available") for _, m in manuals),
+            "totalScopedUsd": round(sum(manual_totals), 12) if manual_totals else None,
+            "services": [item for env, m in manuals for item in tagged(env, m.get("services"))],
+            "estimated": any(m.get("estimated") for _, m in manuals),
+            "note": next((m.get("note") for _, m in manuals if m.get("note")), None),
+        },
+        "environmentExplanation": " · ".join(
+            f"{env}: {s.get('environmentExplanation') or '—'}" for env, s in snaps
+        ),
+        "resourceCount": sum(s.get("resourceCount") or 0 for _, s in snaps),
+        "warnings": [f"[{env}] {w}" for env, s in snaps for w in (s.get("warnings") or [])],
+    }
 
 
 def overall_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -656,6 +800,16 @@ def render_markdown(
             f"{secs(m['avg_seconds'])} | {money(m['total_cost'])} | {money(m['ai_cost'])} | {money(m['avg_cost_doc'])} |"
         )
 
+    by_env = snapshot_by(rows, env_of)
+    if len(by_env) > 1:
+        lines += ["", "## Por ambiente", "",
+                  "Stack del que viene cada documento (dev o prod). En el HTML el filtro \"Ambiente\" hace este mismo corte.",
+                  "",
+                  "| Ambiente | Docs | Aprobación | Confianza | Tiempo prom. | p95 | Costo total | $/doc |",
+                  "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for env_name, m in sorted(by_env.items()):
+            lines.append(f"| {env_name} | {m['n']} | {pct(m['approval_rate'])} | {pct(m['avg_confidence'])} | {secs(m['avg_seconds'])} | {secs(m['p95_seconds'])} | {money(m['total_cost'])} | {money(m['avg_cost_doc'])} |")
+
     lines += ["", "## Por sistema", "",
               "Sistema/app que subió el documento (`AppOrigin`, resuelto de la API key del request).",
               "",
@@ -681,15 +835,19 @@ def render_markdown(
     ]
     for ref in COST_REFERENCE["perPage"]:
         lines.append(f"| {ref['label']} ({COST_REFERENCE['doc']} {ref['source']}) | {money5(ref['value'])} |")
-    projected_processing = (cost_page_now * COST_REFERENCE["volume"]["pagesPerMonth"]) if cost_page_now is not None else None
-    fixed_monthly = (infrastructure or {}).get("fixedMonthlyUsd")
+    proj_env = (infrastructure or {}).get("projectionEnvironment")
+    proj_overall = overall_snapshot([r for r in rows if env_of(r) == proj_env]) if proj_env else overall
+    proj_cost_page = (proj_overall["total_cost"] / proj_overall["total_pages"]) if proj_overall["total_pages"] else None
+    projected_processing = (proj_cost_page * COST_REFERENCE["volume"]["pagesPerMonth"]) if proj_cost_page is not None else None
+    fixed_monthly = (infrastructure or {}).get("projectionFixedMonthlyUsd") if proj_env else (infrastructure or {}).get("fixedMonthlyUsd")
     projected = (projected_processing + (fixed_monthly or 0)) if projected_processing is not None else None
     lines += [
         "",
         f"Costo por documento de este corte: {money(overall['avg_cost_doc'])} "
         f"(referencia {money(COST_REFERENCE['perDoc']['value'])} — {COST_REFERENCE['perDoc']['label']}).",
         "",
-        f"A {COST_REFERENCE['volume']['pagesPerMonth']:,} páginas/mes el corte actual proyecta "
+        f"A {COST_REFERENCE['volume']['pagesPerMonth']:,} páginas/mes "
+        + (f"**solo {proj_env}** ({proj_overall['n_with_cost']} doc(s) con costo; dev es tráfico de pruebas) proyecta " if proj_env else "el corte actual proyecta ")
         + (f"**${projected:,.2f}/mes**" if projected is not None else "—")
         + (f" (procesamiento ${projected_processing:,.2f} + fijo {money(fixed_monthly)})" if projected_processing is not None else "")
         + f" contra el presupuesto acordado de ${COST_REFERENCE['volume']['budgetPerMonth']:,.2f}/mes "
@@ -856,7 +1014,7 @@ def write_excel(
     ws_docs = wb.create_sheet("Documentos")
     ws_docs.title = "Documentos"
     headers = [
-        "DocumentId", "DocumentType", "DocumentTypeName", "DocumentName", "AppOrigin", "ProcessedAt",
+        "DocumentId", "Environment", "DocumentType", "DocumentTypeName", "DocumentName", "AppOrigin", "ProcessedAt",
         "WorkflowStatus", "ValidationStatus", "ProcessingMode", "ProcessingEvidence", "UsesAi", "Model", "ProcessingSeconds", "AvgConfidence", "SubDocumentCount",
         "PagesTotal", "PagesNative", "PagesOcr", "PagesEmpty",
         "TotalCostUsd", "AiCostUsd", "NonAiCostUsd", "CostPerPageUsd", "TotalInputTokens", "TotalOutputTokens", "PricingVersion",
@@ -867,7 +1025,7 @@ def write_excel(
     data_rows = []
     for r in rows:
         row = [
-            r["id"], r["type"], r["typeName"], r["name"], r["appOrigin"], r["processedAt"],
+            r["id"], r.get("environment") or "", r["type"], r["typeName"], r["name"], r["appOrigin"], r["processedAt"],
             r["workflowStatus"], r["validationStatus"], r["processingMode"], r["processingEvidence"], r["usesAi"], r["model"], r["processingSeconds"], r["avgConfidence"],
             r["subDocCount"], r["pagesTotal"], r["pagesNative"], r["pagesOcr"], r["pagesEmpty"],
             r["totalCost"], r["aiCost"], r["nonAiCost"], r["costPerPage"], r["totalInputTokens"], r["totalOutputTokens"], r["pricingVersion"],
@@ -915,6 +1073,10 @@ def write_excel(
         ws_type, ["DocumentType", "ProcessingMode"] + agg_headers,
         [[t, snapshot_mode(m)] + agg_values(m) for t, m in sorted_types(by_type)],
     )
+
+    ws_env = wb.create_sheet("PorAmbiente")
+    by_env = snapshot_by(rows, env_of)
+    write_sheet(ws_env, ["Environment"] + agg_headers, [[e] + agg_values(m) for e, m in sorted(by_env.items())])
 
     ws_app = wb.create_sheet("PorSistema")
     by_app = snapshot_by(rows, app_of)
@@ -1205,9 +1367,11 @@ const DATA = JSON.parse(document.getElementById('report-data').textContent);
 const ROWS = DATA.rows;
 const CATALOG_TYPES = DATA.catalogTypes || [];
 const COST_REF = DATA.costRef;
-const INFRA = DATA.infrastructure || {};
-const MONTHLY_SPEND = DATA.monthlySpend || {rows:[]};
-const DEFAULT_RANGE = INFRA.reportPeriod || {};
+// Un inventario por ambiente; `currentInfra()` los suma o elige uno según el
+// filtro "Ambiente" (misma lógica que `merge_infrastructure_snapshots` en Python).
+const INFRA_BY_ENV = DATA.infrastructureByEnv || {};
+const ENVIRONMENTS = DATA.environments || Object.keys(INFRA_BY_ENV);
+const DEFAULT_RANGE = DATA.reportPeriod || {};
 const ROWS_BY_ID = new Map(ROWS.map(r => [r.id, r]));
 const CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
 const STATUS_ROLE_COLOR = {good: "#0ca30c", warning: "#fab219", critical: "#d03b3b", neutral: "#898781"};
@@ -1281,6 +1445,7 @@ function appOf(r){ return r.appOrigin || '(sin sistema)'; }
 // ---------------------------------------------------------------------
 const state = {
   desde: DEFAULT_RANGE.start || '', hasta: DEFAULT_RANGE.end || '',
+  envs: new Set(),
   types: new Set(), modes: new Set(), apps: new Set(), models: new Set(), workflow: new Set(), validation: new Set(),
   traffic: new Set(),
   hiddenServices: new Set(),
@@ -1296,9 +1461,17 @@ const state = {
 const TYPE_FILTER_PRIMARY_LIMIT = 6;
 
 function distinct(key) { return [...new Set(ROWS.map(r => r[key]).filter(Boolean))].sort(); }
+function envOf(r){ return r.environment || '(sin ambiente)'; }
+
+// Ambientes activos en el corte: los elegidos en el filtro o, sin filtro, todos.
+function selectedEnvs() {
+  const all = ENVIRONMENTS.length ? ENVIRONMENTS : [...new Set(ROWS.map(envOf))];
+  return state.envs.size ? all.filter(e => state.envs.has(e)) : all;
+}
 
 function filteredRows() {
   return ROWS.filter(r => {
+    if (state.envs.size && !state.envs.has(envOf(r))) return false;
     if (state.desde && (r.processedAt||'').slice(0,10) < state.desde) return false;
     if (state.hasta && (r.processedAt||'').slice(0,10) > state.hasta) return false;
     if (state.types.size && !state.types.has(r.type)) return false;
@@ -1310,6 +1483,126 @@ function filteredRows() {
     if (state.traffic.size && !state.traffic.has(r.trafficKind)) return false;
     return true;
   });
+}
+
+// ---------------------------------------------------------------------
+// Infraestructura por ambiente — espejo de merge_infrastructure_snapshots()
+// ---------------------------------------------------------------------
+function mergeInfra(byEnv) {
+  const entries = Object.entries(byEnv).map(([env, s]) => [env, s || {}]);
+  if (!entries.length) return {};
+  if (entries.length === 1) return entries[0][1];
+  const isNum = v => v !== null && v !== undefined;
+  const total = key => { const vs = entries.map(([,s]) => s[key]).filter(isNum); return vs.length ? vs.reduce((a,b) => a+b, 0) : null; };
+  const tagged = (env, items) => (items || []).map(item => ({...item, service: `[${env}] ${item.service || ''}`}));
+  // Proyecciones solo del ambiente base (prod si está) — ver PROJECTION_ENV en Python.
+  const projEnv = entries.some(([env]) => env === 'prod') ? 'prod' : entries[0][0];
+  const projSnap = byEnv[projEnv] || {};
+  const projHistory = projSnap.fixedMonthlyHistory || {};
+  const projRows = new Map((projHistory.rows || []).map(item => [item.month, item]));
+  const months = new Map();
+  entries.forEach(([, s]) => ((s.fixedMonthlyHistory || {}).rows || []).forEach(item => {
+    if (!months.has(item.month)) months.set(item.month, {month: item.month, status: item.status, actualUsd: 0, estimatedFullMonthUsd: 0, projectedUsd: 0, missing: false});
+    const m = months.get(item.month);
+    if (isNum(item.actualUsd)) m.actualUsd += item.actualUsd; else m.missing = true;
+  }));
+  const historyRows = [...months.keys()].sort().map(k => {
+    const m = months.get(k); const p = projRows.get(k) || {};
+    return {month: m.month, status: m.status, actualUsd: m.missing ? null : m.actualUsd,
+      estimatedFullMonthUsd: isNum(p.estimatedFullMonthUsd) ? p.estimatedFullMonthUsd : null,
+      projectedUsd: isNum(p.projectedUsd) ? p.projectedUsd : null};
+  });
+  const histories = entries.map(([,s]) => s.fixedMonthlyHistory || {});
+  const allAvailable = histories.every(h => h.available);
+  const taggeds = entries.map(([env, s]) => [env, s.taggedMtd || {}]);
+  const manuals = entries.map(([env, s]) => [env, s.manualMtd || {}]);
+  const taggedTotals = taggeds.filter(([,t]) => t.available && isNum(t.totalUsd)).map(([,t]) => t.totalUsd);
+  const manualTotals = manuals.filter(([,m]) => isNum(m.totalScopedUsd)).map(([,m]) => m.totalScopedUsd);
+  return {
+    stack: entries.map(([,s]) => s.stack || '—').join(' + '),
+    environment: entries.map(([env]) => env).join(' + '),
+    environments: entries.map(([env]) => env),
+    region: [...new Set(entries.map(([,s]) => s.region).filter(Boolean))].sort().join(' + '),
+    fixedMonthlyUsd: total('fixedMonthlyUsd'),
+    fixedMtdActualUsd: total('fixedMtdActualUsd'),
+    fixedMtdEstimated: entries.some(([,s]) => s.fixedMtdEstimated),
+    fixedItems: entries.flatMap(([env, s]) => tagged(env, s.fixedItems)),
+    usageOnlyItems: entries.flatMap(([env, s]) => tagged(env, s.usageOnlyItems)),
+    fixedMonthlyHistory: {
+      start: (histories.find(h => h.start) || {}).start || null,
+      end: (histories.find(h => h.end) || {}).end || null,
+      available: allAvailable,
+      estimated: histories.some(h => h.estimated),
+      actualToDateUsd: allAvailable && historyRows.length ? historyRows.reduce((a,r) => a + (r.actualUsd || 0), 0) : null,
+      projectedPeriodUsd: isNum(projHistory.projectedPeriodUsd) ? projHistory.projectedPeriodUsd : null,
+      currentRunRateMonthlyUsd: isNum(projHistory.currentRunRateMonthlyUsd) ? projHistory.currentRunRateMonthlyUsd : null,
+      rows: historyRows,
+      scope: entries.map(([env], i) => `${env}: ${histories[i].scope || '—'}`).join(' · ') + ` · proyección basada solo en ${projEnv}`,
+    },
+    projectionEnvironment: projEnv,
+    projectionFixedMonthlyUsd: isNum(projSnap.fixedMonthlyUsd) ? projSnap.fixedMonthlyUsd : null,
+    taggedMtd: {
+      available: taggeds.some(([,t]) => t.available),
+      totalUsd: taggedTotals.length ? taggedTotals.reduce((a,b) => a+b, 0) : null,
+      services: taggeds.flatMap(([env, t]) => tagged(env, t.services)),
+      estimated: taggeds.some(([,t]) => t.estimated),
+    },
+    manualMtd: {
+      available: manuals.some(([,m]) => m.available),
+      totalScopedUsd: manualTotals.length ? manualTotals.reduce((a,b) => a+b, 0) : null,
+      services: manuals.flatMap(([env, m]) => tagged(env, m.services)),
+      estimated: manuals.some(([,m]) => m.estimated),
+      note: (manuals.find(([,m]) => m.note) || [null, {}])[1].note || null,
+    },
+    environmentExplanation: entries.map(([env, s]) => `${env}: ${s.environmentExplanation || '—'}`).join(' · '),
+    resourceCount: entries.reduce((a,[,s]) => a + (s.resourceCount || 0), 0),
+    warnings: entries.flatMap(([env, s]) => (s.warnings || []).map(w => `[${env}] ${w}`)),
+  };
+}
+
+function currentInfra() {
+  const picked = {};
+  selectedEnvs().forEach(env => { if (INFRA_BY_ENV[env]) picked[env] = INFRA_BY_ENV[env]; });
+  return mergeInfra(picked);
+}
+
+// Espejo de monthly_spend_snapshot(): real conocido por mes, sin mezclar
+// proyección. El procesamiento sigue al corte filtrado; el fijo, al ambiente.
+function monthlySpend(rows, infra) {
+  const fixedByMonth = new Map((((infra || {}).fixedMonthlyHistory || {}).rows || []).map(item => [item.month, item]));
+  const buckets = new Map();
+  rows.forEach(r => {
+    const month = (r.processedAt || '').slice(0, 7);
+    if (!month) return;
+    if (!buckets.has(month)) buckets.set(month, {documents: 0, documentsWithCost: 0, processingActualUsd: 0});
+    const b = buckets.get(month);
+    b.documents += 1;
+    if (r.hasCost) { b.documentsWithCost += 1; b.processingActualUsd += r.totalCost || 0; }
+  });
+  const months = [...new Set([...buckets.keys(), ...fixedByMonth.keys()])].filter(Boolean).sort();
+  const out = months.map(month => {
+    const b = buckets.get(month) || {documents: 0, documentsWithCost: 0, processingActualUsd: 0};
+    const fixed = fixedByMonth.get(month) || {};
+    const status = fixed.status || 'closed';
+    const fixedActual = fixed.actualUsd === undefined ? null : fixed.actualUsd;
+    return {
+      month, status, documents: b.documents, documentsWithCost: b.documentsWithCost,
+      processingActualUsd: b.processingActualUsd, fixedActualUsd: fixedActual,
+      fixedActualAvailable: fixedActual !== null,
+      knownActualUsd: status === 'future' ? null : b.processingActualUsd + (fixedActual || 0),
+      fixedProjectionUsd: fixed.projectedUsd === undefined ? null : fixed.projectedUsd,
+    };
+  });
+  const elapsed = out.filter(r => r.status !== 'future');
+  return {
+    rows: out,
+    documents: elapsed.reduce((a,r) => a + r.documents, 0),
+    documentsWithCost: elapsed.reduce((a,r) => a + r.documentsWithCost, 0),
+    processingActualUsd: elapsed.reduce((a,r) => a + r.processingActualUsd, 0),
+    fixedActualUsd: elapsed.every(r => r.fixedActualAvailable) ? elapsed.reduce((a,r) => a + (r.fixedActualUsd || 0), 0) : null,
+    knownActualUsd: elapsed.reduce((a,r) => a + (r.knownActualUsd || 0), 0),
+    note: 'Real conocido = procesamiento con auditoría de costo + fijo atribuible; no incluye proyecciones ni consumo variable compartido.',
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -1584,6 +1877,9 @@ function renderFilters() {
     + (!visible.length ? '<span class="muted">Sin tipos coincidentes.</span>' : '')
     + (hidden ? `<button type="button" class="chip chip-more" id="f-types-more">+${hidden} ver todos</button>`
       : (!query && typeOptions.length > TYPE_FILTER_PRIMARY_LIMIT ? '<button type="button" class="chip chip-more" id="f-types-more">− ver principales</button>' : ''));
+  const envOptions = [...new Set([...ENVIRONMENTS, ...ROWS.map(envOf)])].sort();
+  document.getElementById('f-envs-group').hidden = envOptions.length < 2;
+  mk('f-envs', envOptions, state.envs);
   mk('f-modes', distinct('processingMode'), state.modes);
   mk('f-apps', [...new Set(ROWS.map(appOf))].sort(), state.apps);
   mk('f-models', distinct('model'), state.models);
@@ -1596,7 +1892,7 @@ function renderFilters() {
 
 function activeFilterCount() {
   return (state.desde ? 1 : 0) + (state.hasta ? 1 : 0)
-    + state.types.size + state.modes.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size + state.traffic.size;
+    + state.envs.size + state.types.size + state.modes.size + state.apps.size + state.models.size + state.workflow.size + state.validation.size + state.traffic.size;
 }
 
 // Los filtros viven en un panel colapsado: la barra pegajosa de arriba se
@@ -1615,6 +1911,7 @@ function attachChipHandlers() {
   document.querySelectorAll('#f-types .chip[data-value]').forEach(el => el.addEventListener('click', () => { toggle(state.types, el.dataset.value); render(); }));
   const typeMore = document.getElementById('f-types-more');
   if (typeMore) typeMore.onclick = () => { state.typesExpanded = !state.typesExpanded; render(); };
+  document.querySelectorAll('#f-envs .chip').forEach(el => el.addEventListener('click', () => { toggle(state.envs, el.dataset.value); render(); }));
   document.querySelectorAll('#f-modes .chip').forEach(el => el.addEventListener('click', () => { toggle(state.modes, el.dataset.value); render(); }));
   document.querySelectorAll('#f-apps .chip').forEach(el => el.addEventListener('click', () => { toggle(state.apps, el.dataset.value); render(); }));
   document.querySelectorAll('#f-models .chip').forEach(el => el.addEventListener('click', () => { toggle(state.models, el.dataset.value); render(); }));
@@ -1664,7 +1961,9 @@ function renderAiSection(rows) {
     </tbody></table></div>`;
 }
 
-function renderInfrastructureSection() {
+function renderInfrastructureSection(rows) {
+  const INFRA = currentInfra();
+  const MONTHLY_SPEND = monthlySpend(rows, INFRA);
   const fixed = INFRA.fixedMonthlyUsd;
   const tagged = INFRA.taggedMtd || {};
   const manual = INFRA.manualMtd || {};
@@ -1680,9 +1979,9 @@ function renderInfrastructureSection() {
   const currentFixed = (fixedHistory.rows || []).find(row => row.status === 'mtd');
   document.getElementById('infra-history-kpis').innerHTML = [
     kpiTile(fixedHistory.actualToDateUsd === null || fixedHistory.actualToDateUsd === undefined ? '—' : money(fixedHistory.actualToDateUsd), 'Fijo real acumulado', `${fixedHistory.start || '—'} a hoy`),
-    kpiTile(fixedHistory.projectedPeriodUsd === null || fixedHistory.projectedPeriodUsd === undefined ? '—' : money(fixedHistory.projectedPeriodUsd), 'Proyección fija del periodo', `hasta ${fixedHistory.end || '—'}`),
+    kpiTile(fixedHistory.projectedPeriodUsd === null || fixedHistory.projectedPeriodUsd === undefined ? '—' : money(fixedHistory.projectedPeriodUsd), 'Proyección fija del periodo', `hasta ${fixedHistory.end || '—'}${INFRA.projectionEnvironment ? ' · solo ' + INFRA.projectionEnvironment : ''}`),
     kpiTile(!currentFixed || currentFixed.actualUsd === null ? '—' : money(currentFixed.actualUsd), 'Mes actual · gastado MTD', currentFixed ? currentFixed.month : 'fuera del rango'),
-    kpiTile(!currentFixed ? '—' : money(currentFixed.estimatedFullMonthUsd), 'Mes actual · cierre estimado', 'run-rate del inventario actual'),
+    kpiTile(!currentFixed || currentFixed.estimatedFullMonthUsd === null || currentFixed.estimatedFullMonthUsd === undefined ? '—' : money(currentFixed.estimatedFullMonthUsd), 'Mes actual · cierre estimado', `run-rate del inventario actual${INFRA.projectionEnvironment ? ' · solo ' + INFRA.projectionEnvironment : ''}`),
   ].join('');
   const historyRows = fixedHistory.rows || [];
   const historyMax = Math.max(1, ...historyRows.flatMap(row => [row.actualUsd || 0, row.projectedUsd || 0]));
@@ -1814,14 +2113,19 @@ function deltaCell(actual, ref) {
 function renderReferenceSection(rows) {
   const a = aggOverall(rows);
   const budget = COST_REF.perPage.find(x => x.role === 'budget');
-  const projectedProcessing = a.avgCostPage === null ? null : a.avgCostPage * COST_REF.volume.pagesPerMonth;
-  const fixedMonthly = INFRA.fixedMonthlyUsd;
+  // La proyección mensual se basa en un solo ambiente (prod si está en el
+  // corte): dev es tráfico de pruebas y no representa el volumen real.
+  const infra = currentInfra();
+  const projEnv = infra.projectionEnvironment || null;
+  const p = projEnv ? aggOverall(rows.filter(r => envOf(r) === projEnv)) : a;
+  const projectedProcessing = p.avgCostPage === null ? null : p.avgCostPage * COST_REF.volume.pagesPerMonth;
+  const fixedMonthly = projEnv ? infra.projectionFixedMonthlyUsd : infra.fixedMonthlyUsd;
   const projected = projectedProcessing === null ? null : projectedProcessing + (fixedMonthly || 0);
   document.getElementById('ref-kpis').innerHTML = [
     kpiTile(a.avgCostPage === null ? '—' : money5(a.avgCostPage), 'Costo / página (corte actual)', `${a.nWithCost} doc(s) con costo · ${num(a.totalPages)} pág`),
     kpiTile(money(a.avgCostDoc), 'Costo / documento (corte actual)', `referencia ${money(COST_REF.perDoc.value)} — ${COST_REF.perDoc.label}`),
     kpiTile(money5(budget.value), 'Presupuesto / página', `${COST_REF.doc} ${budget.source}`),
-    kpiTile(projected === null ? '—' : '$' + projected.toFixed(2), `Proyección / mes + fijo`, `procesamiento ${projectedProcessing===null?'—':'$'+projectedProcessing.toFixed(2)} + fijo ${fixedMonthly===null||fixedMonthly===undefined?'—':money(fixedMonthly)}`),
+    kpiTile(projected === null ? '—' : '$' + projected.toFixed(2), `Proyección / mes + fijo${projEnv ? ' · solo ' + projEnv : ''}`, `procesamiento ${projectedProcessing===null?'—':'$'+projectedProcessing.toFixed(2)} + fijo ${fixedMonthly===null||fixedMonthly===undefined?'—':money(fixedMonthly)}${projEnv ? ` · ${p.nWithCost} doc(s) de ${projEnv}` : ''}`),
   ].join('');
 
   const maxRef = Math.max(a.avgCostPage || 0, ...COST_REF.perPage.map(x => x.value));
@@ -1882,7 +2186,7 @@ function renderDocumentsTable(rows) {
   const shown = sorted.slice(0, state.docLimit);
   document.getElementById('doc-count').textContent = rows.length;
   const cols = [
-    ['id','Documento'], ['typeName','Tipo'], ['processingMode','Procesamiento'], ['appOrigin','Sistema'], ['workflowStatus','Ejecución'], ['validationStatus','Negocio'],
+    ['id','Documento'], ['environment','Ambiente'], ['typeName','Tipo'], ['processingMode','Procesamiento'], ['appOrigin','Sistema'], ['workflowStatus','Ejecución'], ['validationStatus','Negocio'],
     ['model','Modelo'], ['avgConfidence','Confianza'], ['processingSeconds','Tiempo'], ['totalCost','Costo'], ['processedAt','Procesado'],
   ];
   const head = cols.map(([key,label]) => {
@@ -1891,6 +2195,7 @@ function renderDocumentsTable(rows) {
   }).join('');
   const body = shown.map(r => `<tr class="doc-row" data-id="${esc(r.id)}">
       <td class="mono">${esc(r.id)}</td>
+      <td class="muted">${esc(r.environment || '—')}</td>
       <td>${esc(r.typeName || r.type)}</td>
       <td>${modeBadge(r.processingMode)}</td>
       <td class="muted">${esc(r.appOrigin || '—')}</td>
@@ -1938,6 +2243,7 @@ function openDetail(id) {
     ${r.hasQuality ? `<div class="kv-grid">
       <div class="k">Estado de ejecución</div><div>${esc(r.workflowStatus||'—')}</div>
       <div class="k">Estado de negocio</div><div>${esc(r.validationStatus||'—')}</div>
+      <div class="k">Ambiente</div><div>${esc(envOf(r))}</div>
       <div class="k">Sistema (app de origen)</div><div>${esc(appOf(r))}</div>
       <div class="k">Modelo</div><div>${esc(r.model)}</div>
       <div class="k">Ruta de procesamiento</div><div>${modeBadge(r.processingMode)}</div>
@@ -2122,7 +2428,7 @@ function render() {
   renderAiSection(rows);
   renderReferenceSection(rows);
   renderServiceSection(rows);
-  renderInfrastructureSection();
+  renderInfrastructureSection(rows);
   attachServiceChipHandlers();
 
   const wf = worstFields(rows, 25);
@@ -2141,7 +2447,7 @@ document.getElementById('f-toggle').addEventListener('click', () => setFiltersOp
 document.getElementById('f-reset').addEventListener('click', () => {
   state.desde = DEFAULT_RANGE.start || ''; state.hasta = DEFAULT_RANGE.end || '';
   state.typesExpanded = false;
-  state.types.clear(); state.modes.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
+  state.envs.clear(); state.types.clear(); state.modes.clear(); state.apps.clear(); state.models.clear(); state.workflow.clear(); state.validation.clear(); state.traffic.clear();
   document.getElementById('f-desde').value = state.desde; document.getElementById('f-hasta').value = state.hasta; document.getElementById('f-type-search').value = '';
   render();
 });
@@ -2220,9 +2526,15 @@ def render_html(
     rows: List[Dict[str, Any]], env: str, quality: Optional[Dict[str, Any]] = None,
     infrastructure: Optional[Dict[str, Any]] = None,
     catalog_types: Optional[List[str]] = None,
+    infrastructure_by_env: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> str:
+    """`infrastructure` es la foto consolidada (o la única); `infrastructure_by_env`
+    lleva un inventario por stack para que el filtro "Ambiente" del dashboard
+    pueda recalcular la sección de infraestructura en el navegador."""
     from _report_lib import BASE_CSS
 
+    if infrastructure_by_env is None:
+        infrastructure_by_env = {env: infrastructure or {}}
     overall = overall_snapshot(rows)
     date_range = f"{overall['first_date'][:10]} a {overall['last_date'][:10]}" if overall["first_date"] else "sin datos"
     report_period = (infrastructure or {}).get("reportPeriod") or {}
@@ -2254,6 +2566,7 @@ def render_html(
             </div>
           </div>
           <div class="filter-group"><label class="fg-label" for="f-type-search">Tipo de documento</label><input class="filter-search" type="search" id="f-type-search" placeholder="Buscar tipo o nombre…" autocomplete="off"><div class="chip-row" id="f-types"></div></div>
+          <div class="filter-group" id="f-envs-group"><span class="fg-label">Ambiente</span><div class="chip-row" id="f-envs"></div></div>
           <div class="filter-group"><span class="fg-label">Procesamiento</span><div class="chip-row" id="f-modes"></div></div>
           <div class="filter-group"><span class="fg-label">Sistema</span><div class="chip-row" id="f-apps"></div></div>
           <div class="filter-group"><span class="fg-label">Modelo</span><div class="chip-row" id="f-models"></div></div>
@@ -2391,7 +2704,7 @@ def render_html(
 
       <footer>Generado por <code>pnpm reporte</code> (scripts/reporte.py) · une la tabla de costos y la de tracking de documentos por <code>DocumentId</code> · datos crudos en <code>datos_raw.xlsx</code> · reportes individuales: <code>pnpm reporte:costos</code> / <code>pnpm reporte:documentos</code>.</footer>
     </div>
-    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "catalogTypes": sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types), "costRef": COST_REFERENCE, "infrastructure": infrastructure or {}, "monthlySpend": monthly_spend_snapshot(rows, infrastructure)}, ensure_ascii=False, default=_json_default)}</script>
+    <script id="report-data" type="application/json">{json.dumps({"rows": rows, "catalogTypes": sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types), "costRef": COST_REFERENCE, "environments": list(infrastructure_by_env), "infrastructureByEnv": infrastructure_by_env, "reportPeriod": report_period}, ensure_ascii=False, default=_json_default)}</script>
     <script>{JS_TEMPLATE}</script>'''
 
     return f'''<!doctype html>
@@ -2412,39 +2725,108 @@ def render_html(
 
 def write_report_bundle(
     out_dir: Path, rows: List[Dict[str, Any]], quality: Dict[str, Any], env: str,
-    infrastructure: Optional[Dict[str, Any]] = None,
+    infrastructure_by_env: Optional[Dict[str, Dict[str, Any]]] = None,
     catalog_types: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
+    """`env` es la etiqueta del corte (`dev`, `prod` o `dev + prod`);
+    `infrastructure_by_env` trae un inventario por stack. El .md y el .xlsx
+    (fotos fijas) usan la suma; el HTML recibe ambos para filtrar."""
     report_catalog_types = sorted(ACTIVE_CATALOG_TYPES) if catalog_types is None else sorted(catalog_types)
+    infrastructure_by_env = infrastructure_by_env or {}
+    infrastructure = merge_infrastructure_snapshots(infrastructure_by_env)
     hydrate_processing_fields(rows)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "reporte.md").write_text(render_markdown(rows, env, quality, infrastructure), encoding="utf-8")
     (out_dir / "reporte.html").write_text(
-        render_html(rows, env, quality, infrastructure, report_catalog_types), encoding="utf-8"
+        render_html(rows, env, quality, infrastructure, report_catalog_types, infrastructure_by_env),
+        encoding="utf-8",
     )
     write_excel(out_dir / "datos_raw.xlsx", rows, quality, infrastructure)
     shutil.copy2(out_dir / "datos_raw.xlsx", out_dir / "reporte_ejecutivo.xlsx")
-    snapshot = {"schemaVersion": 4, "environment": env, "generatedAt": datetime.now().astimezone().isoformat(),
+    snapshot = {"schemaVersion": 5, "environment": env, "environments": list(infrastructure_by_env),
+                "generatedAt": datetime.now().astimezone().isoformat(),
                 "catalogTypes": report_catalog_types, "rows": rows, "quality": quality,
-                "infrastructure": infrastructure or {}}
+                "infrastructure": infrastructure, "infrastructureByEnv": infrastructure_by_env}
     snapshot_path = out_dir / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     os.chmod(snapshot_path, 0o600)
     return overall_snapshot(rows)
 
+def load_environment(
+    env: str, args: argparse.Namespace, report_start: date, report_end: date, *, fail_open: bool,
+) -> tuple[Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
+    """Lee las dos tablas de un ambiente, las une y levanta su inventario de
+    infraestructura. Devuelve `(None, None)` si la tabla de tracking no se
+    pudo leer y `fail_open` está activo (corrida multi-ambiente); sin
+    `fail_open` el error también se imprime y se devuelve `(None, None)`,
+    pero el llamador sale con código 1 porque no queda ningún ambiente."""
+    stack = args.stack or stack_id(env)
+    cost_table = args.cost_table or cost_table_name(env)
+
+    cost_raw: List[Dict[str, Any]] = []
+    try:
+        cost_raw = scan_all(cost_table, args.region)
+    except Exception as e:
+        print(f"{YELLOW}[{env}] No pude leer la tabla de costos {cost_table}: {e} — el reporte sigue sin datos de costo.{RESET}")
+
+    try:
+        doc_table = args.table or resolve_processing_table(stack, args.region)
+    except Exception as e:
+        print(f"{RED}[{env}] {e}{RESET}")
+        if fail_open:
+            print(f"{YELLOW}[{env}] Se omite este ambiente; el reporte sigue con los demás.{RESET}")
+        return None, None
+
+    print(
+        f"[{env}] Leyendo {doc_table} y {cost_table} en {args.region} (stack {stack}) · "
+        f"periodo {report_start.isoformat()} a {report_end.isoformat()}..."
+    )
+    try:
+        doc_raw = scan_all(doc_table, args.region)
+    except Exception as e:
+        print(f"{RED}[{env}] No pude leer la tabla {doc_table} en {args.region}: {e}{RESET}")
+        if fail_open:
+            print(f"{YELLOW}[{env}] Se omite este ambiente; el reporte sigue con los demás.{RESET}")
+        return None, None
+
+    if not cost_raw and not doc_raw:
+        print(f"{YELLOW}[{env}] Ambas tablas están vacías.{RESET}")
+
+    cost_rows = [normalize_cost_item(it) for it in cost_raw]
+    doc_rows = [normalize_doc_item(it) for it in doc_raw]
+    rows = join_rows(cost_rows, doc_rows, environment=env)
+    report_start_text, report_end_text = report_start.isoformat(), report_end.isoformat()
+    rows = [r for r in rows if report_start_text <= r["processedAt"][:10] <= report_end_text]
+
+    try:
+        print(f"[{env}] Verificando infraestructura y gasto fijo de {stack}...")
+        infrastructure = collect_infrastructure_costs(
+            stack, args.region, environment=env,
+            period_start=report_start, period_end=report_end,
+        )
+    except Exception as e:
+        infrastructure = empty_infrastructure_snapshot(
+            stack, args.region, f"No se pudo inventariar/costear la infraestructura del stack: {e}"
+        )
+        print(f"{YELLOW}[{env}] {infrastructure['warnings'][0]}{RESET}")
+    infrastructure["reportPeriod"] = {"start": report_start_text, "end": report_end_text}
+    return rows, infrastructure
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--env", choices=("dev", "prod"), default="dev", help="ambiente a consultar (default: dev)")
+    parser.add_argument("--env", choices=ENVIRONMENTS,
+                        help="ambiente a consultar; sin él se leen dev y prod juntos (filtro \"Ambiente\" en el HTML)")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--year", type=int, default=date.today().year,
                         help="año calendario por defecto, de enero 1 a diciembre 31")
-    parser.add_argument("--stack", help="nombre del stack (default: resuelto de --env)")
-    parser.add_argument("--table", help="tabla de tracking de documentos, salta la resolución vía CloudFormation")
-    parser.add_argument("--cost-table", help="tabla de costos (default: resuelta de --env)")
+    parser.add_argument("--stack", help="nombre del stack (default: resuelto de --env; requiere --env)")
+    parser.add_argument("--table", help="tabla de tracking de documentos, salta la resolución vía CloudFormation (requiere --env)")
+    parser.add_argument("--cost-table", help="tabla de costos (default: resuelta de --env; requiere --env)")
     parser.add_argument("--desde", help="filtra ProcessedAt >= YYYY-MM-DD (también filtrable interactivo en el HTML)")
     parser.add_argument("--hasta", help="filtra ProcessedAt <= YYYY-MM-DD")
     parser.add_argument("--sistema", help="filtra por AppOrigin (uno o varios separados por coma; también filtrable interactivo en el HTML)")
-    parser.add_argument("--out", help="carpeta de salida (default: reportes/<env>/<timestamp>/)")
+    parser.add_argument("--out", help="carpeta de salida (default: reportes/<env>/<timestamp>/, reportes/dev-prod/ sin --env)")
     parser.add_argument("--open", action="store_true", help="abrir el HTML en el navegador al terminar")
     parser.add_argument("--history-dir", default=str(DEFAULT_HISTORY), help="historial local de pruebas")
     parser.add_argument("--snapshot", help="regenera el reporte offline desde un snapshot.json anterior")
@@ -2458,58 +2840,50 @@ def main() -> int:
     if args.snapshot:
         saved = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
         rows, quality = saved.get("rows") or [], saved.get("quality") or quality_snapshot([])
-        infrastructure = saved.get("infrastructure") or empty_infrastructure_snapshot(
-            args.stack or stack_id(saved.get("environment") or args.env), args.region,
+        env = saved.get("environment") or args.env or "dev"
+        # Snapshots v4 y anteriores: un solo ambiente y un solo inventario.
+        by_env = saved.get("infrastructureByEnv") or {env: saved.get("infrastructure") or empty_infrastructure_snapshot(
+            args.stack or stack_id(env), args.region,
             "El snapshot original no contenía inventario de infraestructura.",
-        )
-        env = saved.get("environment") or args.env
-        out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / env / datetime.now().strftime("%Y%m%d-%H%M%S")
+        )}
+        for r in rows:
+            r.setdefault("environment", env if len(by_env) == 1 else "")
+        out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / environment_slug(list(by_env)) / datetime.now().strftime("%Y%m%d-%H%M%S")
         overall = write_report_bundle(
-            out_dir, rows, quality, env, infrastructure, saved.get("catalogTypes")
+            out_dir, rows, quality, env, by_env, saved.get("catalogTypes")
         )
         print(f"Reporte reproducido desde {args.snapshot}: {overall['n']} documento(s) → {out_dir}/")
         if args.open:
             webbrowser.open((out_dir / "reporte.html").resolve().as_uri())
         return 0
 
-    stack = args.stack or stack_id(args.env)
-    cost_table = args.cost_table or cost_table_name(args.env)
+    envs = [args.env] if args.env else list(ENVIRONMENTS)
+    if not args.env and (args.stack or args.table or args.cost_table):
+        parser.error("--stack/--table/--cost-table apuntan a un solo stack: indica también --env dev|prod")
 
-    cost_raw: List[Dict[str, Any]] = []
-    try:
-        cost_raw = scan_all(cost_table, args.region)
-    except Exception as e:
-        print(f"{YELLOW}No pude leer la tabla de costos {cost_table}: {e} — el reporte sigue sin datos de costo.{RESET}")
-
-    try:
-        doc_table = args.table or resolve_processing_table(stack, args.region)
-    except Exception as e:
-        print(f"{RED}{e}{RESET}")
+    report_start_text, report_end_text = report_start.isoformat(), report_end.isoformat()
+    rows: List[Dict[str, Any]] = []
+    infrastructure_by_env: Dict[str, Dict[str, Any]] = {}
+    for env in envs:
+        # Un ambiente que no se puede leer no tumba el otro: se reporta y
+        # se sigue. Con --env explícito sí es un error duro (abajo).
+        env_rows, env_infra = load_environment(
+            env, args, report_start, report_end,
+            fail_open=len(envs) > 1,
+        )
+        if env_rows is None:
+            continue
+        rows += env_rows
+        infrastructure_by_env[env] = env_infra
+    if not infrastructure_by_env:
         return 1
 
-    print(
-        f"Leyendo {doc_table} y {cost_table} en {args.region} (stack {stack}) · "
-        f"periodo {report_start.isoformat()} a {report_end.isoformat()}..."
-    )
-    try:
-        doc_raw = scan_all(doc_table, args.region)
-    except Exception as e:
-        print(f"{RED}No pude leer la tabla {doc_table} en {args.region}: {e}{RESET}")
-        return 1
-
-    quality_runs = load_runs("local", Path(args.history_dir)) + load_runs(args.env, Path(args.history_dir))
+    quality_runs = load_runs("local", Path(args.history_dir))
+    for env in infrastructure_by_env:
+        quality_runs += load_runs(env, Path(args.history_dir))
     quality_runs.sort(key=lambda r: r.get("startedAt", ""))
     quality = quality_snapshot(quality_runs)
 
-    if not cost_raw and not doc_raw:
-        print(f"{YELLOW}Ambas tablas están vacías — el reporte contendrá únicamente el histórico de pruebas.{RESET}")
-
-    cost_rows = [normalize_cost_item(it) for it in cost_raw]
-    doc_rows = [normalize_doc_item(it) for it in doc_raw]
-    rows = join_rows(cost_rows, doc_rows)
-
-    report_start_text, report_end_text = report_start.isoformat(), report_end.isoformat()
-    rows = [r for r in rows if report_start_text <= r["processedAt"][:10] <= report_end_text]
     if not rows:
         print(f"{YELLOW}Ningún documento cae en {report_start_text} a {report_end_text}; "
               f"el reporte continuará con infraestructura y costos fijos.{RESET}")
@@ -2521,25 +2895,14 @@ def main() -> int:
             print(f"{YELLOW}Ningún documento del sistema pedido ({args.sistema}).{RESET}")
             return 0
 
-    try:
-        print(f"Verificando infraestructura y gasto fijo de {stack}...")
-        infrastructure = collect_infrastructure_costs(
-            stack, args.region, environment=args.env,
-            period_start=report_start, period_end=report_end,
-        )
-    except Exception as e:
-        infrastructure = empty_infrastructure_snapshot(
-            stack, args.region, f"No se pudo inventariar/costear la infraestructura del stack: {e}"
-        )
-        print(f"{YELLOW}{infrastructure['warnings'][0]}{RESET}")
-    infrastructure["reportPeriod"] = {"start": report_start_text, "end": report_end_text}
-
-    out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / args.env / datetime.now().strftime("%Y%m%d-%H%M%S")
-    overall = write_report_bundle(out_dir, rows, quality, args.env, infrastructure)
+    env_label = environment_label(list(infrastructure_by_env))
+    out_dir = Path(args.out) if args.out else DEFAULT_OUT_ROOT / environment_slug(list(infrastructure_by_env)) / datetime.now().strftime("%Y%m%d-%H%M%S")
+    overall = write_report_bundle(out_dir, rows, quality, env_label, infrastructure_by_env)
+    infrastructure = merge_infrastructure_snapshots(infrastructure_by_env)
     monthly_spend = monthly_spend_snapshot(rows, infrastructure)
     fixed_history = infrastructure.get("fixedMonthlyHistory") or {}
     print(
-        f"\n{CYAN}{overall['n']} documento(s) ({overall['n_with_cost']} con costo) · "
+        f"\n{CYAN}[{env_label}] {overall['n']} documento(s) ({overall['n_with_cost']} con costo) · "
         f"{overall['n_no_ai']} sin IA · aprobación {pct(overall['approval_rate'])} · "
         f"periodo {report_start.isoformat()} a {report_end.isoformat()}{RESET}\n"
         f"{CYAN}Gastado real conocido {money(monthly_spend.get('knownActualUsd'))} = "

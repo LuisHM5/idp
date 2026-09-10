@@ -282,8 +282,8 @@ operativo. Para cada documento comprueba infraestructura, respuesta pública,
 movimiento a `processed/`, descarga byte a byte, auditoría de costo, búsqueda
 por unique key y ground truth. El primer caso también prueba PATCH de metadata.
 
-`pnpm reporte -- --env dev|prod` incorpora las corridas del ambiente y las
-gratuitas locales. La sección **Calidad comprobada** no confunde tres señales:
+`pnpm reporte` incorpora las corridas de cada ambiente leído (dev y prod
+sin `--env`, o solo el de `-- --env dev|prod`) y las gratuitas locales. La sección **Calidad comprobada** no confunde tres señales:
 aprobación de reglas, confianza declarada por el modelo y exactitud contra
 valores leídos por una persona. Cada paquete incluye `snapshot.json`; se puede
 regenerar sin AWS con `pnpm reporte -- --snapshot ruta/snapshot.json`. En el
