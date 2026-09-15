@@ -779,6 +779,84 @@ de WAF (~$2.16 MTD) y almacenamiento KMS (~$0.24 MTD) pertenecen a prod. Para
 verlos scopeados se usa `pnpm reporte -- --env prod`; allí el inventario da un
 piso de **$10/mes** y el prorrateo real MTD aunque `CostStack` siga sin datos.
 
+## 9. Costo estimado antes de procesar
+
+`pnpm test:e2e:pedimento` y `pnpm test:e2e:suite` muestran el costo **antes** de
+subir nada. Hasta 2026-09-14 ese número era páginas × un $/página promedio (el
+histórico del tipo, o $0.0041 nativa / $0.0080 OCR de este documento): no sabía
+qué modelo corre, cuántas páginas pasan por Textract, cuántas manda la selección
+de páginas ni cuántas llamadas hace la extracción. Medido contra documentos
+reales, erraba **72% mediano** por documento (hasta +1400% en un escaneado).
+
+Hoy lo calcula `scripts/_cost_estimate.py` replicando lo que cobra
+`cost_audit.build_cost_breakdown`, con el mismo código del enrichment Lambda y
+sin ninguna llamada pagada (los clientes de Bedrock y Textract se bloquean):
+
+| Pieza | Cómo se obtiene | Precisión |
+|---|---|---|
+| Modelo | `bedrock.explain_model_resolution("extractor", tipo)` con las variables del Lambda desplegado (`aws lambda get-function-configuration`) y el catálogo JSON + DynamoDB del ambiente. Hoy dev y prod: `minimax.minimax-m2.5` | exacto |
+| Textract | páginas sin capa de texto utilizable (`pdf_pages.load_pages`, mismo umbral y detección de texto corrupto) × `pricing.textract_cost`. Todas pasan por OCR **antes** de la selección | exacto (36/36 documentos reales) |
+| Páginas a la IA | `page_selector.select` sobre el texto nativo. Con páginas escaneadas no hay texto local: se usa cuántas suele elegir la selección en escaneados de ese tipo (calibrado; `pages.pdf`: 3 de 31) y el tope asume fail-open | exacto en nativos; estimado en escaneados |
+| Llamadas | `text_extractor._chunk_pages` × `_field_tree_call_partitions` | exacto con el catálogo vigente |
+| Tokens de entrada | caracteres reales del prompt fijo (`_build_field_tree_prompts`), del JSON del tool y del texto de las páginas ÷ caracteres por token del modelo (calibrado). Página OCR: caracteres por página calibrados por tipo | ±37% mediano |
+| Tokens de salida | tokens por llamada calibrados por modelo y tipo (mediana; el tope usa p90) | ±34% mediano — depende de cuántas filas trae cada documento |
+| Caché | solo modelos Anthropic y solo con más de un chunk (así lo manda el pipeline); los de terceros no tienen caché | regla del pipeline |
+| Lambda | segundos base + por página OCR + por llamada × memoria desplegada | aproximado; < 5% del total |
+| Segmentación / upstream | $0 para un tipo declarado (se verifica corriendo `segment_pages` con Bedrock bloqueado) | exacto |
+
+### Validación contra lo cobrado (`pnpm costos:validar`)
+
+Toma cada registro de la tabla de auditoría cuyo archivo original existe en
+`test-docs/` (mismo nombre y número de páginas), baja su resultado de S3 y
+compara servicio por servicio. Dos cuidados para que la comparación sea justa:
+
+- **Re-tarifa los tokens reales** con `pipeline/pricing.py` vigente: los
+  registros anteriores al 2026-09-04 guardaron MiniMax/Kimi a tarifa de Haiku
+  (`pricingVersion 2026-08-05`, `approximatePricing: true`), así que su $
+  guardado está inflado ~4×. 23 de los 36 registros comparados estaban así.
+- **Calibración leave-one-out**: cada archivo se evalúa con constantes calculadas
+  sin sus propios registros.
+
+Corrida 2026-09-14 (dev + prod, 36 registros, 17 archivos):
+
+| | Método anterior | Estimado actual |
+|---|---:|---:|
+| Error mediano del total por documento | 72% | **23%** |
+| Textract exacto | — | 36/36 |
+| Llamadas a Bedrock iguales a las reales | — | 27/36 (las demás corrieron con un catálogo anterior) |
+
+Límites conocidos, medidos: un documento escaneado de un tipo **sin historial**
+de OCR puede salir muy alto (`invoices-flete.pdf`, 31 páginas escaneadas y
+`multi_instance`, +160% sin su propia calibración), porque ni el tamaño del
+texto OCR ni la partición en instancias se pueden saber sin pagar el OCR. Los
+tokens de salida varían con el contenido (`example.pdf`: 9 590 reales contra
+~2 200 típicos). El catálogo cambió casi a diario en agosto-septiembre, y el
+prompt de una corrida vieja no se puede reconstruir: los resultados guardan la
+huella del catálogo (`tracking.schema.catalogVersions`), no el texto.
+
+**Fuentes de calibración, en orden de confianza**: la selección de páginas guarda
+en cada resultado los caracteres exactos de las páginas enviadas y descartadas
+(`pageSelection.savings.charsSent/charsSkipped`), así que en esos documentos el
+texto OCR por página y la densidad de tokens se miden sin suponer nada (pedimento
+escaneado: 2 628 caracteres/página). Derivar el OCR de los tokens es solo
+respaldo, y se descarta si da menos de 200 o más de 8 000 caracteres por página
+(señal de un prompt de otra versión).
+
+`scripts/cost_calibration.json` guarda las constantes y el error medido (el plan
+lo muestra como "error típico"). Recalibra cuando cambie el modelo desplegado,
+tras cambios grandes de catálogo o si el análisis de una corrida avisa que el
+costo real se desvió más de 50%:
+
+```bash
+pnpm costos:validar                  # mide el error, no escribe nada
+pnpm costos:validar -- --write       # además regenera scripts/cost_calibration.json
+pnpm costos:validar -- -e prod --since 2026-09-10
+```
+
+Además, cada corrida del E2E guarda el estimado de cada archivo y el análisis lo
+compara contra la auditoría del mismo documento (mismo catálogo, mismo momento):
+esa es la validación que se acumula sola con el uso.
+
 ## Tráfico de pruebas reales
 
 `pnpm test:real` genera costos auténticos y persiste documentos igual que una

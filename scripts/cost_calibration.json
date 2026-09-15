@@ -1,0 +1,121 @@
+{
+  "default": {
+    "charsPerToken": 3.2,
+    "ocrCharsPerPage": 2628,
+    "outputTokensPerCall": {
+      "median": 2500,
+      "p90": 4000
+    }
+  },
+  "models": {
+    "minimax.minimax-m2.5": {
+      "documents": 31,
+      "supportsPromptCache": false,
+      "charsPerToken": 2.9879,
+      "outputTokensPerCall": {
+        "median": 1653,
+        "p90": 2860
+      },
+      "outputTokensPerCallByType": {
+        "FACTURA_FLETE_EXTRANJERO": {
+          "median": 1456,
+          "p90": 2162,
+          "documents": 13
+        },
+        "PEDIMENTO_ERP": {
+          "median": 2150,
+          "p90": 3668,
+          "documents": 13
+        },
+        "PEDIMENTO_ADUANAL": {
+          "median": 1599,
+          "p90": 1655,
+          "documents": 2
+        },
+        "INE": {
+          "median": 1240,
+          "p90": 1773,
+          "documents": 2
+        }
+      }
+    },
+    "moonshotai.kimi-k2.5": {
+      "documents": 4,
+      "supportsPromptCache": false,
+      "charsPerToken": 2.9116,
+      "outputTokensPerCall": {
+        "median": 845,
+        "p90": 871
+      },
+      "outputTokensPerCallByType": {
+        "PEDIMENTO_ADUANAL": {
+          "median": 844,
+          "p90": 846,
+          "documents": 3
+        }
+      }
+    },
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "documents": 1,
+      "supportsPromptCache": true,
+      "outputTokensPerCall": {
+        "median": 2492,
+        "p90": 2492
+      },
+      "outputTokensPerCallByType": {}
+    }
+  },
+  "lambda": {
+    "baseSeconds": 8,
+    "secondsPerOcrPage": 1.5,
+    "secondsPerCall": 20,
+    "deterministicSeconds": 2
+  },
+  "ocrCharsPerPageByType": {
+    "FACTURA_FLETE_EXTRANJERO": {
+      "median": 3000,
+      "documents": 4,
+      "source": "derivado de tokens"
+    },
+    "INE": {
+      "median": 7474,
+      "documents": 1,
+      "source": "derivado de tokens"
+    },
+    "PEDIMENTO_ADUANAL": {
+      "median": 2628,
+      "documents": 2,
+      "source": "exacto (selección de páginas)"
+    },
+    "PEDIMENTO_ERP": {
+      "median": 2628,
+      "documents": 9,
+      "source": "exacto (selección de páginas)"
+    }
+  },
+  "selectedScannedPagesByType": {
+    "PEDIMENTO_ADUANAL": {
+      "median": 3,
+      "documents": 2
+    },
+    "PEDIMENTO_ERP": {
+      "median": 3,
+      "documents": 9
+    }
+  },
+  "generatedAt": "2026-09-14T17:52:22+00:00",
+  "documents": 36,
+  "environments": [
+    "dev",
+    "prod"
+  ],
+  "accuracy": {
+    "medianAbsErrTotal": 0.2326,
+    "medianAbsErrOldMethod": 0.7211,
+    "records": 36,
+    "files": 17,
+    "withinRange": 20,
+    "textractExact": 36
+  },
+  "source": "pnpm costos:validar --write (tabla de auditoría de costos + resultados de S3)"
+}

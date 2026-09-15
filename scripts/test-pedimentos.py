@@ -39,7 +39,9 @@ def _norm_str(v) -> str:
     return str(v).strip().upper()
 
 
-_PATH_SEG_RE = re.compile(r"^([A-Z0-9_]+)(?:\[(\d+)\])?$")
+# Nombres mixtos incluidos: PEDIMENTO_ERP usa las columnas del ERP
+# (`No_Pedimento`, `FACTURAS[0].Factura`).
+_PATH_SEG_RE = re.compile(r"^([A-Za-z0-9_]+)(?:\[(\d+)\])?$")
 
 
 def _leaf_value(entities: dict, path: str) -> Any:
@@ -195,23 +197,24 @@ def evaluate_expectation(exp: dict, documents: list) -> dict:
     }
 
 
-def _print_engine_checks(doc: dict) -> None:
+def _print_engine_checks(doc: dict, out=print) -> None:
     """Print the matched document's own failing validation-engine checks.
 
     Separate signal from the ground-truth field comparisons above: a field
     can match its expected value exactly and the document can still fail a
     cross-field rule (e.g. a formula reconciling VALOR_ADUANA against other
     fields) — this is the "why is the overall status not APPROVED" view,
-    straight from `validators/engine.py`'s own rule results.
+    straight from `validators/engine.py`'s own rule results. `out` lets the
+    parallel E2E dataset runner buffer the lines per case.
     """
     failing = [c for c in doc.get("checks", []) if not c.get("valid") and not c.get("skipped")]
     if not failing:
-        print(f"  {DIM}engine: no failing validation rules{RESET}")
+        out(f"  {DIM}engine: no failing validation rules{RESET}")
         return
-    print(f"  {YELLOW}engine: {len(failing)} failing validation rule(s) (status={doc.get('status')}){RESET}")
+    out(f"  {YELLOW}engine: {len(failing)} failing validation rule(s) (status={doc.get('status')}){RESET}")
     for c in failing:
         mark = RED if c.get("severity") == "error" else YELLOW
-        print(f"      {mark}✗ [{c.get('rule')}] {c.get('field')}: {c.get('message')}{RESET}")
+        out(f"      {mark}✗ [{c.get('rule')}] {c.get('field')}: {c.get('message')}{RESET}")
 
 
 def main() -> int:

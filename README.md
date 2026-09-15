@@ -19,7 +19,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | [`documentacion/api-docs/openapi.yaml`](documentacion/api-docs/openapi.yaml) | Contrato OpenAPI 3.1 del mismo API. Ver localmente con `pnpm docs:api` (Scalar en `/`, Swagger UI en `/swagger`). |
 | [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
-| [`documentacion/TESTS.md`](documentacion/TESTS.md) | Qué comando de test correr para cada caso, costos, cómo diagnosticar un bug. |
+| [`documentacion/TESTS.md`](documentacion/TESTS.md) | Guía rápida para correr los tests (preparación, orden de gratis a caro, cómo leer el veredicto del E2E), qué comando usar para cada caso, costos, cómo diagnosticar un bug. |
 | [`documentacion/COSTOS.md`](documentacion/COSTOS.md) | Costos reales medidos (no estimados) por página/documento/mes. |
 | [`documentacion/FLUJO_EJECUCION.md`](documentacion/FLUJO_EJECUCION.md) | Recorrido general del pipeline y su dataflow. |
 | [`documentacion/TRAZA_CODIGO_COMPLETA.md`](documentacion/TRAZA_CODIGO_COMPLETA.md) | Traza técnica independiente, función por función y línea por línea, con payloads, bifurcaciones y llamadas AWS. |
