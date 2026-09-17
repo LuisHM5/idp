@@ -1,0 +1,452 @@
+{
+  "PEDIMENTO_GASTOS_ADUANALES_ERP_XML": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "display_name": "Gastos aduanales del pedimento (mapeo ERP, XML)",
+    "aliases": [
+      "gastos aduanales erp xml",
+      "otros gastos aduanales xml",
+      "factura aduanal xml",
+      "gasto de tercero erp xml"
+    ],
+    "description": "CFDI 4.0 nativo de una factura que se captura como un renglón de gastos del pedimento en el ERP (tabla facturas_aduanales): honorarios del agente aduanal, derecho de acceso, maniobras, muestreo, almacenaje, revisión o certificado fitosanitario, pago de derechos, servicios de logística. El emisor es indistinto y el formato del CFDI también: lo único que define al tipo es que el gasto se factura al importador y se carga al pedimento. No es la factura de la mercancía (proveedor extranjero) ni el pedimento mismo.",
+    "business_destination": "PEDIMENTO_GASTOS_ADUANALES_ERP",
+    "occurrence_mode": "single",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+
+    "__COMENTARIO_proposito__": "Este catálogo es el mapeo XML del MISMO destino que PEDIMENTO_GASTOS_ADUANALES_ERP (el PDF): los dos entregan las mismas columnas con los mismos nombres, para que el ERP inserte sin traducción intermedia y sin importar si del proveedor llegó el XML timbrado o solo la representación impresa. La diferencia es el costo y la certeza: aquí la extracción es determinística vía xpath (confianza 1.0, $0 de Bedrock) y por eso ESTA es la fuente preferida cuando el XML existe. Requiere documentType declarado en la subida (raw/PEDIMENTO_GASTOS_ADUANALES_ERP_XML/{uuid}/archivo.xml): no hay clasificación por visión sobre XML crudo.",
+
+    "__COMENTARIO_equivalencias__": {
+      "No_Factura": "No_Factura — el UUID (folio fiscal) del CFDI, NO la serie/folio del emisor. Verificado contra las 5 filas de test-docs/otros-gastos/facturas_aduanales.csv: los cinco No_Factura son exactamente los UUID de los cinco CFDI. El ERP lo guarda en MAYÚSCULAS y algunos emisores lo timbran en minúsculas (el FAA de la muestra); el valor se entrega tal como está en el XML y el índice de unique_key ya normaliza a mayúsculas, así que buscar por cualquiera de las dos formas cae en la misma clave. Quien inserta es el que debe aplicar UPPER().",
+      "Fecha_Factura": "Fecha_Factura — fecha de emisión del CFDI (@Fecha). OJO, ver __COMENTARIO_fecha_factura__: en la muestra el ERP guardó otra fecha para los renglones de Otros_Gastos=1.",
+      "Razon": "Razon — nombre o razón social del emisor (cfdi:Emisor/@Nombre). Se entrega COMPLETO; el ERP es el que recorta al ancho de su columna (en la muestra hay valores cortados a 30 caracteres y uno de 41, así que el ancho real no se puede inferir y recortar aquí perdería datos que nadie puede recuperar).",
+      "Concepto": "Concepto — descripción del PRIMER concepto del CFDI. En la muestra es un resumen tecleado a mano de ≤30 caracteres ('DERECHOS DE ACCESO,MANIOBRAS A' para un CFDI de 4 conceptos), que un xpath no puede componer: el array CONCEPTOS entrega los renglones completos para que el ERP arme su resumen con la regla que quiera.",
+      "Importe_Pesos": "Importe_Pesos — base del gasto en pesos, NETA de retenciones. Ver __COMENTARIO_importe_pesos__.",
+      "IVA": "IVA — cfdi:Impuestos/@TotalImpuestosTrasladados (IVA trasladado del comprobante). Ausente = 0 (un CFDI con ObjetoImp='01' no trae el nodo de impuestos: el GT2 de la muestra).",
+      "ISR": "ISR — retención de ISR: cfdi:Impuestos/cfdi:Retenciones/cfdi:Retencion[@Impuesto='001']/@Importe. Ausente = 0.",
+      "IVARET": "IVARET — retención de IVA: la misma tabla con [@Impuesto='002']. Ausente = 0. No confundir con IVA: en el FAA de la muestra IVA=53.60 (trasladado) e IVARET=35.73 (retenido).",
+      "Dolar": "Dolar — tipo de cambio aplicado. El ERP guarda 0 cuando la factura está en pesos, INCLUSO si el CFDI imprime TipoCambio='1', así que se deriva de MONEDA en vez de copiar el atributo. Ver __COMENTARIO_moneda__.",
+      "Importe_Dolar": "Importe_Dolar — importe en moneda extranjera. 0 cuando MONEDA=MXN. Ver __COMENTARIO_moneda__.",
+      "Otros_Gastos": "Otros_Gastos — bandera 0/1. Ver __COMENTARIO_otros_gastos__.",
+      "PEDIMENTO_REFERENCE": "sin columna en esta tabla: el ERP liga el gasto por Num_Pedimento (su id interno). Este campo es el consecutivo del pedimento tal como lo cita la factura, que es lo único con lo que el documento se puede amarrar al pedimento; el ERP resuelve Num_Pedimento buscando por él.",
+      "EMISOR_RFC / EMISOR_NOMBRE / EMISOR_REGIMEN_FISCAL": "sin columna: el ERP resuelve No_Agencia (y el proveedor) a partir del RFC del emisor, no lo declara la extracción.",
+      "SUBTOTAL_CFDI / TOTAL_CFDI / DESCUENTO_CFDI / MONEDA / TIPO_CAMBIO_CFDI / CONCEPTOS / VERSION_CFDI / SERIE_CFDI / FOLIO_CFDI / FECHA_TIMBRADO / TIPO_COMPROBANTE / FORMA_PAGO / METODO_PAGO / LUGAR_EXPEDICION / RECEPTOR_* / USO_CFDI": "sin columna en facturas_aduanales: son los insumos fiscales con los que se valida la aritmética del renglón (y con los que el ERP puede recalcular lo que no se puede derivar aquí). Llevan nombre canónico en MAYÚSCULAS, no nombre de columna, porque no son columnas — y porque el evaluador de fórmulas solo admite identificadores en mayúsculas (ver __COMENTARIO_validaciones__)."
+    },
+
+    "__COMENTARIO_sin_fuente_documental__": "Columnas de facturas_aduanales que la factura NO imprime y que por eso no se declaran — las llena el ERP: Num_Gasto (autoincremental; en la muestra 155458..155463 con un hueco en 155461), Num_Pedimento (id interno del pedimento, 66196 en la muestra: NO son los 15 dígitos del pedimento ni el consecutivo), No_Agencia (21396, id del proveedor/agencia que el ERP resuelve por RFC), Zona_Facturacion (2, configuración del ERP), Manual (0, bandera de captura manual), Num_Enc_Factura (0, FK al encabezado de factura en Costos.dbo.C_ENC_FACTURA) y fecha_manual (nula en las 5 filas). Ninguna de las seis está en el CFDI en ninguna forma: pedírselas a la extracción sería inventarlas.",
+
+    "__COMENTARIO_importe_pesos__": "La identidad verificada contra las 5 filas del CSV es Importe_Pesos = SubTotal − ISR − IVARET (equivalentemente Total − IVA): FAA 335 − 33.50 − 35.73 = 265.77; OLI 8068.83; GT1 7068.96; GT3 26550.00; GT2 3356.00. El XML no trae un nodo con ese neto y el catálogo no puede calcularlo — `derived` elige un valor por condición, no hace aritmética, y `LIQUIDACION_NORMALIZADA` agrega arrays de conceptos, no resta retenciones. Así que el campo se resuelve con @SubTotal (correcto para cualquier gasto SIN retenciones, que es el caso de 4 de las 5 filas y de casi todo gasto de tercero) y la resta queda declarada como `custom_formula`: una factura CON retenciones — honorarios de persona física, el FAA de la muestra — sale marcada inválida con los tres operandos en el resultado, o sea va a REQUIERE_REVISION con el número correcto a la vista, en vez de insertar 335 callando que debían ser 265.77. Para cerrarlo sin intervención humana hace falta un mecanismo nuevo de campo calculado por fórmula en el pipeline (hoy no existe); mientras no exista, el ERP debe aplicar la resta.",
+
+    "__COMENTARIO_otros_gastos__": "Otros_Gastos distingue el renglón de honorarios de la propia agencia (0) de un gasto pagado a un tercero (1): en la muestra el FAA es 0 y con Razon/Concepto vacíos, y los cuatro gastos de tercero son 1. La prueba autoritativa es 'emisor ≠ la agencia aduanal del pedimento', un lookup que hace el ERP con EMISOR_RFC, no algo que el documento diga. Lo que sí es legible es su consecuencia fiscal: el agente aduanal es persona física y su factura de honorarios trae retención de ISR, y un gasto de tercero no. Por eso se deriva de ISR, con el umbral en este JSON y no en código. Es un PROXY calibrado sobre el corpus observado: un gasto de tercero facturado por una persona física con retención también saldría 0 y habría que corregirlo del lado del ERP. Si el ERP prefiere decidirlo él, ignore el campo: EMISOR_RFC viene en el mismo renglón.",
+
+    "__COMENTARIO_fecha_factura__": "En la muestra, Fecha_Factura coincide con @Fecha del CFDI SOLO en la fila de honorarios (FAA: 2026-07-30). Las cuatro filas de Otros_Gastos=1 traen 2026-07-31 mientras sus CFDI son del 27, 28, 29 y 30 de julio: el ERP guardó ahí la fecha de captura/corte de la cuenta de gastos, no la de emisión. El catálogo entrega la fecha de emisión porque es el único valor que el documento sostiene; si el ERP necesita su fecha de corte, la pone él y esta columna le sirve de dato fiscal real.",
+
+    "__COMENTARIO_moneda__": "Las 5 facturas de la muestra son MXN, dos con TipoCambio='1' y tres sin el atributo, y el ERP guardó Dolar=0 e Importe_Dolar=0 en todas. Por eso Dolar/Importe_Dolar se derivan de MONEDA (MXN → 0) en vez de copiar @TipoCambio. Para una factura en moneda extranjera no hay muestra que calibre la conversión, así que quedan nulos a propósito y MONEDA lleva una regla que manda el documento a revisión: TIPO_CAMBIO_CFDI y SUBTOTAL_CFDI viajan en el mismo resultado para que el ERP convierta con criterio explícito, en vez de que el catálogo meta un importe en dólares en la columna de pesos.",
+
+    "__COMENTARIO_pedimento__": "Un CFDI de gasto aduanal casi nunca declara el pedimento en el nodo que el SAT reserva para eso (cfdi:InformacionAduanera): de los 5 XML de la muestra, NINGUNO lo usa, y solo uno cita el pedimento y lo hace dentro del texto libre de la descripción del concepto ('PED.0823-6001803' en el GT1). Los otros cuatro traen la referencia únicamente en la representación impresa, como addenda que el CFDI no contiene: 'Observaciones del contribuyente: P0823 6001803' (GT2), 'Pedimento: 6001803' (GT3), 'REF: P0823 6001803' (OLI), 'OBSERVACIONES, PEDIMENTOS: 6001803' (FAA). Ésa es la limitación real de la ruta XML frente al PDF, y es la razón por la que PEDIMENTO_REFERENCE es opcional aquí: el xpath prueba primero el nodo oficial y luego la descripción, y si el XML no lo dice el campo sale ausente en vez de inventado. El vínculo con el pedimento lo aporta entonces quien sube el archivo (ya sabe a qué pedimento lo está cargando) o el PDF.",
+
+    "__COMENTARIO_importes_ausentes__": "IVA, ISR e IVARET salen AUSENTES —no en cero— cuando el CFDI no trae el nodo correspondiente: el GT2 de la muestra factura con ObjetoImp='01' y no lleva cfdi:Impuestos, y tres de los cinco no llevan retenciones. El `\"default\": 0` declarado en esos campos documenta la intención pero NO lo aplica el pipeline (solo `liquidacion.py` y `derived` leen `default`), y un campo opcional sin valor y válido se OMITE del envelope. Quien inserta debe interpretar ausente como 0, igual que lo hace el motor: en una fórmula un operando faltante cuenta como 0 y queda anotado en `details.assumptions` — por eso el `cfdi_total` del GT2 cuadra (3356 + 0) en vez de marcarse inerte.",
+
+    "__COMENTARIO_validaciones__": "Las reglas `custom_formula`/`cfdi_total` solo admiten identificadores en MAYÚSCULAS como operandos (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:156); un operando como `Importe_Pesos` haría que la regla se marque `skipped` y quede inerte. El campo DECLARADO sí puede llevar nombre mixto (se resuelve por `entity_map.get`, no por el evaluador), así que la aritmética se escribe con operandos canónicos — SUBTOTAL_CFDI, IVA, ISR, IVARET, TOTAL_CFDI, que ya son mayúsculas — y se declara sobre el campo del ERP. Las dos reglas se cubren entre sí: si los xpath de retenciones dejaran de resolver, Importe_Pesos pasaría por casualidad pero TOTAL_CFDI fallaría. Verificado contra las 5 filas del CSV: ninguna regla sale `skipped`. Efecto secundario conocido de `custom_formula`: al fallar marca también cada OPERANDO como 'possible source of failed check' (validators/engine.py, `operand_fields`), así que en una factura con retenciones se marcan además ISR, IVARET y SUBTOTAL_CFDI aunque sus valores estén bien leídos. Es deliberado en el motor —de una suma que no cuadra no se sabe qué sumando está mal— y no hay que perseguir esos tres: el único que hay que corregir es Importe_Pesos.",
+
+    "namespaces": {
+      "cfdi": "http://www.sat.gob.mx/cfd/4",
+      "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital"
+    },
+
+    "fields": {
+      "No_Factura": {
+        "type": "string",
+        "required": true,
+        "unique_key": {
+          "normalize": "upper"
+        },
+        "xpath": ".//tfd:TimbreFiscalDigital/@UUID",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "No_Factura debe ser el UUID (folio fiscal) del CFDI"
+          }
+        ]
+      },
+      "Fecha_Factura": {
+        "type": "date",
+        "required": true,
+        "xpath": "@Fecha",
+        "validation": []
+      },
+      "Razon": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Nombre",
+        "validation": []
+      },
+      "Concepto": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Conceptos/cfdi:Concepto/@Descripcion",
+        "validation": []
+      },
+      "Importe_Pesos": {
+        "type": "number",
+        "required": true,
+        "xpath": "@SubTotal",
+        "validation": [
+          {
+            "rule_type": "custom_formula",
+            "formula": "SUBTOTAL_CFDI - ISR - IVARET",
+            "tolerance": 0.02,
+            "message": "Importe_Pesos debe ser el subtotal NETO de retenciones (SubTotal - ISR - IVARET): esta factura trae retenciones, así que el subtotal impreso no es el importe que se carga al pedimento"
+          }
+        ]
+      },
+      "IVA": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "cfdi:Impuestos/@TotalImpuestosTrasladados",
+        "validation": []
+      },
+      "ISR": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "cfdi:Impuestos/cfdi:Retenciones/cfdi:Retencion[@Impuesto='001']/@Importe",
+        "validation": []
+      },
+      "IVARET": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "cfdi:Impuestos/cfdi:Retenciones/cfdi:Retencion[@Impuesto='002']/@Importe",
+        "validation": []
+      },
+      "Dolar": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "MONEDA",
+          "cases": [
+            {
+              "when": {
+                "eq": "MXN"
+              },
+              "value": 0,
+              "label": "Factura en pesos: el ERP no guarda tipo de cambio"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no impreso: 0 cuando el CFDI está en MXN. En moneda extranjera queda nulo a propósito — el tipo de cambio va en TIPO_CAMBIO_CFDI y la conversión la decide el ERP.",
+        "validation": []
+      },
+      "Importe_Dolar": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "MONEDA",
+          "cases": [
+            {
+              "when": {
+                "eq": "MXN"
+              },
+              "value": 0,
+              "label": "Factura en pesos: no hay importe en dólares"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no impreso: 0 cuando el CFDI está en MXN. En moneda extranjera queda nulo a propósito — el importe en esa moneda es SUBTOTAL_CFDI.",
+        "validation": []
+      },
+      "Otros_Gastos": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "ISR",
+          "cases": [
+            {
+              "when": {
+                "gt": 0
+              },
+              "value": 0,
+              "label": "Honorarios del agente aduanal (factura con retenciones)"
+            }
+          ],
+          "default": 1
+        },
+        "hint": "Calculado, no impreso: 1 = gasto pagado a un tercero, 0 = honorarios de la propia agencia. Se decide por la retención de ISR, que es la huella fiscal de los honorarios del agente aduanal; la prueba autoritativa (emisor = la agencia del pedimento) la hace el ERP con EMISOR_RFC.",
+        "validation": []
+      },
+
+      "PEDIMENTO_REFERENCE": {
+        "type": "string",
+        "required": false,
+        "xpath": [
+          ".//cfdi:InformacionAduanera/@NumeroPedimento",
+          "cfdi:Conceptos/cfdi:Concepto/@Descripcion"
+        ],
+        "xpath_regex": {
+          "pattern": "(?is).*?(?<!\\d)(\\d{7})(?!\\d)",
+          "group": 1
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(?:\\d{7}|\\d{15})$",
+            "message": "La referencia de pedimento debe contener 7 o 15 dígitos"
+          }
+        ]
+      },
+
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Emisor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del emisor tiene un formato inválido"
+          }
+        ]
+      },
+      "EMISOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": false,
+        "xpath": "cfdi:Emisor/@RegimenFiscal",
+        "validation": []
+      },
+      "RECEPTOR_RFC": {
+        "type": "string",
+        "required": true,
+        "xpath": "cfdi:Receptor/@Rfc",
+        "validation": [
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC receptor no corresponde a la empresa configurada: este gasto no es del importador"
+          }
+        ]
+      },
+      "RECEPTOR_NOMBRE": {
+        "type": "string",
+        "required": false,
+        "xpath": "cfdi:Receptor/@Nombre",
+        "validation": []
+      },
+      "USO_CFDI": {
+        "type": "string",
+        "required": false,
+        "xpath": "cfdi:Receptor/@UsoCFDI",
+        "validation": []
+      },
+
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Version",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^4\\.0$",
+            "message": "El comprobante debe corresponder a CFDI versión 4.0"
+          }
+        ]
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": true,
+        "xpath": "@TipoDeComprobante",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^I$",
+            "message": "Un gasto aduanal debe venir en un CFDI de ingreso"
+          }
+        ]
+      },
+      "SERIE_CFDI": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Serie",
+        "validation": []
+      },
+      "FOLIO_CFDI": {
+        "type": "string",
+        "required": false,
+        "xpath": "@Folio",
+        "validation": []
+      },
+      "FECHA_TIMBRADO": {
+        "type": "string",
+        "required": true,
+        "xpath": ".//tfd:TimbreFiscalDigital/@FechaTimbrado",
+        "validation": []
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@FormaPago",
+        "validation": []
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": false,
+        "xpath": "@MetodoPago",
+        "validation": []
+      },
+      "LUGAR_EXPEDICION": {
+        "type": "string",
+        "required": false,
+        "xpath": "@LugarExpedicion",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{5}$",
+            "message": "El lugar de expedición debe ser un código postal de cinco dígitos"
+          }
+        ]
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": true,
+        "xpath": "@Moneda",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^MXN$",
+            "message": "Gasto en moneda extranjera: Importe_Pesos necesita conversión (usar TIPO_CAMBIO_CFDI y SUBTOTAL_CFDI) antes de insertarlo en el ERP"
+          }
+        ]
+      },
+      "TIPO_CAMBIO_CFDI": {
+        "type": "number",
+        "required": false,
+        "xpath": "@TipoCambio",
+        "validation": []
+      },
+
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "item_xpath": "cfdi:Conceptos/cfdi:Concepto",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "El CFDI debe traer al menos un concepto de gasto"
+          }
+        ],
+        "item_fields": {
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveProdServ",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{8}$",
+                "message": "La clave de producto o servicio debe contener ocho dígitos"
+              }
+            ]
+          },
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "xpath": "@NoIdentificacion",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Cantidad",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": true,
+            "xpath": "@ClaveUnidad",
+            "validation": []
+          },
+          "UNIDAD": {
+            "type": "string",
+            "required": false,
+            "xpath": "@Unidad",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "xpath": "@Descripcion",
+            "validation": []
+          },
+          "VALOR_UNITARIO": {
+            "type": "number",
+            "required": true,
+            "xpath": "@ValorUnitario",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "xpath": "@Importe",
+            "validation": []
+          },
+          "OBJETO_IMPUESTO": {
+            "type": "string",
+            "required": false,
+            "xpath": "@ObjetoImp",
+            "validation": []
+          },
+          "IVA_CONCEPTO": {
+            "type": "number",
+            "required": false,
+            "xpath": "cfdi:Impuestos/cfdi:Traslados/cfdi:Traslado[@Impuesto='002']/@Importe",
+            "validation": []
+          }
+        }
+      },
+
+      "SUBTOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@SubTotal",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El subtotal del CFDI no coincide con la suma de los importes de sus conceptos"
+          }
+        ]
+      },
+      "DESCUENTO_CFDI": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "xpath": "@Descuento",
+        "validation": []
+      },
+      "TOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "xpath": "@Total",
+        "validation": [
+          {
+            "rule_type": "cfdi_total",
+            "formula": "SUBTOTAL_CFDI + IVA - ISR - IVARET",
+            "tolerance": 0.02,
+            "message": "El total del CFDI no cuadra con subtotal, IVA trasladado y retenciones: alguno de los importes que se cargan al pedimento está mal leído"
+          }
+        ]
+      }
+    },
+
+    "cross_field_validation": []
+  }
+}

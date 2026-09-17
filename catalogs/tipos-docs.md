@@ -8,6 +8,7 @@ de negocio, no tipos disponibles para procesar de fábrica.
 |---|---|---|
 | Pedimento | `PEDIMENTO_ADUANAL` | Pedimento PDF/imagen. |
 | Factura CFDI que referencia un pedimento, con salida ERP | `PEDIMENTO_ERP_XML` | CFDI 4.0 con `InformacionAduanera/@NumeroPedimento`. Mapea número/componentes, factura y conceptos; no sustituye el pedimento completo. |
+| Cualquier factura que se captura como un gasto del pedimento, con salida ERP | `PEDIMENTO_GASTOS_ADUANALES_ERP` o `PEDIMENTO_GASTOS_ADUANALES_ERP_XML` | Un renglón de la tabla `facturas_aduanales` del ERP: honorarios de la agencia, derecho de acceso, maniobras, muestreo, almacenaje, revisión/certificado fitosanitario, pago de derechos, logística. El primero lee la representación impresa (con recuperación del UUID y el total desde el QR del SAT); el segundo, el CFDI nativo sin Bedrock. Los dos entregan **los mismos campos con los mismos nombres**, así que el ERP inserta con un solo mapeo y elige la fuente según el archivo que le llegó. Fuera de la clasificación automática: se piden declarándolos. |
 | Credencial para votar / INE | `INE` | Identificación mexicana. |
 | Certificado, carátula o constancia de seguro | `CERTIFICADO_POLIZA` | Documento de póliza o cobertura. |
 | Factura de honorarios / honorarios de agencia aduanal | `FACTURA_HONORARIOS` o `FACTURA_HONORARIOS_XML` | El primero procesa PDF/impreso; el segundo procesa el CFDI XML nativo sin Bedrock. |
@@ -26,6 +27,17 @@ de negocio, no tipos disponibles para procesar de fábrica.
 | `GT1` | `CFDI_PAGO_DERECHOS_SANITARIOS_XML` | Pago por un certificado/permiso sanitario o fitosanitario. En la muestra, SENASICA cobra el derecho por un certificado fitosanitario de importación; el XML es el comprobante fiscal del pago, no el certificado. |
 | `GT2` | `CFDI_GASTO_TERCERO_XML` | Gasto de un proveedor tercero necesario para el despacho. En la muestra: acceso de vehículo, maniobras y muestreo de carga. |
 | `OLI` | `FACTURA_LOGISTICA_XML` | Operación o servicio logístico ligado al comercio exterior. Solo debe tratarse como flete cuando el concepto declare transporte/flete de forma explícita. |
+
+**El sufijo del archivo no es el tipo.** Esa correspondencia describe UNA muestra,
+no una convención estable: en `test-docs/otros-gastos` (pedimento 26 07 0823
+6001803) el `GT1` es un laboratorio de agrodiagnóstico y el `GT2` es el cobro de
+SENASICA, o sea justo al revés que en la tabla de arriba, y el `FPE` no es un
+gasto aduanal sino la factura de la mercancía del proveedor extranjero (el tipo
+para ése es `FACTURA_FLETE_EXTRANJERO`). Clasifica por lo que dice el
+comprobante — emisor y concepto —, nunca por cómo se nombró el archivo. Cuando
+lo único que se necesita es el renglón de gastos del ERP y no la lectura fiscal
+por familia, la pareja `PEDIMENTO_GASTOS_ADUANALES_ERP`/`_XML` cubre las cuatro
+familias (`FAA`, `GT*`, `OLI`) con un solo contrato.
 
 Todos los tipos `_XML` exigen `documentType` explícito en la subida y usan
 extracción determinística por XPath, con costo Bedrock de extracción igual a

@@ -1,0 +1,510 @@
+{
+  "PEDIMENTO_GASTOS_ADUANALES_ERP": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "display_name": "Gastos aduanales del pedimento (mapeo ERP)",
+    "aliases": [
+      "gastos aduanales erp",
+      "otros gastos aduanales",
+      "factura aduanal",
+      "facturas aduanales",
+      "gasto de tercero erp"
+    ],
+    "description": "Representación impresa (PDF o escaneo) de una factura que se captura como un renglón de gastos del pedimento en el ERP: honorarios del agente aduanal, derecho de acceso, maniobras, muestreo, almacenaje refrigerado, revisión o certificado fitosanitario, pago de derechos ante SENASICA, punto de inspección, servicios de logística. El formato es deliberadamente variable —cada proveedor imprime su CFDI como quiere— y el emisor es indistinto: lo que define al tipo es que el gasto se factura al importador y se carga a un pedimento, casi siempre citado en el documento como PED./REF./Pedimento/OBSERVACIONES. Se reconoce por el bloque de emisor con RFC, el folio fiscal (UUID), la tabla de conceptos con clave SAT y la leyenda de representación impresa de un CFDI. No es el pedimento, no es la factura de la mercancía del proveedor extranjero, y no es una cuenta de gastos consolidada.",
+    "business_destination": "PEDIMENTO_GASTOS_ADUANALES_ERP",
+    "occurrence_mode": "multiple",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+
+    "__COMENTARIO_proposito__": "Mapeo de la tabla facturas_aduanales del ERP (un renglón = un gasto cargado a un pedimento) desde la representación IMPRESA de la factura. Tiene un gemelo, PEDIMENTO_GASTOS_ADUANALES_ERP_XML, que entrega EXACTAMENTE las mismas columnas con los mismos nombres y las mismas reglas desde el CFDI nativo, de forma determinística y a $0 de Bedrock. La razón de tener los dos es que la fuente cambia sin que cambie el dato: del proveedor a veces llega el XML timbrado y a veces solo el PDF. Cuando existen los dos archivos del MISMO comprobante, usa el XML: este catálogo es la red para cuando no hay XML (o cuando el dato que se necesita solo vive en la addenda impresa, ver __COMENTARIO_pedimento__). Los dos tipos comparten los nombres de campo a propósito, para que el ERP inserte con un solo mapeo.",
+
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, por la misma razón que PEDIMENTO_ERP: es un RENDERIZADO con nombres de columna del ERP de documentos que ya tienen tipo canónico en el catálogo (la factura de honorarios del agente es el mismo papel físico que FACTURA_HONORARIOS, y un gasto de tercero es el mismo que la familia CFDI_GASTO_TERCERO). Un clasificador que lee texto no tiene con qué elegir entre dos renderizados del mismo papel, y elegir mal cambia el shape del resultado. Se pide declarándolo: documentType=PEDIMENTO_GASTOS_ADUANALES_ERP (solo, o dentro de una lista separada por comas), que es justo lo que hace una integración de ERP: ya sabe que está cargando gastos de un pedimento. Quitar esta línea lo devuelve a la lista de candidatos.",
+
+    "__COMENTARIO_equivalencias__": {
+      "No_Factura": "No_Factura — el UUID (folio fiscal) del CFDI, NO la serie/folio del emisor. Verificado contra las 5 filas de test-docs/otros-gastos/facturas_aduanales.csv: los cinco No_Factura son exactamente los UUID de los cinco comprobantes. Se recupera del QR del SAT (parámetro id) antes que de la página, porque el UUID impreso cambia de lugar y de etiqueta en cada formato ('UUID:', 'Folio fiscal', 'Folio Fiscal (UUID)') y es el único campo que no se puede equivocar. El ERP lo guarda en MAYÚSCULAS; el valor se entrega como viene y el índice de unique_key ya normaliza, así que quien inserta aplica UPPER().",
+      "Fecha_Factura": "Fecha_Factura — fecha de emisión del comprobante. Ver __COMENTARIO_fecha_factura__.",
+      "Razon": "Razon — nombre o razón social del emisor, completo. El ERP recorta al ancho de su columna.",
+      "Concepto": "Concepto — descripción del PRIMER concepto, tal como está impresa. El resumen de ≤30 caracteres que se ve en el CSV lo teclea una persona y no es reproducible; el array CONCEPTOS entrega los renglones completos para que el ERP arme el resumen con su propia regla.",
+      "Importe_Pesos": "Importe_Pesos — base del gasto en pesos, NETA de retenciones. Ver __COMENTARIO_importe_pesos__.",
+      "IVA": "IVA — IVA trasladado del comprobante (el renglón 'IVA', 'IVA(16%)', 'Impuestos Trasladados'). Ausente = 0.",
+      "ISR": "ISR — retención de ISR (renglón '10% Ret. I.S.R.'). Solo aparece en honorarios de persona física. Ausente = 0.",
+      "IVARET": "IVARET — retención de IVA (renglón 'Ret. I.V.A.'). Ausente = 0. No confundir con IVA: en el FAA de la muestra IVA=53.60 (trasladado) e IVARET=35.73 (retenido).",
+      "Dolar": "Dolar — tipo de cambio aplicado. El ERP guarda 0 cuando la factura está en pesos, aun cuando el comprobante imprima 'Tipo de cambio 1', así que se deriva de MONEDA. Ver __COMENTARIO_moneda__.",
+      "Importe_Dolar": "Importe_Dolar — importe en moneda extranjera. 0 cuando MONEDA=MXN. Ver __COMENTARIO_moneda__.",
+      "Otros_Gastos": "Otros_Gastos — bandera 0/1. Ver __COMENTARIO_otros_gastos__.",
+      "PEDIMENTO_REFERENCE": "sin columna en esta tabla: el ERP liga el gasto por Num_Pedimento (su id interno). Este campo es el consecutivo del pedimento tal como lo cita la factura, y es lo que el ERP usa para resolver Num_Pedimento. Nombre canónico (no del ERP) a propósito: es el mismo que usa FACTURA_HONORARIOS, así que la regla cross-documento `same_pedimento` de _shared.json ya sabe leerlo (ver __COMENTARIO_pedimento__).",
+      "EMISOR_RFC / EMISOR_NOMBRE_FISCAL": "sin columna: el ERP resuelve No_Agencia y el proveedor a partir del RFC del emisor.",
+      "SUBTOTAL_CFDI / TOTAL_CFDI / MONEDA / TIPO_CAMBIO_CFDI / CONCEPTOS / GASTOS_CUENTA_TERCEROS / UUID y datos de timbrado / RECEPTOR_* / QR_*": "sin columna en facturas_aduanales: son los insumos fiscales con los que se valida la aritmética del renglón y se audita de dónde salió cada valor. Llevan nombre canónico en MAYÚSCULAS porque no son columnas del ERP — y porque el evaluador de fórmulas solo admite identificadores en mayúsculas (ver __COMENTARIO_validaciones__)."
+    },
+
+    "__COMENTARIO_sin_fuente_documental__": "Columnas de facturas_aduanales que la factura NO imprime y que por eso no se declaran — las llena el ERP: Num_Gasto (autoincremental; en la muestra 155458..155463 con un hueco en 155461), Num_Pedimento (id interno del pedimento, 66196 en la muestra: NO son los 15 dígitos del pedimento ni su consecutivo), No_Agencia (21396, id del proveedor/agencia que el ERP resuelve por RFC), Zona_Facturacion (2, configuración del ERP), Manual (0, bandera de captura manual), Num_Enc_Factura (0, FK al encabezado de factura en Costos.dbo.C_ENC_FACTURA) y fecha_manual (nula en las 5 filas). Pedírselas al modelo sería pedirle que las invente.",
+
+    "__COMENTARIO_importe_pesos__": "La identidad verificada contra las 5 filas del CSV es Importe_Pesos = subtotal − ISR − IVARET (equivalentemente total − IVA): FAA 335 − 33.50 − 35.73 = 265.77; OLI 8068.83; GT1 7068.96; GT3 26550.00; GT2 3356.00. Ese neto NO está impreso en ninguna parte del papel —en el FAA la página muestra Importe 335.00, IVA 53.60, SubTotal 388.60, 10% Ret. I.S.R. 33.50, Ret. I.V.A. 35.73 y 'SubTotal 1 $319.37', pero nunca 265.77— y el catálogo no puede calcularlo: `derived` elige un valor por condición, no hace aritmética. Por eso el hint pide el subtotal impreso (correcto para cualquier gasto SIN retenciones, que es el caso de 4 de las 5 filas y de casi todo gasto de tercero) y la resta queda declarada como `custom_formula`: una factura CON retenciones sale marcada inválida, con los tres operandos en el resultado, o sea va a REQUIERE_REVISION con el número correcto a la vista, en vez de insertar 335 callando que debían ser 265.77. Pedirle la resta al modelo sería peor: sería un cálculo sin rastro, imposible de auditar y distinto en cada corrida. El ERP debe aplicarla.",
+
+    "__COMENTARIO_otros_gastos__": "Otros_Gastos distingue el renglón de honorarios de la propia agencia (0) de un gasto pagado a un tercero (1): en la muestra el FAA es 0 y con Razon/Concepto vacíos, y los cuatro gastos de tercero son 1. La prueba autoritativa es 'emisor ≠ la agencia aduanal del pedimento', un lookup que hace el ERP con EMISOR_RFC, no algo que el documento diga. Lo que sí es legible es su consecuencia fiscal: el agente aduanal es persona física y su factura de honorarios trae retención de ISR, y un gasto de tercero no. Por eso se deriva de ISR, con el umbral en este JSON y no en código — determinista, $0 de Bedrock y fuera del prompt. Es un PROXY calibrado sobre el corpus observado: un gasto de tercero facturado por una persona física con retención también saldría 0 y habría que corregirlo del lado del ERP. Si el ERP prefiere decidirlo él, ignore el campo: EMISOR_RFC viaja en el mismo renglón.",
+
+    "__COMENTARIO_fecha_factura__": "En la muestra, Fecha_Factura coincide con la fecha de emisión SOLO en la fila de honorarios (FAA: 2026-07-30). Las cuatro filas de Otros_Gastos=1 traen 2026-07-31 mientras sus comprobantes son del 27, 28, 29 y 30 de julio: el ERP guardó ahí la fecha de captura/corte de la cuenta de gastos, no la de emisión. El catálogo entrega la fecha de emisión porque es el único valor que el documento sostiene; si el ERP necesita su fecha de corte, la pone él.",
+
+    "__COMENTARIO_moneda__": "Las 5 facturas de la muestra son MXN y el ERP guardó Dolar=0 e Importe_Dolar=0 en todas, incluso en las dos que imprimen tipo de cambio 1. Por eso Dolar/Importe_Dolar se derivan de MONEDA (MXN → 0) en vez de copiar el tipo de cambio impreso. Para una factura en moneda extranjera no hay muestra que calibre la conversión, así que quedan nulos a propósito y MONEDA lleva una regla que manda el documento a revisión: TIPO_CAMBIO_CFDI y SUBTOTAL_CFDI viajan en el mismo resultado para que el ERP convierta con criterio explícito, en vez de que el catálogo meta un importe en dólares en la columna de pesos.",
+
+    "__COMENTARIO_pedimento__": "Aquí está la ventaja real del PDF sobre el XML. La referencia al pedimento casi nunca vive en el CFDI: de los 5 comprobantes de la muestra, NINGUNO usa cfdi:InformacionAduanera (el nodo que el SAT reserva para eso) y solo uno la mete en el texto del concepto; los otros cuatro la traen únicamente en la representación impresa, como addenda que el XML no contiene, y cada proveedor la etiqueta distinto: 'OBSERVACIONES, PEDIMENTOS: 6001803' (FAA), 'PED.0823-6001803' dentro de la descripción del concepto (GT1), 'Observaciones del contribuyente: P0823 6001803' (GT2), 'Pedimento: 6001803' en el encabezado (GT3), 'REF: P0823 6001803' (OLI). En todos los casos el número que importa es el consecutivo de 7 dígitos (6001803); el 0823 que a veces lo precede es la patente de la agencia. Aun así el campo es OPCIONAL: hay facturas que no citan el pedimento, y ahí el vínculo lo aporta quien sube el archivo (ya sabe a qué pedimento lo está cargando). Para que este tipo participe en la regla cross-documento `same_pedimento` de un expediente hay que agregarlo a la lista `documents` de esa regla en catalogs/_shared.json — el nombre del campo ya es el que esa regla busca, pero la regla declara a qué tipos aplica.",
+
+    "__COMENTARIO_qr__": "Los 5 PDF de la muestra traen el QR de verificación del SAT y zxing-cpp los decodificó los 5 a 150 dpi, incluidos los que imprimen el total con relleno de ceros ('tt=000000000000030798.000000'). Eso es lo que vuelve manejable un tipo cuyo formato es distinto en cada proveedor: el UUID, el RFC del emisor, el del receptor y el total salen del QR con confianza 0.99 y sin depender del layout, y solo el resto lo lee el modelo. GASTO_QR_VALIDO es informativo y NO lleva `boolean_true` a propósito: a diferencia de FACTURA_HONORARIOS, aquí el corpus es abierto y sí llegan comprobantes sin QR (recibos, facturas extranjeras escaneadas); marcar inválido todo lo que no traiga QR mandaría a revisión documentos correctos. Cuando el QR falta, los campos se extraen del texto como cualquier otro.",
+
+    "__COMENTARIO_page_selection__": "NO se declara `page_selection` a propósito. Estos comprobantes tienen 1-2 páginas, así que filtrar páginas no ahorra nada, y activarlo sin calibrar es la forma de perder la única página que importa. Si algún día llegan legajos de varias facturas en un solo PDF, lo que hace falta es `page_selection.multi_instance` (partir el archivo en un documento por factura, determinista y gratis) — y eso se calibra ANTES de declararlo, sin gastar un centavo: `pnpm paginas -- --type PEDIMENTO_GASTOS_ADUANALES_ERP --dir test-docs/otros-gastos --show-pages` (agregar `--ocr` si los PDF llegan escaneados, como el FPE de la muestra). Mientras no esté declarado, un legajo declarado con este tipo produce UN solo documento: las N facturas se extraerían juntas y sobreviviría un solo renglón. `occurrence_mode: \"multiple\"` ya está puesto para que, cuando se declare, se conserven todas.",
+
+    "__COMENTARIO_gastos_cuenta_terceros__": "GASTOS_CUENTA_TERCEROS solo aparece en la factura de la AGENCIA (el renglón de honorarios): es su tabla 'Pagos hechos por su cuenta deducibles segun el art 41 del RLISR', y sus importes son los TOTALES de las demás facturas del mismo pedimento. Verificado en la muestra: MUESTREO 8,200.00 = total del GT1, PAGO DE DERECHOS 3,356.00 = GT2, PUNTO DE INSPECCION 30,798.00 = GT3, OTROS 9,359.84 = OLI, y el Total 52,416.21 = esos cuatro + 383.00 de impuestos aduanales + los 319.37 de honorarios. Se declara porque es la única cuadratura disponible de 'los gastos que capturé suman lo que la agencia me cobró', y no puede vivir en el XML (el CFDI no la contiene). NO son conceptos fiscales: no van en CONCEPTOS, no entran en SUBTOTAL_CFDI y su total NUNCA es Importe_Pesos.",
+
+    "__COMENTARIO_fuera_de_alcance__": "El FPE de la muestra (test-docs/otros-gastos/*_FPE.pdf) NO es un gasto aduanal y no tiene renglón en el CSV: es la factura de la mercancía del proveedor extranjero (RPE LLC, US$9,240.00) más la declaratoria de la regla 3.1.8, viene escaneada y sin QR, y su pedimento sí está impreso completo ('26 07 0823 6001803'). Para ése el tipo correcto es FACTURA_FLETE_EXTRANJERO o un tipo de factura de proveedor extranjero, no éste. Se menciona aquí porque llega en la misma carpeta que los gastos y es el falso positivo obvio: un comprobante en dólares emitido por un proveedor del extranjero al importador no es un gasto de despacho.",
+
+    "__COMENTARIO_validaciones__": "Las reglas `custom_formula`/`cfdi_total` solo admiten identificadores en MAYÚSCULAS como operandos (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:156); un operando como `Importe_Pesos` haría que la regla se marque `skipped` y quede inerte. El campo DECLARADO sí puede llevar nombre mixto (se resuelve por `entity_map.get`, no por el evaluador), así que la aritmética se escribe con operandos canónicos —SUBTOTAL_CFDI, IVA, ISR, IVARET, TOTAL_CFDI, que ya son mayúsculas— y se declara sobre el campo del ERP. Las dos reglas se cubren entre sí: si las retenciones se leyeran mal, Importe_Pesos podría pasar por casualidad pero TOTAL_CFDI fallaría. Efecto secundario conocido: al fallar, `custom_formula` marca también cada OPERANDO como 'possible source of failed check' (`operand_fields`), así que en una factura con retenciones se marcan además ISR, IVARET y SUBTOTAL_CFDI aunque estén bien leídos — es deliberado en el motor (de una suma que no cuadra no se sabe qué sumando está mal) y el único campo a corregir es Importe_Pesos.",
+
+    "qr_recovery": {
+      "confidence": 0.99,
+      "page_marker_min_matches": 2,
+      "short_segment_max_pages": 3,
+      "page_markers": [
+        "REPRESENTACI[ÓO]N IMPRESA DE UN CFDI",
+        "FOLIO\\s*FISCAL",
+        "SELLO\\s*DIGITAL",
+        "CADENA\\s*ORIGINAL",
+        "UUID",
+        "CERTIFICADO\\s+DEL\\s+SAT",
+        "FECHA\\s+(?:Y\\s+HORA\\s+DE\\s+)?(?:DE\\s+)?(?:CERTIFICACI[ÓO]N|TIMBRAD)"
+      ],
+      "url_contains": "verificacfdi.facturaelectronica.sat.gob.mx/default.aspx"
+    },
+
+    "fields": {
+      "No_Factura": {
+        "type": "string",
+        "required": true,
+        "unique_key": {
+          "normalize": "upper"
+        },
+        "qr_source": {
+          "param": "id",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+        },
+        "hint": "Folio fiscal (UUID) del CFDI: los 36 caracteres con guiones. La etiqueta cambia en cada formato — 'UUID:', 'Folio fiscal', 'Folio Fiscal (UUID)', 'Folio Fiscal:' — y también aparece dentro de la cadena original, entre barras verticales, si en la cabecera no se ve. Copiarlo carácter por carácter, con sus guiones y sin cambiar mayúsculas. NUNCA la serie ni el folio del emisor ('A', '23451', 'Juarez - 9755', 'B2472181', 'AXCR 24851'): ésos son consecutivos internos del proveedor, no el folio fiscal.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+            "message": "No_Factura debe ser el UUID (folio fiscal) del CFDI, no la serie ni el folio del emisor"
+          }
+        ]
+      },
+      "Fecha_Factura": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de EMISIÓN del comprobante, normalizada a YYYY-MM-DD. Se imprime en formatos muy distintos: '2026/07/30 10:27:53', '27/7/2026 15:15:27', '2026-07-28T13:16:00', '29/Jul/2026 16:58:47'. Si el documento trae además fecha de timbrado o de certificación, la de emisión es la primera; si solo se ve una, usar ésa. NO es la fecha de pago ni la de vencimiento.",
+        "validation": []
+      },
+      "Razon": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o razón social del EMISOR (quien cobra el gasto), completo y tal como está impreso, sin el RFC ni el domicilio: 'MARTHA CELIA VELOZ OÑATE', 'LABORATORIO DE AGRODIAGNOSTICO FITOLAB', 'SERVICIO NACIONAL DE SANIDAD INOCUIDAD Y CALIDAD AGROALIMENTARIA', 'CASA HERNANDEZ DE CIUDAD JUAREZ', 'SERV EN COMERCIO EXTERIOR DE LA FRONTERA'. No recortarlo ni abreviarlo: el ERP lo recorta al ancho de su columna. NO es el receptor/cliente (el importador), que suele imprimirse igual de grande y a veces antes.",
+        "validation": []
+      },
+      "Concepto": {
+        "type": "string",
+        "required": true,
+        "hint": "Descripción del PRIMER concepto de la tabla de conceptos, tal como está impresa y completa. Si el comprobante trae varios conceptos, aquí va solo el primero en el orden impreso: los demás viajan en CONCEPTOS. No resumir, no traducir, no quitar acentos. NO incluir aquí los renglones de la tabla de 'Pagos hechos por su cuenta' (ésos van en GASTOS_CUENTA_TERCEROS).",
+        "validation": []
+      },
+      "Importe_Pesos": {
+        "type": "number",
+        "required": true,
+        "hint": "SUBTOTAL del comprobante: la suma de los importes de los conceptos, ANTES de IVA y antes de retenciones, sin símbolo de moneda ni separadores de miles. Es el renglón etiquetado 'Subtotal', 'SubTotal' o 'Importe' (335.00 en un comprobante de honorarios de 335 + 53.60 de IVA). NUNCA el total a pagar, NUNCA el 'SubTotal' que ya incluye IVA (algunos formatos etiquetan así el 388.60 = 335 + 53.60), NUNCA el 'Total con letra' y NUNCA el total global de gastos y honorarios ni el 'Saldo' de la tabla de pagos por cuenta del cliente (52,416.21 en la muestra). Si el comprobante trae retenciones, el ERP resta ISR e IVARET después: aquí va el subtotal impreso.",
+        "validation": [
+          {
+            "rule_type": "custom_formula",
+            "formula": "SUBTOTAL_CFDI - ISR - IVARET",
+            "tolerance": 0.02,
+            "message": "Importe_Pesos debe ser el subtotal NETO de retenciones (subtotal - ISR - IVARET): esta factura trae retenciones, así que el subtotal impreso no es el importe que se carga al pedimento"
+          }
+        ]
+      },
+      "IVA": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "IVA TRASLADADO del comprobante, el monto no la tasa: el renglón 'IVA', 'IVA(16%)', 'IVA 16%', 'Impuestos Trasladados' o la columna de impuestos de los conceptos sumada. 0 (o ausente) cuando el comprobante no causa IVA, como un pago de derechos con ObjetoImp 01. NO confundir con IVARET (IVA retenido): en la factura de honorarios de la muestra conviven IVA 53.60 y Ret. I.V.A. 35.73.",
+        "validation": []
+      },
+      "ISR": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Monto de ISR RETENIDO, no el porcentaje: el renglón '10% Ret. I.S.R.', 'Retención ISR' o la retención con impuesto 001. Solo aparece cuando el emisor es persona física (típicamente el agente aduanal); en un gasto de tercero normalmente no existe y va 0.",
+        "validation": []
+      },
+      "IVARET": {
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "hint": "Monto de IVA RETENIDO, no el porcentaje: el renglón 'Ret. I.V.A.', 'Retención IVA' o la retención con impuesto 002 (35.73 en la muestra). Distinto de IVA, que es el trasladado. Va 0 cuando no hay retención.",
+        "validation": []
+      },
+      "Dolar": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "MONEDA",
+          "cases": [
+            {
+              "when": {
+                "eq": "MXN"
+              },
+              "value": 0,
+              "label": "Factura en pesos: el ERP no guarda tipo de cambio"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no leído: 0 cuando el comprobante está en MXN, aunque imprima 'Tipo de cambio 1'. En moneda extranjera queda nulo a propósito — el tipo de cambio impreso va en TIPO_CAMBIO_CFDI y la conversión la decide el ERP.",
+        "validation": []
+      },
+      "Importe_Dolar": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "MONEDA",
+          "cases": [
+            {
+              "when": {
+                "eq": "MXN"
+              },
+              "value": 0,
+              "label": "Factura en pesos: no hay importe en dólares"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no leído: 0 cuando el comprobante está en MXN. En moneda extranjera queda nulo a propósito — el importe en esa moneda es SUBTOTAL_CFDI.",
+        "validation": []
+      },
+      "Otros_Gastos": {
+        "type": "number",
+        "required": false,
+        "computed": true,
+        "derived": {
+          "from": "ISR",
+          "cases": [
+            {
+              "when": {
+                "gt": 0
+              },
+              "value": 0,
+              "label": "Honorarios del agente aduanal (factura con retenciones)"
+            }
+          ],
+          "default": 1
+        },
+        "hint": "Calculado, no impreso: 1 = gasto pagado a un tercero, 0 = honorarios de la propia agencia aduanal. Se decide por la retención de ISR, que es la huella fiscal de los honorarios del agente; la prueba autoritativa (emisor = la agencia del pedimento) la hace el ERP con EMISOR_RFC.",
+        "validation": []
+      },
+
+      "PEDIMENTO_REFERENCE": {
+        "type": "string",
+        "required": false,
+        "hint": "Consecutivo del pedimento al que se carga este gasto: SOLO los 7 dígitos (6001803), o los 15 si el documento imprime el pedimento completo ('26 07 0823 6001803' -> 260708236001803, sin espacios). Cada proveedor lo etiqueta distinto y hay que buscarlo en todo el documento: 'OBSERVACIONES, PEDIMENTOS:' seguido del número; 'Pedimento:' o 'Pedimento' en el encabezado; 'REF:' o 'Observaciones del contribuyente:' con la forma 'P0823 6001803'; o dentro de la descripción de un concepto, como 'PED.0823-6001803'. Cuando el número viene precedido de otro de 3-4 dígitos ('0823-6001803', 'P0823 6001803'), ese prefijo es la PATENTE de la agencia y NO forma parte de este campo: aquí van solo los 7 dígitos finales. Dejarlo vacío si el documento no cita ningún pedimento — no deducirlo del nombre del archivo ni de otro documento.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(?:\\d{7}|\\d{15})$",
+            "message": "La referencia de pedimento debe contener 7 o 15 dígitos, sin la patente ni separadores"
+          }
+        ]
+      },
+
+      "EMISOR_RFC": {
+        "type": "string",
+        "required": true,
+        "qr_source": {
+          "param": "re",
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        },
+        "hint": "RFC del EMISOR (quien cobra el gasto), 12 caracteres si es persona moral y 13 si es física. Es el que está junto a la razón social del emisor, no el del cliente. El ERP lo usa para resolver el proveedor y la agencia.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del emisor tiene un formato inválido"
+          }
+        ]
+      },
+      "EMISOR_REGIMEN_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave numérica del régimen fiscal del emisor (601, 603, 612...), sin la descripción que suele acompañarla.",
+        "validation": []
+      },
+      "RECEPTOR_RFC": {
+        "type": "string",
+        "required": true,
+        "qr_source": {
+          "param": "rr",
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        },
+        "hint": "RFC del RECEPTOR: el importador al que se le factura el gasto. Está en el bloque de cliente/receptor.",
+        "validation": [
+          {
+            "rule_type": "expected_value_by_app",
+            "message": "El RFC receptor no corresponde a la empresa configurada: este gasto no es del importador"
+          }
+        ]
+      },
+      "RECEPTOR_NOMBRE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre o razón social del receptor/cliente, tal como está impreso.",
+        "validation": []
+      },
+      "USO_CFDI": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave de uso del CFDI del receptor (G03, G01...), sin la descripción.",
+        "validation": []
+      },
+
+      "VERSION_CFDI": {
+        "type": "string",
+        "required": false,
+        "hint": "Versión del comprobante impresa como 'Versión: 4.0' o 'VERSION: 4.0'. Dejar vacío si el documento no es un CFDI (un recibo simple sin timbrado).",
+        "validation": []
+      },
+      "TIPO_COMPROBANTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave del tipo de comprobante: la letra sola ('I'), aunque se imprima como 'I - Ingreso' o 'I-Ingreso'. Un gasto aduanal es de ingreso.",
+        "validation": []
+      },
+      "SERIE_CFDI": {
+        "type": "string",
+        "required": false,
+        "hint": "Serie del emisor ('A', 'B', 'Juarez', 'AXCR'), si el documento la imprime. No es parte de No_Factura.",
+        "validation": []
+      },
+      "FOLIO_CFDI": {
+        "type": "string",
+        "required": false,
+        "hint": "Folio consecutivo del emisor ('23451', '9755', '2472181', '24851', '11353'). No es No_Factura, que es el UUID.",
+        "validation": []
+      },
+      "FECHA_TIMBRADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Fecha y hora de timbrado o certificación del CFDI, tal como está impresa ('2026-07-30T10:28:20', 'Julio 27 2026 - 15:15:30'). Distinta de Fecha_Factura, que es la de emisión.",
+        "validation": []
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave de forma de pago (03, 99...), sin la descripción que la acompaña.",
+        "validation": []
+      },
+      "METODO_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Clave de método de pago (PUE, PPD), sin la descripción.",
+        "validation": []
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": true,
+        "hint": "Código de 3 letras de la moneda del comprobante: MXN, USD, EUR. Se imprime como 'Moneda: MXN', 'MXN - Peso Mexicano' o 'US$'. Aquí va solo el código.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^MXN$",
+            "message": "Gasto en moneda extranjera: Importe_Pesos necesita conversión (usar TIPO_CAMBIO_CFDI y SUBTOTAL_CFDI) antes de insertarlo en el ERP"
+          }
+        ]
+      },
+      "TIPO_CAMBIO_CFDI": {
+        "type": "number",
+        "required": false,
+        "hint": "Tipo de cambio impreso en el comprobante, si lo trae. Es dato de auditoría: la columna Dolar del ERP se calcula aparte (ver Dolar).",
+        "validation": []
+      },
+
+      "CONCEPTOS": {
+        "type": "array",
+        "required": true,
+        "hint": "Tabla principal de conceptos del comprobante: una fila por renglón facturado, en el orden impreso. Los encabezados cambian en cada formato ('CANT. / U. MED. / CVE PROD. / DESCRIPCION / IMPUESTO / P. UNITARIO / IMPORTE', 'Cantidad / Clave Unidad SAT / Concepto / Descripción / Valor Unitario / Impuestos / Importe', 'ClaveProdServ / Cantidad / Clave Unidad / Descripción / Precio Unitario / Importe'). Extraer TODAS las filas, no solo la primera: un comprobante de maniobras puede traer acceso, maniobras, muestreo y almacenaje como cuatro renglones. NO incluir aquí los renglones de la tabla de 'Pagos hechos por su cuenta' (van en GASTOS_CUENTA_TERCEROS) ni los renglones de totales/impuestos del pie.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "El comprobante debe traer al menos un concepto de gasto"
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "CLAVE_PRODUCTO_SERVICIO": {
+            "type": "string",
+            "required": false,
+            "hint": "Clave SAT de producto o servicio de esta fila, 8 dígitos (85151508, 93161700, 83112600). Algunos formatos la imprimen seguida de su descripción ('81141601 - Logística'): aquí van solo los dígitos.",
+            "validation": [
+              {
+                "rule_type": "regex",
+                "pattern": "^\\d{8}$",
+                "message": "La clave de producto o servicio debe contener ocho dígitos"
+              }
+            ]
+          },
+          "NUMERO_IDENTIFICACION": {
+            "type": "string",
+            "required": false,
+            "hint": "Número de identificación interno del emisor para esta fila ('SER008', 'SERV007', '1', '23'), si la tabla lo imprime.",
+            "validation": []
+          },
+          "CANTIDAD": {
+            "type": "number",
+            "required": false,
+            "hint": "Cantidad de esta fila (1.00, 5.00), sin la unidad.",
+            "validation": []
+          },
+          "CLAVE_UNIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Clave de unidad SAT de esta fila, normalmente E48. Si se imprime como 'E48 - Unidad de servicio', aquí va solo la clave; el texto va en UNIDAD.",
+            "validation": []
+          },
+          "UNIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Unidad en palabras tal como está impresa ('SERVICIO', 'SERV', 'Unidad de servicio'), si la tabla la trae aparte de la clave.",
+            "validation": []
+          },
+          "DESCRIPCION": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal y completa del concepto de esta fila, respetando acentos y saltos de línea convertidos en espacios. Si la descripción incluye la referencia del pedimento ('REVISIÓN FITOSANITARIA DE PAPA CONSUMO HUMANO PED.0823-6001803'), conservarla aquí igual: el número también se copia en PEDIMENTO_REFERENCE.",
+            "validation": []
+          },
+          "VALOR_UNITARIO": {
+            "type": "number",
+            "required": false,
+            "hint": "Valor o precio unitario de esta fila, sin símbolo de moneda ni separadores de miles.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "hint": "Importe de esta fila ANTES de impuestos, sin símbolo de moneda ni separadores de miles. Es cantidad x valor unitario (5.00 x 4,000.00 = 20,000.00), no el importe con IVA.",
+            "validation": []
+          },
+          "IVA_CONCEPTO": {
+            "type": "number",
+            "required": false,
+            "hint": "Monto de IVA trasladado de ESTA fila, cuando la tabla lo imprime por renglón ('IVA, - Importe: 224.00', '002-IVA-53.60'). Solo el monto.",
+            "validation": []
+          }
+        }
+      },
+
+      "SUBTOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "hint": "Subtotal fiscal del comprobante, el mismo número que Importe_Pesos cuando no hay retenciones: suma de los importes de los conceptos, antes de impuestos. Va aparte de Importe_Pesos porque es el dato tal como lo imprime el comprobante y con él se valida la aritmética del renglón. NUNCA el subtotal que ya incluye IVA ni el total.",
+        "validation": [
+          {
+            "rule_type": "sum_array",
+            "source": "CONCEPTOS.IMPORTE",
+            "tolerance": 0.02,
+            "message": "El subtotal del comprobante no coincide con la suma de los importes de sus conceptos"
+          }
+        ]
+      },
+      "TOTAL_CFDI": {
+        "type": "number",
+        "required": true,
+        "qr_source": {
+          "param": "tt",
+          "pattern": "^\\d+(?:\\.\\d{1,6})?$"
+        },
+        "hint": "TOTAL FISCAL del comprobante: subtotal + IVA trasladado - retenciones. Se recupera preferentemente del parámetro tt del QR del SAT, que algunos emisores rellenan con ceros a la izquierda. Puede venir con una etiqueta engañosa ('SubTotal 1 $319.37'). NUNCA el total global de gastos y honorarios, NUNCA el 'Saldo' a pagar de la tabla de pagos por cuenta del cliente y NUNCA la suma de los dos.",
+        "validation": [
+          {
+            "rule_type": "cfdi_total",
+            "formula": "SUBTOTAL_CFDI + IVA - ISR - IVARET",
+            "tolerance": 0.02,
+            "message": "El total del comprobante no cuadra con subtotal, IVA trasladado y retenciones: alguno de los importes que se cargan al pedimento está mal leído"
+          }
+        ]
+      },
+
+      "GASTOS_CUENTA_TERCEROS": {
+        "type": "array",
+        "required": false,
+        "hint": "Solo en la factura de la AGENCIA aduanal: la tabla 'Pagos hechos por su cuenta deducibles segun el art 41 del RLISR' (o equivalente), con una fila por concepto pagado por cuenta del cliente — IMPUESTOS ADUANALES, MUESTREO, PAGO DE DERECHOS, PUNTO DE INSPECCION, OTROS. NO son conceptos fiscales del comprobante: no mezclarlas con CONCEPTOS y no sumarlas a SUBTOTAL_CFDI. Dejar vacío en cualquier factura que no traiga esa tabla, que es el caso de todo gasto de tercero.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "CONCEPTO": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal del gasto pagado por cuenta del cliente, tal como está impresa.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": true,
+            "hint": "Importe de esta fila, sin símbolo de moneda ni separadores de miles.",
+            "validation": []
+          }
+        }
+      },
+
+      "QR_GASTO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "qr_source": "payload",
+        "hint": "URL completa decodificada del QR de verificación CFDI del SAT. La llena el pipeline determinísticamente; nunca inferirla ni reconstruirla desde los campos impresos.",
+        "validation": []
+      },
+      "QR_SELLO_ULTIMOS_8": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "qr_source": {
+          "param": "fe",
+          "pattern": "^[A-Za-z0-9+/]{6,12}={0,2}$"
+        },
+        "hint": "Valor del parámetro fe del QR, los últimos caracteres del sello digital. Conservar mayúsculas, minúsculas, signos y el relleno Base64.",
+        "validation": []
+      },
+      "GASTO_QR_VALIDO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "qr_source": "valid",
+        "qr_requires": [
+          "No_Factura",
+          "EMISOR_RFC",
+          "RECEPTOR_RFC",
+          "TOTAL_CFDI",
+          "QR_SELLO_ULTIMOS_8"
+        ],
+        "hint": "True solo cuando el QR oficial del CFDI permitió recuperar UUID, RFC emisor, RFC receptor, total fiscal y fragmento del sello. Es informativo: un comprobante sin QR se extrae del texto igual y no se marca inválido por eso.",
+        "validation": []
+      }
+    },
+
+    "cross_field_validation": []
+  }
+}

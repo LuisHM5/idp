@@ -93,9 +93,9 @@ test("stale-row detection ignores disabled and internal DynamoDB entries", () =>
   );
 });
 
-test("the repository ships 21 active catalogs with explicit maturity", () => {
+test("the repository ships 23 active catalogs with explicit maturity", () => {
   const types = discoverCatalogTypes(resolve("catalogs"));
-  assert.equal(types.length, 21);
+  assert.equal(types.length, 23);
   assert.ok(types.every(({ entry }) => ["stable", "beta"].includes(entry.catalog_status)));
 
   const beta = new Map(
@@ -116,11 +116,18 @@ test("the repository ships 21 active catalogs with explicit maturity", () => {
     "IDENTIFICACION",
     "PASAPORTE",
     "PEDIMENTO_ERP_XML",
+    "PEDIMENTO_GASTOS_ADUANALES_ERP",
+    "PEDIMENTO_GASTOS_ADUANALES_ERP_XML",
   ]);
   assert.equal(beta.get("COMPROBANTE_DOMICILIO").segmentation_candidate, false);
   assert.equal(beta.get("CEDULA_PROFESIONAL").segmentation_candidate, false);
   assert.equal(beta.get("COMPROBANTE_ESTUDIOS").segmentation_candidate, false);
   assert.equal(beta.get("IDENTIFICACION").segmentation_candidate, false);
+  // The ERP renderings of a document that already has a canonical type are
+  // chosen by declaring them, never by a text classifier — same reason as
+  // PEDIMENTO_ERP (see that catalog's __COMENTARIO_segmentation_candidate__).
+  assert.equal(beta.get("PEDIMENTO_GASTOS_ADUANALES_ERP").segmentation_candidate, false);
+  assert.equal(beta.get("PEDIMENTO_GASTOS_ADUANALES_ERP_XML").segmentation_candidate, false);
   for (const typeId of ["CURP", "ACTA_NACIMIENTO", "CONSTANCIA_NSS", "PASAPORTE"]) {
     assert.notEqual(beta.get(typeId).segmentation_candidate, false);
   }
