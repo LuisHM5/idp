@@ -1195,6 +1195,62 @@ Reglas del mecanismo (`pipeline/derived.py`):
   escrito **no matchea** (en vez de matchear siempre) y queda logueado.
 - Sirve en los tres pipelines (PDF, XML y tabular), y un tipo que no declare
   ningún `derived` no paga nada: el paso no hace trabajo.
+- **Un `derived` puede leer otro `derived`** (`TIPO_DOCUMENTO` desde
+  `SIGLAS_DOCUMENTO`). Se resuelven **por dependencia, no por orden de
+  declaración**: un catálogo sincronizado a DynamoDB vuelve como Map y un Map
+  no conserva el orden de sus claves. Una dependencia circular no truena: se
+  loguea y se resuelve en el orden declarado.
+
+#### Leer el nombre del archivo (`$FILE_NAME`), `from` por caso y `keep_extracted`
+
+Tres extensiones opcionales del mismo bloque; un `derived` que no use ninguna se
+comporta exactamente igual que antes. El caso real es `SIGLAS_DOCUMENTO` de
+`PEDIMENTO_GASTOS_ADUANALES_ERP`/`_XML`: quien sube nombra el archivo
+`<pedimento>_<SIGLA><n>.<ext>` (`2607-0823-6001803_GT1.pdf`), y eso es un hecho
+que ya declaró, no algo que haya que pagarle a un modelo por adivinar.
+
+```jsonc
+"SIGLAS_DOCUMENTO": {
+  "type": "string",
+  "required": true,
+  "hint": "Sigla del tipo de documento, decidida por contenido: II = ..., GT = ...",
+  "derived": {
+    "from": "$FILE_NAME",                  // variable de contexto, no un campo
+    "keep_extracted": true,                // sin match -> se queda lo que leyó el modelo
+    "cases": [
+      { "when": { "matches": "(?:^|[_\\-\\s])(?:II|FAA)\\d*\\.[A-Za-z0-9]+$" }, "value": "II" },
+      { "when": { "matches": "(?:^|[_\\-\\s])GT\\d*\\.[A-Za-z0-9]+$" },        "value": "GT" },
+      // un caso puede leer OTRO campo: gana sobre el `from` del bloque solo en ese caso
+      { "from": "ISR", "when": { "gt": 0 }, "value": "II", "label": "Decidido por contenido: retención de ISR" }
+    ]
+  }
+}
+```
+
+- **`$FILE_NAME`** es el nombre base del archivo subido. De la key de S3
+  (`raw/{TIPO}/{uuid}/archivo.pdf`) solo se conserva el último segmento: ni el
+  TIPO ni el uuid llegan al patrón. El conjunto de variables `$` es cerrado
+  (`pipeline/derived.py::build_context`); una desconocida no vale nada y queda
+  logueada. Un valor decidido desde una variable de contexto lleva confianza
+  **1.0**: el nombre es lo que mandó quien subió, byte por byte. En un PDF con
+  varios segmentos todos ven el mismo nombre — describe al ARCHIVO.
+- **Ancla el patrón.** `matches` es un `re.search`: una sigla de una letra (`P`)
+  buscada sin ancla matchea medio alfabeto. El patrón de arriba exige la sigla
+  al final, tras `_`/`-`/espacio y justo antes de la extensión.
+- **`from` por caso.** Permite "lo dice el nombre; si no, la retención de ISR;
+  si no, el concepto" como UNA lista ordenada, en vez de una cadena de campos
+  auxiliares que acabarían todos en la salida. La confianza se hereda del campo
+  que leyó **el caso que decidió**.
+- **`keep_extracted: true`** — cuando ningún caso matchea, se conserva lo que la
+  extracción dejó en el campo en vez de pisarlo con `default`. Es lo que permite
+  un campo determinista cuando la señal barata existe y leído por el modelo
+  cuando no: el campo lleva `hint` y **no** lleva `computed` (si lo llevara
+  saldría del prompt y no habría lectura que conservar). El valor conservado no
+  se re-etiqueta — sigue siendo `MODEL_EXTRACTION` con la confianza del modelo —,
+  así que en el resultado se distinguen solos: `source: "DERIVED"` = lo dijo el
+  nombre, sin `source` = lo leyó el modelo. Si tampoco hubo lectura, sale el
+  `default`. En un tipo XML/tabular no hay modelo: ahí el contenido se decide
+  con casos `from` sobre campos ya extraídos y el campo sí es `computed`.
 
 **¿Código o IA?** El criterio para decidir dónde va una regla:
 

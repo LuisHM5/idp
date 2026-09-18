@@ -43,7 +43,7 @@ from validators import engine
 from validators.engine import ValidationContext
 
 from . import confidence as conf_policy
-from .derived import apply_derived_fields
+from .derived import apply_derived_fields, build_context
 from .liquidacion import apply_liquidacion_normalizada
 from .normalize import parse_amount
 from .result_common import build_tracking, checks_to_json, error_result
@@ -385,7 +385,9 @@ def process_tabular(
     # Config-driven derived fields (`derived` blocks in the catalog) — same
     # convention and same ordering as the PDF pipeline; a no-op for a type
     # that declares none. See catalogs/README.md.
-    derived = apply_derived_fields(entity_map, confidences, entry)
+    derived = apply_derived_fields(
+        entity_map, confidences, entry, build_context(source_name)
+    )
 
     ctx = ValidationContext(expected_values=expected_values, sibling_documents=[], document_text="")
     resolved_tree, checks, effective_confidences = engine.resolve_field_tree(

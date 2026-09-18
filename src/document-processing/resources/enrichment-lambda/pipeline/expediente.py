@@ -34,7 +34,7 @@ from document_catalog import (
 from validators import engine
 from validators.engine import RuleCheck, ValidationContext
 
-from .derived import SOURCE_DERIVED, apply_derived_fields
+from .derived import SOURCE_DERIVED, apply_derived_fields, build_context
 from .liquidacion import apply_liquidacion_normalizada
 from .normalize import (
     digits_exact,
@@ -104,6 +104,7 @@ def _extract_segment(
     pages: List[PageText],
     model_id: Optional[str],
     reader: Optional[Any] = None,
+    source_name: str = "",
 ) -> Dict[str, Any]:
     """Extract one segment into a document dict. Runs in a worker thread.
 
@@ -111,7 +112,9 @@ def _extract_segment(
     concurrently over all segments without shared mutable state. `reader` is a
     shared pypdf.PdfReader over the whole file (same sharing pattern
     pdf_pages.load_pages already uses across its OCR worker threads) — only
-    read from when the segment's catalog declares a QR source.
+    read from when the segment's catalog declares a QR source. `source_name`
+    is the upload's name, which only `derived` blocks reading `$FILE_NAME` use
+    — it describes the FILE, so every segment cut from it sees the same one.
     """
     seg_pages = [p for p in pages if seg.page_start <= p.number <= seg.page_end]
     entry = get_type_entry(seg.doc_type)
@@ -196,7 +199,8 @@ def _extract_segment(
         # page. After the liquidation build on purpose, so a rule can read either
         # the raw extraction or a normalized concept total.
         derived = apply_derived_fields(
-            doc["_entities"], doc.setdefault("_confidences", {}), entry
+            doc["_entities"], doc.setdefault("_confidences", {}), entry,
+            build_context(source_name),
         )
         doc.setdefault("_recovered_sources", {}).update(derived.sources)
         if derived.labels:
@@ -483,7 +487,10 @@ def process_pdf(
     workers = min(_EXTRACT_WORKERS, len(segments)) or 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
         documents: List[Dict[str, Any]] = list(
-            pool.map(lambda seg: _extract_segment(seg, pages, model_id, qr_reader), segments)
+            pool.map(
+                lambda seg: _extract_segment(seg, pages, model_id, qr_reader, source_name),
+                segments,
+            )
         )
     _mark("extraction")
 

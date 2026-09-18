@@ -1,7 +1,7 @@
 {
   "PEDIMENTO_GASTOS_ADUANALES_ERP": {
     "catalog_status": "beta",
-    "schema_version": "1.0.0",
+    "schema_version": "1.1.0",
     "display_name": "Gastos aduanales del pedimento (mapeo ERP)",
     "aliases": [
       "gastos aduanales erp",
@@ -32,6 +32,8 @@
       "Dolar": "Dolar — tipo de cambio aplicado. El ERP guarda 0 cuando la factura está en pesos, aun cuando el comprobante imprima 'Tipo de cambio 1', así que se deriva de MONEDA. Ver __COMENTARIO_moneda__.",
       "Importe_Dolar": "Importe_Dolar — importe en moneda extranjera. 0 cuando MONEDA=MXN. Ver __COMENTARIO_moneda__.",
       "Otros_Gastos": "Otros_Gastos — bandera 0/1. Ver __COMENTARIO_otros_gastos__.",
+      "SIGLAS_DOCUMENTO": "sin columna todavía en facturas_aduanales: la sigla canónica del tipo de documento (P, HE, II, OLI, PFA, GT, PS, FPE). Ver __COMENTARIO_tipo_documento__.",
+      "TIPO_DOCUMENTO": "sin columna todavía en facturas_aduanales: el nombre del tipo de documento que corresponde a SIGLAS_DOCUMENTO ('Honorarios', 'Operaciones Logísticas', 'Otros Servicios Aduanales / Gastos de Terceros'...). Ver __COMENTARIO_tipo_documento__.",
       "PEDIMENTO_REFERENCE": "sin columna en esta tabla: el ERP liga el gasto por Num_Pedimento (su id interno). Este campo es el consecutivo del pedimento tal como lo cita la factura, y es lo que el ERP usa para resolver Num_Pedimento. Nombre canónico (no del ERP) a propósito: es el mismo que usa FACTURA_HONORARIOS, así que la regla cross-documento `same_pedimento` de _shared.json ya sabe leerlo (ver __COMENTARIO_pedimento__).",
       "EMISOR_RFC / EMISOR_NOMBRE_FISCAL": "sin columna: el ERP resuelve No_Agencia y el proveedor a partir del RFC del emisor.",
       "SUBTOTAL_CFDI / TOTAL_CFDI / MONEDA / TIPO_CAMBIO_CFDI / CONCEPTOS / GASTOS_CUENTA_TERCEROS / UUID y datos de timbrado / RECEPTOR_* / QR_*": "sin columna en facturas_aduanales: son los insumos fiscales con los que se valida la aritmética del renglón y se audita de dónde salió cada valor. Llevan nombre canónico en MAYÚSCULAS porque no son columnas del ERP — y porque el evaluador de fórmulas solo admite identificadores en mayúsculas (ver __COMENTARIO_validaciones__)."
@@ -56,6 +58,8 @@
     "__COMENTARIO_gastos_cuenta_terceros__": "GASTOS_CUENTA_TERCEROS solo aparece en la factura de la AGENCIA (el renglón de honorarios): es su tabla 'Pagos hechos por su cuenta deducibles segun el art 41 del RLISR', y sus importes son los TOTALES de las demás facturas del mismo pedimento. Verificado en la muestra: MUESTREO 8,200.00 = total del GT1, PAGO DE DERECHOS 3,356.00 = GT2, PUNTO DE INSPECCION 30,798.00 = GT3, OTROS 9,359.84 = OLI, y el Total 52,416.21 = esos cuatro + 383.00 de impuestos aduanales + los 319.37 de honorarios. Se declara porque es la única cuadratura disponible de 'los gastos que capturé suman lo que la agencia me cobró', y no puede vivir en el XML (el CFDI no la contiene). NO son conceptos fiscales: no van en CONCEPTOS, no entran en SUBTOTAL_CFDI y su total NUNCA es Importe_Pesos.",
 
     "__COMENTARIO_fuera_de_alcance__": "El FPE de la muestra (test-docs/otros-gastos/*_FPE.pdf) NO es un gasto aduanal y no tiene renglón en el CSV: es la factura de la mercancía del proveedor extranjero (RPE LLC, US$9,240.00) más la declaratoria de la regla 3.1.8, viene escaneada y sin QR, y su pedimento sí está impreso completo ('26 07 0823 6001803'). Para ése el tipo correcto es FACTURA_FLETE_EXTRANJERO o un tipo de factura de proveedor extranjero, no éste. Se menciona aquí porque llega en la misma carpeta que los gastos y es el falso positivo obvio: un comprobante en dólares emitido por un proveedor del extranjero al importador no es un gasto de despacho.",
+
+    "__COMENTARIO_tipo_documento__": "Este tipo abarca varios documentos del expediente del pedimento, y el ERP necesita saber cuál es cada uno. La tabla del negocio: P = Pedimento; HE = Honorarios Extranjeros; II / FAA = Honorarios (dos nombres, el MISMO documento); OLI = Operaciones Logísticas; PFA = Fletes; GT = Otros Servicios Aduanales / Gastos de Terceros (llegan varios por pedimento: GT1, GT2, GT3...); PS = Permisos de Salud; FPE / PE = Factura de Proveedores Extranjeros. Solo II/FAA, OLI y GT llegan además como XML. SIGLAS_DOCUMENTO sale siempre en su forma CANÓNICA —II aunque el archivo diga FAA, FPE aunque diga PE, GT aunque diga GT3— para que el ERP compare contra ocho valores y no contra todas sus variantes; el consecutivo y la variante original no se pierden, siguen en el nombre del archivo (DocumentName / sourceFile). TIPO_DOCUMENTO es el nombre que corresponde a esa sigla, derivado de ella, así que los dos nunca se contradicen. La sigla se decide PRIMERO por el nombre del archivo: la convención de quien sube es '<pedimento>_<SIGLA><consecutivo>.<ext>' (2607-0823-6001803_GT1.pdf), eso es un hecho que declaró el que subió el archivo y no algo que haya que adivinar — determinista, $0 y con confianza 1.0 (`derived` con `from: \"$FILE_NAME\"`, ver catalogs/README.md). El patrón exige la sigla al FINAL del nombre, precedida de '_', '-' o espacio, justo antes de la extensión: P es una sola letra y buscarla en cualquier parte del nombre matchearía medio alfabeto. Un nombre sin sigla reconocible ('26 07 3435 6041353 CG.pdf', 'factura.pdf') no matchea nada y se cae al contenido. Aquí el contenido lo lee el MODELO: SIGLAS_DOCUMENTO NO es `computed`, lleva un hint con el criterio de cada sigla, y `keep_extracted: true` hace que esa lectura sobreviva cuando ningún caso del nombre matcheó (y que se descarte cuando sí: el nombre manda). Por eso en el resultado se distinguen solos: source DERIVED con confianza 1.0 = lo dijo el nombre; MODEL_EXTRACTION con la confianza del modelo = lo decidió por contenido. El criterio del hint sigue el mismo orden que las reglas deterministas del gemelo XML (retención de ISR -> II, concepto de logística -> OLI, lo demás -> GT) para que el mismo comprobante dé la misma sigla por las dos rutas. El orden de declaración entre los dos campos no importa: `derived` resuelve por dependencia, y un catálogo que pasó por DynamoDB no conserva el orden de sus claves.",
 
     "__COMENTARIO_validaciones__": "Las reglas `custom_formula`/`cfdi_total` solo admiten identificadores en MAYÚSCULAS como operandos (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:156); un operando como `Importe_Pesos` haría que la regla se marque `skipped` y quede inerte. El campo DECLARADO sí puede llevar nombre mixto (se resuelve por `entity_map.get`, no por el evaluador), así que la aritmética se escribe con operandos canónicos —SUBTOTAL_CFDI, IVA, ISR, IVARET, TOTAL_CFDI, que ya son mayúsculas— y se declara sobre el campo del ERP. Las dos reglas se cubren entre sí: si las retenciones se leyeran mal, Importe_Pesos podría pasar por casualidad pero TOTAL_CFDI fallaría. Efecto secundario conocido: al fallar, `custom_formula` marca también cada OPERANDO como 'possible source of failed check' (`operand_fields`), así que en una factura con retenciones se marcan además ISR, IVARET y SUBTOTAL_CFDI aunque estén bien leídos — es deliberado en el motor (de una suma que no cuadra no se sabe qué sumando está mal) y el único campo a corregir es Importe_Pesos.",
 
@@ -205,6 +209,134 @@
           "default": 1
         },
         "hint": "Calculado, no impreso: 1 = gasto pagado a un tercero, 0 = honorarios de la propia agencia aduanal. Se decide por la retención de ISR, que es la huella fiscal de los honorarios del agente; la prueba autoritativa (emisor = la agencia del pedimento) la hace el ERP con EMISOR_RFC.",
+        "validation": []
+      },
+
+      "SIGLAS_DOCUMENTO": {
+        "type": "string",
+        "required": true,
+        "derived": {
+          "from": "$FILE_NAME",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])P\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "P"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])HE\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "HE"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])(?:II|FAA)\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "II"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])OLI\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "OLI"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])PFA\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "PFA"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])GT\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "GT"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])PS\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "PS"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])(?:FPE|PE)\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "FPE"
+            }
+          ]
+        },
+        "hint": "Sigla del tipo de documento dentro del expediente del pedimento, decidida POR CONTENIDO (cuando el nombre del archivo ya la trae, el pipeline usa ésa e ignora esta lectura). Exactamente UNA de estas, en este orden de descarte: II = factura de honorarios de la agencia o del agente aduanal (concepto 'HONORARIOS', retención de ISR, tabla de 'Pagos hechos por su cuenta'); OLI = operaciones logísticas (el concepto principal es un servicio de logística, p. ej. 'SERVICIOS POR LOGISTICA'); PFA = factura o comprobante de flete / transporte internacional; HE = honorarios o servicios cobrados por un proveedor del EXTRANJERO (invoice sin timbrado CFDI, por servicios, no por mercancía); PS = permiso, certificado o documentación sanitaria EN SÍ (no el CFDI con el que se pagan sus derechos: ése es GT); FPE = factura de la mercancía emitida por un proveedor extranjero; P = el pedimento; GT = cualquier otro servicio aduanal o gasto de tercero (derecho de acceso, maniobras, muestreo, almacenaje, revisión o certificado fitosanitario, pago de derechos ante SENASICA, punto de inspección) y es la respuesta cuando el documento es un gasto y no encaja en ninguna de las anteriores. Solo la sigla, en mayúsculas, sin consecutivo (GT, nunca GT1).",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(?:P|HE|II|OLI|PFA|GT|PS|FPE)$",
+            "message": "SIGLAS_DOCUMENTO debe ser una de P, HE, II, OLI, PFA, GT, PS, FPE, sin consecutivo"
+          }
+        ]
+      },
+      "TIPO_DOCUMENTO": {
+        "type": "string",
+        "required": true,
+        "computed": true,
+        "derived": {
+          "from": "SIGLAS_DOCUMENTO",
+          "cases": [
+            {
+              "when": {
+                "eq": "P"
+              },
+              "value": "Pedimento"
+            },
+            {
+              "when": {
+                "eq": "HE"
+              },
+              "value": "Honorarios Extranjeros"
+            },
+            {
+              "when": {
+                "eq": "II"
+              },
+              "value": "Honorarios"
+            },
+            {
+              "when": {
+                "eq": "OLI"
+              },
+              "value": "Operaciones Logísticas"
+            },
+            {
+              "when": {
+                "eq": "PFA"
+              },
+              "value": "Fletes"
+            },
+            {
+              "when": {
+                "eq": "GT"
+              },
+              "value": "Otros Servicios Aduanales / Gastos de Terceros"
+            },
+            {
+              "when": {
+                "eq": "PS"
+              },
+              "value": "Permisos de Salud"
+            },
+            {
+              "when": {
+                "eq": "FPE"
+              },
+              "value": "Factura de Proveedores Extranjeros"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no leído: el nombre del tipo de documento que corresponde a SIGLAS_DOCUMENTO. Nulo cuando la sigla no es una de la tabla.",
         "validation": []
       },
 

@@ -16,7 +16,12 @@ LAMBDA_DIR = REPO_ROOT / "src/document-processing/resources/enrichment-lambda"
 sys.path.insert(0, str(LAMBDA_DIR))
 
 from document_catalog import _parse_entry  # noqa: E402
-from pipeline.derived import SOURCE_DERIVED, apply_derived_fields  # noqa: E402
+from pipeline.derived import (  # noqa: E402
+    CONTEXT_CONFIDENCE,
+    SOURCE_DERIVED,
+    apply_derived_fields,
+    build_context,
+)
 
 
 def entry_con(campos):
@@ -24,10 +29,10 @@ def entry_con(campos):
     return _parse_entry("TIPO_DE_PRUEBA", {"schema_version": "4.0.0", "fields": campos})
 
 
-def derivar(campos, entities, confidences=None):
+def derivar(campos, entities, confidences=None, context=None):
     entry = entry_con(campos)
     confidences = dict(confidences or {})
-    derived = apply_derived_fields(entities, confidences, entry)
+    derived = apply_derived_fields(entities, confidences, entry, context)
     return entities, confidences, derived
 
 
@@ -276,3 +281,136 @@ def test_la_etiqueta_llega_al_arbol_resuelto():
     assert tree["TIPO_PAGO"]["value"] == 3
     assert tree["TIPO_PAGO"]["label"] == "Solo Pasivo"
     assert "label" not in tree["TOTAL"]  # nadie etiquetó este, sale como siempre
+
+
+# ---------------------------------------------------------------------------
+# Variables de contexto ($FILE_NAME), `from` por case y `keep_extracted`
+# ---------------------------------------------------------------------------
+
+SIGLA = {
+    "SIGLA": {
+        "type": "string",
+        "computed": True,
+        "derived": {
+            "from": "$FILE_NAME",
+            "cases": [
+                {"when": {"matches": r"(?:^|[_\-\s])GT\d*\.[A-Za-z0-9]+$"}, "value": "GT"},
+                {"from": "ISR", "when": {"gt": 0}, "value": "II", "label": "por contenido"},
+            ],
+            "default": None,
+        },
+    },
+    "ISR": {"type": "number"},
+}
+
+
+@pytest.mark.parametrize(
+    "source_name, esperado",
+    [
+        ("2607-0823-6001803_GT1.pdf", "2607-0823-6001803_GT1.pdf"),
+        ("raw/TIPO_GT/9f1c-uuid/2607-0823-6001803_GT1.pdf", "2607-0823-6001803_GT1.pdf"),
+        ("C:\\docs\\2607_GT1.pdf", "2607_GT1.pdf"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_el_contexto_solo_conserva_el_nombre_del_archivo(source_name, esperado):
+    """La key de S3 trae el TIPO y el uuid: si llegaran al patrón, un tipo
+    llamado `..._GT` haría matchear cualquier archivo."""
+    assert build_context(source_name) == {"$FILE_NAME": esperado}
+
+
+def test_una_variable_de_contexto_decide_con_confianza_plena():
+    entities, confidences, derived = derivar(
+        SIGLA, {"ISR": 33.5}, {"ISR": 0.8}, build_context("raw/T/uuid/2607_GT2.xml")
+    )
+    assert entities["SIGLA"] == "GT"  # el nombre va primero aunque ISR también matchearía
+    assert confidences["SIGLA"] == CONTEXT_CONFIDENCE
+    assert derived.sources["SIGLA"] == SOURCE_DERIVED
+    assert "SIGLA" not in derived.labels
+
+
+def test_un_case_con_su_propio_from_lee_otro_campo():
+    entities, confidences, derived = derivar(
+        SIGLA, {"ISR": 33.5}, {"ISR": 0.8}, build_context("factura.xml")
+    )
+    assert entities["SIGLA"] == "II"
+    assert confidences["SIGLA"] == 0.8  # hereda del campo que DECIDIÓ, no del `from` del bloque
+    assert derived.labels["SIGLA"] == "por contenido"
+
+
+def test_sin_contexto_las_variables_no_matchean_y_no_truenan():
+    """Quien llame sin contexto (código viejo, un test) obtiene lo de siempre."""
+    entities, confidences, _ = derivar(SIGLA, {"ISR": 0})
+    assert entities["SIGLA"] is None
+    assert "SIGLA" not in confidences
+
+
+def test_una_variable_desconocida_no_vale_nada():
+    campos = {"X": {"type": "string", "computed": True, "derived": {
+        "from": "$NO_EXISTE", "cases": [{"when": {"empty": False}, "value": "si"}], "default": "no"}}}
+    entities, confidences, _ = derivar(campos, {}, context=build_context("a.pdf"))
+    assert entities["X"] == "no"
+    assert "X" not in confidences  # nada que heredar de algo que no existe
+
+
+KEEP = {
+    "SIGLA": {
+        "type": "string",
+        "hint": "la lee el modelo",
+        "derived": {
+            "from": "$FILE_NAME",
+            "keep_extracted": True,
+            "cases": [{"when": {"matches": r"_GT\d*\."}, "value": "GT"}],
+        },
+    },
+}
+
+
+def test_keep_extracted_conserva_la_lectura_cuando_ningun_case_decide():
+    entities, confidences, derived = derivar(
+        KEEP, {"SIGLA": "OLI"}, {"SIGLA": 0.87}, build_context("factura.pdf")
+    )
+    assert entities["SIGLA"] == "OLI"
+    assert confidences["SIGLA"] == 0.87
+    assert "SIGLA" not in derived.sources  # sigue siendo MODEL_EXTRACTION: es lo que es
+
+
+def test_keep_extracted_no_protege_cuando_un_case_si_decide():
+    entities, confidences, derived = derivar(
+        KEEP, {"SIGLA": "OLI"}, {"SIGLA": 0.87}, build_context("x_GT3.pdf")
+    )
+    assert entities["SIGLA"] == "GT"
+    assert confidences["SIGLA"] == CONTEXT_CONFIDENCE
+    assert derived.sources["SIGLA"] == SOURCE_DERIVED
+
+
+def test_keep_extracted_sin_lectura_cae_al_default():
+    entities, _, derived = derivar(KEEP, {"SIGLA": "  "}, context=build_context("factura.pdf"))
+    assert entities["SIGLA"] is None
+    assert derived.sources["SIGLA"] == SOURCE_DERIVED
+
+
+def test_sin_keep_extracted_el_default_pisa_como_siempre():
+    campos = {"SIGLA": {**KEEP["SIGLA"], "derived": {**KEEP["SIGLA"]["derived"], "keep_extracted": False}}}
+    entities, _, _ = derivar(campos, {"SIGLA": "OLI"}, context=build_context("factura.pdf"))
+    assert entities["SIGLA"] is None
+
+
+def test_un_derivado_que_lee_otro_derivado_no_depende_del_orden_de_declaracion():
+    """Un catálogo que pasó por DynamoDB vuelve como Map y no conserva el orden
+    de sus claves: NOMBRE declarado ANTES que la SIGLA de la que depende tiene
+    que dar lo mismo."""
+    nombre = {"type": "string", "computed": True, "derived": {
+        "from": "SIGLA", "cases": [{"when": {"eq": "GT"}, "value": "Gastos de Terceros"}]}}
+    for campos in ({"NOMBRE": nombre, **SIGLA}, {**SIGLA, "NOMBRE": nombre}):
+        entities, confidences, _ = derivar(campos, {}, context=build_context("a_GT1.pdf"))
+        assert entities["NOMBRE"] == "Gastos de Terceros"
+        assert confidences["NOMBRE"] == CONTEXT_CONFIDENCE
+
+
+def test_una_dependencia_circular_no_cuelga_ni_truena():
+    a = {"type": "string", "computed": True, "derived": {"from": "B", "cases": [], "default": "a"}}
+    b = {"type": "string", "computed": True, "derived": {"from": "A", "cases": [], "default": "b"}}
+    entities, _, _ = derivar({"A": a, "B": b}, {})
+    assert entities == {"A": "a", "B": "b"}

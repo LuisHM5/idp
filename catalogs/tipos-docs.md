@@ -39,6 +39,37 @@ lo único que se necesita es el renglón de gastos del ERP y no la lectura fisca
 por familia, la pareja `PEDIMENTO_GASTOS_ADUANALES_ERP`/`_XML` cubre las cuatro
 familias (`FAA`, `GT*`, `OLI`) con un solo contrato.
 
+### `SIGLAS_DOCUMENTO` y `TIPO_DOCUMENTO` en la pareja de gastos ERP
+
+Como esa pareja abarca varios documentos del expediente, cada resultado dice
+cuál es con dos campos: la sigla **canónica** y el nombre que le corresponde.
+
+| En el nombre del archivo | `SIGLAS_DOCUMENTO` | `TIPO_DOCUMENTO` | PDF | XML |
+|---|---|---|---|---|
+| `P` | `P` | Pedimento | Sí | No |
+| `HE` | `HE` | Honorarios Extranjeros | Sí | No |
+| `II`, `FAA` | `II` | Honorarios | Sí | Sí |
+| `OLI` | `OLI` | Operaciones Logísticas | Sí | Sí |
+| `PFA` | `PFA` | Fletes | Sí | No |
+| `GT`, `GT1`, `GT2`, ... | `GT` | Otros Servicios Aduanales / Gastos de Terceros | Sí | Sí |
+| `PS` | `PS` | Permisos de Salud | Sí | No |
+| `FPE`, `PE` | `FPE` | Factura de Proveedores Extranjeros | Sí | No |
+
+Se decide **primero por el nombre del archivo** (`<pedimento>_<SIGLA><n>.<ext>`,
+la sigla al final y antes de la extensión; determinista, $0, confianza 1.0) y,
+si el nombre no la trae, **por contenido**: en el PDF la lee el modelo; en el XML
+son reglas sobre el CFDI (retención de ISR → `II`, primer concepto de logística
+→ `OLI`, cualquier otro CFDI timbrado → `GT`). El consecutivo (`GT3`) y la
+variante (`FAA`) no se pierden: siguen en el nombre del archivo.
+
+Esto **no contradice** la advertencia de arriba. La sigla dice la FAMILIA del
+documento (`GT` = gasto de tercero), y ésa sí es una convención estable de quien
+sube; lo que no es estable es qué gasto concreto trae el `GT1` contra el `GT2`,
+y por eso el `TYPE_ID` fino (`CFDI_PAGO_DERECHOS_SANITARIOS_XML` contra
+`CFDI_GASTO_TERCERO_XML`) se sigue eligiendo por contenido. La tabla completa se
+mapea aunque `P` y `FPE` no sean gastos: si alguien sube uno de ésos con este
+tipo, el resultado lo dice en vez de etiquetarlo como gasto.
+
 Todos los tipos `_XML` exigen `documentType` explícito en la subida y usan
 extracción determinística por XPath, con costo Bedrock de extracción igual a
 cero. Ver `catalogs/README.md`, sección “Tipos con fuente XML”.

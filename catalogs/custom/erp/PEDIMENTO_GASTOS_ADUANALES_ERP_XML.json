@@ -1,7 +1,7 @@
 {
   "PEDIMENTO_GASTOS_ADUANALES_ERP_XML": {
     "catalog_status": "beta",
-    "schema_version": "1.0.0",
+    "schema_version": "1.1.0",
     "display_name": "Gastos aduanales del pedimento (mapeo ERP, XML)",
     "aliases": [
       "gastos aduanales erp xml",
@@ -29,6 +29,8 @@
       "Dolar": "Dolar — tipo de cambio aplicado. El ERP guarda 0 cuando la factura está en pesos, INCLUSO si el CFDI imprime TipoCambio='1', así que se deriva de MONEDA en vez de copiar el atributo. Ver __COMENTARIO_moneda__.",
       "Importe_Dolar": "Importe_Dolar — importe en moneda extranjera. 0 cuando MONEDA=MXN. Ver __COMENTARIO_moneda__.",
       "Otros_Gastos": "Otros_Gastos — bandera 0/1. Ver __COMENTARIO_otros_gastos__.",
+      "SIGLAS_DOCUMENTO": "sin columna todavía en facturas_aduanales: la sigla canónica del tipo de documento (P, HE, II, OLI, PFA, GT, PS, FPE). Ver __COMENTARIO_tipo_documento__.",
+      "TIPO_DOCUMENTO": "sin columna todavía en facturas_aduanales: el nombre del tipo de documento que corresponde a SIGLAS_DOCUMENTO ('Honorarios', 'Operaciones Logísticas', 'Otros Servicios Aduanales / Gastos de Terceros'...). Ver __COMENTARIO_tipo_documento__.",
       "PEDIMENTO_REFERENCE": "sin columna en esta tabla: el ERP liga el gasto por Num_Pedimento (su id interno). Este campo es el consecutivo del pedimento tal como lo cita la factura, que es lo único con lo que el documento se puede amarrar al pedimento; el ERP resuelve Num_Pedimento buscando por él.",
       "EMISOR_RFC / EMISOR_NOMBRE / EMISOR_REGIMEN_FISCAL": "sin columna: el ERP resuelve No_Agencia (y el proveedor) a partir del RFC del emisor, no lo declara la extracción.",
       "SUBTOTAL_CFDI / TOTAL_CFDI / DESCUENTO_CFDI / MONEDA / TIPO_CAMBIO_CFDI / CONCEPTOS / VERSION_CFDI / SERIE_CFDI / FOLIO_CFDI / FECHA_TIMBRADO / TIPO_COMPROBANTE / FORMA_PAGO / METODO_PAGO / LUGAR_EXPEDICION / RECEPTOR_* / USO_CFDI": "sin columna en facturas_aduanales: son los insumos fiscales con los que se valida la aritmética del renglón (y con los que el ERP puede recalcular lo que no se puede derivar aquí). Llevan nombre canónico en MAYÚSCULAS, no nombre de columna, porque no son columnas — y porque el evaluador de fórmulas solo admite identificadores en mayúsculas (ver __COMENTARIO_validaciones__)."
@@ -47,6 +49,8 @@
     "__COMENTARIO_pedimento__": "Un CFDI de gasto aduanal casi nunca declara el pedimento en el nodo que el SAT reserva para eso (cfdi:InformacionAduanera): de los 5 XML de la muestra, NINGUNO lo usa, y solo uno cita el pedimento y lo hace dentro del texto libre de la descripción del concepto ('PED.0823-6001803' en el GT1). Los otros cuatro traen la referencia únicamente en la representación impresa, como addenda que el CFDI no contiene: 'Observaciones del contribuyente: P0823 6001803' (GT2), 'Pedimento: 6001803' (GT3), 'REF: P0823 6001803' (OLI), 'OBSERVACIONES, PEDIMENTOS: 6001803' (FAA). Ésa es la limitación real de la ruta XML frente al PDF, y es la razón por la que PEDIMENTO_REFERENCE es opcional aquí: el xpath prueba primero el nodo oficial y luego la descripción, y si el XML no lo dice el campo sale ausente en vez de inventado. El vínculo con el pedimento lo aporta entonces quien sube el archivo (ya sabe a qué pedimento lo está cargando) o el PDF.",
 
     "__COMENTARIO_importes_ausentes__": "IVA, ISR e IVARET salen AUSENTES —no en cero— cuando el CFDI no trae el nodo correspondiente: el GT2 de la muestra factura con ObjetoImp='01' y no lleva cfdi:Impuestos, y tres de los cinco no llevan retenciones. El `\"default\": 0` declarado en esos campos documenta la intención pero NO lo aplica el pipeline (solo `liquidacion.py` y `derived` leen `default`), y un campo opcional sin valor y válido se OMITE del envelope. Quien inserta debe interpretar ausente como 0, igual que lo hace el motor: en una fórmula un operando faltante cuenta como 0 y queda anotado en `details.assumptions` — por eso el `cfdi_total` del GT2 cuadra (3356 + 0) en vez de marcarse inerte.",
+
+    "__COMENTARIO_tipo_documento__": "Este tipo abarca varios documentos del expediente del pedimento, y el ERP necesita saber cuál es cada uno. La tabla del negocio: P = Pedimento; HE = Honorarios Extranjeros; II / FAA = Honorarios (dos nombres, el MISMO documento); OLI = Operaciones Logísticas; PFA = Fletes; GT = Otros Servicios Aduanales / Gastos de Terceros (llegan varios por pedimento: GT1, GT2, GT3...); PS = Permisos de Salud; FPE / PE = Factura de Proveedores Extranjeros. Solo II/FAA, OLI y GT llegan además como XML. SIGLAS_DOCUMENTO sale siempre en su forma CANÓNICA —II aunque el archivo diga FAA, FPE aunque diga PE, GT aunque diga GT3— para que el ERP compare contra ocho valores y no contra todas sus variantes; el consecutivo y la variante original no se pierden, siguen en el nombre del archivo (DocumentName / sourceFile). TIPO_DOCUMENTO es el nombre que corresponde a esa sigla, derivado de ella, así que los dos nunca se contradicen. La sigla se decide PRIMERO por el nombre del archivo: la convención de quien sube es '<pedimento>_<SIGLA><consecutivo>.<ext>' (2607-0823-6001803_GT1.pdf), eso es un hecho que declaró el que subió el archivo y no algo que haya que adivinar — determinista, $0 y con confianza 1.0 (`derived` con `from: \"$FILE_NAME\"`, ver catalogs/README.md). El patrón exige la sigla al FINAL del nombre, precedida de '_', '-' o espacio, justo antes de la extensión: P es una sola letra y buscarla en cualquier parte del nombre matchearía medio alfabeto. Un nombre sin sigla reconocible ('26 07 3435 6041353 CG.pdf', 'factura.pdf') no matchea nada y se cae al contenido. Aquí no hay modelo, así que el contenido se decide con reglas sobre campos ya extraídos, en el mismo bloque y en orden (cada `case` puede declarar su propio `from`): retención de ISR > 0 -> II (la misma huella fiscal que ya decide Otros_Gastos: el FAA de la muestra retiene 33.50); el PRIMER concepto habla de logística -> OLI ('SERVICIOS POR LOGISTICA' en la muestra; se mira la descripción y no la clave SAT porque el GT3 trae 81141601 en su tercer renglón, 'MANIOBRAS DE MUESTREO X CARGA', y no es un OLI); cualquier otro CFDI timbrado -> GT, que es lo único que queda: de la tabla, solo II/FAA, OLI y GT llegan como XML. Verificado contra los 5 XML de test-docs/otros-gastos con el nombre borrado: FAA->II, OLI->OLI, GT1/GT2/GT3->GT. Son PROXIES calibrados sobre ese corpus — un tercero persona física que retenga ISR saldría II — y por eso el nombre del archivo va primero y cada caso de contenido lleva su `label`: el resultado dice con qué se decidió. El orden de declaración entre los dos campos no importa: `derived` resuelve por dependencia, y un catálogo que pasó por DynamoDB no conserva el orden de sus claves.",
 
     "__COMENTARIO_validaciones__": "Las reglas `custom_formula`/`cfdi_total` solo admiten identificadores en MAYÚSCULAS como operandos (`_IDENT_RE = ^[A-Z][A-Z0-9_]*$`, validators/engine.py:156); un operando como `Importe_Pesos` haría que la regla se marque `skipped` y quede inerte. El campo DECLARADO sí puede llevar nombre mixto (se resuelve por `entity_map.get`, no por el evaluador), así que la aritmética se escribe con operandos canónicos — SUBTOTAL_CFDI, IVA, ISR, IVARET, TOTAL_CFDI, que ya son mayúsculas — y se declara sobre el campo del ERP. Las dos reglas se cubren entre sí: si los xpath de retenciones dejaran de resolver, Importe_Pesos pasaría por casualidad pero TOTAL_CFDI fallaría. Verificado contra las 5 filas del CSV: ninguna regla sale `skipped`. Efecto secundario conocido de `custom_formula`: al fallar marca también cada OPERANDO como 'possible source of failed check' (validators/engine.py, `operand_fields`), así que en una factura con retenciones se marcan además ISR, IVARET y SUBTOTAL_CFDI aunque sus valores estén bien leídos. Es deliberado en el motor —de una suma que no cuadra no se sabe qué sumando está mal— y no hay que perseguir esos tres: el único que hay que corregir es Importe_Pesos.",
 
@@ -181,6 +185,159 @@
           "default": 1
         },
         "hint": "Calculado, no impreso: 1 = gasto pagado a un tercero, 0 = honorarios de la propia agencia. Se decide por la retención de ISR, que es la huella fiscal de los honorarios del agente aduanal; la prueba autoritativa (emisor = la agencia del pedimento) la hace el ERP con EMISOR_RFC.",
+        "validation": []
+      },
+
+      "SIGLAS_DOCUMENTO": {
+        "type": "string",
+        "required": true,
+        "computed": true,
+        "derived": {
+          "from": "$FILE_NAME",
+          "cases": [
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])P\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "P"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])HE\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "HE"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])(?:II|FAA)\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "II"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])OLI\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "OLI"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])PFA\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "PFA"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])GT\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "GT"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])PS\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "PS"
+            },
+            {
+              "when": {
+                "matches": "(?:^|[_\\-\\s])(?:FPE|PE)\\d*\\.[A-Za-z0-9]+$"
+              },
+              "value": "FPE"
+            },
+            {
+              "from": "ISR",
+              "when": {
+                "gt": 0
+              },
+              "value": "II",
+              "label": "Decidido por contenido: CFDI con retención de ISR (honorarios)"
+            },
+            {
+              "from": "Concepto",
+              "when": {
+                "matches": "LOG[IÍ]STIC"
+              },
+              "value": "OLI",
+              "label": "Decidido por contenido: el concepto principal es un servicio de logística"
+            },
+            {
+              "from": "No_Factura",
+              "when": {
+                "not_empty": true
+              },
+              "value": "GT",
+              "label": "Decidido por contenido: CFDI de gasto sin retención de ISR ni concepto de logística"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no leído: la sigla del tipo de documento dentro del expediente del pedimento. Primero el nombre del archivo ('..._GT1.xml' -> GT); si no la trae, el contenido del CFDI.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(?:P|HE|II|OLI|PFA|GT|PS|FPE)$",
+            "message": "SIGLAS_DOCUMENTO debe ser una de P, HE, II, OLI, PFA, GT, PS, FPE"
+          }
+        ]
+      },
+      "TIPO_DOCUMENTO": {
+        "type": "string",
+        "required": true,
+        "computed": true,
+        "derived": {
+          "from": "SIGLAS_DOCUMENTO",
+          "cases": [
+            {
+              "when": {
+                "eq": "P"
+              },
+              "value": "Pedimento"
+            },
+            {
+              "when": {
+                "eq": "HE"
+              },
+              "value": "Honorarios Extranjeros"
+            },
+            {
+              "when": {
+                "eq": "II"
+              },
+              "value": "Honorarios"
+            },
+            {
+              "when": {
+                "eq": "OLI"
+              },
+              "value": "Operaciones Logísticas"
+            },
+            {
+              "when": {
+                "eq": "PFA"
+              },
+              "value": "Fletes"
+            },
+            {
+              "when": {
+                "eq": "GT"
+              },
+              "value": "Otros Servicios Aduanales / Gastos de Terceros"
+            },
+            {
+              "when": {
+                "eq": "PS"
+              },
+              "value": "Permisos de Salud"
+            },
+            {
+              "when": {
+                "eq": "FPE"
+              },
+              "value": "Factura de Proveedores Extranjeros"
+            }
+          ],
+          "default": null
+        },
+        "hint": "Calculado, no leído: el nombre del tipo de documento que corresponde a SIGLAS_DOCUMENTO. Nulo cuando la sigla no es una de la tabla.",
         "validation": []
       },
 
