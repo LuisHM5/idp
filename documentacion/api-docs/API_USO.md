@@ -752,6 +752,8 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 ### Notas del upload
 
+- **`metadata.proveedor` en tipos con verificación de autenticidad** (hoy `CARTA_NOM35`). Esos tipos comparan la firma, el sello y el logotipo del documento contra los que el emisor tiene **registrados con anticipación**, y saben de qué emisor se trata por esta llave: `"metadata": {"proveedor": "10040"}`. Es opcional y nunca rechaza por sí sola: sin ella — o si ese proveedor aún no tiene referencias — el documento se procesa igual, verificando que firma, sello y logo **estén** y **no sean imágenes insertadas**, y `authenticity.referencesFound` sale `false`. El resultado llega en `documents[i].authenticity` (§2).
+
 - **`documentType` decide entre tres modos**, según cuántos tipos mandes. Es **un solo campo**: varios tipos van separados por coma, igual que en `GET /documents?docType=A,B`.
 
   | Mandas                                              | `classificationMode` | Qué hace                                                                                                                                                                                                                                                                  |
@@ -1162,6 +1164,53 @@ resumen compatible. No sustituye ni modifica las confianzas individuales.
 El flujo estándar legado no mide confianza por campo; para esos valores emite
 `confidence: 0.0`, que significa explícitamente **no medido**, en vez de omitir
 la llave o inventar certeza.
+
+### `documents[i].authenticity`: ¿es una hoja real o un Word con la firma pegada?
+
+Solo en tipos que lo verifican (hoy `CARTA_NOM35`; un tipo que no lo declara no
+trae la llave). Resume si el archivo es la **captura de una hoja impresa, firmada
+con tinta, sellada y escaneada**, o una composición digital:
+
+```jsonc
+"authenticity": {
+  "verdict": "NO_AUTENTICO",        // AUTENTICO | SOSPECHOSO | NO_AUTENTICO | NO_EVALUADO
+  "layers": { "structure": "FALLA", "pixels": "OK", "vision": "OK", "memory": "OK" },
+  "reasons": [
+    { "code": "TEXTO_NATIVO_CON_IMAGEN_PEGADA", "hard": true,
+      "message": "El PDF tiene texto nativo y una imagen insertada: no es la captura de un papel" },
+    { "code": "FIRMA_ES_IMAGEN_INSERTADA", "hard": true,
+      "message": "FIRMA: hay una imagen incrustada en el PDF justo donde está el elemento" }
+  ],
+  "referencesFound": false          // ¿el proveedor tenía firmas/sellos registrados?
+}
+```
+
+Cómo leerlo:
+
+- **Lo que decide el estatus son los campos**, no este bloque: `CAPTURA_FISICA`,
+  `FIRMA_PRESENTE`, `SELLO_PRESENTE`, `LOGO_PRESENTE`, `FIRMA_SIN_INSERCION`,
+  `SELLO_CORRESPONDE_EMISOR`, `FIRMA_COINCIDE_REFERENCIA`,
+  `FIRMA_SELLO_NO_REUTILIZADOS`… viajan en `fields` como cualquier otro, con su
+  `valid` y su `reason`. `authenticity` es el resumen legible para mostrarle a una
+  persona o devolverle al proveedor.
+- **`verdict` es el hallazgo, no el estatus.** `NO_AUTENTICO` = evidencia
+  determinista (`hard: true`); `SOSPECHOSO` = solo señales de juicio. Qué hace cada
+  hallazgo con el documento lo decide el catálogo del tipo, y puede estar en modo
+  observación: un `NO_AUTENTICO` puede venir con `validation.status:
+  "REQUIERE_REVISION"`. **Ramifica por `validation.status`**, y usa `reasons[].code`
+  para el porqué.
+- **Un campo de autenticidad ausente significa «no se pudo determinar», no «no».**
+  `FIRMA_COINCIDE_REFERENCIA` no aparece cuando el proveedor no tiene firmas
+  registradas; `CAPTURA_FISICA` no aparece en una foto JPG (no hay estructura PDF
+  que leer). Eso nunca rechaza.
+- **`NO_EVALUADO` siempre va a revisión.** Si la verificación no pudo correr, el
+  documento no se aprueba sin que alguien lo vea.
+- Lo que sí rechaza por sí solo: que la **misma** firma o sello aparezca en el
+  documento de **otra** persona (`*_REUTILIZADO_EN_OTRA_CARTA`). Una firma autógrafa
+  nunca se repite exacta.
+
+Catálogo completo de códigos y guía de operación:
+`documentacion/AUTENTICIDAD_Y_REFERENCIAS.md` (repo interno).
 
 ### Confianza y status: qué manda a revisión
 

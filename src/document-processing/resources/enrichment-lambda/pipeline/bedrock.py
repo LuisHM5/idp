@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import logging
@@ -32,7 +33,18 @@ _STAGE_ENV = {
     "segmenter": "BEDROCK_SEGMENTER_MODEL_ID",
     "extractor": "BEDROCK_EXTRACTOR_MODEL_ID",
     "recovery": "BEDROCK_RECOVERY_MODEL_ID",
+    "vision": "BEDROCK_VISION_MODEL_ID",
 }
+
+# Stages that send IMAGES. Every other stage is text-only by design (the
+# expediente pipeline never shows a page to a model), which is why the base
+# model and the fallback list are free to be text-only models — and why a
+# multimodal stage must never resolve to either: handing an image to a
+# text-only model is a ValidationException at best and a confident answer
+# about a page it never saw at worst. See `_model_candidates`.
+_MULTIMODAL_STAGES = frozenset({"vision"})
+# Vision-capable default for those stages when nothing pins one.
+_MULTIMODAL_DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 def base_model_id() -> str:
@@ -234,8 +246,22 @@ def _model_candidates(
          `BEDROCK_SEGMENTER_MODEL_ID`) wins over it exactly as before.
       6. base model — `base_model_id()`: `BEDROCK_MODEL_ID`, or the hardcoded
          fallback. Always non-empty, so resolution can never come up short.
+
+    A stage in `_MULTIMODAL_STAGES` (it sends images) walks a shorter chain
+    instead — catalog `model_ids[stage]`, its stage env var, then
+    `_MULTIMODAL_DEFAULT_MODEL_ID` — so it can never land on a text-only model.
     """
     env_var = _STAGE_ENV.get(stage)
+    if stage in _MULTIMODAL_STAGES:
+        # A deliberately SHORTER chain: only sources that were chosen knowing
+        # the stage sends images. The request override, the type's blanket
+        # `model_id` and the base model are all picked for text extraction
+        # (this deployment's base is a text-only model) and are skipped.
+        return [
+            ("catalog model_ids[stage]", type_entry.model_ids.get(stage) if type_entry else None),
+            ("stage env var", os.environ.get(env_var) if env_var else None),
+            ("multimodal default", _MULTIMODAL_DEFAULT_MODEL_ID),
+        ]
     candidates: List[Tuple[str, Optional[str]]] = [
         ("request override", _MODEL_OVERRIDE),
         ("catalog model_ids[stage]", type_entry.model_ids.get(stage) if type_entry else None),
@@ -342,6 +368,36 @@ _DUMP_DIR = os.environ.get("MODEL_RESPONSE_DUMP_DIR")
 _dump_counter = itertools.count(1)
 
 
+def _image_digest(image: Dict[str, Any]) -> Dict[str, Any]:
+    """What a prompt log keeps of an image: enough to identify it, never the
+    bytes (they are not JSON, and a page scan would dwarf the rest of the log)."""
+    data = image.get("bytes") or b""
+    return {
+        "label": image.get("label"),
+        "format": image.get("format") or "jpeg",
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "byteLength": len(data),
+    }
+
+
+def _without_image_bytes(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """The request with every image block reduced to its digest, so it can be
+    JSON-dumped. Text-only requests come back untouched."""
+    messages = []
+    for message in kwargs.get("messages") or []:
+        blocks = []
+        for block in message.get("content") or []:
+            if "image" in block:
+                source = (block["image"].get("source") or {})
+                blocks.append({"image": _image_digest(
+                    {"format": block["image"].get("format"), "bytes": source.get("bytes")}
+                )})
+            else:
+                blocks.append(block)
+        messages.append({**message, "content": blocks})
+    return {**kwargs, "messages": messages}
+
+
 def _dump_exchange(kwargs: Dict[str, Any], response: Dict[str, Any]) -> None:
     if not _DUMP_DIR:
         return
@@ -364,7 +420,7 @@ def _dump_exchange(kwargs: Dict[str, Any], response: Dict[str, Any]) -> None:
                         (b["toolUse"].get("input") for b in output if "toolUse" in b), None
                     ),
                     "text": "\n".join(b.get("text", "") for b in output if "text" in b),
-                    "request": kwargs,
+                    "request": _without_image_bytes(kwargs),
                     "rawResponseContent": output,
                 },
                 fh,
@@ -530,6 +586,7 @@ def _invoke_with_fallback(
     max_retries: int,
     stage: Optional[str] = None,
     max_fallback_retries: Optional[int] = None,
+    fallback_models: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """`_invoke_with_retry`, plus: when the model itself is the problem
     (`_MODEL_UNAVAILABLE` — never a request-shape issue like
@@ -552,6 +609,10 @@ def _invoke_with_fallback(
         call went on to succeed, with the full expected-vs-actual model and
         retry count for `tracking.modelFallbacks` (see `fallback_events()`).
     """
+    # `fallback_models`, when given, REPLACES the shared list for this call —
+    # `[]` meaning "never switch". A multimodal stage passes its own, since the
+    # shared list holds text-only models (see `_MULTIMODAL_STAGES`).
+    switch_pool = get_fallback_models() if fallback_models is None else list(fallback_models)
     requested_model = kwargs.get("modelId")
     budget = get_max_fallback_retries() if max_fallback_retries is None else max_fallback_retries
     total_budget = budget
@@ -572,7 +633,7 @@ def _invoke_with_fallback(
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
             next_model = (
-                next((m for m in get_fallback_models() if m not in tried), None)
+                next((m for m in switch_pool if m not in tried), None)
                 if code in _MODEL_UNAVAILABLE and budget > 0
                 else None
             )
@@ -687,6 +748,8 @@ def converse_structured(
     max_retries: int = 4,
     stage: Optional[str] = None,
     max_fallback_retries: Optional[int] = None,
+    images: Optional[List[Dict[str, Any]]] = None,
+    fallback_models: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Single-turn Converse call constrained to a tool's JSON schema.
 
@@ -702,11 +765,23 @@ def converse_structured(
     needed, botocore already gives back a Python dict.
 
     `stage` — see `converse()`'s docstring; same purpose here.
+
+    `images` — optional `[{"label", "format" ("jpeg"|"png"), "bytes"}]` sent
+    BEFORE the prompt, each preceded by its label as a text block so the
+    prompt can refer to them by name. Only a multimodal stage passes them, and
+    it must pass `fallback_models` too (its own vision-capable list, or `[]`):
+    the shared fallback list holds text-only models.
     """
     model_id = model_id or base_model_id()
+    content: List[Dict[str, Any]] = []
+    for image in images or []:
+        content.append({"text": str(image.get("label") or "imagen")})
+        content.append({"image": {"format": image.get("format") or "jpeg",
+                                  "source": {"bytes": image["bytes"]}}})
+    content.append({"text": prompt})
     kwargs: Dict[str, Any] = {
         "modelId": model_id,
-        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "messages": [{"role": "user", "content": content}],
         "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0},
         "toolConfig": {
             "tools": [
@@ -726,7 +801,8 @@ def converse_structured(
         kwargs["system"] = blocks
 
     response, used_model_id = _invoke_with_fallback(
-        kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries
+        kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries,
+        fallback_models=fallback_models,
     )
 
     output = response.get("output", {}).get("message", {})
@@ -748,6 +824,7 @@ def converse_structured(
             "system": system,
             "cacheSystem": cache_system,
             "prompt": prompt,
+            **({"images": [_image_digest(i) for i in images]} if images else {}),
             "maxTokens": max_tokens,
             "toolName": tool_name,
             "toolDescription": tool_description,

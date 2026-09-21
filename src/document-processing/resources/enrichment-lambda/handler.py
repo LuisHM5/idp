@@ -90,7 +90,7 @@ def determine_status(checks: List[CheckResult]) -> str:
 # phase, and any consumer keyed on the phase name (e.g. a report reading
 # `Tracking.ModelIds`) finds nothing for "extraction" even though the model
 # is right there under "extractor".
-_STAGE_TO_PHASE = {"extractor": "extraction", "segmenter": "segmentation"}
+_STAGE_TO_PHASE = {"extractor": "extraction", "segmenter": "segmentation", "vision": "authenticity"}
 
 
 def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
@@ -608,6 +608,14 @@ def _run_expediente(
             source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
             declared_types=declared_types,
             declared_counts=declared_counts,
+            # What we know ABOUT the upload (not what's in it). Generic: a
+            # catalog can name an upload-metadata key it needs, e.g. the
+            # supplier whose registered signatures to compare against.
+            context={
+                "documentId": document_id,
+                "metadata": _upload_metadata(event),
+                "appOrigin": event.get("appOrigin"),
+            },
         )
 
     # Persist the FULL result to S3: a large expediente (86 pages, 20+

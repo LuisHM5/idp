@@ -14,9 +14,10 @@ flowchart TD
         P1["1. pdf_pages<br/>texto + Textract"]:::ml
         P2["2. segmenter<br/>Bedrock"]:::ml
         P3["3. text_extractor<br/>Bedrock, paralelo"]:::ml
+        P35["3.5 autenticidad física<br/>(solo tipos que la declaran)<br/>estructura · pixeles · visión · memoria"]:::ml
         P4["4-5. normalize + engine<br/>reglas del catálogo"]:::compute
         P6["6. reglas<br/>cross-documento"]:::compute
-        P1 --> P2 --> P3 --> P4 --> P6
+        P1 --> P2 --> P3 --> P35 --> P4 --> P6
     end
 
     subgraph CAMINOB["Camino B — Estándar (catalogs/save/)"]

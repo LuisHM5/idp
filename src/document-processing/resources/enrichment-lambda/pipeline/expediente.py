@@ -388,6 +388,7 @@ def process_pdf(
     source_format: str = "pdf",
     declared_types: Optional[Sequence[str]] = None,
     declared_counts: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Process a (possibly multi-document) PDF — or, when `source_format` is
     an image type ("jpg"/"jpeg"/"png"), a single standalone photographed/
@@ -398,6 +399,12 @@ def process_pdf(
     classified among exactly those (see `segmenter.segment_pages`). With one
     type it is equivalent to `declared_type`, which every existing caller keeps
     using unchanged.
+
+    `context` is what the caller knows ABOUT the upload rather than what is in
+    it — `{"documentId", "metadata" (the uploader's own key/values), "appOrigin"}`.
+    Optional and generic: today only the authenticity stage reads it (a catalog
+    names the metadata key that identifies whose references to compare against,
+    e.g. `metadata.proveedor`). A local run simply passes none.
     """
     types = normalize_declared_types(declared_types, declared_type)
     declared_counts = resolve_declared_counts(types, declared_counts)
@@ -493,6 +500,16 @@ def process_pdf(
             )
         )
     _mark("extraction")
+
+    # ---- physical-authenticity pass (pipeline/authenticity.py). Its own pass,
+    # NOT one more enricher inside `_extract_segment`: that chain shares a
+    # single try/except, so a failure in here would turn a perfectly extracted
+    # document into a PROCESSING_ERROR. It also needs the extracted fields
+    # (the issuer the stamp must name, the employee+date that identify the
+    # letter), and deserves its own line in `tracking.timings`. A type without
+    # an `authenticity` block costs one dict lookup.
+    _run_authenticity(documents, pdf_bytes, qr_reader, is_image, context)
+    _mark("authenticity")
 
     # ---- validation pass (with sibling context)
     siblings = [
@@ -649,11 +666,19 @@ def process_pdf(
     locator_model = next(
         (d["pageLocatorMeta"].get("modelId") for d in documents if d.get("pageLocatorMeta")), None
     )
+    # Same for the authenticity stage's vision calls: real, billed, and only
+    # made for types that declare the stage — its own usage line and service.
+    authenticity_usage = merge_bedrock_usage(*(d.get("authenticityMeta", {}).get("usage") for d in documents))
+    authenticity_model = next(
+        (d["authenticityMeta"].get("modelId") for d in documents if d.get("authenticityMeta")), None
+    )
     usage_summary = {
         "segmentation": segmentation_usage or None,
         "extraction": {"modelId": used_models().get("extractor"), "usage": extraction_usage},
         "pageSelection": _page_selection_summary(documents),
         **({"pageLocator": {"modelId": locator_model, "usage": locator_usage}} if locator_usage else {}),
+        **({"authenticity": {"modelId": authenticity_model, "usage": authenticity_usage}}
+           if authenticity_usage else {}),
     }
     return {
         "processingId": processing_id,
@@ -694,6 +719,47 @@ def process_pdf(
         "warnings": warnings,
         **({"truncated": {"originalPages": original_page_count, "processedPages": page_cap}} if truncated else {}),
     }
+
+
+def _run_authenticity(
+    documents: List[Dict[str, Any]],
+    file_bytes: bytes,
+    reader: Optional[Any],
+    is_image: bool,
+    context: Optional[Dict[str, Any]],
+) -> None:
+    """Run the physical-authenticity stage on every document whose type
+    declares it. Detected by catalog SHAPE (`authenticity.applies_to`), never
+    by TYPE_ID. Documents are independent, so they run concurrently; each one
+    is isolated — the stage itself never raises, and the guard here covers the
+    import too (a missing imaging wheel must cost a review, not the upload)."""
+    try:
+        from . import authenticity
+    except Exception as e:  # pragma: no cover - only a broken deployment
+        logger.error("authenticity stage unavailable: %s", e)
+        return
+
+    targets = []
+    for doc in documents:
+        if doc.get("status") == engine.DOC_ERROR or doc.get("documentType") == "OTRO":
+            continue
+        entry = get_type_entry(doc["documentType"])
+        if authenticity.applies_to(entry):
+            targets.append((doc, entry))
+    if not targets:
+        return
+
+    source = authenticity.source_for(file_bytes, reader, is_image)
+
+    def _one(target) -> None:
+        doc, entry = target
+        try:
+            authenticity.run(doc, entry, source, context)
+        except Exception:  # belt and braces: `run` already guards itself
+            logger.exception("authenticity stage crashed for %s", doc.get("documentType"))
+
+    with ThreadPoolExecutor(max_workers=min(_EXTRACT_WORKERS, len(targets)) or 1) as pool:
+        list(pool.map(_one, targets))
 
 
 def _page_selection_summary(documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

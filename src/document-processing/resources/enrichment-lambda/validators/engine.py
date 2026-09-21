@@ -69,6 +69,12 @@ class RuleCheck:
     #              por debajo del umbral de confianza, p. ej.)
     severity: str = "error"  # "error" | "warning" | "info"
     skipped: bool = False    # rule could not run (missing target doc, no expectation)
+    # True solo cuando la regla declara `on_fail: "reject"` en el catálogo: un
+    # fallo así RECHAZA el documento él solo, aunque el resto de los campos
+    # esté bien. Sin esto un "error" entre N checks buenos da PARCIAL (que el
+    # API reporta como REQUIERE_REVISION), y una señal determinista de fraude
+    # nunca podría rechazar. Ver `_apply_on_fail`.
+    blocking: bool = False
     details: Dict[str, Any] = dc_field(default_factory=dict)
 
 
@@ -530,7 +536,13 @@ def _check_date_max_age(rule: ValidationRule, value: Any, ctx: ValidationContext
     )
 
 
-def _check_boolean_true(rule: ValidationRule, value: Any) -> RuleCheck:
+def _check_boolean_true(rule: ValidationRule, value: Any) -> Optional[RuleCheck]:
+    # `allow_empty` da el tercer estado "no evaluado": un booleano `computed`
+    # que el pipeline no pudo determinar (la etapa no aplica a este archivo,
+    # no hay referencias registradas, ...) queda vacío y NO cuenta como "no".
+    # Sin `allow_empty` el comportamiento es el de siempre: vacío = falla.
+    if _is_empty(value) and _allow_empty(rule):
+        return None
     affirmative = {"si", "sí", "yes", "true", "1", "presente"}
     ok = not _is_empty(value) and str(value).strip().lower() in affirmative
     return RuleCheck(
@@ -542,6 +554,40 @@ def _check_boolean_true(rule: ValidationRule, value: Any) -> RuleCheck:
 # ---------------------------------------------------------------- engine
 
 
+_ON_FAIL_VALUES = ("reject", "review", "info")
+
+
+def _apply_on_fail(rule: ValidationRule, check: Optional[RuleCheck]) -> Optional[RuleCheck]:
+    """Apply the rule's optional `on_fail` param to its outcome.
+
+    `on_fail` is how a CATALOG says what a failure of this rule means for the
+    document, for any `rule_type`:
+
+      "reject" -> severity "error" + `blocking`: the document is REJECTED by
+                  this failure alone (see `document_status_from_checks`).
+      "review" -> severity "warning": the document goes to review.
+      "info"   -> severity "info": reported and audited, status untouched.
+
+    Absent (every catalog before this param existed) the check keeps the
+    severity its handler chose. A skipped check is left alone: a rule that
+    could not run has no failure to grade. An unrecognized value is ignored
+    rather than guessed at.
+    """
+    if check is None or check.skipped:
+        return check
+    on_fail = str(rule.params.get("on_fail") or "").strip().lower()
+    if on_fail not in _ON_FAIL_VALUES:
+        return check
+    if on_fail == "reject":
+        check.severity = "error"
+        check.blocking = True
+    elif on_fail == "review":
+        check.severity = "warning"
+    else:
+        check.severity = "info"
+    return check
+
+
 def _dispatch_rule(
     rule: ValidationRule, value: Any, entity_map: Dict[str, Any], ctx: ValidationContext
 ) -> Optional[RuleCheck]:
@@ -550,6 +596,14 @@ def _dispatch_rule(
     an empty optional field). Shared by `run_rules` and `resolve_field_tree`
     so the field-centric DSL path evaluates rules identically instead of
     duplicating this dispatch."""
+    return _apply_on_fail(rule, _evaluate_rule(rule, value, entity_map, ctx))
+
+
+def _evaluate_rule(
+    rule: ValidationRule, value: Any, entity_map: Dict[str, Any], ctx: ValidationContext
+) -> Optional[RuleCheck]:
+    """The `rule_type` switch itself — the sole arbiter of which rule types
+    exist. Called only through `_dispatch_rule`, which grades the outcome."""
     try:
         rt = rule.rule_type
         if rt == "regex":
@@ -1119,12 +1173,20 @@ def resolve_field_tree(
     return result, checks, effective_confidences
 
 
+def _has_blocking_failure(checks: List[RuleCheck]) -> bool:
+    """A failed rule declared `on_fail: "reject"` rejects the document on its
+    own, before the partial/rejected arithmetic below gets a say."""
+    return any(not c.valid and not c.skipped and c.blocking for c in checks)
+
+
 def document_status_from_checks(checks: List[RuleCheck]) -> str:
     """Document-level status from a flat check list alone — the
     `resolve_field_tree` counterpart of `document_status` (which needs the
     VALIDATED/INVALID/... status enum `resolve_fields` produces per scalar,
     something the recursive field-tree shape doesn't have)."""
     hard_failures = [c for c in checks if not c.valid and not c.skipped and c.severity == "error"]
+    if _has_blocking_failure(checks):
+        return DOC_REJECTED
     if hard_failures:
         return DOC_PARTIAL if len(hard_failures) < len(checks) else DOC_REJECTED
     # "info" queda fuera a propósito: se reporta en el campo y en `checks`,
@@ -1148,6 +1210,8 @@ def document_status(
         for name in type_entry.required_fields
         if "." not in name and name in resolved_fields
     )
+    if _has_blocking_failure(checks):
+        return DOC_REJECTED
     if hard_failures or required_missing:
         # Some fields fine, some broken → partial; everything critical broken → rejected
         ok_count = sum(1 for s in statuses if s == VALIDATED)

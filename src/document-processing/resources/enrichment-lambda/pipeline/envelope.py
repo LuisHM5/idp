@@ -232,8 +232,29 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
     # and—critically—never removes `confidence` from an individual field.
     if doc.get("fieldConfidence") is not None:
         view["fieldConfidence"] = doc["fieldConfidence"]
+    # Physical-authenticity stage (pipeline/authenticity.py): the caller gets
+    # the verdict and the REASONS — they are what a reviewer acts on and what a
+    # supplier is told — but not the boxes, per-page statistics, fingerprints
+    # and image hashes behind them, which stay in the full S3 result.
+    if doc.get("authenticity"):
+        view["authenticity"] = _authenticity_view(doc["authenticity"])
     view["fields"] = fields
     return view
+
+
+def _authenticity_view(audit: Dict[str, Any]) -> Dict[str, Any]:
+    # Mirrors `pipeline.authenticity.envelope_view`; duplicated rather than
+    # imported because this module is deliberately free of the pipeline's
+    # imaging/AWS imports so it stays unit-testable on its own.
+    return {
+        "verdict": audit.get("verdict"),
+        "layers": audit.get("layers") or {},
+        "reasons": [
+            {"code": r.get("code"), "hard": bool(r.get("hard")), "message": r.get("message")}
+            for r in audit.get("reasons") or []
+        ],
+        "referencesFound": bool((audit.get("references") or {}).get("found")),
+    }
 
 
 def classification_of(documents: List[Dict[str, Any]], fallback: str) -> str:

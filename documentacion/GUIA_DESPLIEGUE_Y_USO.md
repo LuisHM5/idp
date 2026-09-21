@@ -514,6 +514,60 @@ Todas configurables por variable de entorno (redeploy, no hot-reload):
 
 Ausente cuando nada degradó — misma regla que `modelFallbacks`. Un `resolution: "marked_otro"` también fuerza `reviewRequired: true` y agrega un `warnings[]` legible, aunque el resto del expediente haya extraído bien.
 
+### 5.6.2 Autenticidad física: despliegue, referencias por proveedor y endurecimiento
+
+Aplica a los tipos que declaran el bloque `authenticity` (hoy `CARTA_NOM35`). Guía
+completa: **[`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md)**.
+Lo operativo, en orden:
+
+**1. Primer despliegue de la etapa.** Trae una tabla nueva
+(`document-validation-fingerprints[-dev]`, `RETAIN`) — `check-pending-tables` la
+lista y pide confirmación antes del deploy —, sube la Lambda de 1024 a 1536 MB y
+agrega `Pillow` al bundle (~72 → ~86 MB de los 250 MB). Requiere **«Model access»
+habilitado para el modelo de visión** en la cuenta/región (por default Haiku 4.5,
+aunque `BEDROCK_MODEL_ID` sea otro: la etapa de visión no hereda el modelo base).
+
+```bash
+pnpm autenticidad -- --dir test-docs/nom35     # gratis: qué diría la etapa hoy
+pnpm test:autenticidad                          # gratis: regresión contra el ground truth
+pnpm run deploy:dev                             # crea la tabla; confirma con S
+pnpm sync:one -- --type CARTA_NOM35             # el tipo, en caliente
+```
+
+**2. Dar de alta las firmas, sellos y logos válidos de cada proveedor** (opcional
+por proveedor: sin referencias la carta no se rechaza; se exige presencia y
+no-inserción). Una carpeta por proveedor, clasificada por subcarpeta:
+
+```
+referencias/10040/firma/julio-cesar-lemus.png
+referencias/10040/sello/planta-envasadora.png
+referencias/10040/logo/membrete-superior.png
+```
+
+```bash
+pnpm refs:register -- --key 10040 --dir referencias/10040 --dry-run   # revisa y clasifica, no escribe
+pnpm refs:register -- --key 10040 --dir referencias/10040             # dev, confirma con S
+pnpm refs:register -- --key 10040 --dir referencias/10040 --env prod  # prod es explícito
+pnpm refs:list     -- --key 10040
+pnpm refs:remove   -- --key 10040 --kind SELLO --ref planta-envasadora   # desactiva; --delete borra
+```
+
+Las referencias deben salir de **una carta en papel verificada**, nunca de un PDF
+hecho en Word (§3.1 de la guía). dev y prod **no comparten** referencias.
+
+**3. Quien sube la carta manda el proveedor** en la metadata de carga:
+`"metadata": {"proveedor": "10040"}`. Sin ella corre en modo «sin referencias».
+
+**4. Endurecer cuando ya se midió.** `CAPTURA_FISICA` arranca en observación
+(`"on_fail": "review"`). Para que un PDF digital con firma pegada salga
+`RECHAZADO`: cambiar a `"on_fail": "reject"` en
+`catalogs/base/recursos_humanos/CARTA_NOM35.json` y
+`pnpm sync:one -- --type CARTA_NOM35` — **sin deploy**. La reutilización de la
+misma firma/sello entre cartas de empleados distintos ya rechaza desde el día uno.
+
+**Apagado de emergencia:** `AUTHENTICITY_ENABLED=false` en `.env.*` + deploy. No
+aprueba lo que no se revisó: esas cartas salen `REQUIERE_REVISION`.
+
 ### 5.7 Migración única al CMK compartido de producción
 
 Dev no crea llaves KMS propias; prod utiliza una sola llave compartida,
@@ -612,7 +666,9 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 | Synth falla en bundling y no hay Docker                                | Sin `pip3` local ni Docker                                                                           | Instalar python3-pip, o Docker para el fallback                                                                                                                                                                                                                                                                                             |
 | `AccessDeniedException` de Bedrock                                     | Modelo no habilitado en la cuenta/región                                                             | Desde que existe el fallback de modelo (§5.6) esto ya no falla la extracción de inmediato — el pipeline cambia solo al siguiente modelo configurado y solo ves este error si TODA la lista de fallback también falla. Consola Bedrock → Model access → habilitar el/los modelo(s) en la región, o revisa `MODEL_FALLBACK_MAX_RETRIES`/la tabla `document-validation-fallback-models` |
 | Log con `bedrock: <modelo> unavailable (...); falling back to <otro>`  | El modelo pedido (configurado o del catálogo) no respondió — comportamiento normal del fallback (§5.6) | Informativo, no es un error a menos que se repita mucho: revisa por qué ese modelo falla (cuota, no habilitado) o reordena la tabla de fallback                                                                                                                                                                                            |
-| Task timed out (Lambda)                                                | Expediente muy grande                                                                                | La Lambda ya corre a 15 min / 1024 MB; para archivos mayores dividir el PDF o subir memoria en el stack                                                                                                                                                                                                                                     |
+| Toda carta con `authenticity` sale `REQUIERE_REVISION` y `AUTENTICIDAD_EVALUADA` en falso | La capa de visión no corre: modelo de visión sin «Model access», o `AUTHENTICITY_ENABLED=false` | Ver `authenticity.visionError` en `results/<id>.json`; habilitar el modelo (default Haiku 4.5, o el de `BEDROCK_VISION_MODEL_ID`) en Bedrock → Model access. Más casos: [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md) §7 |
+| El proveedor tiene referencias pero `authenticity.referencesFound` es `false` | La carga no mandó `metadata.proveedor`, o se registraron en el otro ambiente | Mandar `"metadata": {"proveedor": "<n>"}` en `POST /documents`; `pnpm refs:list -- --key <n> --env <ambiente>` |
+| Task timed out (Lambda)                                                | Expediente muy grande                                                                                | La Lambda ya corre a 15 min / 1536 MB; para archivos mayores dividir el PDF o subir memoria en el stack                                                                                                                                                                                                                                     |
 | Resultado automático `REQUIERE_REVISION` con segmentos `OTRO`          | Páginas sin tipo en el catálogo (COVE, DODA, manifestación…); en una solicitud cerrada esos segmentos se omiten | Normal y conservador; si quieres extraerlos, agrega esos tipos al catálogo JSON y solicítalos                                                                                                                                                                                                                                                |
 | Tipos nuevos no aplican                                                | Se editó la copia generada (`config/catalogs.json`)                                                  | Editar el archivo del tipo en `catalogs/` y correr `pnpm sync` (hot-reload) o `pnpm run build && pnpm run deploy`                                                                                                                                                                                                                            |
 | `test-e2e` no encuentra el endpoint                                    | Nombre de stack distinto                                                                             | `pnpm test-e2e --stack DocumentValidationStack --endpoint https://...`                                                                                                                                                                                                                                                                      |
@@ -630,6 +686,10 @@ catalogs/_TEMPLATE.json              ← plantilla para tipos nuevos
 config/catalogs.json                 ← NO EDITAR: copia generada por pnpm build
 validators/engine.py                 ← motor de reglas (agregar rule_types nuevos aquí)
 pipeline/                            ← pipeline de expedientes (OCR, segmentación, extracción)
+pipeline/authenticity.py + pdf_forensics / pixel_forensics / vision_inspector / fingerprint_store
+                                     ← etapa de autenticidad física (genérica; se activa desde el catálogo)
 tests/integration/expected_pedimentos.json ← ground truth de los tests de pedimentos
+tests/integration/expected_autenticidad.json ← ground truth de la etapa de autenticidad
+referencias/<proveedor>/             ← NO COMMITEAR: recortes de firmas/sellos para `pnpm refs:register`
 .env.production                      ← modelo Bedrock y cuenta/región de deploy
 ```

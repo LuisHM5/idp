@@ -14,7 +14,6 @@ regex-based `_recover_references`) without touching any catalog.
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 import re
@@ -22,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .normalize import digits_exact
+from .page_raster import render_page_array  # lives there now; tests patch it on this module
 from .page_selector import score_pages
 
 logger = logging.getLogger(__name__)
@@ -31,30 +31,6 @@ _SLICE_RE = re.compile(r"^(-?\d*):(-?\d*)$")
 
 def enabled() -> bool:
     return os.environ.get("QR_RECOVERY_ENABLED", "true").strip().lower() not in ("0", "false", "no")
-
-
-def render_page_array(reader, page_index: int, dpi: int = 150) -> Optional[Any]:
-    """Rasterize one page (0-based) of an already-open pypdf reader to a
-    numpy BGR array — pypdfium2's native render output, fed straight into
-    OpenCV with no PNG/Pillow round-trip (Pillow isn't otherwise a Lambda
-    dependency here)."""
-    try:
-        import pypdfium2 as pdfium
-        from pypdf import PdfWriter
-
-        writer = PdfWriter()
-        writer.add_page(reader.pages[page_index])
-        buf = io.BytesIO()
-        writer.write(buf)
-
-        pdf = pdfium.PdfDocument(buf.getvalue())
-        try:
-            return pdf[0].render(scale=dpi / 72).to_numpy()
-        finally:
-            pdf.close()
-    except Exception as e:
-        logger.warning("qr_recovery: could not render page %d: %s", page_index + 1, e)
-        return None
 
 
 def decode_qr_texts(image: Any) -> List[str]:

@@ -20,3 +20,13 @@ numpy==2.2.6
 # too) — no compiled extension, so it needs neither the manylinux wheel
 # constraints nor the Docker bundling fallback that pypdfium2/zxing-cpp do.
 openpyxl==3.1.5
+# Physical-authenticity stage (pipeline/authenticity.py → page_raster.py):
+# decodes JPG/PNG uploads and registered reference crops (PNG with alpha),
+# honours the EXIF orientation of phone photos, and JPEG-encodes page rasters
+# and signature/stamp crops for the Bedrock vision call — pypdfium2 renders to
+# a numpy array but cannot encode one, and a PNG of a noisy colour scan blows
+# past Bedrock's per-image size cap. ~14 MB unzipped (bundle ~72 -> ~86 MB of
+# the 250 MB Lambda limit). NOT opencv: that was measured at +140 MB and
+# removed (see the QR note above); every pixel routine the stage needs is
+# plain numpy (pipeline/pixel_forensics.py).
+Pillow==12.3.0

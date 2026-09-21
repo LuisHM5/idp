@@ -1,0 +1,367 @@
+{
+  "_comment": "Ground truth de la etapa de autenticidad (capas gratuitas: estructura del PDF y pixeles) sobre test-docs/nom35/samples — carpeta = número de proveedor. `verified_by_eye: true` son las carpetas ancla revisadas a mano (ver `anchors`); el resto es lo que midió `pnpm autenticidad` el 2026-09-18 y sirve para detectar REGRESIONES, no como verdad revisada. `physical_capture`: true = captura de papel, false = composición digital (determinista), null = la estructura sola no alcanza. Se compara con `pnpm test:autenticidad` (gratis). test-docs/ no se commitea: si un archivo no está, se omite.",
+  "type": "CARTA_NOM35",
+  "dataset": "test-docs/nom35/samples",
+  "anchors": {
+    "10021": "Escaneos de multifuncional (Lexmark) revisados a ojo: capturas genuinas — sello y firma varían de una carta a otra.",
+    "10040": "Capturas de app de celular y de multifuncional (RICOH) revisadas a ojo: genuinas — dos sucursales, dos firmantes, dos sellos.",
+    "10037": "PDF de procesador de texto con UN mismo bloque firma+sello (JPEG de md5 idéntico) incrustado en las cartas de tres empleados distintos: composición digital."
+  },
+  "files": {
+    "10021/doc1.pdf": {
+      "sha256": "f8fd55a8d73da786afcf033f6ddae9bd682171cbdfde4eb7e39bbb71d3b9dc80",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": true
+    },
+    "10021/doc2.pdf": {
+      "sha256": "d75512a320325805215cbf9ebd314d022981dc67e50a8dda2ee7c08f2b71fdbf",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": true
+    },
+    "10021/doc3.pdf": {
+      "sha256": "54b765f7a11965e46d21c76c0648e692d85997fef2e9e9c74c8076354d0947c5",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": true
+    },
+    "10037/doc1.pdf": {
+      "sha256": "fb7af90cc6294ee23ccb8e65167b5eab5ec6554e48f70beca0c2d520bc6069f1",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": true
+    },
+    "10037/doc2.pdf": {
+      "sha256": "862e777c290d6bdabb5ab99575a80db248c8ae077467404165fd16c377c73e11",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": true
+    },
+    "10037/doc3.pdf": {
+      "sha256": "5a95dd47c9d6af79533209aaa1fd64fbc953d97843cc8b23ed808dfa0b630d0b",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": true
+    },
+    "10040/doc1.pdf": {
+      "sha256": "3f02dd5855a35f1230b974f364e0a2ab569dcfa8289d29d4e6d0f9ef0bc1bb9f",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": true
+    },
+    "10040/doc2.pdf": {
+      "sha256": "f0e0facd63ffac2c0e34e66e4dc544533071af72cbb38f07d864152e1396882e",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": true
+    },
+    "10040/doc3.pdf": {
+      "sha256": "466a10cad9e655eed7a14ec2bde6c91d6a30e6bd7fdb844df545673ffc6ce097",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": true
+    },
+    "10047/doc1.pdf": {
+      "sha256": "23087468cb0f890756d7c77e802e3a99ff22b3776d9e8ddb42a1e07592dcee45",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10047/doc2.pdf": {
+      "sha256": "0275d3803caa89c6f8aa715859aff6bdd4eb0e19a85db94bcd2577027e2e8d13",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10047/doc3.pdf": {
+      "sha256": "1f199ad7dab8595f5179cbe359c98e9d6ecff0d62aebf82e6fdb12a1c8f65d0e",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10110/doc1.pdf": {
+      "sha256": "71367483f6465ca6dac1faf3044335d3bb8f26546c432950da841f2ae2eb1e20",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10110/doc2.pdf": {
+      "sha256": "a1c8ec84b1e561897f6cc67309dd5dbbfc486e291116c60a8849e82d1454d893",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10110/doc3.pdf": {
+      "sha256": "78d842d8692c75db819a349081188dc1c4887820f9f09d1a44e7c111b9789b94",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10177/doc1.pdf": {
+      "sha256": "0047b527c62535b4acc9f0889057397e958985cbd2092e3b24d156a775771b38",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10177/doc2.pdf": {
+      "sha256": "50f669b42cec8f97274851c13644993c1c07ee8dc23dfbf254e0d125d8c9353d",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10177/doc3.pdf": {
+      "sha256": "cdab6674cadc95b5ddfcf0632971495c44f2e8e717041a79ca0856061d11fd59",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10223/doc1.pdf": {
+      "sha256": "70c40dcb6ba9e5acd29ec45e50e4e07e21bf80e8e8688c1087d7167e96037cc8",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": false
+    },
+    "10223/doc2.pdf": {
+      "sha256": "30da0e4abbb6202187e3cc47d44fa45bcbf43bb2e5200b451e34e910d4c4204e",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10223/doc3.pdf": {
+      "sha256": "ec384e93d8ab5cdd4f4b0079442c3011761a73f80699d65160ff20a8cbe627a0",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10272/doc1.pdf": {
+      "sha256": "f8a2853c12773f649c4ba5469b73490c2054c7437edec43c03384305dbe7676e",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10272/doc2.pdf": {
+      "sha256": "271c52eb444abe49ab2d70e2d017641f83348ad5448295051b9645625c21eff3",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10272/doc3.pdf": {
+      "sha256": "dd9541d1e5e09fa7a70d8d20a06542fba86f80fd06ddbebc5688e0948b7f72e4",
+      "structure": "INDETERMINADO",
+      "physical_capture": null,
+      "verified_by_eye": false
+    },
+    "10275/doc1.pdf": {
+      "sha256": "594a7304cc8a11fb13bd8bdd4eeeb5abcc05d5a9894a1d1a939b6fa3423c8acd",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": false
+    },
+    "10275/doc2.pdf": {
+      "sha256": "6fd945fe3e383fcdeb85634b4bcd3c715d9c2021550edb95f1e5da969c242c9b",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10275/doc3.pdf": {
+      "sha256": "db26c5a6416297625b220a8a22f72092b447aa7f859a60998d25d91b647c42cb",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10284/doc1.pdf": {
+      "sha256": "69d0c2a8c1c3e929d6b9c3788f586b91b4508ab4aaa27b6fbdf819a2d015de31",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10284/doc2.pdf": {
+      "sha256": "0a4a7637c273d1d3d64ae584997a83e3d131492514691e5f7bcfc9dce62ddd45",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10284/doc3.pdf": {
+      "sha256": "f688faf85f238613d5b79585658d6aebc457b9caefc293f3c59e757355463a5f",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10320/doc1.pdf": {
+      "sha256": "d407bdf75d0801174dcaf367ca0203b4844c2e5685973bb97fb617edd59f9df6",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10320/doc2.pdf": {
+      "sha256": "d19f2b4cb65d5fbe1daf9ada76822c3925421230af58bb2fbac33e2c0011ead4",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10320/doc3.pdf": {
+      "sha256": "04b0911f8ed9432ac6a767d1c53a80be8e1df133571fbf4417ec2e9342224673",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "10329/doc1.pdf": {
+      "sha256": "c09274fc09f91709c053aafff266b8556cfd299c1685719389a220b8fed6135c",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10329/doc2.pdf": {
+      "sha256": "6fc2dcc6de99850c1ef41b84e2216e546863b641f201c5c597cd49f620c394ea",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10329/doc3.pdf": {
+      "sha256": "c4a193f6307e0e0eea8c035ec544a16629e09fe7282909501b210e68abcc746f",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10356/doc1.pdf": {
+      "sha256": "15eb1a44a66772fa68b158f46d50bb5082c632effb68e5168163b77986486f11",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10356/doc2.pdf": {
+      "sha256": "879a28b6312615f15c7fe373cfec6c9175ba03bf917746114386bf08df78a046",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10356/doc3.pdf": {
+      "sha256": "81027094b23fa977526ba379670100d2d722fce8a724697515b3f772e4b4a863",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "10378/doc1.pdf": {
+      "sha256": "8dffaa788b3aa3d27675ec9e340299d2bb9bd7473456484238b466f94a836ce3",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": false
+    },
+    "10378/doc2.pdf": {
+      "sha256": "9c1b09bdd5cb0e58e60824cba156d0eb1232ee3d318278d5d51ec258228d4376",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": false
+    },
+    "10378/doc3.pdf": {
+      "sha256": "50448a7e8c2ade9bd7714c427123a574e2e831465e9bff609ae9cd1d670c92e4",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": false
+    },
+    "10379/doc1.pdf": {
+      "sha256": "d6fb3a092e55b52f2a3b69c8f810165cc6192ff4f9159829fc0cfdc2d5e570b2",
+      "structure": "FISICO",
+      "physical_capture": true,
+      "verified_by_eye": false
+    },
+    "5850/doc1.pdf": {
+      "sha256": "1056e92ce21358c72e0664f77235f52bc83dae0264b3f62a52c68aab60ccd5a1",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    },
+    "5850/doc2.pdf": {
+      "sha256": "c1b3b85fcfbdbc511b99237abf2c7bced0b88458bc8109e0aa9af4fa570b21b6",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA"
+      ],
+      "verified_by_eye": false
+    },
+    "5850/doc3.pdf": {
+      "sha256": "4f9d318ba70c46bceabfa645c83d75554892f6e04a6686741cc2c8adca1d3127",
+      "structure": "DIGITAL",
+      "physical_capture": false,
+      "reasons_include": [
+        "TEXTO_NATIVO_CON_IMAGEN_PEGADA",
+        "IMAGEN_CON_TRANSPARENCIA"
+      ],
+      "verified_by_eye": false
+    }
+  }
+}

@@ -263,13 +263,15 @@ def field_quality(doc: dict) -> list[tuple[str, bool | None, float | None]]:
     return out
 
 
-def _service_rows(seg_cost: dict, ext_cost: dict, ocr_cost: dict) -> list[dict]:
+def _service_rows(seg_cost: dict, ext_cost: dict, ocr_cost: dict, extra: tuple = ()) -> list[dict]:
     """Una fila por servicio AWS que ESTA corrida realmente facturó — omite
     un servicio que nunca se llamó (costo y tokens en cero, ej. Bedrock en un
     documento .xml/.xlsx/.csv, o Textract en un PDF 100% texto nativo) para
     no ensuciar el desglose con líneas de $0.0000."""
     rows = []
-    for label, c in (("Bedrock segmentación", seg_cost), ("Bedrock extracción", ext_cost)):
+    # `extra`: otras llamadas Bedrock REALES y opcionales, cada una en su propia
+    # fila (mismo criterio que cost_audit.py: nunca escondidas en "extracción").
+    for label, c in (("Bedrock segmentación", seg_cost), ("Bedrock extracción", ext_cost), *extra):
         if c["costUsd"] or c["inputTokens"] or c["outputTokens"]:
             rows.append({
                 "label": label,
@@ -299,6 +301,24 @@ def _service_rows(seg_cost: dict, ext_cost: dict, ocr_cost: dict) -> list[dict]:
     return rows
 
 
+def _usar_referencias_de(env: str) -> None:
+    """Apunta la etapa de autenticidad de ESTA corrida local a la tabla de
+    huellas y al bucket del stack desplegado, en solo lectura."""
+    import boto3
+
+    stack = "DocumentValidationStack" if env == "prod" else "DocumentValidationStack-Dev"
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    salidas = boto3.client("cloudformation", region_name=region).describe_stacks(StackName=stack)
+    valores = {o["OutputKey"]: o["OutputValue"] for o in salidas["Stacks"][0].get("Outputs", [])}
+    if "FingerprintTableName" not in valores or "DocumentBucketName" not in valores:
+        raise SystemExit(f"El stack {stack} no expone la tabla de huellas/bucket: ¿falta `pnpm run deploy:{env}`?")
+    os.environ["FINGERPRINT_TABLE"] = valores["FingerprintTableName"]
+    os.environ["DOCUMENT_BUCKET"] = valores["DocumentBucketName"]
+    os.environ["FINGERPRINT_READONLY"] = "true"
+    os.environ.setdefault("AWS_DEFAULT_REGION", region)
+    print(f"Referencias de autenticidad: {valores['FingerprintTableName']} (solo lectura)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -319,6 +339,18 @@ def main() -> int:
     parser.add_argument("--dir", default=str(DEFAULT_DIR), help="carpeta con PDFs/XMLs/XLSX/CSVs (default si no se da posicional ni --file)")
     parser.add_argument("--out", default="resultados", help="carpeta de salida para los JSON")
     parser.add_argument("--importer", help="RFC del importador esperado (activa checks cruzados de RFC)")
+    parser.add_argument(
+        "--refs-env", choices=["dev", "prod"],
+        help="etapa de autenticidad: usa las REFERENCIAS registradas (y el historial de huellas) del stack "
+        "desplegado de ese ambiente, en modo SOLO LECTURA — compara, pero no deja huellas de tus pruebas. "
+        "Sin esto, en local no hay contra qué comparar y los campos *_COINCIDE_REFERENCIA salen vacíos.",
+    )
+    parser.add_argument(
+        "--meta", action="append", default=[], metavar="CLAVE=VALOR",
+        help="metadata de carga, como la que manda `POST /documents` (repetible). La lee la etapa de "
+        "autenticidad: `--meta proveedor=10021` elige contra qué firmas/sellos registrados se compara. "
+        "Sin tabla de huellas configurada (FINGERPRINT_TABLE) la comparación queda vacía, no falla.",
+    )
     parser.add_argument("--model", help="[igual que el 3er posicional] override del modelo Bedrock (solo aplica a PDFs)")
     parser.add_argument(
         "--type",
@@ -338,6 +370,8 @@ def main() -> int:
     )
     # pnpm forwards a literal "--" separator; argparse must not choke on it
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
+    if args.refs_env:
+        _usar_referencias_de(args.refs_env)
 
     # El flag explícito gana si alguien da los dos (posicional Y --flag) con
     # valores distintos — poco común, pero mejor avisar que fallar en
@@ -541,6 +575,10 @@ def main() -> int:
                             source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
                             declared_types=declared_types,
                             declared_counts=declared_counts,
+                            context={
+                                "documentId": f"local-{doc_path.stem}",
+                                "metadata": dict(m.split("=", 1) for m in args.meta if "=" in m),
+                            },
                         )
                 except Exception as e:
                     print(f"  {RED}ERROR: {e}{RESET}")
@@ -574,17 +612,28 @@ def main() -> int:
                 seg_cost = bedrock_cost(segmentation.get("usage"), segmentation.get("modelId"))
                 ext_cost = bedrock_cost(extraction.get("usage"), extraction.get("modelId"))
                 ocr_cost = textract_cost(pages.get("ocrPages"))
-                doc_cost = round(seg_cost["costUsd"] + ext_cost["costUsd"] + ocr_cost["costUsd"], 6)
+                # Llamadas opcionales que el pipeline factura aparte: localizador
+                # de páginas por IA y la visión de la etapa de autenticidad. Sin
+                # esto el total de una CARTA_NOM35 salía a menos de la mitad.
+                extra_costs = tuple(
+                    (label, bedrock_cost((usage.get(key) or {}).get("usage"), (usage.get(key) or {}).get("modelId")))
+                    for key, label in (("pageLocator", "Bedrock localizador de páginas"),
+                                       ("authenticity", "Bedrock autenticidad (visión)"))
+                    if usage.get(key)
+                )
+                doc_cost = round(seg_cost["costUsd"] + ext_cost["costUsd"] + ocr_cost["costUsd"]
+                                 + sum(c["costUsd"] for _, c in extra_costs), 6)
                 total_pages = pages.get("totalPages") or 0
                 cost_per_page = (doc_cost / total_pages) if total_pages else None
-                any_approx = bool(seg_cost.get("approximatePricing") or ext_cost.get("approximatePricing"))
+                any_approx = bool(seg_cost.get("approximatePricing") or ext_cost.get("approximatePricing")
+                                  or any(c.get("approximatePricing") for _, c in extra_costs))
 
                 cost_note = f"${doc_cost:.4f}" + (f" (${cost_per_page:.4f}/pág)" if cost_per_page is not None else "")
                 if any_approx:
                     cost_note += f"  {YELLOW}⚠ tarifa aprox.{RESET}"
                 print(f"  Estado: {color}{status}{RESET}  |  {source_note}  |  {duration}  |  {cost_note}")
 
-                service_rows = _service_rows(seg_cost, ext_cost, ocr_cost)
+                service_rows = _service_rows(seg_cost, ext_cost, ocr_cost, extra_costs)
                 if service_rows:
                     parts = []
                     for r in service_rows:

@@ -273,7 +273,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       // The expediente pipeline OCRs scanned pages via Textract and runs
       // several Bedrock extraction calls: an 86-page expediente takes ~6 min.
       timeout: cdk.Duration.minutes(15),
-      memorySize: 1024,
+      // 1536 (was 1024) since the physical-authenticity stage: it rasterizes
+      // a page and keeps a few full-resolution RGB copies alive at once (a
+      // 2424x3216 phone capture is ~23 MB per copy), on top of Pillow. Types
+      // that declare no `authenticity` block never touch that path.
+      memorySize: 1536,
       description:
         "Config-driven document validation (JSON + DynamoDB + custom Node.js)",
       environment: {
@@ -332,6 +336,16 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         // the file, so it would let a caller choose the model, and with it the
         // cost and the extraction quality, on someone else's document.
         ...(isProd ? {} : { ALLOW_MODEL_OVERRIDE: "true" }),
+        // Physical-authenticity stage (pipeline/authenticity.py). The vision
+        // model is resolved on its OWN chain — catalog `model_ids.vision`,
+        // this variable, then a vision-capable default — and never falls back
+        // to BEDROCK_MODEL_ID, which in this deployment is a text-only model.
+        ...(process.env.BEDROCK_VISION_MODEL_ID && {
+          BEDROCK_VISION_MODEL_ID: process.env.BEDROCK_VISION_MODEL_ID,
+        }),
+        // Kill-switch. "false" does NOT approve unchecked documents: a type
+        // that declares the stage then goes to REQUIERE_REVISION instead.
+        AUTHENTICITY_ENABLED: process.env.AUTHENTICITY_ENABLED || "true",
       },
     });
 
@@ -542,6 +556,37 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     enrichmentFn.addEnvironment("COST_TABLE", costTable.tableName);
     costTable.grantWriteData(enrichmentFn);
 
+    // Fingerprint table — layer 4 of the physical-authenticity stage
+    // (`enrichment-lambda/pipeline/fingerprint_store.py`). Two things live
+    // here, told apart by the `Pk` prefix:
+    //   E# / X# / L#  what was SEEN on each processed letter: the ink
+    //                 fingerprint of its signature/stamp, the hash of any image
+    //                 embedded under them, the letter's identity. It is what
+    //                 lets a signature reused across the letters of different
+    //                 employees be caught — evidence no single document carries.
+    //   R#            each supplier's REGISTERED valid signatures/stamps/logos
+    //                 (written by `pnpm refs:*`, scripts/manage-references.mjs;
+    //                 the image bytes themselves go to the document bucket
+    //                 under `references/`).
+    // RETAIN, like costTable and unlike uniqueKeyTable: this is history and
+    // hand-curated registrations, not an index that a backfill can rebuild in
+    // full — a `pnpm run destroy` during dev iteration must not erase it.
+    const fingerprintTable = new dynamodb.Table(this, "FingerprintTable", {
+      tableName: `document-validation-fingerprints${envSuffix}`,
+      partitionKey: { name: "Pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "Sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      ...(encryptionKey
+        ? {
+            encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryptionKey,
+          }
+        : { encryption: dynamodb.TableEncryption.DEFAULT }),
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    enrichmentFn.addEnvironment("FINGERPRINT_TABLE", fingerprintTable.tableName);
+    fingerprintTable.grantReadWriteData(enrichmentFn);
+
     // Grant broad Bedrock invoke permissions to all Lambda roles in the pipeline
     // The construct creates its own roles but customModelId with cross-region prefix
     // may not generate correct IAM ARNs for inference profiles
@@ -581,6 +626,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // expediente pipeline reads raw documents and persists complete results
     // under results/ (Step Functions payloads only carry a compact summary).
     documentBucket.grantReadWrite(enrichmentFn);
+    // The authenticity stage reads registered reference images from this same
+    // bucket (`references/<scope>/<key>/<KIND>/...` — only `raw/` triggers the
+    // workflow, so they are inert there). It needs the bucket NAME for that:
+    // every other read in this Lambda gets bucket+key from the event.
+    enrichmentFn.addEnvironment("DOCUMENT_BUCKET", documentBucket.bucketName);
 
     // Apps/API keys registry: `pnpm apps:register`/`list`/`revoke` (see
     // scripts/manage-apps.mjs) create real API Gateway ApiKey+UsagePlan
@@ -941,6 +991,17 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     }
 
     // Outputs
+    // Read by `pnpm refs:*` (scripts/manage-references.py) to find where the
+    // registered reference images of the authenticity stage are stored.
+    new cdk.CfnOutput(this, "DocumentBucketName", {
+      value: documentBucket.bucketName,
+      description: "Bucket de documentos (raw/, processed/, results/, references/)",
+    });
+    new cdk.CfnOutput(this, "FingerprintTableName", {
+      value: fingerprintTable.tableName,
+      description: "Huellas de firma/sello y referencias registradas por proveedor",
+    });
+
     new cdk.CfnOutput(this, "ApiEndpoint", {
       value: api.url,
       description: "Document Upload API endpoint (random execute-api URL)",

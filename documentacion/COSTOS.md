@@ -857,6 +857,70 @@ Además, cada corrida del E2E guarda el estimado de cada archivo y el análisis 
 compara contra la auditoría del mismo documento (mismo catálogo, mismo momento):
 esa es la validación que se acumula sola con el uso.
 
+## 10. Etapa de autenticidad física — ESTIMADO, aún sin medir (2026-09-18)
+
+> A diferencia del resto de este documento, **estas cifras no están medidas**:
+> la etapa se agregó el 2026-09-18 y todavía no hay cartas procesadas en un stack
+> desplegado. Son la estimación de `scripts/_cost_estimate.py` con tokens de
+> visión por default. Reemplazar por lo medido en cuanto `pnpm costos` tenga
+> registros con el servicio `BedrockAuthenticity`: sus tokens reales se fijan **a
+> mano** en `scripts/cost_calibration.json` → `authenticity`
+> (`locateInputTokens`, `inspectInputTokens`, `referenceImageTokens`…).
+> `pnpm costos:validar -- --write` todavía **no** recalibra esta etapa.
+
+**Primeras mediciones reales (2026-09-21, corridas locales con Haiku 4.5 en
+visión) — sustituyen a la estimación de abajo donde difieren:**
+
+| Carta | Llamadas de visión | Tokens entrada / salida | Visión | Total carta |
+|---|---|---|---|---|
+| Escaneo genuino, sin referencias (6 cartas) | 2 (clasificar ≤12 regiones + examinar 3 recortes) | 6,100–7,200 / 515–580 | **~$0.0090–0.0101** | no medido (faltó OCR + extracción en esas corridas) |
+| Carta digital de Word, 4 imágenes insertadas, 6 referencias enviadas | 2 | 7,550 / 579 | **$0.0115** | **$0.0161** (extracción $0.0046; sin OCR: texto nativo) |
+
+La primera llamada resultó más cara que lo estimado (3,300 tokens) porque ahora
+lleva, además de la página, los recortes de las regiones candidatas: el modelo
+ubicaba mal y se cambió a «el código propone regiones, el modelo las clasifica»
+(ver `AUTENTICIDAD_Y_REFERENCIAS.md` §2). `pnpm procesar` ya incluye esta línea en
+su total — antes la omitía y una `CARTA_NOM35` salía a menos de la mitad.
+
+Solo la pagan los tipos que declaran el bloque `authenticity` (hoy:
+`CARTA_NOM35`). De sus cuatro capas, **dos son gratis** (estructura del PDF y
+pixeles corren en la Lambda, sin servicios externos) y una cuesta centavos de
+DynamoDB (memoria). Lo que se factura es la **visión**: Converse cobra cada imagen
+como tokens de ENTRADA (~ancho×alto/750 en los modelos Anthropic).
+
+| Llamada | Qué manda | Tokens entrada (default) | Salida |
+|---|---|---|---|
+| `locate` | la página a 1568 px de lado largo + esquema | ~3,300 | ~150 |
+| `inspect` | recortes de firma/sello/logo a resolución nativa | ~2,200 | ~350 |
+| + por referencia registrada enviada | un recorte más (máx. `max_references_per_kind` × elementos) | ~320 c/u | — |
+
+Por carta de una página, con Haiku 4.5 en visión y el extractor desplegado:
+
+| Carta | Textract | Extracción | Autenticidad | Lambda | **Total** |
+|---|---|---|---|---|---|
+| Captura genuina (escaneada), sin referencias | $0.0015 | ~$0.0027 | ~$0.0088 (2 llamadas) | ~$0.0010 | **~$0.014** |
+| Ídem, con 9 referencias enviadas (tope) | $0.0015 | ~$0.0027 | ~$0.0120 | ~$0.0010 | **~$0.019** |
+| PDF digital (Word con firma pegada) | $0 (texto nativo) | ~$0.0025 | ~$0.0045 (**1** llamada) | ~$0.0009 | **~$0.008** |
+
+La tercera fila es el guardrail de costo de la etapa: cuando la capa gratis ya
+probó que el documento es digital, **el examen de recortes se omite**
+(`vision.inspect_when_digital: false`) — preguntarle a un modelo si la firma
+«parece» pegada no agrega información, solo costo. Se sigue pagando `locate`
+porque hace falta saber QUÉ imagen incrustada está bajo la firma para poder
+probar su reutilización en otra carta.
+
+Guardrails por tipo, todos en el catálogo y todos fail-open (exceder uno analiza
+menos y lo dice en `reasons`, nunca recorta en silencio): `pages.max_pages`,
+`vision.max_references_per_kind`, `vision.inspect_crops`, `vision.enabled`.
+Interruptor global: `AUTHENTICITY_ENABLED` (apagado manda a revisión, no aprueba).
+
+En la auditoría (`pnpm costos`, §7) aparece como servicio propio,
+**`BedrockAuthenticity`** — mismo criterio que `BedrockPageLocator`: una llamada
+real y opcional nunca se esconde dentro de `BedrockExtraction`. La Lambda pasó de
+1024 a **1536 MB** por los rasters de página (afecta el `LambdaCompute` de todos
+los tipos en proporción a su duración: +50 % sobre una partida que es ~5-8 % del
+costo por documento).
+
 ## Tráfico de pruebas reales
 
 `pnpm test:real` genera costos auténticos y persiste documentos igual que una

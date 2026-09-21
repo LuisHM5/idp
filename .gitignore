@@ -79,3 +79,6 @@ data/responses*/
 documentacion/*.pdf
 documentacion/**/*.pdf
 .tgrep/
+# Recortes de firmas/sellos/logos de proveedores para `pnpm refs:register`:
+# son firmas de personas reales — nunca al repo (documentacion/AUTENTICIDAD_Y_REFERENCIAS.md §3.3).
+referencias/

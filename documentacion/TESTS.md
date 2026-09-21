@@ -67,6 +67,8 @@ validar es justo lo que está desplegado ahí.
 | Acabo de desplegar | paso 3; para todo el corpus etiquetado, `pnpm test:real -- --env dev` ([sección 8](#8-suite-seria-cobertura-e-histórico-local)) |
 | Quiero saber si un tipo procesa bien documentos reales | paso 5 ([sección 5.1](#51-modo-dataset-análisis-de-confianza)) |
 | Quiero ir probando muchos tipos poco a poco | `pnpm test:e2e:init`, llenar carpetas, paso 6 ([sección 5.2](#52-suite-multi-tipo-por-carpetas)) |
+| Toqué la etapa de autenticidad (`pdf_forensics`, `pixel_forensics`, `authenticity`…) o los umbrales del bloque `authenticity` de un catálogo | `pnpm test:unit` y luego `pnpm test:autenticidad` (gratis los dos); si tocaste `vision_inspector` o los prompts, `pnpm test:autenticidad -- --vision` (~$0.08) |
+| Quiero saber cuántas cartas reales rechazaría la regla de captura física | `pnpm autenticidad -- --dir <carpeta>` (gratis, sin AWS) |
 | Un documento concreto salió mal y quiero ver por qué | `pnpm comparar -- archivo.pdf` ([sección 2](#2-comparar-expected-vs-real-de-un-documento-con-costo-script-simple)) |
 
 ### 0.4 Paso a paso: dataset de un tipo
@@ -284,6 +286,9 @@ funcionando.
 | `pnpm test:pedimentos`                    | Pipeline directo contra todos los PDFs locales; compara los que están declarados en el ground truth | Sí (Textract + Bedrock) | Depende del corpus |
 | `pnpm test:pedimentos -- --file B2401416` | Igual a `pnpm comparar` pero sin el prompt de confirmación (útil en CI/scripts) | Sí                      | ~$0.02–0.35  |
 | `pnpm test:pedimentos -- --save /tmp/res` | Corre todo + guarda los JSON completos de resultado                            | Sí                      | —            |
+| `pnpm test:autenticidad`                  | Etapa de autenticidad física contra `tests/integration/expected_autenticidad.json` sobre `test-docs/nom35`: veredicto de estructura, `physical_capture`, motivos duros, y que ninguna captura genuina se acuse de fondo artificial. Solo capas deterministas; memoria y referencias apagadas | No | $0 |
+| `pnpm test:autenticidad -- --vision`      | Lo mismo + la capa de visión REAL sobre las carpetas ancla revisadas a ojo: exige que el modelo encuentre los elementos `required` en las capturas genuinas y lista lo que opinó de cada recorte | Sí (Bedrock) | ~$0.08, confirma antes |
+| `pnpm autenticidad -- --dir <carpeta>`    | No es un test: corre las capas gratuitas sobre cualquier carpeta y dice cuántos documentos caerían — para calibrar antes de activar o endurecer el bloque | No | $0 |
 | `pnpm test-local --type INE`              | Motor de validación con entidades simuladas                                    | No                      | $0           |
 | `pnpm test-e2e -- doc.pdf TIPO_DOCUMENTO` | Contrato público desplegado completo: `POST /documents` → `PUT` S3 → polling de `GET /documents/{id}` hasta `FINISHED`; imprime el JSON final | Sí (stack desplegado) | centavos     |
 | `pnpm test:e2e:pedimento -- --file normal_pend.pdf` | **E2E real de verdad**: sube por el stack desplegado (S3→SQS→SFN→Lambdas→DynamoDB/S3) Y compara contra el ground truth — ver [5](#5-e2e-real-contra-el-stack-desplegado) | Sí (stack desplegado) | ~$0.05–0.10 + minutos |
@@ -292,6 +297,15 @@ funcionando.
 | `pnpm test:e2e:init`                      | Crea `test-docs/e2e-suite/<TIPO>/` para cada tipo activo y muestra el formato esperado y cuántos archivos tiene cada carpeta — ver [5.2](#52-suite-multi-tipo-por-carpetas) | No | $0 |
 | `pnpm test:e2e:suite [TIPO ...] [-d DIR] -e prod` | **Varios tipos de golpe** (o uno solo): una carpeta por tipo en `test-docs/e2e-suite/<TIPO>/` —o `-d DIR` para un solo tipo—, plan con costo por tipo, confirmación, y el mismo análisis por tipo — ver [5.2](#52-suite-multi-tipo-por-carpetas) | Sí (stack desplegado) | Muestra estimado y tope antes de confirmar |
 | `pnpm schema:sensitivity -- --file normal_pend.pdf` | Experimento: qué tan preciso/impreciso se vuelve el resultado al cambiar el catálogo (hints, campos requeridos, tolerancias) — ver [6](#6-experimento-de-sensibilidad-del-schema) | Sí (parcial, ver abajo) | ~$0.05–0.15 |
+
+La etapa de autenticidad tiene su propia verdad de terreno,
+`tests/integration/expected_autenticidad.json` (validada gratis por
+`tests/unit/test_expected_autenticidad_schema.py`): `verified_by_eye: true` marca
+las carpetas ancla revisadas a mano; el resto es lo medido y sirve para detectar
+regresiones. Sus pruebas unitarias simulan el modelo de visión y DynamoDB, así que
+toda la etapa — incluido el contrato con el catálogo real de `CARTA_NOM35` y el
+motor de reglas — se prueba sin AWS
+(`tests/unit/test_authenticity_stage.py`). Guía: [AUTENTICIDAD_Y_REFERENCIAS.md](AUTENTICIDAD_Y_REFERENCIAS.md).
 
 La verdad de terreno de los tests de pedimentos vive en
 `tests/integration/expected_pedimentos.json` — al agregar documentos de

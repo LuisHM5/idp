@@ -1,0 +1,409 @@
+{
+  "CARTA_NOM35": {
+    "catalog_status": "beta",
+    "schema_version": "5.0.0",
+    "display_name": "Carta NOM-035 de promotor",
+    "aliases": [
+      "carta NOM-035",
+      "carta NOM 35",
+      "carta NOM35",
+      "constancia NOM-035 de promotor"
+    ],
+    "description": "Carta membretada que emite un proveedor, dirigida a Operadora Futurama S.A. de C.V., donde hace constar que una persona es su empleado(a) desde cierta fecha y en cierto puesto, que dentro de sus actividades visita tiendas alsuper, que conoce la política de la NOM-035 y participa en sus cuestionarios, y que deslinda de esa responsabilidad a Operadora Futurama. Lleva logotipo o membrete del proveedor, firma autógrafa sobre el nombre del firmante y sello de la empresa. No confundir con constancia laboral genérica, carta de recomendación, contrato ni constancia de evaluación NOM-035 emitida por un consultor.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "business_destination": "RECURSOS_HUMANOS",
+    "min_confidence": 0.85,
+    "authenticity": {
+      "enabled": true,
+      "pages": {
+        "max_pages": 2
+      },
+      "structure": {
+        "min_native_text_chars": 200,
+        "max_scan_text_chars": 40,
+        "full_page_coverage": 0.85,
+        "ignore_image_coverage_below": 0.01
+      },
+      "pixels": {
+        "dpi": 150
+      },
+      "vision": {
+        "enabled": true,
+        "inspect_crops": true,
+        "inspect_when_digital": "with_references",
+        "max_references_per_kind": 3,
+        "fallback_models": []
+      },
+      "elements": {
+        "FIRMA": {
+          "description": "Firma autógrafa trazada con tinta sobre la línea de firma, encima del nombre impreso del firmante. El nombre impreso o la línea vacía NO son la firma.",
+          "required": true,
+          "ink_when_overlapping": "dark",
+          "similarity_reject": 0.97,
+          "similarity_review": 0.85
+        },
+        "SELLO": {
+          "description": "Sello de goma de la empresa emisora estampado con tinta (con o sin recuadro), normalmente junto a la firma o encima de ella, con razón social, sucursal, domicilio o teléfono.",
+          "required": true,
+          "read_text": true,
+          "issuer_field": "EMPRESA_EMISORA",
+          "ink_when_overlapping": "colour",
+          "similarity_reject": null,
+          "similarity_review": 0.95
+        },
+        "LOGO": {
+          "description": "Logotipo o membrete de la empresa emisora, normalmente en el encabezado o en el pie de la hoja.",
+          "required": true,
+          "fingerprint": false,
+          "embedded_image_is_insertion": false
+        }
+      },
+      "references": {
+        "key_from": "metadata.proveedor",
+        "scope": "PROVEEDOR"
+      },
+      "memory": {
+        "enabled": true,
+        "identity_fields": [
+          "NOMBRE_EMPLEADO",
+          "FECHA_CARTA"
+        ],
+        "element_similarity_reject": 0.97,
+        "element_similarity_review": 0.85,
+        "max_candidates": 2000
+      }
+    },
+    "fields": {
+      "DESTINATARIO": {
+        "type": "string",
+        "required": true,
+        "hint": "Razón social a la que va dirigida la carta, normalmente bajo la leyenda 'Atención:' al inicio.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "(?i)operadora\\s+futurama",
+            "message": "La carta no está dirigida a Operadora Futurama S.A. de C.V."
+          }
+        ]
+      },
+      "NOMBRE_EMPLEADO": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo de la persona de quien se hace constar que es empleado(a) ('hacemos constar que ... es empleado(a) de'). No es el firmante.",
+        "validation": []
+      },
+      "EMPRESA_EMISORA": {
+        "type": "string",
+        "required": true,
+        "hint": "Razón social de la empresa que emite la carta y que emplea a la persona ('es empleado(a) de ...'). Si el cuerpo no la nombra, tomar la del membrete. Nunca es Operadora Futurama.",
+        "validation": []
+      },
+      "FECHA_INGRESO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha desde la cual la persona es empleada ('desde ... a la fecha'). Formato YYYY-MM-DD.",
+        "validation": []
+      },
+      "PUESTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Puesto que ocupa el empleado ('ocupando el puesto de ...').",
+        "validation": []
+      },
+      "FECHA_CARTA": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha de emisión de la carta, normalmente arriba a la derecha o como 'Ciudad, a DD de mes de YYYY'. Formato YYYY-MM-DD.",
+        "validation": [
+          {
+            "rule_type": "date_max_age",
+            "value": 1,
+            "on_fail": "review",
+            "message": "La carta NOM-035 tiene más de 1 año de emitida; se considera no vigente"
+          }
+        ]
+      },
+      "NOMBRE_FIRMANTE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre impreso bajo la línea de firma: la persona responsable de la empresa que firma la carta.",
+        "validation": []
+      },
+      "CARGO_FIRMANTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Cargo o puesto del firmante si aparece bajo su nombre.",
+        "validation": []
+      },
+      "REFERENCIA_NOM035": {
+        "type": "string",
+        "required": true,
+        "hint": "Texto literal con el que la carta menciona la norma, por ejemplo 'NOM-035' o 'NORMA 035'. Vacío si no la menciona.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "(?i)(nom|norma)[\\s-]*0?35",
+            "message": "La carta no menciona la NOM-035"
+          }
+        ]
+      },
+      "AUTENTICIDAD_EVALUADA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "evaluated",
+        "hint": "Verdadero cuando todas las capas habilitadas de la verificación de autenticidad pudieron correr.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "on_fail": "review",
+            "message": "No se pudo completar la verificación de autenticidad; requiere revisión manual"
+          }
+        ]
+      },
+      "CAPTURA_FISICA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "structure.physical_capture",
+        "hint": "Verdadero cuando el archivo es la captura (escaneo o foto) de una hoja de papel; falso cuando es un documento digital con imágenes insertadas.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El archivo es un documento digital con firma/sello insertados como imagen: la carta debe imprimirse, firmarse con tinta, sellarse y escanearse"
+          }
+        ]
+      },
+      "ORIGEN_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "structure.origin",
+        "hint": "Programa que generó el archivo: ESCANER, APP_CAPTURA, OFIMATICA, DESCONOCIDO o IMAGEN. Solo evidencia.",
+        "validation": []
+      },
+      "FONDO_NATURAL": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "pixels.natural_background",
+        "hint": "Verdadero cuando el fondo de la hoja tiene ruido de captura (papel/sensor).",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El fondo es perfectamente uniforme: posible exportación digital o captura de pantalla"
+          }
+        ]
+      },
+      "FIRMA_PRESENTE": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.FIRMA.present",
+        "hint": "Se ve una firma autógrafa en la hoja.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "No se detectó firma autógrafa en la carta"
+          }
+        ]
+      },
+      "SELLO_PRESENTE": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.SELLO.present",
+        "hint": "Se ve un sello de la empresa en la hoja.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "No se detectó sello de la empresa en la carta"
+          }
+        ]
+      },
+      "LOGO_PRESENTE": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.LOGO.present",
+        "hint": "Se ve el logotipo o membrete de la empresa emisora.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "No se detectó logotipo o membrete de la empresa emisora"
+          }
+        ]
+      },
+      "FIRMA_SIN_INSERCION": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.FIRMA.not_pasted",
+        "hint": "Falso cuando la firma es una imagen insertada o muestra indicios de serlo.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La firma es una imagen insertada o muestra indicios de inserción digital"
+          }
+        ]
+      },
+      "SELLO_SIN_INSERCION": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.SELLO.not_pasted",
+        "hint": "Falso cuando el sello es una imagen insertada, impresa, o muestra indicios de serlo.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El sello es una imagen insertada o muestra indicios de inserción digital o de impresión"
+          }
+        ]
+      },
+      "TEXTO_SELLO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.SELLO.text",
+        "hint": "Leyenda legible del sello.",
+        "validation": []
+      },
+      "SELLO_CORRESPONDE_EMISOR": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.SELLO.issuer_consistent",
+        "hint": "La leyenda del sello nombra a la misma empresa que emite la carta. Vacío si el sello es ilegible.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El sello nombra a una empresa distinta de la que emite la carta"
+          }
+        ]
+      },
+      "FIRMA_COINCIDE_REFERENCIA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.FIRMA.matches_reference",
+        "hint": "La firma corresponde a un firmante registrado del proveedor. Vacío si el proveedor no tiene firmas registradas.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La firma no corresponde a ninguna de las firmas registradas del proveedor"
+          }
+        ]
+      },
+      "SELLO_COINCIDE_REFERENCIA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.SELLO.matches_reference",
+        "hint": "El sello corresponde a un sello registrado del proveedor. Vacío si el proveedor no tiene sellos registrados.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El sello no corresponde a ninguno de los sellos registrados del proveedor"
+          }
+        ]
+      },
+      "LOGO_COINCIDE_REFERENCIA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "element.LOGO.matches_reference",
+        "hint": "El logotipo corresponde a uno registrado del proveedor. Vacío si el proveedor no tiene logotipos registrados.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El logotipo no corresponde a ninguno de los registrados del proveedor"
+          }
+        ]
+      },
+      "FIRMA_SELLO_NO_REUTILIZADOS": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "memory.elements_unique",
+        "hint": "Falso cuando la firma o el sello son la MISMA imagen que en la carta de otro empleado.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "reject",
+            "message": "La firma o el sello son idénticos a los de la carta de otro empleado: una firma autógrafa nunca se repite exacta"
+          }
+        ]
+      },
+      "FIRMA_SELLO_NO_PARECIDOS": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "memory.elements_not_similar",
+        "hint": "Falso cuando la firma o el sello se parecen demasiado a los de otra carta.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La firma o el sello se parecen demasiado a los de otra carta; revisar posible reutilización"
+          }
+        ]
+      },
+      "CARTA_NO_DUPLICADA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "memory.not_duplicate",
+        "hint": "Falso cuando esta misma carta (mismo empleado y fecha) ya se había recibido.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "info",
+            "message": "Esta misma carta ya se había recibido antes"
+          }
+        ]
+      },
+      "VEREDICTO_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "verdict",
+        "hint": "AUTENTICO, SOSPECHOSO, NO_AUTENTICO o NO_EVALUADO.",
+        "validation": []
+      },
+      "MOTIVOS_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "reasons",
+        "hint": "Códigos de los hallazgos de autenticidad, separados por coma.",
+        "validation": []
+      }
+    }
+  }
+}

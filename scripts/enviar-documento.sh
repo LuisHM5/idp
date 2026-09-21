@@ -23,6 +23,11 @@
 # Opciones:
 #   --env dev|prod    Ambiente destino (default: dev, igual que el deploy)
 #   --stack <NOMBRE>  Stack explícito (gana sobre --env)
+#   --meta clave=valor  Metadata de la carga (repetible): va en el campo `metadata`
+#                     del POST /documents. Ej. `--meta proveedor=10021` para que la
+#                     etapa de autenticidad compare contra las firmas/sellos
+#                     registrados de ese proveedor. Claves [a-z0-9][a-z0-9._-]*,
+#                     valores ASCII simples (el API rechaza lo demás).
 #   --model <ID>      Modelo de Bedrock solo para ESTE documento, sin redeploy.
 #                     Solo dev: el stack de prod ignora el valor a propósito
 #                     (ALLOW_MODEL_OVERRIDE), porque viene de quien sube el
@@ -86,8 +91,21 @@ FILE=""
 DOC_TYPE=""
 MODEL_ID=""
 OCCURRENCE_MODE=""
+META_JSON=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --meta)
+      if [[ $# -lt 2 || "$2" != *=* ]]; then
+        echo "Falta el valor de --meta (clave=valor, ej. proveedor=10021)." >&2
+        exit 2
+      fi
+      # Sin comillas ni backslashes: el body se arma con printf, no con un
+      # serializador, y el API solo admite valores ASCII planos de todos modos.
+      if [[ "$2" == *'"'* || "$2" == *'\'* ]]; then
+        echo "--meta no admite comillas ni backslashes: $2" >&2
+        exit 2
+      fi
+      META_JSON+="${META_JSON:+,}\"${2%%=*}\":\"${2#*=}\""; shift 2 ;;
     --model)
       if [[ $# -lt 2 ]]; then
         echo "Falta el valor de --model (ej. amazon.nova-pro-v1:0)." >&2
@@ -158,7 +176,7 @@ if [[ -z "$STACK_NAME" ]]; then
 fi
 
 if [[ -z "$FILE" ]]; then
-  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
+  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
   echo "     TIPO_DOCUMENTO acepta varios tipos y sufijos :N/:all, sin espacios." >&2
   exit 2
 fi
@@ -273,6 +291,7 @@ trap 'rm -f "$REQ_BODY_FILE"' EXIT
   [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
   [[ -n "$OCCURRENCE_MODE" ]] && printf ',"occurrenceMode":"%s"' "$OCCURRENCE_MODE"
   [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
+  [[ -n "$META_JSON" ]] && printf ',"metadata":{%s}' "$META_JSON"
   printf '}'
 } > "$REQ_BODY_FILE"
 

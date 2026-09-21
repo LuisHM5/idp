@@ -19,6 +19,7 @@ flowchart TB
     RES[("S3 results/<br/>+ processed·failed")]:::storage
     DDBT[("DynamoDB<br/>tracking")]:::database
     DDBC[("DynamoDB<br/>catálogo")]:::database
+    DDBF[("DynamoDB<br/>huellas + referencias<br/>(autenticidad)")]:::database
     EB["EventBridge<br/>idp-broker"]:::integration
     STATUS["Status Lambda<br/>FINISHED · FAILED"]:::compute
     KMSN[("Cifrado<br/>CMK prod · default dev")]:::security
@@ -33,6 +34,7 @@ flowchart TB
     SFN --> EB
     EB --> STATUS --> DDBT
     LAMBDA -.-> TX
+    LAMBDA -.->|"autenticidad"| DDBF
     DDBC -.->|"gana sobre bundle"| LAMBDA
     KMSN -.-> RAW
     KMSN -.-> SQS

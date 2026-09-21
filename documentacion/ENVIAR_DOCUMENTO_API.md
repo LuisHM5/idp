@@ -8,7 +8,8 @@ Guía para mandar un documento al pipeline de validación y leer el resultado.
 pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP  # dev (default)
 pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP --env prod
 pnpm enviar invoices-flete.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
-# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--env dev|prod]
+pnpm enviar carta.pdf CARTA_NOM35 --meta proveedor=10021   # metadata de carga (repetible); ver CARTA_NOM35.md
+# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod]
 ```
 
 Para probar de una vez la subida, la espera eficiente por `202`/`Retry-After`

@@ -642,6 +642,141 @@ Cuando además se quieren mapear parámetros y validar el QR:
   `qr_source` junto al campo.
 - `QR_RECOVERY_ENABLED=false` desactiva globalmente este mecanismo.
 
+### Autenticidad física (`authenticity`)
+
+Para tipos que deben llegar **impresos, firmados con tinta, sellados y
+escaneados** — y donde el riesgo no es leer mal un dato sino que alguien entregue
+un Word con la firma y el sello *pegados como imagen*. Es el segundo bloque
+no-textual del DSL (el primero es `qr_recovery`, y está calcado de él): un bloque
+de tipo + un marcador por campo + booleanos `computed` que el motor de reglas
+normal califica. **Nada en el código conoce un `TYPE_ID`, un nombre de campo ni un
+nombre de elemento**: todo sale de aquí. Primer tipo que lo usa:
+`base/recursos_humanos/CARTA_NOM35.json`.
+
+Guía operativa completa (qué detecta, cómo dar de alta las firmas y sellos de
+cada proveedor, arranque en observación, límites):
+[`documentacion/AUTENTICIDAD_Y_REFERENCIAS.md`](../documentacion/AUTENTICIDAD_Y_REFERENCIAS.md).
+
+```jsonc
+"authenticity": {
+  "enabled": true,
+  "pages": { "max_pages": 2 },          // páginas con contenido a rasterizar (fail-open: si hay más, se avisa)
+
+  "structure": {                        // CAPA 1 — estructura del PDF. Gratis, determinista.
+    "min_native_text_chars": 200,       //   texto VISIBLE ≥ esto => documento digital
+    "max_scan_text_chars": 40,          //   texto visible ≤ esto => sin capa de texto real
+    "full_page_coverage": 0.85,         //   una imagen que cubre ≥ esto ES la página
+    "ignore_image_coverage_below": 0.01,//   menos que esto es decoración (marca de agua de CamScanner)
+    "origin_patterns": { "ESCANER": ["lexmark", "..."] }   // opcional; solo evidencia
+  },
+
+  "pixels": {                           // CAPA 2 — ruido de fondo. Gratis, señal suave.
+    "dpi": 150, "grid": 8, "min_regions": 8,
+    "noise_std_min": 0.05, "pure_white_ratio_min": 0.999
+  },
+
+  "vision": {                           // CAPA 3 — un modelo multimodal ve la página. De pago.
+    "enabled": true,
+    "inspect_crops": true,              //   2ª llamada: examina recortes a resolución nativa
+    "inspect_when_digital": "with_references",  // false: si la capa 1 ya probó que es digital, no se paga el examen
+                                        //   true: siempre · "with_references": solo si el proveedor tiene referencias
+                                        //   registradas ("¿la firma pegada es al menos la registrada?")
+    "max_references_per_kind": 3,       //   referencias registradas que se mandan por elemento
+    "fallback_models": []               //   [] = nunca cambia de modelo (la lista compartida es de solo texto)
+  },
+
+  "elements": {                         // QUÉ se busca. Los nombres son tuyos.
+    "FIRMA": {
+      "description": "Firma autógrafa trazada con tinta sobre la línea de firma…",  // va al prompt
+      "required": true,
+      "ink_when_overlapping": "dark",   // si su caja se traslapa con otra: qué tinta es ESTE elemento
+      "similarity_reject": 0.97,        // memoria: a partir de aquí es LA MISMA tinta que otra carta
+      "similarity_review": 0.85         //          a partir de aquí se parece demasiado
+    },
+    "SELLO": {
+      "description": "Sello de goma de la empresa emisora…",
+      "read_text": true,                // transcribe la leyenda -> `element.SELLO.text`
+      "issuer_field": "EMPRESA_EMISORA",// la leyenda debe nombrar a este campo extraído
+      "ink_when_overlapping": "colour",
+      "similarity_reject": null,        // null = el parecido NUNCA rechaza (una goma rígida siempre se parece)
+      "similarity_review": 0.95
+    },
+    "LOGO": {
+      "description": "Logotipo o membrete…",
+      "fingerprint": false,             // no se le guarda huella: un logo SÍ se repite legítimamente
+      "embedded_image_is_insertion": false
+    }
+  },
+
+  "references": {                       // referencias registradas por proveedor (`pnpm refs:*`)
+    "key_from": "metadata.proveedor",   //   de dónde sale la clave: metadata de la carga
+    "scope": "PROVEEDOR"
+  },
+
+  "memory": {                           // CAPA 4 — memoria entre documentos (tabla de huellas)
+    "enabled": true,
+    "identity_fields": ["NOMBRE_EMPLEADO", "FECHA_CARTA"],   // qué hace que dos cargas sean "la misma carta"
+    "element_similarity_reject": 0.97, "element_similarity_review": 0.85,
+    "max_candidates": 2000
+  }
+}
+```
+
+Cada capa se apaga por separado (`"vision": false`, `"memory": {"enabled": false}`,
+`"pixels": false`…). Un tipo **sin** el bloque no paga nada: una búsqueda de
+diccionario. El interruptor global es `AUTHENTICITY_ENABLED` — y `false` **no
+aprueba** lo que no se revisó: manda a revisión.
+
+#### Cómo recibe un campo su valor: `authenticity_source`
+
+Los resultados caen en campos `computed` normales. Cada uno dice qué señal quiere:
+
+```jsonc
+"CAPTURA_FISICA": {
+  "type": "boolean", "required": false, "computed": true,
+  "authenticity_source": "structure.physical_capture",
+  "hint": "…",
+  "validation": [
+    { "rule_type": "boolean_true", "allow_empty": true, "on_fail": "review", "message": "…" }
+  ]
+}
+```
+
+| `authenticity_source` | Valor |
+|---|---|
+| `evaluated` | `true` si todas las capas habilitadas corrieron. **Sin `allow_empty`** en su regla: si la etapa no corrió, el documento va a revisión |
+| `verdict` · `reasons` · `capture_kind` | `AUTENTICO`/`SOSPECHOSO`/`NO_AUTENTICO`/`NO_EVALUADO` · códigos separados por coma · cómo se capturó la hoja |
+| `structure.physical_capture` | `true` captura de papel · `false` composición digital (determinista) · *vacío* si la estructura sola no alcanza |
+| `structure.origin` | `ESCANER` · `APP_CAPTURA` · `OFIMATICA` · `DESCONOCIDO` · `IMAGEN` — solo evidencia |
+| `pixels.natural_background` | `false` = fondo perfectamente uniforme · *vacío* en bitonales o sin área en blanco |
+| `element.<KIND>.present` | se ve en la página · *vacío* si la visión no corrió |
+| `element.<KIND>.not_pasted` | `false` si hay una imagen incrustada justo ahí (determinista) o el modelo ve indicios |
+| `element.<KIND>.text` · `.ink_colour` | leyenda transcrita (con `read_text`) · color de tinta |
+| `element.<KIND>.issuer_consistent` | la leyenda nombra al `issuer_field`. Se compara **en Python**, no opina el modelo |
+| `element.<KIND>.matches_reference` | corresponde a una referencia registrada · ***vacío* si no hay referencias** |
+| `memory.elements_unique` | `false` = la misma tinta/imagen en **otra** carta (nivel rechazo) |
+| `memory.elements_not_similar` | `false` = demasiado parecida (nivel revisión o peor) |
+| `memory.not_duplicate` | `false` = esta misma carta ya se recibió |
+
+Tres reglas para declarar estos campos:
+
+1. **`required: false` siempre.** El `presence` automático de `required: true` no
+   acepta `on_fail`, y un campo vacío aquí es una respuesta legítima.
+2. **`allow_empty: true` en todos menos en el de `evaluated`.** Vacío = «no se
+   pudo determinar», no «no». Es lo que hace que un proveedor sin referencias no
+   se rechace.
+3. **`on_fail` dice la política**: `reject` solo para lo determinista
+   (`structure.*`, `memory.elements_unique`); `review` para todo lo que sale de
+   la visión. El modelo puede equivocarse y puede ser engañado: nunca rechaza solo.
+
+Un `authenticity_source` que no existe deja el campo vacío (y con `allow_empty`
+pasa en silencio): si un campo nunca se llena, revisa que el nombre de la señal
+esté en la tabla de arriba.
+
+Antes de activar el bloque en un tipo, y antes de pasar un `on_fail` de `review` a
+`reject`, **mide con `pnpm autenticidad -- --type <TIPO> --dir <carpeta>`** (gratis,
+sin AWS): dice cuántos documentos reales caerían.
+
 ### Selección de páginas de interés (`page_selection`)
 
 Un PDF de 100 páginas cuyos campos viven en 3 sale caro: hoy se manda el
@@ -1026,7 +1161,7 @@ explícito). **Solo estos `rule_type` tienen implementación real** —
 | `regex` | `pattern`, `message` | El valor (normalizado y crudo) matchea el patrón. |
 | `regex_each` | `pattern`, `message` | Cada elemento de un array matchea el patrón. |
 | `presence` | `message` | El valor no está vacío. `required: true` en el campo ya genera esto automáticamente — no lo dupliques. |
-| `boolean_true` | `message` | El valor es afirmativo (`si`, `sí`, `yes`, `true`, `1`, `presente`). |
+| `boolean_true` | `message`, `allow_empty` | El valor es afirmativo (`si`, `sí`, `yes`, `true`, `1`, `presente`). Vacío = falla, salvo con `"allow_empty": true`, que da el tercer estado **"no evaluado"**: pensado para booleanos `computed` que el pipeline no siempre puede determinar (la etapa no aplica a ese archivo, no hay referencias registradas...). |
 | `date_expiry` | `message` | La fecha es futura respecto a hoy (documento no vencido). |
 | `date_max_age` | `pattern` o `params.value` (años), `message` | La fecha no es más vieja que N años. |
 | `minimum_items` | `params.value` (default 1) | Un array tiene al menos N elementos. |
@@ -1041,6 +1176,37 @@ explícito). **Solo estos `rule_type` tienen implementación real** —
 
 Params opcionales comunes a casi cualquier regla numérica: `"tolerance"`
 (default 0.01) y `"allow_empty": true` (no falla si el campo viene vacío).
+
+#### `on_fail`: qué le pasa al documento cuando la regla falla
+
+Param opcional de **cualquier** `rule_type`. Sin él, la severidad la decide el
+código de la regla (casi siempre `error`), y aquí hay una sutileza que
+sorprende: **un solo `error` entre varios checks buenos NO rechaza el
+documento** — da `PARTIALLY_APPROVED`, que el API reporta como
+`REQUIERE_REVISION`. Solo se rechaza cuando fallan *todos* los checks. Con
+`on_fail` el catálogo lo dice explícitamente, regla por regla:
+
+| `on_fail` | Severidad del check | Efecto en el documento |
+|---|---|---|
+| `"reject"` | `error` + `blocking: true` | **`RECHAZADO` por ese fallo solo**, sin importar cuántos campos más estén bien. Para señales deterministas e inequívocas. |
+| `"review"` | `warning` | `REQUIERE_REVISION`. Para señales de juicio o dudosas. |
+| `"info"` | `info` | Se reporta en el campo y en `checks`, pero no cambia el status. |
+| *(ausente)* | la que decida la regla | El comportamiento de siempre. |
+
+```jsonc
+"validation": [
+  {"rule_type": "boolean_true", "allow_empty": true, "on_fail": "reject",
+   "message": "Firma o sello idénticos a los de la carta de otro empleado"}
+]
+```
+
+Cambiar de `"review"` a `"reject"` es un `pnpm sync:one`, sin deploy — la forma
+de arrancar una regla nueva **en observación** y endurecerla cuando ya se midió.
+Un valor que no sea uno de los tres se ignora (no se adivina), y una regla
+`skipped` no bloquea nunca: no hubo veredicto que graduar. No aplica al
+`presence` automático de `required: true` (no es una regla declarada); si
+necesitas graduar una presencia, declara `required: false` y una regla
+`presence` explícita con su `on_fail`.
 
 **Gotcha importante:** un `rule_type` que NO está en esta tabla —
 `greater_than`, `in`, `less_than`, lo que sea que "suene lógico" — **no

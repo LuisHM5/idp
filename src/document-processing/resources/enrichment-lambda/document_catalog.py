@@ -190,6 +190,20 @@ class TypeRegistryEntry:
     # in; `page_selector.enabled_for` resolves that against the global
     # PAGE_SELECTION_ENABLED kill-switch.
     page_selection: Optional[Dict[str, Any]] = None
+    # Optional declarative PHYSICAL-AUTHENTICITY stage (pipeline/authenticity.py):
+    # when set, the pipeline checks that the upload is a genuine capture of a
+    # paper document (printed, wet-signed, stamped, scanned) rather than a
+    # digital composition with a pasted signature/stamp image. Four layers, each
+    # independently switchable inside the block: `structure` (PDF internals,
+    # free), `pixels` (background noise, free), `vision` (a multimodal model
+    # looks at the page) and `memory` (cross-document fingerprints + registered
+    # references). Results land on ordinary `computed` fields that opt in with
+    # a per-field `authenticity_source`, so the normal rule engine grades them
+    # (`boolean_true` + `on_fail`). None (the default) means the type pays
+    # nothing and takes exactly the path it takes today; nothing in the generic
+    # pipeline is coupled to which type declares it. See catalogs/README.md →
+    # "Autenticidad física (`authenticity`)".
+    authenticity: Optional[Dict[str, Any]] = None
     # Declarative UNIQUE KEY(s) for this type: the field(s) whose value
     # identifies one document of this type on its own (a pedimento number, a
     # CFDI UUID...). Written by `unique_keys.py` to the lookup table as
@@ -466,6 +480,7 @@ def _parse_entry(
             unique_keys=_parse_unique_keys(data),
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),
+            authenticity=data.get("authenticity"),
             segmentation_candidate=data.get("segmentation_candidate"),
             namespaces=data.get("namespaces", {}) or {},
         )
@@ -508,6 +523,7 @@ def _parse_entry(
         model_ids=data.get("model_ids", {}) or {},
         qr_recovery=data.get("qr_recovery"),
         page_selection=data.get("page_selection"),
+        authenticity=data.get("authenticity"),
         segmentation_candidate=data.get("segmentation_candidate"),
         unique_keys=_parse_unique_keys(data),
     )

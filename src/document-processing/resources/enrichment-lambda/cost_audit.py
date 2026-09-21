@@ -113,6 +113,7 @@ def build_cost_breakdown(
     segmentation = usage.get("segmentation") or {}
     extraction = usage.get("extraction") or {}
     locator = usage.get("pageLocator") or {}
+    authenticity = usage.get("authenticity") or {}
     pages = _page_counts(result)
     ocr_pages = pages["Ocr"] if pages else 0
 
@@ -125,6 +126,12 @@ def build_cost_breakdown(
         # el caso normal, porque no se llama.
         "BedrockPageLocator": bedrock_cost(locator.get("usage"), locator.get("modelId")),
         "BedrockExtraction": bedrock_cost(extraction.get("usage"), extraction.get("modelId")),
+        # Etapa de autenticidad física: las llamadas de VISIÓN (la página y los
+        # recortes de firma/sello viajan como imagen; Converse las cobra como
+        # tokens de entrada). $0 para todo tipo que no declare `authenticity`,
+        # y también cuando la capa de estructura ya probó que el documento es
+        # digital y se omite el examen de recortes.
+        "BedrockAuthenticity": bedrock_cost(authenticity.get("usage"), authenticity.get("modelId")),
         "TextractOcr": textract_cost(ocr_pages),
         "LambdaCompute": lambda_cost(
             duration_ms, os.environ.get("AWS_LAMBDA_FUNCTION_MEMORY_SIZE")

@@ -226,6 +226,7 @@ Son APIs que este proyecto **no controla**: dependencias de AWS. Cambios de disp
 |---|---|---|
 | `Converse` | Código propio — `enrichment-lambda/pipeline/bedrock.py` | Segmentación, extracción por documento y recuperación de referencias del pipeline de expediente |
 | `Converse` | Código propio — `document-processing/resources/model-invoke-lambda/index.py` | Los pasos `ClassificationStep`/`ProcessingStep` de Step Functions (flujo estándar), con visión |
+| `Converse` **con bloques de imagen** | Código propio — `enrichment-lambda/pipeline/vision_inspector.py` (vía `pipeline/bedrock.py`) | Etapa de autenticidad física, solo en tipos que declaran `authenticity` (hoy `CARTA_NOM35`): 1–2 llamadas por documento — la página, y recortes de firma/sello/logo + referencias registradas. Salida forzada por herramienta. Ver [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md) |
 
 Toda llamada al modelo usa **Converse**, la API de Bedrock que es agnóstica del proveedor: el mismo request sirve para cualquier modelo que Bedrock aloje, así que cambiar de modelo es configuración, no código.
 
@@ -238,6 +239,7 @@ Modelo base: `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil de inferencia
 | `BEDROCK_SEGMENTER_MODEL_ID` | Segmentación del expediente | No |
 | `BEDROCK_EXTRACTOR_MODEL_ID` | Extracción de campos (la mayor parte de los tokens) | No |
 | `BEDROCK_RECOVERY_MODEL_ID` | Re-extracción Textract + modelo | No |
+| `BEDROCK_VISION_MODEL_ID` | Etapa de autenticidad (ve la página y los recortes) | **Sí** — y **no** cae al modelo base: si no se define usa un default con visión (Haiku 4.5), porque `BEDROCK_MODEL_ID` y la lista de fallback pueden ser de solo texto |
 
 Antes de mover un paso a otro modelo, confirmar que el modelo soporte lo que ese paso usa: Converse; tool use forzado (el extractor lo requiere para catálogos de 100+ campos); visión (solo los dos primeros pasos); y su ventana de contexto (retunear `MAX_MODEL_DOC_BYTES`). Requiere además habilitar "Model access" en la consola de Bedrock — paso manual por cuenta/región.
 
@@ -263,13 +265,15 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 | `ListObjectsV2` | `query-lambda/index.mjs` | `GET /documents/{id}/file`: localiza el objeto original bajo `processed/{id}/` (o `failed/{id}/`) sin asumir el nombre de archivo |
 | `GetObject` (vía URL presignada, `getSignedUrl`) | `query-lambda/index.mjs` | `GET /documents/{id}/file`: firma la URL de descarga, el cliente hace el `GET`, no la Lambda — simétrico al `PutObject` presignado de la subida |
 | `HeadObject` + `CopyObject` | `query-lambda/index.mjs` | `POST /documents/{id}/reprocess`: recupera metadata y copia el original de `processed/`/`failed/` a una key nueva en `raw/`; no descarga bytes |
+| `GetObject` | `enrichment-lambda/pipeline/fingerprint_store.py` | Lee las imágenes de referencia registradas de un proveedor bajo `references/<scope>/<clave>/<ELEMENTO>/…` (mismo bucket; solo `raw/` dispara el flujo). Por eso la Lambda recibe `DOCUMENT_BUCKET` |
+| `PutObject` / `DeleteObject` | `scripts/manage-references.py` (`pnpm refs:*`, boto3) | Alta y baja de esas imágenes de referencia — herramienta de operación, no runtime |
 | `DownloadFile` (transfer manager) | Código propio — `model-invoke-lambda/index.py` | Descarga el archivo para la llamada de visión del flujo estándar |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createSuccessChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Al terminar la ejecución SIN excepción (incluida una validación RECHAZADA — es un resultado de negocio, no una falla): mueve `raw/{TIPO?}/{uuid}/archivo` → `processed/{documentId}/{filename}`. Código propio no lo invoca directamente. |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createFailedChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Mismo movimiento pero a `failed/{documentId}/{filename}`, solo cuando la propia ejecución de Step Functions revienta (excepción no capturada, timeout) — no cuando el documento simplemente sale RECHAZADO. |
 
 ### 2.4 Amazon DynamoDB — catálogo, tracking y auditoría de costos
 
-Tres tablas distintas, mismo servicio:
+Varias tablas distintas, mismo servicio (tracking, catálogo, costos, y — abajo — llaves únicas y huellas de autenticidad):
 
 | Operación | Quién la llama | Tabla | Nota |
 |---|---|---|---|
@@ -286,6 +290,8 @@ Tres tablas distintas, mismo servicio:
 | `Scan` | `enrichment-lambda/document_catalog.py` | catálogo | Carga tipos/reglas hot-reload al inicio de cada invocación |
 | `Scan` | `query-lambda/index.mjs` | catálogo | Resuelve nombre humano → `TYPE_ID` |
 | `PutItem` | `enrichment-lambda/cost_audit.py` | costos (`document-validation-costs[-dev]`) | Un item por documento procesado: $ desglosado por servicio (Bedrock segmentación/extracción/upstream, Textract, Lambda). Best-effort, tabla `RETAIN` separada de tracking — ver `COSTOS.md` §7 |
+| `PutItem` + `Query` | `enrichment-lambda/pipeline/fingerprint_store.py` | huellas (`document-validation-fingerprints[-dev]`) | Etapa de autenticidad: escribe la huella de tinta de firma/sello, el hash de cualquier imagen incrustada bajo ellos y la identidad de la carta, y consulta la partición del proveedor para detectar la MISMA firma en la carta de otro empleado o un reenvío. También lee (`Query`) las referencias registradas (`Pk = R#…`). Best-effort: sin tabla o con error, los campos quedan vacíos. Tabla `RETAIN`, una por ambiente |
+| `PutItem` / `UpdateItem` / `DeleteItem` / `Query` / `Scan` | `scripts/manage-references.py` (`pnpm refs:*`, boto3) | huellas | Alta, consulta y baja de referencias por proveedor — herramienta de operación, no runtime |
 | `Scan` / `GetItem` | `scripts/ver-costos.py` (boto3 directo, no `aws` CLI) | costos | `pnpm costos` / `pnpm costos -- --id <id>` — herramienta de auditoría, no runtime |
 
 ### 2.5 AWS Step Functions — orquestación

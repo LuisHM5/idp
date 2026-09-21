@@ -38,6 +38,7 @@ BEDROCK_SERVICES = (
     "BedrockProcessingUpstream",
     "BedrockSegmentation",
     "BedrockExtraction",
+    "BedrockAuthenticity",
 )
 SERVICE_LABEL_ES = {
     "BedrockClassificationUpstream": "Bedrock · Clasificación (upstream)",
@@ -45,6 +46,7 @@ SERVICE_LABEL_ES = {
     "BedrockSegmentation": "Bedrock · Segmentación",
     "BedrockExtraction": "Bedrock · Extracción",
     "BedrockPageLocator": "Bedrock · Localizador de páginas",
+    "BedrockAuthenticity": "Bedrock · Autenticidad (visión)",
     "TextractOcr": "Textract · OCR",
     "LambdaCompute": "Lambda · Cómputo (aprox.)",
 }

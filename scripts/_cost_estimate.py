@@ -350,6 +350,8 @@ def estimate_file(path: Path, doc_type: str, deployment: Deployment, calibration
         extract_mid += len(chosen)
         extract_high += len(seg_pages)
 
+    authenticity = _authenticity_cost(mods, path, segments, calibration, notes)
+
     priced_mid = _price_calls(mods, mid_calls, chunks_mid, model, cal, doc_type, workers)
     priced_high = _price_calls(mods, high_calls, chunks_high, model, cal, doc_type, workers)
     bedrock_mid, bedrock_high = priced_mid["mid"], priced_high["high"]
@@ -357,8 +359,10 @@ def estimate_file(path: Path, doc_type: str, deployment: Deployment, calibration
     per_ocr = float(lambda_cal.get("secondsPerOcrPage", 1.5))
     per_call = float(lambda_cal.get("secondsPerCall", 20))
     base = float(lambda_cal.get("baseSeconds", 8))
-    seconds_mid = base + per_ocr * len(scanned) + per_call * len(mid_calls)
-    seconds_high = base + per_ocr * len(scanned) + per_call * len(high_calls) * 1.5
+    per_vision = float(lambda_cal.get("secondsPerVisionCall", 6))
+    seconds_mid = base + per_ocr * len(scanned) + per_call * len(mid_calls) + per_vision * authenticity["calls"]
+    seconds_high = (base + per_ocr * len(scanned) + per_call * len(high_calls) * 1.5
+                    + per_vision * authenticity["callsHigh"])
     lam_mid = pricing.lambda_cost(min(seconds_mid, 900) * 1000, deployment.memory_mb)["costUsd"]
     lam_high = pricing.lambda_cost(min(seconds_high, 900) * 1000, deployment.memory_mb)["costUsd"]
 
@@ -368,14 +372,88 @@ def estimate_file(path: Path, doc_type: str, deployment: Deployment, calibration
         inputTokens=bedrock_mid["inputTokens"], outputTokens=bedrock_mid["outputTokens"],
         outputTokensHigh=priced_mid["high"]["outputTokens"], cacheReadTokens=bedrock_mid["cacheReadTokens"],
         cacheWriteTokens=bedrock_mid["cacheWriteTokens"], lambdaUsd=lam_mid,
-        totalUsd=round(textract + bedrock_mid["costUsd"] + lam_mid, 6),
-        totalHighUsd=round(textract + bedrock_high["costUsd"] + lam_high, 6),
+        authenticityUsd=authenticity["usd"], authenticityHighUsd=authenticity["usdHigh"],
+        authenticityCalls=authenticity["calls"], authenticityModel=authenticity["model"],
+        totalUsd=round(textract + bedrock_mid["costUsd"] + authenticity["usd"] + lam_mid, 6),
+        totalHighUsd=round(textract + bedrock_high["costUsd"] + authenticity["usdHigh"] + lam_high, 6),
         segmentationUsd=0.0, exact=not scanned and not seg_usage,
         approximatePricing=bool(bedrock_mid.get("approximatePricing")),
     )
     if bedrock_mid.get("approximatePricing"):
         notes.append(f"{model} no está en pipeline/pricing.py: precio aproximado con tarifas de Haiku")
     return result
+
+
+# Tokens de una llamada de visión de la etapa de autenticidad cuando todavía
+# no hay medición propia en `cost_calibration.json` (`authenticity`). Converse
+# cobra la imagen como tokens de ENTRADA (~ancho*alto/750 en los modelos
+# Anthropic): una hoja carta a 1568 px de lado largo son ~2,500 + el prompt y
+# el esquema; los recortes de firma/sello/logo son chicos, y cada referencia
+# registrada que se manda suma otro recorte.
+_AUTHENTICITY_DEFAULTS = {
+    "locateInputTokens": 3300, "locateOutputTokens": 150,
+    "inspectInputTokens": 2200, "inspectOutputTokens": 350,
+    "referenceImageTokens": 320,
+}
+
+
+def _authenticity_cost(mods, path: Path, segments, calibration: Dict[str, Any], notes: List[str]) -> Dict[str, Any]:
+    """Costo de las llamadas de VISIÓN de `pipeline/authenticity.py`, solo para
+    tipos que declaran el bloque. Usa la capa de estructura — que es gratis y
+    corre aquí mismo — para saber lo que el pipeline sabrá: si el PDF ya se
+    prueba digital, el examen de recortes se omite y es UNA llamada, no dos.
+    Medio = sin referencias registradas; alto = con el máximo que el catálogo
+    permite mandar por elemento."""
+    nothing = {"usd": 0.0, "usdHigh": 0.0, "calls": 0, "callsHigh": 0, "model": None}
+    document_catalog, bedrock, _expediente, _selector, _pdf_pages, pricing = mods[:6]
+    try:
+        from pipeline import authenticity as stage, pdf_forensics
+    except Exception:  # un checkout sin la etapa: nada que estimar
+        return nothing
+
+    cal = {**_AUTHENTICITY_DEFAULTS, **(calibration.get("authenticity") or {})}
+    total = dict(nothing)
+    for seg in segments:
+        entry = document_catalog.get_type_entry(seg.doc_type)
+        spec = stage.spec_for(entry)
+        vision = spec.get("vision") if spec else None
+        if not spec or vision is False or (isinstance(vision, dict) and vision.get("enabled") is False):
+            continue
+        vision = vision if isinstance(vision, dict) else {}
+        model = bedrock.explain_model_resolution("vision", entry)["resolved"]
+        digital = False
+        if path.suffix.lower() == ".pdf":
+            try:
+                from pypdf import PdfReader
+
+                reader = PdfReader(str(path))
+                indexes = range(seg.page_start - 1, min(seg.page_end, len(reader.pages)))
+                digital = pdf_forensics.inspect_pdf(reader, indexes, spec.get("structure") or {})["physicalCapture"] is False
+            except Exception:
+                digital = False
+        inspects = not digital or bool(vision.get("inspect_when_digital"))
+        elements = len(spec.get("elements") or {})
+        max_refs = int(vision.get("max_references_per_kind", 3)) * elements
+
+        def price(with_inspect: bool, references: int) -> float:
+            tokens_in = cal["locateInputTokens"] + (cal["inspectInputTokens"] + references * cal["referenceImageTokens"]
+                                                     if with_inspect else 0)
+            tokens_out = cal["locateOutputTokens"] + (cal["inspectOutputTokens"] if with_inspect else 0)
+            return pricing.bedrock_cost({"inputTokens": tokens_in, "outputTokens": tokens_out}, model)["costUsd"]
+
+        total["usd"] += price(inspects, 0)
+        total["usdHigh"] += price(True, max_refs)
+        total["calls"] += 2 if inspects else 1
+        total["callsHigh"] += 2
+        total["model"] = model
+        if digital:
+            notes.append("autenticidad: el PDF ya se prueba digital con la capa gratis; "
+                         "se estima 1 llamada de visión (sin examen de recortes)")
+    if total["calls"] and not (calibration.get("authenticity") or {}):
+        notes.append("autenticidad: tokens de visión por default (sin calibrar); ver los reales en `pnpm costos -- --id <id>` "
+                     "(servicio BedrockAuthenticity) y fijarlos en scripts/cost_calibration.json -> authenticity")
+    total["usd"], total["usdHigh"] = round(total["usd"], 6), round(total["usdHigh"], 6)
+    return total
 
 
 def page_selector_wants_locator(mods, spec: Dict[str, Any]) -> bool:

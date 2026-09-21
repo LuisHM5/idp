@@ -1483,6 +1483,8 @@ components:
         error: { type: string, description: "Presente solo si falló ESTE documento." }
         errorType: { type: string }
         liquidacionNormalizada: { type: object, additionalProperties: true }
+        authenticity:
+          $ref: "#/components/schemas/AuthenticitySummary"
         fields:
           type: object
           description: >
@@ -1493,6 +1495,67 @@ components:
             documento no lo traía Y no era obligatorio**: todo lo demás viaja con
             su `confidence`; si no hubo medición, vale `0.0`.
           additionalProperties: true
+    AuthenticitySummary:
+      type: object
+      description: >
+        Presente solo en tipos de documento que verifican AUTENTICIDAD FÍSICA
+        (p. ej. `CARTA_NOM35`): si el archivo es la captura de una hoja impresa,
+        firmada con tinta, sellada y escaneada, o una composición digital con la
+        firma/sello insertados como imagen. Es el RESUMEN: qué se concluyó y por
+        qué. Los valores que deciden el estatus viajan como campos normales en
+        `fields` (`CAPTURA_FISICA`, `FIRMA_PRESENTE`, `SELLO_COINCIDE_REFERENCIA`…),
+        y el detalle completo (cajas, estadísticas, hashes) en `fullResult`.
+        `verdict` describe el HALLAZGO, no el estatus del documento: un tipo en
+        modo observación reporta `NO_AUTENTICO` en un documento que solo va a
+        `REQUIERE_REVISION`.
+      properties:
+        verdict:
+          type: string
+          enum: [AUTENTICO, SOSPECHOSO, NO_AUTENTICO, NO_EVALUADO]
+          description: >
+            AUTENTICO: sin hallazgos. SOSPECHOSO: solo señales de juicio
+            (visión, parecido, elemento ausente). NO_AUTENTICO: evidencia
+            determinista (PDF digital con imagen insertada; la misma firma/sello
+            en la carta de otra persona). NO_EVALUADO: alguna capa no pudo correr
+            — el documento va a revisión, nunca se aprueba sin revisar.
+        layers:
+          type: object
+          description: Estado de cada capa.
+          properties:
+            structure: { $ref: "#/components/schemas/AuthenticityLayerStatus" }
+            pixels: { $ref: "#/components/schemas/AuthenticityLayerStatus" }
+            vision: { $ref: "#/components/schemas/AuthenticityLayerStatus" }
+            memory: { $ref: "#/components/schemas/AuthenticityLayerStatus" }
+        reasons:
+          type: array
+          description: Hallazgos, en el orden en que se encontraron. Vacío si no hubo.
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                description: >
+                  Identificador estable para ramificar, p. ej.
+                  `TEXTO_NATIVO_CON_IMAGEN_PEGADA`, `FIRMA_ES_IMAGEN_INSERTADA`,
+                  `SELLO_AUSENTE`, `FIRMA_REUTILIZADO_EN_OTRA_CARTA`,
+                  `SIN_REFERENCIAS_REGISTRADAS`, `CARTA_YA_RECIBIDA`.
+              hard:
+                type: boolean
+                description: true = evidencia determinista; false = juicio o aviso.
+              message: { type: string, description: "Explicación legible, en español." }
+        referencesFound:
+          type: boolean
+          description: >
+            Si el emisor (`metadata.proveedor` de la carga) tenía firmas/sellos/logos
+            registrados contra los cuales comparar. `false` NO rechaza: sin
+            referencias se verifica presencia y no-inserción.
+    AuthenticityLayerStatus:
+      type: string
+      enum: [OK, FALLA, NO_APLICA, ERROR, DESACTIVADA]
+      description: >
+        OK corrió sin hallazgos duros · FALLA encontró evidencia · NO_APLICA no
+        aplica a este archivo (una foto no tiene estructura PDF) · ERROR no pudo
+        correr · DESACTIVADA apagada en el catálogo o globalmente.
     FileDownloadResponse:
       type: object
       properties:

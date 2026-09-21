@@ -85,6 +85,7 @@ def checks_to_json(checks: List[RuleCheck]) -> List[Dict[str, Any]]:
             "valid": c.valid,
             "severity": c.severity,
             "skipped": c.skipped,
+            **({"blocking": True} if c.blocking else {}),
             "message": c.message,
             **({"details": c.details} if c.details else {}),
         }

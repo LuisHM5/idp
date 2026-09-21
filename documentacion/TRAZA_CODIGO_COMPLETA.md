@@ -658,6 +658,54 @@ validación, sin volver a recorrer ni mutar el árbol renderizado.
 La variante legacy hace lo mismo con `_call_model()`, `_merge_fields()` y
 `_merge_arrays()` sobre un schema plano.
 
+### 12.6b Pasada de autenticidad física (`expediente._run_authenticity`)
+
+Entre `_mark("extraction")` y la validación, `process_pdf()` corre una pasada
+propia — cronometrada como `tracking.timings.authenticity` — sobre cada documento
+cuyo tipo declara el bloque `authenticity` (detección por FORMA del catálogo:
+`authenticity.applies_to(entry)`, nunca por `TYPE_ID`). Un expediente sin tipos
+que la declaren paga una búsqueda de diccionario.
+
+No es un enricher más dentro de `_extract_segment` a propósito: esa cadena
+comparte un solo `try`, y una falla aquí convertiría un documento bien extraído
+en `PROCESSING_ERROR`. Además necesita los campos ya extraídos (el emisor que el
+sello debe nombrar, el empleado+fecha que identifican la carta).
+
+`process_pdf(context=...)` recibe de `handler._run_expediente` lo que se sabe
+SOBRE la carga — `{documentId, metadata, appOrigin}` —; de ahí sale, por ejemplo,
+`metadata.proveedor` (qué referencias registradas aplican).
+
+`authenticity.run(doc, entry, source, context)` por documento:
+
+1. `spec_for(entry)`: bloque del tipo + los campos que declaran
+   `authenticity_source` (mismo patrón que `_qr_spec_from_fields`).
+2. **Estructura** — `pdf_forensics.inspect_pdf(reader, páginas)`; en JPG/PNG es
+   `NO_APLICA`.
+3. **Rasters** de hasta `pages.max_pages` páginas con contenido —
+   `page_raster.render_page_rgb` / `decode_image`.
+4. **Pixeles** — `pixel_forensics.background_stats`; se abstiene en bitonales.
+5. **Visión (ubicar)** — `vision_inspector.locate(página JPEG 1568px)` → presente +
+   caja por elemento. Una falla deja la capa en `ERROR` y `evaluated=false`.
+6. **Evidencia por elemento** sin modelo: recorte, huella de tinta
+   (`pixel_forensics.fingerprint`, separando tinta negra/color si dos cajas se
+   traslapan) y `pdf_forensics.images_overlapping` — una imagen incrustada bajo el
+   elemento es prueba directa de inserción.
+7. **Referencias** — `fingerprint_store.list_references(scope, clave)`; se mandan
+   las `max_references_per_kind` más parecidas por huella.
+8. **Visión (examinar)** — `vision_inspector.inspect(recortes, referencias)`; se
+   omite si la capa 1 ya probó que el documento es digital.
+9. **Memoria** — `fingerprint_store.record_and_find`: escribe primero, consulta
+   después; misma carta/archivo = duplicado, otra carta con la misma tinta =
+   coincidencia.
+10. `_write_fields`: cada señal a su campo `computed` (`_entities`,
+    `_confidences`, `_recovered_sources` = `AUTHENTICITY`). **Señal `None` → el
+    campo se deja vacío**, que con `allow_empty` significa «no se pudo determinar».
+    Auditoría completa en `doc["authenticity"]`; tokens de visión en
+    `doc["authenticityMeta"]` → `usage.authenticity` → servicio `BedrockAuthenticity`.
+
+La validación que sigue (12.7) califica esos campos como cualquier otro:
+`boolean_true` + `on_fail` decide rechazo, revisión o aviso.
+
 ### 12.7 Validación por documento
 
 Después de extraer todos los segmentos, `process_pdf()` crea el contexto de
@@ -696,7 +744,17 @@ Legacy dentro del pipeline nuevo:
    `LOW_CONFIDENCE`, `NOT_FOUND`, `NOT_APPLICABLE` o `REVIEW_REQUIRED`.
 3. `engine.document_status()` reduce esos estados al status del documento.
 
-### 12.8 `_dispatch_rule()` (`engine.py:539`)
+### 12.8 `_dispatch_rule()` → `_evaluate_rule()` + `_apply_on_fail()` (`engine.py`)
+
+`_dispatch_rule` es el punto de entrada único; delega el `switch` de `rule_type`
+a `_evaluate_rule` y luego aplica el `on_fail` opcional de la regla
+(`_apply_on_fail`): `reject` → severidad `error` + `blocking=True`, `review` →
+`warning`, `info` → `info`. Un check `blocking` fallido hace que
+`document_status_from_checks`/`document_status` devuelvan `REJECTED` antes de la
+aritmética parcial/rechazado — sin él, un solo `error` entre varios checks buenos
+da `PARTIALLY_APPROVED` (= `REQUIERE_REVISION` en el API). `blocking` viaja en
+`checks[]` solo cuando es `true`. `boolean_true` respeta `allow_empty` (tercer
+estado «no evaluado»).
 
 Los `rule_type` implementados actualmente son:
 
@@ -1069,7 +1127,7 @@ Para un `documentId`:
 - Cambiar lectura PDF/imagen: `pdf_pages.py`.
 - Cambiar segmentación: `segmenter.py`.
 - Cambiar schema/hints: catálogo JSON.
-- Cambiar un `rule_type`: `validators/engine.py::_dispatch_rule`.
+- Cambiar un `rule_type`: `validators/engine.py::_evaluate_rule` (`_dispatch_rule` lo envuelve para aplicar `on_fail`).
 - Cambiar una regla entre documentos: `_shared.json` y
   `expediente.py::_run_cross_document_rules`.
 - Cambiar la forma consultable: `pipeline/envelope.py::build`,
@@ -1586,6 +1644,31 @@ Archivo: `pipeline/qr_recovery.py`.
 Los valores QR sí pueden sobrescribir el valor del modelo: su fuente es
 determinista y queda auditada en `qrRecovery`/`recoveredFields` con confidence
 configurable (normalmente 0.99).
+
+### 27.16b Autenticidad física
+
+Archivos: `pipeline/authenticity.py`, `pdf_forensics.py`, `pixel_forensics.py`,
+`vision_inspector.py`, `fingerprint_store.py`, `page_raster.py`.
+
+| Función | Entrada | Transformación | Salida/destino | Dependencias |
+| --- | --- | --- | --- | --- |
+| `authenticity.enabled()` | env | boolean global | `false` → `evaluated=false` (revisión, no aprobación) | `AUTHENTICITY_ENABLED` |
+| `authenticity.spec_for()` | entry | bloque + campos con `authenticity_source` | spec o None | `FieldSpec.params` |
+| `authenticity.run()` | doc, entry, `PageSource`, context | orquesta las 4 capas; nunca lanza | campos `computed`, `doc["authenticity"]`, `authenticityMeta` | todos los de abajo |
+| `pdf_forensics.inspect_page()` | reader, índice | recorre el content stream (`q/Q/cm/Tr/Tj/TJ/Do`, Form XObjects hasta 3 niveles) | texto visible/invisible, imágenes con rect/cobertura/sha256/ppi | pypdf |
+| `pdf_forensics.page_verdict()` | hechos de la página + política | pura | `FISICO`/`ESCANEO_CON_OCR`/`DIGITAL`/`INDETERMINADO`/`EN_BLANCO` + motivos | — |
+| `pdf_forensics.inspect_pdf()` | reader, índices, política | agrega páginas + origen por productor | `{verdict, physicalCapture, origin, reasons, bilevel, perPage}` | — |
+| `pdf_forensics.images_overlapping()` | página, caja | imágenes ≤35 % de cobertura que traslapan la caja | lista → prueba de inserción | — |
+| `pixel_forensics.background_stats()` | raster RGB | ruido de las celdas en blanco (p90) | `naturalBackground` True/False/None | numpy |
+| `pixel_forensics.fingerprint()` / `grid_similarity()` | recorte / dos huellas | rejilla 32×32 de densidad de tinta; Jaccard ponderado con ±2 celdas | 1024 bytes / 0..1 | numpy |
+| `page_raster.render_page_rgb()` / `decode_image()` / `encode_jpeg()` / `crop()` | reader o bytes | raster RGB, EXIF, alfa sobre blanco, JPEG | arreglos / bytes | pypdfium2, Pillow |
+| `vision_inspector.locate()` | página JPEG, elementos | Converse con imagen, herramienta forzada | presente + caja por elemento, tipo de captura | `bedrock.converse_structured(images=)`, etapa `vision` |
+| `vision_inspector.inspect()` | recortes, referencias | ídem sobre recortes nativos | indicios de inserción, tinta, leyenda, referencia coincidente | ídem |
+| `vision_inspector.issuer_consistent()` | leyenda, emisor | tokens distintivos sin relleno legal | True/False/None | — (Python puro) |
+| `fingerprint_store.record_and_find()` | huellas + hashes exactos | escribe `L#`/`X#`/`E#`, consulta la partición | `{evaluated, matches, duplicateOf}` | DynamoDB `FINGERPRINT_TABLE` |
+| `fingerprint_store.list_references()` / `rank_references()` / `fetch_reference_bytes()` | scope, clave | lee `R#`, ordena por huella, baja bytes | referencias para `inspect` | DynamoDB + S3 `DOCUMENT_BUCKET` |
+
+`render_page_array()` vive ahora en `page_raster.py`; `qr_recovery.py` la reimporta.
 
 ### 27.17 Motor de reglas
 
