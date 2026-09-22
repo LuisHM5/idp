@@ -256,6 +256,76 @@ For each such change: edit the matching section of `API_USO.md` (endpoint table 
 
 **API Gateway gotcha:** adding a route via CDK does not always redeploy the `prod` stage — a new route can return `403 Missing Authentication Token` even after a successful `pnpm run deploy`. If so, force a stage redeploy: `aws apigateway create-deployment --rest-api-id <id> --stage-name prod --region us-east-1`.
 
+## Code search & text substitution — codebase-memory-mcp → `tgrep` → `rg`, `sd` not `sed`
+
+Search order for any code exploration:
+
+1. **`codebase-memory-mcp` first** (project `home-luis-pc-Desktop-documents-validator`) for symbols, callers, call chains and symbol source: `search_graph`, `trace_path`, `get_code_snippet`, `query_graph`, `get_architecture`, `search_code`.
+2. **[`tgrep`](https://github.com/microsoft/tgrep)** (trigram-indexed, ripgrep flags) for plain text: a string, a field ID across catalogs, config and non-code files.
+3. **`rg`** only as the fallback when `tgrep` is missing or misbehaves (`SEARCH_FALLBACK=1 rg ...`). Never `grep -r`.
+
+Reading a file you already know the path of → `Read`, not a search.
+
+### Enforced by hooks (`.claude/settings.json`, scripts in `.claude/hooks/`)
+
+All hooks exit 0 silently on their own errors, so they never break a session or a tool call.
+
+| Hook | Script | What it does |
+|---|---|---|
+| `SessionStart` | `tgrep-ensure.sh` | Starts a detached `tgrep serve .` if none is running (builds `.tgrep/` on first run; its file watcher keeps the index in sync within ~1 s). |
+| `SessionStart` | `cbm-index.sh session` | Indexes the repo in codebase-memory-mcp (full on first run, incremental after) and prints the node count. |
+| `PreToolUse` (`Bash`, `Grep`) | `search-tools-gate.py` | Denies file searches with `grep`/`rg`/the built-in Grep tool and any `sed`, answering with the `tgrep`/`sd` equivalent. Restarts the tgrep server first if it died (auto-index). |
+| `PostToolUse` (`Edit`, `Write`, `NotebookEdit`, `Bash`) | `cbm-index.sh post` | Detached, debounced (`flock` + dirty flag) incremental reindex so the graph follows every edit. |
+
+- **Denied:** `grep -r`, `grep pattern file`, `xargs grep`, `find -exec grep`, `rg` as a file search, the built-in Grep tool, `sed`/`gsed`. Wrappers (`bash -c`, `timeout`, `env`, `sudo`) are looked through; heredoc bodies are not parsed as commands.
+- **Allowed:** pipe filters (`ps aux | grep node`, `cmd | rg x`), `git grep`, `grep ... <<< "$x"`, `--version`/`--help`, everything with `tgrep` and `sd`.
+- **Fallback:** without `tgrep`, `rg` and the Grep tool are allowed again; without `sd`, `sed` is allowed again. If `tgrep` returns something wrong, rerun as `SEARCH_FALLBACK=1 rg -n -- "x" .` and say why.
+- **Why a project hook on top of the global `auto_index=true`:** that setting only fires when a new MCP server process starts, and a running server does not watch a project indexed after it started. `cbm-index.sh` runs `codebase-memory-mcp cli index_repository` explicitly; last log in `$XDG_RUNTIME_DIR/cbm-index-home-luis-pc-Desktop-documents-validator.log`. Do not call `index_repository` yourself unless `index_status` says the project is missing.
+- The read-only codebase-memory tools, `index_repository` and `tgrep` are pre-approved in `.claude/settings.json`; `delete_project` and `sd` are not.
+
+### Measured on this repo (2026-09-22, 312 indexed files, mean of 10 runs, match count in parentheses)
+
+| Search | `tgrep` (server) | `rg` | `grep -r` |
+|---|---|---|---|
+| Literal, common (`documentType`) | 5 ms (353) | 8 ms (353) | 306 ms (755) |
+| Literal, rare (`PEDIMENTO_ERP`) | 4 ms (309) | 7 ms (309) | 295 ms (973) |
+| Case-insensitive (`pedimento`) | 10 ms (1681) | 8 ms (1681) | 351 ms (9326) |
+| Filenames only (`-l NUMERO_PEDIMENTO`) | 3 ms (32) | 7 ms (32) | 299 ms (172) |
+| Regex (`def \w+_field\(`) | 4 ms (12) | 12 ms (12) | 288 ms (12) |
+
+`grep -r` finds more because it ignores `.gitignore` and walks `resultados/`, `test-docs/`, `data/` and `dist/` — generated output and documents that may carry PII. codebase-memory incremental reindex with no changes: 10 ms, 8 MB RSS (6.7k nodes / 19.5k edges).
+
+### `tgrep` usage
+
+```bash
+tgrep -F -- "NUMERO_PEDIMENTO" .                              # literal, whole repo
+tgrep -F -l -- "PEDIMENTO_ERP" .                              # filenames only
+tgrep -F -t py -- "keep_extracted" .                          # by file type
+tgrep -F -g "catalogs/**" -- "segmentation_candidate" .       # scope with -g, keep PATH = .
+tgrep -n -g "src/**/*.py" -C 3 -- "def \w+_field\(" .         # regex + context
+tgrep --index-path .tgrep -F -- "authenticity" src            # subdir as PATH needs --index-path
+```
+
+- **Always search from the root (`.`) and scope with `-g`/`-t`.** A subdirectory as PATH makes tgrep look for `<subdir>/.tgrep`, miss it and silently scan without the index.
+- Do not pass `--exclude`, `--no-ignore` or `--max-filesize`: they must match across `index`, `serve` and every search, or the server treats files as deleted. `.gitignore` already excludes the right things.
+- Do not run `tgrep index`/`tgrep serve` by hand; if `tgrep status .` shows `Server: not running`, run `.claude/hooks/tgrep-ensure.sh`. Server log: `.tgrep/serve.log`.
+- `.tgrep/` is gitignored and never committed; `.claude/settings.json` and `.claude/hooks/` **are** committed — they are the setup.
+
+### `sd` instead of `sed`
+
+[`sd`](https://github.com/chmln/sd) 1.0 lives in `~/.cargo/bin`. It edits **in place by default**, uses Rust regex syntax and `$1` (not `\1`) for capture groups — write `${1}` when a letter, digit or `_` follows, or `sd` errors out as ambiguous:
+
+```bash
+sd -F 'old literal' 'new literal' path/file.py                    # literal, in place
+sd -p 'old' 'new' path/file.py                                    # -p: preview, writes nothing
+sd 'get_(\w+)_field\(' 'read_${1}_field(' path/file.py            # regex; ${1} because "_" follows
+tgrep -F -l -- 'OLD_FIELD' . | xargs sd -F 'OLD_FIELD' 'NEW_FIELD' # repo-wide rename (preview first)
+cmd | sd 'old' 'new'                                              # stream filter
+```
+
+- There is no `sed -n 'X,Yp'`: view line ranges with `Read` (`offset`/`limit`) or `head`/`tail`. In `sd`, `-n` means max replacements.
+- For a single change in one file prefer the `Edit` tool; preview repo-wide `sd` with `-p`. Catalog field IDs feed `catalogs.json` and DynamoDB — a repo-wide rename still needs `pnpm build` and a sync (see [Catalog Loading Precedence](#catalog-loading-precedence)).
+
 ## Conventions
 
 - TypeScript strict-ish CDK code, 2-space indent, double quotes, semicolons (see `src/document-validation-stack.ts`).
