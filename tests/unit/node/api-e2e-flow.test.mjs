@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parseArgs, runE2E, validateOptions } from "../../../scripts/test-e2e.mjs";
+import { parseArgs, pollDocument, registerDocument, runE2E, validateOptions } from "../../../scripts/test-e2e.mjs";
 
 test("recorre POST -> PUT -> GET 202 -> GET 200 y entrega el JSON final", async () => {
   const directory = await mkdtemp(join(tmpdir(), "documents-validator-e2e-"));
@@ -157,4 +157,56 @@ test("acepta un tipo, o varios separados por coma", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+const jsonResponse = (status, payload, headers = {}) =>
+  new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json", ...headers } });
+
+test("el polling trata un 429 de throttle como espera, no como fallo", async () => {
+  const statuses = [];
+  const replies = [
+    jsonResponse(429, { message: "Too Many Requests" }),
+    jsonResponse(202, { documentId: "d1", processingStatus: "PROCESSING" }, { "Retry-After": "0" }),
+    jsonResponse(200, { documentId: "d1", processingStatus: "FINISHED" }),
+  ];
+  const result = await pollDocument({
+    endpoint: "https://api.example.test/prod",
+    documentId: "d1",
+    timeoutMs: 60_000,
+    sleep: async () => {},
+    jitter: () => 0,
+    onPoll: ({ statusCode }) => statuses.push(statusCode),
+    fetchImpl: async () => replies.shift(),
+  });
+  assert.equal(result.processingStatus, "FINISHED");
+  assert.deepEqual(statuses, [429, 202, 200]);
+});
+
+test("el polling falla claro si la cuota diaria de requests se agotó", async () => {
+  await assert.rejects(
+    pollDocument({
+      endpoint: "https://api.example.test/prod",
+      documentId: "d1",
+      timeoutMs: 60_000,
+      sleep: async () => {},
+      fetchImpl: async () => jsonResponse(429, { message: "Limit Exceeded" }),
+    }),
+    /cuota diaria de requests/
+  );
+});
+
+test("POST /documents explica el 429 del tope de documentos por día", async () => {
+  await assert.rejects(
+    registerDocument({
+      endpoint: "https://api.example.test/prod",
+      filePath: "/tmp/factura.pdf",
+      documentType: "FACTURA_FLETE_EXTRANJERO",
+      fetchImpl: async () => jsonResponse(
+        429,
+        { error: "DAILY_DOCUMENT_LIMIT", limit: 20, resetsAt: "2026-09-22T00:00:00.000Z" },
+        { "Retry-After": "3600" }
+      ),
+    }),
+    /tope de documentos por día alcanzado \(20\)/
+  );
 });

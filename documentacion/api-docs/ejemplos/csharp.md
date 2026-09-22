@@ -263,9 +263,16 @@ static async Task<JsonElement> WaitForResult(
         using var response = await apiClient.GetAsync(resultUrl);
 
         var body = await ReadJson(response);
-        if (response.StatusCode == HttpStatusCode.Accepted)
+        // 429 "Too Many Requests" = throttle: se espera igual que un 202.
+        // 429 "Limit Exceeded" (techo diario agotado) cae en EnsureSuccess.
+        var throttled = response.StatusCode == HttpStatusCode.TooManyRequests
+            && !(body.TryGetProperty("message", out var message)
+                 && message.GetString() == "Limit Exceeded");
+        if (response.StatusCode == HttpStatusCode.Accepted || throttled)
         {
-            var status = body.GetProperty("processingStatus").GetString();
+            var status = throttled
+                ? "429 throttle"
+                : body.GetProperty("processingStatus").GetString();
             var retryAfter = response.Headers.RetryAfter?.Delta ?? delay;
             Console.WriteLine($"{status}... intento {attempt}/{attempts}");
             delay = retryAfter > delay ? retryAfter : delay;

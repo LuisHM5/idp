@@ -20,6 +20,7 @@ flowchart TB
     DDBT[("DynamoDB<br/>tracking")]:::database
     DDBC[("DynamoDB<br/>catálogo")]:::database
     DDBF[("DynamoDB<br/>huellas + referencias<br/>(autenticidad)")]:::database
+    DDBA[("DynamoDB<br/>apps + docs/día por app")]:::database
     EB["EventBridge<br/>idp-broker"]:::integration
     STATUS["Status Lambda<br/>FINISHED · FAILED"]:::compute
     KMSN[("Cifrado<br/>CMK prod · default dev")]:::security
@@ -27,6 +28,7 @@ flowchart TB
 
     CLIENTE -->|"registra"| UP
     UP -->|"AWAITING_UPLOAD"| DDBT
+    UP -.->|"app + tope diario"| DDBA
     CLIENTE --> RAW
     RAW --> SQS --> SFN --> LAMBDA
     LAMBDA --> RES
@@ -45,6 +47,7 @@ flowchart TB
 
     CLIENTE -->|"consulta / marca"| QG --> QL
     QL --> DDBT
+    QL -.->|"alcance + tope en reproceso"| DDBA
     QL --> RES
     QL -->|"CopyObject reproceso"| RAW
 

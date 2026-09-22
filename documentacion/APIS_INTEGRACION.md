@@ -197,8 +197,10 @@ Soporta además `status`, `since`/`until`, `order`, `limit`, `summary`, `full`. 
 
 | | dev | prod |
 |---|---|---|
-| Auth | Ninguna (abierto) | **`x-api-key`** obligatorio en los 6 endpoints — sin key válida, `403` nativo de API Gateway sin invocar Lambda |
-| Rate limit | No | WAFv2 (rate-based + reglas gestionadas) + usage plan (throttle/cuota por key) |
+| Auth | `x-api-key` solo si el stack se desplegó con `DEV_API_KEY_REQUIRED=true` (hoy sí, en `.env.dev`); si no, abierto | **`x-api-key`** obligatorio en todos los endpoints — sin key válida, `403` nativo de API Gateway sin invocar Lambda |
+| Rate limit | Throttle de stage compartido por todos los clientes (10 req/s en escrituras, 40 req/s por cada ruta GET) + los límites por app si hay key | WAFv2 por IP (escrituras y GET por separado, + reglas gestionadas) + límites por app |
+| Límites por app | Throttle de escritura, throttle de GET (más holgado), documentos/día (solo cuentan `POST /documents` y reprocess) y techo de requests/día — ver [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md) "Límites por app" | igual |
+| Al pasarse | `429` (`Too Many Requests` = reintentar con backoff; `Limit Exceeded` o `DAILY_DOCUMENT_LIMIT` = hasta la medianoche UTC) | igual, y el WAF responde `403` |
 | Payload (upload) | Igual en ambos | El archivo nunca pasa por la API: `POST` devuelve URL y el cliente hace `PUT` directo a S3 |
 | Payload (descarga, 1.4) | Igual en ambos | Sin tope propio — nunca pasa por Lambda/API Gateway, hereda el tamaño que tenga el archivo en S3 |
 

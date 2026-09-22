@@ -104,7 +104,7 @@ def handler(event, context):
                     #
                     #   - `app-origin` — which app uploaded this, resolved from
                     #     the caller's x-api-key (see upload-lambda/index.mjs's
-                    #     resolveAppOrigin);
+                    #     resolveApp);
                     #   - every other key — the caller's own `metadata` from
                     #     `POST /documents` (normalizeMetadata already lowercased
                     #     it and stripped the two reserved keys below), carried

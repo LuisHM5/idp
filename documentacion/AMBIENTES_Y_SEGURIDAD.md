@@ -8,7 +8,8 @@ API keys); `dev` queda abierto en el URL random de Amazon para probar fácil.
 | Stack | `DocumentValidationStack-Dev` | `DocumentValidationStack` |
 | URL | `execute-api` random de Amazon | `https://idp.alsuper.com` (o random si no configuras dominio) |
 | Auth | ninguna por default; **API key** opcional vía `DEV_API_KEY_REQUIRED=true` + redeploy | **API key** (`x-api-key`) en todos los endpoints, siempre |
-| Rate limit / anti-DDoS | no (WAF no aplica en dev); throttle ciego a nivel de stage | **WAF** (rate-based + managed rules) + usage plan por app |
+| Rate limit / anti-DDoS | sin WAF; throttle de stage **compartido por todos** (10 req/s, burst 20 en escrituras; 40/80 por ruta GET) + usage plan por app cuando hay keys | **WAF** (rate-based por IP, escrituras y GET por separado, + managed rules) + usage plan por app |
+| Documentos/día por app | `MaxDocsPerDay` (si la app lo tiene) | `MaxDocsPerDay` (si la app lo tiene) |
 | TLS | sí (execute-api) | sí (cert propio, TLS 1.2+) |
 | Recursos globales | sufijo `-dev` (`idp-broker-dev`); **sin CMK propia** | nombres base (`idp-broker`, alias KMS `…/pipeline`) |
 | Catálogo (DynamoDB) | `document-validation-catalog-dev` | `document-validation-catalog` |
@@ -181,6 +182,75 @@ curl -H "x-api-key: <VALOR>" https://idp.alsuper.com/documents/...
 pnpm enviar archivo.pdf PEDIMENTO_ERP --env prod
 ```
 
+### Límites por app: qué cuenta y qué no
+
+Cada app registrada tiene **cuatro límites independientes**. Solo uno de ellos
+("documentos por día") se entiende en documentos; los demás cuentan requests:
+
+| Límite | Dónde vive | Qué cuenta | Al pasarse | Default de `register` |
+|---|---|---|---|---|
+| **Throttle de escritura** (req/s + burst) | override por método del usage plan | `POST /documents`, `POST /upload`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata` | 429 `{"message":"Too Many Requests"}` | 20 / 40 |
+| **Throttle de lectura** (req/s + burst) | throttle del usage plan | **todos los GET**: polling de `/documents/{id}`, `/file`, búsquedas, `/document-types` | 429 `{"message":"Too Many Requests"}` | 4× escritura (80 / 160) |
+| **Documentos por día** (`MaxDocsPerDay`) | fila de la app en `document-validation-apps[-dev]`; el contador en `document-validation-app-usage[-dev]` | solo `POST /documents`, `POST /upload` y reprocess **que pasaron validación** — los GET nunca | 429 `{"error":"DAILY_DOCUMENT_LIMIT", ...}` con `Retry-After` hasta la medianoche UTC | sin tope |
+| **Techo de requests por día** | cuota del usage plan | **todo**, incluido el polling | 429 `{"message":"Limit Exceeded"}` hasta la medianoche UTC | 5000 |
+
+Por qué está repartido así:
+
+- **La cuota de API Gateway no distingue métodos.** Cuenta cada request de la
+  key y no se puede excluir ninguno, así que un cliente que hace polling cada
+  5 s gasta ~50 requests por documento (p95 de procesamiento medido en dev:
+  ~238 s). Por eso "documentos por día" no puede ser la cuota: lo cuenta la
+  Lambda (`daily-doc-cap.mjs`, copia idéntica en upload-lambda y query-lambda)
+  con un `UpdateItem` condicional atómico por (key, día UTC), y la cuota queda
+  como techo anti-abuso amplio (`recommendLimits` la calcula como
+  docs/día × 50, mín. 1000).
+- **Lectura = throttle del plan, escritura = override por método.** AWS no
+  documenta si un override por método de un usage plan puede ser *mayor* que
+  el throttle del plan; *menor* sí funciona siempre. Con este reparto el
+  resultado es correcto en cualquier caso. La lista de rutas de escritura es
+  `WRITE_METHODS` en `scripts/_app-limits.mjs`; un test
+  (`tests/unit/node/app-limits.test.mjs`) falla si el stack gana una ruta
+  no-GET que no esté ahí.
+- **Fail-open.** Si el contador de DynamoDB falla por cualquier razón que no
+  sea "tope alcanzado", el documento pasa (con log): un problema del contador
+  nunca tumba subidas, y el techo de la cuota sigue de respaldo. Sin
+  `MaxDocsPerDay`, sin key (dev abierto) o con una key no registrada no hay
+  tope de documentos.
+- **Día UTC** en los dos límites diarios (la cuota de API Gateway también se
+  reinicia a las 00:00 UTC = 18:00 de Ciudad de México).
+- **Los throttles son aproximados; el tope de documentos es exacto.** AWS
+  aplica rate/burst "best-effort", con buckets distribuidos entre nodos.
+  Medido en dev el 2026-09-21 con una app de escritura 1/s (burst 1) y GET
+  10/s (burst 20): a 8 req/s sostenidos, los POST recibieron 22 de 64 `429`
+  (pasaron ~5/s) y los GET 0 de 64; a 30 GET/s pasaron ~21/s. Ráfagas cortas
+  de 10 POST o 40 GET concurrentes pasaron completas. Sirven para frenar un
+  loop o un abuso sostenido, no como contador preciso — lo que protege el
+  costo con exactitud es `MaxDocsPerDay` (atómico en DynamoDB: el 4º
+  documento con tope 3 siempre recibe `DAILY_DOCUMENT_LIMIT`).
+
+Además de los límites de la app, cada ambiente tiene uno propio que no depende
+de la key: en **dev**, el throttle del stage (10 req/s, burst 20 para
+escrituras; 40/80 por cada ruta GET), **compartido por todas las apps**; en
+**prod**, el WAF por IP (2000 escrituras y 10000 GET cada 5 min), que bloquea
+con **403** `{"message":"Forbidden"}`, no con 429.
+
+**Planes anteriores a esta separación** tienen un solo throttle para todo (GET
+y escrituras comparten el mismo bucket). `pnpm apps:usage` los marca como
+"plan antiguo"; fijar cualquier límite con `apps:reconfigure` (sección 5) los
+separa conservando los valores actuales de lo que no se pidió.
+
+**Ver los límites reales y el consumo** — solo lectura, no toca nada:
+```bash
+pnpm apps:usage -- --env dev                 # todas las apps ACTIVE, últimos 7 días
+pnpm apps:usage -- --env prod --name ERP --days 30
+```
+Por app muestra los límites **leídos del usage plan real** (no la copia de
+DynamoDB) y, por día UTC, requests usadas/restantes de la cuota (`get-usage`)
+y documentos contados contra `MaxDocsPerDay`. Las requests rechazadas con 429
+o 403 no aparecen: nunca llegaron a consumir cuota. El conteo de requests
+(`get-usage`) **no es en tiempo real** — lo de hoy puede tardar en aparecer;
+el de documentos (DynamoDB) sí es inmediato.
+
 ### Ciclo de vida de una app registrada
 
 Todos los comandos aceptan `--env dev|prod` (default `dev`), `--stack <NOMBRE>`
@@ -189,7 +259,7 @@ explícito si el nombre del stack no es el estándar, y `--region` (default
 API Gateway y con la tabla `document-validation-apps[-dev]` ya desplegada.
 
 **Todos los que mutan algo** (`register`, `rotate`, `reconfigure`, `disable`,
-`enable`, `revoke`, `adopt` — `list` es de solo lectura) son **interactivos**
+`enable`, `revoke`, `adopt` — `list` y `usage` son de solo lectura) son **interactivos**
 si corren en una terminal real y falta algún dato, y **siempre** terminan con
 una confirmación `(S/n)` antes de tocar AWS — incluso si ya diste todos los
 flags. `--yes`, o correr sin TTY (scripts/CI), se salta todo eso (falla si
@@ -202,28 +272,32 @@ falta algo requerido) para no bloquear automatización.
 ```bash
 pnpm apps:register
 ```
-Pregunta **solo lo que falte** (nombre, ambiente, y si falta cualquiera de
-rate-limit/burst-limit/cuota, el **volumen de documentos por día** esperado
-para esa app) y recomienda valores por tramo:
+Pregunta **solo lo que falte** (nombre, ambiente, y si falta cualquier
+límite, el **volumen de documentos por día** esperado para esa app) y
+recomienda valores por tramo:
 
-| Volumen/día | rate (req/s) | burst | cuota/día sugerida |
-|---|---|---|---|
-| ≤ 50 | 5 | 10 | ~volumen×1.5 (mín. 100) |
-| 51–500 | 10 | 20 | ídem |
-| 501–2000 | 20 | 40 | ídem |
-| 2001–10000 | 40 | 80 | ídem |
-| > 10000 | 80 | 160 | ídem |
+| Volumen/día | escritura (req/s / burst) | GET (req/s / burst) | docs/día | techo requests/día |
+|---|---|---|---|---|
+| ≤ 50 | 5 / 10 | 20 / 40 | volumen×1.5 (mín. 20) | docs/día × 50 (mín. 1000) |
+| 51–500 | 10 / 20 | 40 / 80 | ídem | ídem |
+| 501–2000 | 20 / 40 | 80 / 160 | ídem | ídem |
+| 2001–10000 | 40 / 80 | 160 / 320 | ídem | ídem |
+| > 10000 | 80 / 160 | 320 / 640 | ídem | ídem |
 
-(`scripts/manage-apps.mjs::VOLUME_TIERS`/`recommendLimits` — rate/burst por
+(`scripts/_app-limits.mjs::VOLUME_TIERS`/`recommendLimits` — rate/burst por
 tramo porque en este dominio, subida de documentos y no llamadas de alta
 frecuencia, protegen contra un loop/burst anómalo más que limitar tráfico
-legítimo; la cuota diaria sí se calcula fino sobre el número que des, con
-30% de margen para reintentos). Cada pregunta muestra el valor recomendado
+legítimo; los GET se recomiendan a 4× la escritura porque solo cuestan
+Lambda + DynamoDB. Documentos/día sí se calcula fino sobre el número que des,
+con 50% de margen para reintentos y reprocesos; el techo de requests deja
+espacio para el polling de cada documento — ver "Límites por app" arriba).
+Si cambias la escritura, la recomendación de GET se recalcula a 4× lo que
+escribiste. Cada pregunta muestra el valor recomendado
 entre corchetes — Enter lo acepta, o escribes el tuyo (como en el segundo
 ejemplo arriba: volumen 50000 recomienda rate=80, pero se aceptó `100`
 a mano). Al final pide confirmación con un resumen antes de tocar AWS.
 Cualquier flag que ya hayas pasado **no se vuelve a preguntar** — si diste
-los tres límites, tampoco pregunta el volumen. `--yes`, o correr sin TTY
+los seis límites, tampoco pregunta el volumen. `--yes`, o correr sin TTY
 (pipes, CI), desactiva las preguntas por completo y usa flags/defaults tal
 cual (falla si falta `--name`) — igual que el comportamiento antes de que
 existiera el modo interactivo.
@@ -231,11 +305,14 @@ existiera el modo interactivo.
 **Modo directo**, para scripting o cuando ya sabes los números:
 ```bash
 pnpm apps:register -- --name CEDIS --env prod \
-  --rate-limit 30 --burst-limit 60 --quota-per-day 10000
+  --rate-limit 10 --burst-limit 20 \
+  --read-rate-limit 40 --read-burst-limit 80 \
+  --docs-per-day 300 --quota-per-day 15000
 ```
-`--rate-limit`/`--burst-limit`/`--quota-per-day` son opcionales incluso aquí
-(default `20`/`40`/`5000`, igual que `idp-default`, sin pasar por la
-recomendación por volumen).
+Todos los límites son opcionales incluso aquí: escritura `20`/`40`, GET 4×
+la escritura, techo `5000` y **sin** tope de documentos (lo mismo que hacía
+antes de existir el tope, para no cambiar scripts existentes), sin pasar por
+la recomendación por volumen.
 
 En ambos modos: el comando imprime el valor de la key **una sola vez** en
 pantalla — cópialo antes de cerrar la terminal; si lo pierdes, se reobtiene
@@ -287,32 +364,49 @@ historial de auditoría de qué apps existieron.
 pnpm apps:rotate -- --name CEDIS --env prod
 ```
 El caso de uso típico: la key se filtró, o toca rotarla por política. Un solo
-comando: crea una key + usage plan **nuevos** con el mismo rate limit/cuota
-que tenía la app (a menos que pases `--rate-limit`/`--burst-limit`/
-`--quota-per-day` para cambiarlos también), la registra en DynamoDB, y recién
+comando: crea una key + usage plan **nuevos** con los mismos límites que
+tenía la app (a menos que pases cualquiera de los flags de límites para
+cambiarlos también; una app de antes de separar lectura/escritura conserva un
+solo throttle para todo), la registra en DynamoDB, y recién
 entonces **deshabilita** (no borra) la key vieja — el orden importa: si algo
 falla creando la nueva, la vieja se queda activa en vez de dejar a la app sin
 ninguna key funcionando. Ambas filas quedan enlazadas (`RotatedFrom` en la
 nueva, `RotatedTo` en la vieja) para poder rastrear el historial de una app.
 `register --force` **no** es lo mismo que `rotate`: crea una key adicional
 sin tocar la vieja ni saber cuál reemplaza a cuál — usa `rotate` salvo que
-quieras deliberadamente dos keys activas a la vez.
+quieras deliberadamente dos keys activas a la vez. El contador de
+documentos/día va por `ApiKeyId`, así que la key nueva empieza el día en cero.
 
-#### 5. Cambiar SOLO el rate limit/cuota, sin tocar la key (`reconfigure`)
+#### 5. Cambiar SOLO los límites, sin tocar la key (`reconfigure`)
 ```bash
-pnpm apps:reconfigure -- --name CEDIS --env prod --rate-limit 50 --burst-limit 100
+pnpm apps:reconfigure -- --name CEDIS --env prod --read-rate-limit 20 --read-burst-limit 40
+pnpm apps:reconfigure -- --name CEDIS --env prod --rate-limit 5 --burst-limit 10
+pnpm apps:reconfigure -- --name CEDIS --env prod --docs-per-day 80     # o `none` para quitar el tope
+pnpm apps:reconfigure -- --name CEDIS --env prod --quota-per-day 4000
 ```
 Para cuando el volumen de una app cambió y hay que ajustarle el límite, pero
 la key en sí sigue siendo válida — a diferencia de `rotate`, **no crea nada
-nuevo**: hace `update-usage-plan` (JSON Patch por sub-path, solo sobre
-`/throttle/rateLimit`, `/throttle/burstLimit` y/o `/quota/limit` — los que
-pases) sobre el `UsagePlanId` que ya tiene la app, y actualiza esos mismos
-campos en DynamoDB. La API key no cambia, así que los consumidores **no
-necesitan hacer nada** (a diferencia de `rotate`, que sí les obliga a
-actualizar su key). Acepta cualquier subconjunto de `--rate-limit`/
-`--burst-limit`/`--quota-per-day` — los que omitas se quedan como estaban.
-Falla si la app fue adoptada sin `UsagePlanId` conocido (no hay a qué usage
-plan aplicarle el patch) o si no hay ninguna app `ACTIVE` con ese nombre.
+nuevo** y la API key no cambia, así que los consumidores **no necesitan hacer
+nada**. Acepta cualquier subconjunto de los flags de límites; lo que omitas se
+queda como está:
+
+- Throttle y techo: lee el usage plan **real** (`get-usage-plan`), completa
+  lo no pedido con sus valores actuales y aplica un `update-usage-plan` (JSON
+  Patch): `/throttle/*` para los GET, `/quota/limit` para el techo, y
+  `/apiStages/<api>:<stage>/throttle/documents/POST/rateLimit` (etc.; el resource path va literal, sin escapar como `~1`) para
+  cada ruta de escritura — `add` si el override aún no existe, `replace` si
+  ya existe. En un **plan antiguo** (un solo throttle para todo), fijar
+  cualquier throttle crea los overrides de escritura con el valor de hoy: nada
+  se afloja ni se aprieta sin pedirlo.
+- `--docs-per-day` es solo un atributo en DynamoDB (`MaxDocsPerDay`), así que
+  aplica aunque la app no tenga `UsagePlanId` y surte efecto en el siguiente
+  POST, sin propagación.
+
+Falla si pides throttle/techo en una app adoptada sin `UsagePlanId` conocido
+(no hay a qué usage plan aplicarle el patch) o si no hay ninguna app `ACTIVE`
+con ese nombre. Los cambios de usage plan pueden tardar unos minutos en
+propagarse (igual que `disable`); `pnpm apps:usage` muestra lo que el plan
+tiene guardado.
 
 #### 6. Restringir qué documentos y qué queries puede usar una app (`register`/`reconfigure`)
 ```bash
@@ -439,8 +533,10 @@ despliega ni modifica ningún Lambda):
 4. `apigateway get-api-key --include-value` — recupera el **valor real**
    de la key (un secreto de 40 caracteres) para imprimirlo una vez; el
    script nunca lo persiste en ningún lado, ni en DynamoDB ni en disco.
-5. `apigateway create-usage-plan` — crea el usage plan con el
-   rate/burst/quota pedidos, ya asociado al `RestApiId`+stage del paso 1-2.
+5. `apigateway create-usage-plan` (vía `--cli-input-json`) — crea el usage
+   plan asociado al `RestApiId`+stage del paso 1-2, con el throttle de GET a
+   nivel plan, el de escritura como override por método en las rutas de
+   `WRITE_METHODS` y el techo de requests como cuota diaria.
 6. `apigateway create-usage-plan-key` — conecta la ApiKey del paso 3 al
    usage plan del paso 5 (sin esto, la key existiría pero no tendría
    throttle/cuota aplicados — seguiría exigiendo `apiKeyRequired`, pero sin
@@ -448,7 +544,8 @@ despliega ni modifica ningún Lambda):
 7. `dynamodb put-item` en `document-validation-apps[-dev]` — la única
    escritura que no es contra API Gateway: guarda `ApiKeyId → AppName` (y
    los límites/estado) para que el Upload Lambda pueda resolver el nombre
-   después.
+   y el tope `MaxDocsPerDay` después. Los demás límites en esa fila son una
+   copia informativa: los aplica API Gateway, no se leen de ahí.
 
 Del lado de **procesar un documento** (no del script, corre en cada request):
 
@@ -459,7 +556,10 @@ Del lado de **procesar un documento** (no del script, corre en cada request):
    automáticamente en el evento cuando el método exige key) y hace un
    `GetItem` **directo** (no Scan) contra `document-validation-apps[-dev]`
    por ese `ApiKeyId` — de ahí la elección de `ApiKeyId` como partition key:
-   este es el único lookup que corre en el hot path de cada subida.
+   este es el único lookup que corre en el hot path de cada subida. Si la app
+   tiene `MaxDocsPerDay`, después de validar el body suma 1 al contador del
+   día (`daily-doc-cap.mjs`) o responde 429 `DAILY_DOCUMENT_LIMIT` sin
+   generar la URL prefirmada.
 3. El nombre resuelto (`AppName`, o `"unregistered"` si la key es válida pero
    nadie la registró aquí) viaja como metadata del objeto S3 (`app-origin`,
    mismo mecanismo que `model-id` para el override de modelo en dev) — nunca
@@ -611,18 +711,30 @@ un error claro. En dev conserva el comportamiento anterior: cuando
 y el request recibirá 403.
 
 ### WAF + rate limiting + anti-DDoS
-- **Regla rate-based** por IP (default 2000 req/5min, configurable con `wafRateLimit`).
+- **Dos reglas rate-based** por IP, cada 5 min: `RateLimitPerIp` para todo lo
+  que no es GET (default 2000, `wafRateLimit`) y `RateLimitPerIpReads` solo
+  para GET (default 10000, `wafReadRateLimit`). Separadas para que una
+  integración que hace polling de muchos documentos desde una sola IP no se
+  coma el presupuesto pensado para subidas.
 - **Managed rules** de AWS: Common, KnownBadInputs, AmazonIpReputationList.
-- **Usage plan**: throttle (default 20 req/s, burst 40) + cuota diaria (5000), por key.
+- **Usage plan por app** (ver "Límites por app"): throttle de escritura y de
+  GET por separado + techo de requests/día; tope de documentos/día en Lambda.
 - **AWS Shield Standard**: protección L3/L4 automática y gratis (sin config).
 
 Tráfico bloqueado por WAF devuelve 403 **antes** de la integración → tampoco
 consume Lambda.
 
 ### Configurable
-En `bin/app.ts` / props del stack: `wafRateLimit`, `apiThrottle`
-(`rateLimit`/`burstLimit`/`quotaPerDay`). Volumen actual es bajo (~170 pedimentos/mes),
-así que los defaults son holgados.
+- Por app, sin redeploy: `pnpm apps:register|reconfigure` (ver "Límites por app").
+- WAF, en las props del stack (`bin/app.ts`, hoy no se pasan → defaults):
+  `wafRateLimit`, `wafReadRateLimit`.
+- Solo la key CDK `idp-default`: `apiThrottle` (`rateLimit`/`burstLimit` de
+  escritura, default 20/40; `readRateLimit`/`readBurstLimit` de GET, default
+  80/160; `quotaPerDay`, default 5000). No afecta a las apps registradas.
+- Dev: el throttle de stage (10/20 escrituras, 40/80 por ruta GET) está fijo
+  en `src/document-validation-stack.ts` (`DEV_READ_METHOD_PATHS`).
+
+Volumen actual es bajo (~170 pedimentos/mes), así que los defaults son holgados.
 
 ## Notas
 - Activar API keys en prod es **breaking** para consumidores actuales: deben

@@ -217,6 +217,28 @@ async function apiFetch(url, options = {}, fetchImpl = fetch) {
   return { response, body };
 }
 
+/**
+ * Explica un 429 en español. Hay tres, y solo uno se arregla esperando unos
+ * segundos (ver documentacion/api-docs/API_USO.md → "Límites y 429"):
+ *   - "Too Many Requests": throttle (req/s) de API Gateway → reintentar.
+ *   - "Limit Exceeded": cuota diaria de requests de la API key → hasta mañana (UTC).
+ *   - DAILY_DOCUMENT_LIMIT: tope de documentos/día de la app → hasta `resetsAt`.
+ */
+export function describeRateLimit(body) {
+  if (body?.error === "DAILY_DOCUMENT_LIMIT") {
+    return `tope de documentos por día alcanzado (${body.limit}); se reinicia ${body.resetsAt}`;
+  }
+  if (body?.message === "Limit Exceeded") {
+    return "cuota diaria de requests de la API key agotada; se reinicia a medianoche UTC";
+  }
+  return "throttle de API Gateway (demasiadas requests por segundo)";
+}
+
+/** Solo el throttle por segundo se resuelve reintentando pronto. */
+function isRetryableThrottle(response, body) {
+  return response.status === 429 && body?.error !== "DAILY_DOCUMENT_LIMIT" && body?.message !== "Limit Exceeded";
+}
+
 export async function registerDocument({
   endpoint, filePath, documentType, occurrenceMode, apiKey, metadata, fetchImpl,
 }) {
@@ -231,6 +253,12 @@ export async function registerDocument({
     }),
   }, fetchImpl);
 
+  if (response.status === 429) {
+    throw new E2EError(`POST /documents rechazado (HTTP 429, ${describeRateLimit(body)}): ${JSON.stringify(body)}`, {
+      statusCode: response.status,
+      responseBody: body,
+    });
+  }
   if (response.status !== 200 || !body?.documentId || !body?.uploadUrl) {
     throw new E2EError(`POST /documents falló (HTTP ${response.status}): ${JSON.stringify(body)}`, {
       statusCode: response.status,
@@ -317,8 +345,13 @@ export async function pollDocument({
       onPoll({ attempt, statusCode: 200, processingStatus: body?.processingStatus, waitMs: 0 });
       return body;
     }
-    if (response.status !== 202) {
-      throw new E2EError(`GET /documents/${documentId} falló (HTTP ${response.status}): ${JSON.stringify(body)}`, {
+    // Un 429 de throttle en el polling no es un fallo: se espera como un 202
+    // (mismo backoff). La cuota diaria agotada sí es fatal — reintentar solo
+    // seguiría recibiendo 429 hasta la medianoche UTC.
+    const throttled = isRetryableThrottle(response, body);
+    if (response.status !== 202 && !throttled) {
+      const reason = response.status === 429 ? ` (${describeRateLimit(body)})` : "";
+      throw new E2EError(`GET /documents/${documentId} falló (HTTP ${response.status}${reason}): ${JSON.stringify(body)}`, {
         statusCode: response.status,
         responseBody: body,
       });
@@ -326,7 +359,7 @@ export async function pollDocument({
 
     const minimumMs = retryAfterMilliseconds(response, body);
     const waitMs = Math.max(backoffMs, minimumMs) + Math.max(0, jitter());
-    onPoll({ attempt, statusCode: 202, processingStatus: body?.processingStatus, waitMs });
+    onPoll({ attempt, statusCode: response.status, processingStatus: body?.processingStatus, waitMs });
     if (Date.now() + waitMs > deadline) break;
     await sleep(waitMs);
     backoffMs = Math.min(backoffMs * 2, 30_000);
@@ -372,7 +405,11 @@ export async function runE2E({
     ...(sleep && { sleep }),
     ...(jitter && { jitter }),
     ...(fetchImpl && { fetchImpl }),
-    onPoll: ({ processingStatus, waitMs }) => {
+    onPoll: ({ statusCode, processingStatus, waitMs }) => {
+      if (statusCode === 429) {
+        log(`429 throttle de API Gateway · reintento en ${(waitMs / 1000).toFixed(1)}s`);
+        return;
+      }
       if (processingStatus !== lastStatus) {
         log(`${processingStatus || "ESTADO_DESCONOCIDO"}${waitMs ? ` · próximo GET en ${(waitMs / 1000).toFixed(1)}s` : ""}`);
         lastStatus = processingStatus;

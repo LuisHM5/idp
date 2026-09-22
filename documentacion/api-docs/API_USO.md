@@ -59,6 +59,31 @@ Referencia de todos los endpoints del API de la app de validación documental.
 > `-H "x-api-key: $KEY"`. **Agrégalo en todos** — la única petición que NO lo
 > lleva es el `PUT` a S3 del paso 2 de la subida, que va firmado en la URL.
 
+## Límites y `429`
+
+Cada API key (una por app) tiene cuatro límites. Los `GET` (consultar estado,
+descargar, buscar, catálogo) tienen un throttle **más holgado** que las
+escrituras y **no gastan** tu presupuesto de documentos:
+
+| Límite | Qué cuenta | Respuesta al pasarse | Qué hacer |
+| ------ | ---------- | -------------------- | --------- |
+| Throttle de escritura (req/s) | `POST /documents`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata` | `429` `{"message":"Too Many Requests"}` | Reintentar con backoff (1 s, 2 s, 4 s…) |
+| Throttle de lectura (req/s) | Todos los `GET` | `429` `{"message":"Too Many Requests"}` | Reintentar con backoff; en el polling, esperar como un `202` |
+| Documentos por día | Solo `POST /documents` y reprocess que pasaron validación | `429` `{"error":"DAILY_DOCUMENT_LIMIT","limit":N,"resetsAt":"…","retryAfterSeconds":N}` + `Retry-After` | No reintentar antes de `resetsAt` (medianoche UTC). Los `GET` siguen funcionando |
+| Techo de requests por día | **Todo**, incluido el polling | `429` `{"message":"Limit Exceeded"}` | No se arregla reintentando: se reinicia a medianoche UTC. Si pasa seguido, pide que se suba el techo |
+
+- Los dos `429` de API Gateway (`Too Many Requests`, `Limit Exceeded`) **no
+  traen** el formato `{error, message}` ni cabecera `Retry-After`: distínguelos
+  por `message`.
+- En **prod** el WAF además limita por IP (2000 escrituras y 10000 `GET` cada
+  5 min) y bloquea con **`403`** `{"message":"Forbidden"}` — el mismo cuerpo que
+  una key inválida. Si una key que funcionaba empieza a recibir `403` en ráfaga,
+  baja el ritmo antes de sospechar de la key.
+- Ninguna request rechazada con `429`/`403` llega a la Lambda ni cuenta como
+  documento.
+- Tus valores concretos los da quien administra la API (`pnpm apps:usage`, ver
+  `AMBIENTES_Y_SEGURIDAD.md` → "Límites por app").
+
 ## Resumen de endpoints
 
 | Método  | Ruta                                     | Para qué                                                                                  |
@@ -290,7 +315,10 @@ while :; do
   code=$(curl -sS -o result.json -w '%{http_code}' \
     "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
   [ "$code" = 200 ] && break
-  [ "$code" = 202 ] || { cat result.json; exit 1; }
+  # 429 "Too Many Requests" = throttle: se espera igual que un 202.
+  # 429 "Limit Exceeded" = cuota diaria agotada: reintentar no sirve.
+  if [ "$code" = 429 ] && grep -q "Limit Exceeded" result.json; then cat result.json; exit 1; fi
+  [ "$code" = 202 ] || [ "$code" = 429 ] || { cat result.json; exit 1; }
   sleep $((delay + RANDOM % 3))
   delay=$((delay < 15 ? delay * 2 : 30))
 done
@@ -317,7 +345,10 @@ for (let i = 0; i < 60; i++) {
     doc = body;
     break;
   }
-  if (r.status !== 202)
+  // 429 "Too Many Requests" = throttle: se espera igual que un 202.
+  // 429 "Limit Exceeded" = cuota diaria agotada: reintentar no sirve.
+  const throttled = r.status === 429 && body.message !== "Limit Exceeded";
+  if (r.status !== 202 && !throttled)
     throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
   const minimum =
     Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
@@ -371,7 +402,10 @@ for _ in range(60):
     if r.status_code == 200:
         doc = body
         break
-    if r.status_code != 202:
+    # 429 "Too Many Requests" = throttle: se espera igual que un 202.
+    # 429 "Limit Exceeded" = cuota diaria agotada: reintentar no sirve.
+    throttled = r.status_code == 429 and body.get("message") != "Limit Exceeded"
+    if r.status_code != 202 and not throttled:
         r.raise_for_status()
     minimum = int(r.headers.get("Retry-After", body.get("retryAfterSeconds", 5)))
     time.sleep(max(delay, minimum) + random.random())
@@ -411,7 +445,11 @@ for (var i = 0; i < 60; i++)
         doc = body;
         break;
     }
-    if (r.StatusCode != HttpStatusCode.Accepted) r.EnsureSuccessStatusCode();
+    // 429 "Too Many Requests" = throttle: se espera igual que un 202.
+    // 429 "Limit Exceeded" = cuota diaria agotada: reintentar no sirve.
+    var throttled = r.StatusCode == HttpStatusCode.TooManyRequests
+        && !(body.TryGetProperty("message", out var m) && m.GetString() == "Limit Exceeded");
+    if (r.StatusCode != HttpStatusCode.Accepted && !throttled) r.EnsureSuccessStatusCode();
     await Task.Delay(delay + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)));
     delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
 }
@@ -1370,6 +1408,7 @@ Errores:
 - `404 NOT_FOUND` — no existe o la app no puede ver el documento viejo;
 - `404 FILE_NOT_FOUND` — el registro existe pero el original ya no está en `processed/`/`failed/`;
 - `409 SOURCE_NOT_READY` — todavía sigue bajo `raw/`; espera a que el GET termine;
+- `429 DAILY_DOCUMENT_LIMIT` — la app ya usó su tope de documentos del día (un reproceso cuenta igual que una subida); no reintentes antes de `resetsAt` (ver "Límites y `429`");
 - `500 JOB_REGISTRATION_FAILED|REPROCESS_COPY_FAILED` — no pudo reservarse el trabajo o copiarse el objeto. Si falla la copia, el `documentId` nuevo queda en `FAILED` para auditoría.
 
 ---

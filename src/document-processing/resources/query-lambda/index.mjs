@@ -22,7 +22,8 @@
  *       Creates a new document id and copies the original object internally
  *       from processed/ or failed/ back to raw/. The optional documentType,
  *       occurrenceMode and modelId body fields override the new run only;
- *       the old result is never changed.
+ *       the old result is never changed. Counts against the app's
+ *       documents-per-day cap like an upload (429 DAILY_DOCUMENT_LIMIT).
  *
  *   PATCH /documents/{id}/metadata
  *       Applies a flat JSON Merge Patch to the mutable metadata stored on the
@@ -115,7 +116,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -173,8 +174,12 @@ import {
   parsePage,
   scopeToAllowedDocTypes,
 } from "./document-type-catalog.mjs";
+import { consumeDailyDocument, dailyLimitResponse } from "./daily-doc-cap.mjs";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+// Low-level client kept on its own for daily-doc-cap.mjs, which builds
+// AttributeValue params (shared verbatim with upload-lambda).
+const ddbClient = new DynamoDBClient({});
+const ddb = DynamoDBDocumentClient.from(ddbClient, {
   marshallOptions: { removeUndefinedValues: true },
 });
 const s3 = new S3Client({});
@@ -185,6 +190,7 @@ const TYPE_INDEX = process.env.DOCUMENT_TYPE_INDEX || "DocumentTypeIndex";
 const UNIQUE_KEY_TABLE = process.env.UNIQUE_KEY_TABLE;
 const CATALOG_TABLE = process.env.CATALOG_TABLE;
 const APPS_TABLE = process.env.APPS_TABLE;
+const APP_USAGE_TABLE = process.env.APP_USAGE_TABLE;
 const MAX_LIMIT = 100;
 // The blueprint moves the raw upload to processed/{id}/{filename} on any
 // execution that completes without an exception (including a RECHAZADO
@@ -262,6 +268,8 @@ const UNRESTRICTED = {
   allowFieldSearch: true,
   allowMetadataWrite: true,
   allowReprocess: true,
+  apiKeyId: null,
+  maxDocsPerDay: null,
 };
 
 /** Grandfathered read access is not authority to mutate stored data. */
@@ -269,7 +277,7 @@ const UNREGISTERED = { ...UNRESTRICTED, allowMetadataWrite: false, allowReproces
 
 /**
  * Resolve the caller's own app + permissions from its x-api-key, mirroring
- * upload-lambda's `resolveAppOrigin` GetItem-by-ApiKeyId lookup — same table,
+ * upload-lambda's `resolveApp` GetItem-by-ApiKeyId lookup — same table,
  * same hot-path-friendly access pattern (direct GetItem, no Scan).
  */
 async function resolveCallerApp(event) {
@@ -291,6 +299,9 @@ async function resolveCallerApp(event) {
       // same billed operation with the transport optimized away, so no second
       // per-app grant is required; an unregistered key is still read-only.
       allowReprocess: true,
+      // Reprocess spends the same documents-per-day budget as an upload.
+      apiKeyId,
+      maxDocsPerDay: Item.MaxDocsPerDay ?? null,
     };
   } catch (err) {
     console.error("Failed to resolve caller app permissions (failing open — read access unaffected):", err);
@@ -998,6 +1009,17 @@ async function reprocessById(id, event, caller) {
   }
   const declaredCounts = serializeDocumentCounts(effectiveCounts);
   if (declaredCounts) objectMetadata["document-counts"] = declaredCounts;
+
+  // Same documents-per-day budget as POST /documents (daily-doc-cap.mjs),
+  // spent only once every check above has passed.
+  const cap = await consumeDailyDocument({
+    update: (params) => ddbClient.send(new UpdateItemCommand(params)),
+    table: APP_USAGE_TABLE,
+    apiKeyId: caller.apiKeyId,
+    appName: caller.appName,
+    maxDocsPerDay: caller.maxDocsPerDay,
+  });
+  if (!cap.allowed) return dailyLimitResponse(cap);
 
   const documentId = randomUUID();
   const key = rawKeyFor(parsedTypes.types, documentId, fileName);

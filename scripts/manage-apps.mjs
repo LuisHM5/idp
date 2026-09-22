@@ -12,9 +12,11 @@
  * Uso:
  *   pnpm apps:register                                  (interactivo: pregunta lo que falte)
  *   pnpm apps:register -- --name CEDIS --env dev
- *   pnpm apps:register -- --name ERP --env prod --rate-limit 30 --burst-limit 60 --quota-per-day 10000
+ *   pnpm apps:register -- --name ERP --env prod --rate-limit 10 --burst-limit 20 \
+ *        --read-rate-limit 40 --read-burst-limit 80 --docs-per-day 300 --quota-per-day 15000
  *   pnpm apps:rotate -- --name CEDIS --env dev          (key nueva, la vieja queda deshabilitada)
- *   pnpm apps:reconfigure -- --name CEDIS --env dev --rate-limit 50   (solo cambia límites, misma key)
+ *   pnpm apps:reconfigure -- --name CEDIS --env dev --read-rate-limit 20   (solo cambia límites, misma key)
+ *   pnpm apps:reconfigure -- --name CEDIS --env dev --docs-per-day 50      (o `none` para quitar el tope)
  *   pnpm apps:reconfigure -- --name CEDIS --env dev --access-scope all --allow-field-search
  *   pnpm apps:grant -- --name ERP --env prod --metadata-write
  *   pnpm apps:reconfigure -- --name CEDIS --env dev --allowed-doctypes FACTURA_HONORARIOS_XML
@@ -26,16 +28,29 @@
  *   pnpm apps:revoke -- --name CEDIS --env dev --delete   (+ borra los recursos AWS, irreversible)
  *   pnpm apps:adopt -- --name legacy-idp-default --api-key-id <ApiKeyId> --env prod
  *   pnpm apps:list -- --env prod
+ *   pnpm apps:usage -- --env dev [--name CEDIS] [--days 7]   (límites reales + consumo por día)
+ *
+ * Límites por app (detalle en scripts/_app-limits.mjs y
+ * documentacion/AMBIENTES_Y_SEGURIDAD.md → "Límites por app"):
+ *   --rate-limit / --burst-limit            throttle de ESCRITURA (POST /documents,
+ *                                           /upload, reprocess, PATCH metadata).
+ *   --read-rate-limit / --read-burst-limit  throttle de LECTURA (todos los GET);
+ *                                           se recomienda 4× el de escritura.
+ *   --docs-per-day N|none                   tope de documentos/día que cuenta la
+ *                                           Lambda (solo POST /documents, /upload y
+ *                                           reprocess); `none` = sin tope.
+ *   --quota-per-day N                       techo de requests/día de API Gateway
+ *                                           (cuenta TODO, incluido el polling).
  *
  * TODOS los comandos que mutan algo (register/rotate/reconfigure/grant/deny/
- * disable/enable/revoke/adopt — `list` es de solo lectura) son interactivos cuando
+ * disable/enable/revoke/adopt — `list` y `usage` son de solo lectura) son interactivos cuando
  * corren en una terminal real y falta algún dato, y SIEMPRE terminan con una
  * confirmación S/n antes de tocar AWS — incluso si diste todos los flags,
  * salvo que pases `--yes` o no haya TTY (pipe/CI), en cuyo caso no preguntan
  * ni confirman nada y fallan si falta algo requerido (para scripting/CI):
- *   - `register`: si falta rate-limit/burst-limit/cuota, pide el volumen de
- *     documentos esperado por día para RECOMENDAR valores (`recommendLimits`/
- *     `VOLUME_TIERS`).
+ *   - `register`: si falta algún límite, pide el volumen de documentos
+ *     esperado por día para RECOMENDAR valores (`recommendLimits`/
+ *     `VOLUME_TIERS` en scripts/_app-limits.mjs).
  *   - `reconfigure`: busca la app primero y muestra sus límites ACTUALES como
  *     default de cada pregunta — Enter deja ese campo sin cambios, no repite
  *     la recomendación desde cero (aquí se edita algo que ya existe).
@@ -74,13 +89,22 @@
  *
  * Usa el AWS CLI vía execSync (mismo criterio que scripts/backfill-index.mjs
  * y scripts/import-cert.mjs) — sin dependencia npm extra, solo credenciales
- * con permisos de apigateway (ApiKey / UsagePlan) y dynamodb (Scan / PutItem
- * / UpdateItem).
+ * con permisos de apigateway (ApiKey / UsagePlan / GetUsage) y dynamodb
+ * (Scan / Query / PutItem / UpdateItem).
  */
 
 import { execSync } from "child_process";
 import { writeFileSync, unlinkSync } from "fs";
 import { createInterface } from "node:readline/promises";
+import {
+  effectiveLimits,
+  formatThrottle,
+  parseLimit,
+  recommendLimits,
+  recommendReadLimits,
+  usagePlanInput,
+  usagePlanPatchOps,
+} from "./_app-limits.mjs";
 
 const DEV_STACK = "DocumentValidationStack-Dev";
 const PROD_STACK = "DocumentValidationStack";
@@ -150,6 +174,12 @@ function resolveStack(args) {
 function resolveAppsTable(args) {
   if (args.table) return args.table;
   return `document-validation-apps${args.env === "prod" ? "" : "-dev"}`;
+}
+
+/** Contador de documentos/día por app que escriben las Lambdas (daily-doc-cap.mjs). */
+function resolveUsageTable(args) {
+  if (args["usage-table"]) return args["usage-table"];
+  return `document-validation-app-usage${args.env === "prod" ? "" : "-dev"}`;
 }
 
 /** Mismo patrón que backfill-index.mjs::resolveTable, para el RestApi. */
@@ -239,14 +269,23 @@ function findAppByName(table, name, region, { activeOnly = false } = {}) {
   );
 }
 
-function ddbWrite(op, payload, region) {
-  const tmp = `/tmp/ddb-apps-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
+/**
+ * `aws <cmd> --cli-input-json` vía archivo temporal: evita pelear con el
+ * quoting del shell para payloads con llaves/comillas (items de DynamoDB,
+ * patch paths de usage plans como `/apiStages/x:prod/throttle/documents/{id}/...`).
+ */
+function cliJson(cmd, payload, region, opts = {}) {
+  const tmp = `/tmp/aws-apps-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
   writeFileSync(tmp, JSON.stringify(payload));
   try {
-    run(`dynamodb ${op} --cli-input-json file://${tmp} --output json`, region);
+    return run(`${cmd} --cli-input-json file://${tmp} --output json`, region, opts);
   } finally {
     unlinkSync(tmp);
   }
+}
+
+function ddbWrite(op, payload, region) {
+  cliJson(`dynamodb ${op}`, payload, region);
 }
 
 function ddbPutItem(table, item, region) {
@@ -300,8 +339,10 @@ function ddbRemoveAttrs(table, key, attrNames, region) {
  * Crea los recursos AWS físicos (ApiKey + UsagePlan + UsagePlanKey) — la
  * parte que `register` y `rotate` comparten. No toca DynamoDB; el caller
  * decide qué escribir ahí (fila nueva en `register`, reemplazo en `rotate`).
+ * El usage plan nace con el throttle de lectura a nivel plan y el de
+ * escritura como override por método (ver scripts/_app-limits.mjs).
  */
-function createApiKeyAndPlan({ name, envLabel, apiId, stage, rateLimit, burstLimit, quotaPerDay, region }) {
+function createApiKeyAndPlan({ name, envLabel, apiId, stage, limits, region }) {
   const label = `idp-${name}-${envLabel}`;
 
   const keyOut = JSON.parse(run(`apigateway create-api-key --name "${label}" --enabled --output json`, region));
@@ -312,11 +353,9 @@ function createApiKeyAndPlan({ name, envLabel, apiId, stage, rateLimit, burstLim
   );
 
   const planOut = JSON.parse(
-    run(
-      `apigateway create-usage-plan --name "${label}" ` +
-        `--throttle rateLimit=${rateLimit},burstLimit=${burstLimit} ` +
-        `--quota limit=${quotaPerDay},period=DAY ` +
-        `--api-stages apiId=${apiId},stage=${stage} --output json`,
+    cliJson(
+      "apigateway create-usage-plan",
+      usagePlanInput({ name: label, apiId, stage, write: limits.write, read: limits.read, quotaPerDay: limits.quotaPerDay }),
       region
     )
   );
@@ -327,10 +366,40 @@ function createApiKeyAndPlan({ name, envLabel, apiId, stage, rateLimit, burstLim
   return { apiKeyId, apiKeyValue, usagePlanId };
 }
 
-function printNewKey({ name, apiKeyId, apiKeyValue, usagePlanId, rateLimit, burstLimit, quotaPerDay, region }) {
+/** Una línea legible con los cuatro límites de una app. */
+function describeLimits({ write, read, docsPerDay, quotaPerDay }) {
+  return (
+    `escritura ${formatThrottle(write)} · GET ${formatThrottle(read)} · ` +
+    `docs/día ${docsPerDay ?? "sin tope"} · techo requests/día ${quotaPerDay ?? "-"}`
+  );
+}
+
+/** Atributos DynamoDB de los límites (copia informativa, salvo MaxDocsPerDay que SÍ lee la Lambda). */
+function limitAttrs({ write, read, docsPerDay, quotaPerDay }) {
+  return {
+    RateLimit: { N: String(write.rateLimit) },
+    BurstLimit: { N: String(write.burstLimit) },
+    ReadRateLimit: { N: String(read.rateLimit) },
+    ReadBurstLimit: { N: String(read.burstLimit) },
+    QuotaPerDay: { N: String(quotaPerDay) },
+    ...(docsPerDay != null ? { MaxDocsPerDay: { N: String(docsPerDay) } } : {}),
+  };
+}
+
+/** Aviso (no error): con escritura > lectura, un POST podría quedar limitado por el throttle del plan. */
+function warnIfWriteAboveRead({ write, read }) {
+  if (write.rateLimit > read.rateLimit || write.burstLimit > read.burstLimit) {
+    console.warn(
+      `⚠️  El throttle de escritura (${formatThrottle(write)}) es mayor que el de lectura (${formatThrottle(read)}). ` +
+        "Lo normal es escritura ≤ lectura; revisa que sea intencional."
+    );
+  }
+}
+
+function printNewKey({ name, apiKeyId, apiKeyValue, usagePlanId, limits, region }) {
   console.log(`   ApiKeyId:    ${apiKeyId}`);
   console.log(`   UsagePlanId: ${usagePlanId}`);
-  console.log(`   Rate limit:  ${rateLimit} req/s (burst ${burstLimit}), cuota ${quotaPerDay}/día`);
+  console.log(`   Límites:     ${describeLimits(limits)}`);
   console.log(`\n   🔑 Valor de la key (se puede reobtener cuando sea con):`);
   console.log(`      aws apigateway get-api-key --api-key ${apiKeyId} --include-value --query value --output text --region ${region}\n`);
   console.log(`   ${apiKeyValue}`);
@@ -339,25 +408,56 @@ function printNewKey({ name, apiKeyId, apiKeyValue, usagePlanId, rateLimit, burs
   console.log(`\n   Entrégale este valor a '${name}' — no queda en ningún log de este script ni en DynamoDB (solo el ApiKeyId).`);
 }
 
-// Recomendación de rate/burst por tramos de volumen: en este dominio (subida
-// de documentos, no llamadas de alta frecuencia) el volumen diario rara vez
-// exige un rate/burst alto — lo que de verdad escala con el volumen es la
-// cuota diaria. rate/burst se eligen por tramo (protegen contra un loop/burst
-// anómalo, no contra tráfico legítimo normal); la cuota sí se calcula fino
-// sobre el número dado, con margen para reintentos.
-const VOLUME_TIERS = [
-  { max: 50, rateLimit: 5, burstLimit: 10, label: "bajo (≤50/día)" },
-  { max: 500, rateLimit: 10, burstLimit: 20, label: "medio (51-500/día)" },
-  { max: 2000, rateLimit: 20, burstLimit: 40, label: "alto (501-2000/día)" },
-  { max: 10000, rateLimit: 40, burstLimit: 80, label: "muy alto (2001-10000/día)" },
-  { max: Infinity, rateLimit: 80, burstLimit: 160, label: "extremo (>10000/día)" },
-];
+/**
+ * Valida los flags de límites. Cada campo es el número pedido o `null` si el
+ * flag no vino; `removeDocsPerDay` = `--docs-per-day none`.
+ */
+function parseLimitFlags(args) {
+  const spec = [
+    ["rate-limit", "rateLimit", false],
+    ["burst-limit", "burstLimit", true],
+    ["read-rate-limit", "readRateLimit", false],
+    ["read-burst-limit", "readBurstLimit", true],
+    ["quota-per-day", "quotaPerDay", true],
+  ];
+  const out = { docsPerDay: null, removeDocsPerDay: false };
+  for (const [flag, key, integer] of spec) {
+    out[key] = null;
+    if (args[flag] === undefined) continue;
+    const parsed = parseLimit(args[flag], `--${flag}`, { integer });
+    if (parsed.error) fail(parsed.error);
+    out[key] = parsed.value;
+  }
+  if (args["docs-per-day"] !== undefined) {
+    if (String(args["docs-per-day"]).trim().toLowerCase() === "none") {
+      out.removeDocsPerDay = true;
+    } else {
+      const parsed = parseLimit(args["docs-per-day"], "--docs-per-day", { integer: true });
+      if (parsed.error) fail(parsed.error);
+      out.docsPerDay = parsed.value;
+    }
+  }
+  return out;
+}
 
-function recommendLimits(docsPerDay) {
-  const n = Math.max(0, Number(docsPerDay) || 0);
-  const tier = VOLUME_TIERS.find((t) => n <= t.max);
-  const quotaPerDay = Math.max(100, Math.ceil(n * 1.5)); // margen para reintentos/errores del cliente
-  return { rateLimit: tier.rateLimit, burstLimit: tier.burstLimit, quotaPerDay, tierLabel: tier.label };
+/**
+ * Límites completos para `register`: flags → si no, los mismos defaults de
+ * siempre (20/40, cuota 5000), lectura 4× la escritura y sin tope de
+ * documentos (retrocompatible para scripting; el modo interactivo sí propone uno).
+ */
+function resolveRegisterLimits(args) {
+  const lim = parseLimitFlags(args);
+  const write = { rateLimit: lim.rateLimit ?? 20, burstLimit: lim.burstLimit ?? 40 };
+  const rec = recommendReadLimits(write);
+  return {
+    write,
+    read: {
+      rateLimit: lim.readRateLimit ?? rec.readRateLimit,
+      burstLimit: lim.readBurstLimit ?? rec.readBurstLimit,
+    },
+    docsPerDay: lim.removeDocsPerDay ? null : lim.docsPerDay,
+    quotaPerDay: lim.quotaPerDay ?? 5000,
+  };
 }
 
 /**
@@ -375,34 +475,40 @@ async function promptRegister(args) {
     if (!args.name) args.name = await promptName(rl, "Nombre de la app (ej. CEDIS, ERP, Portal)");
     if (!args.env) args.env = await promptEnv(rl);
 
-    const needRate = !args["rate-limit"];
-    const needBurst = !args["burst-limit"];
-    const needQuota = !args["quota-per-day"];
-    if (needRate || needBurst || needQuota) {
-      console.log("\nPara recomendar rate limit/cuota, cuéntame el volumen esperado.");
+    const limitFlags = ["rate-limit", "burst-limit", "read-rate-limit", "read-burst-limit", "docs-per-day", "quota-per-day"];
+    if (limitFlags.some((f) => args[f] === undefined)) {
+      console.log("\nPara recomendar límites, cuéntame el volumen esperado.");
       const volAns = (
         await rl.question("¿Cuántos documentos por día esperas que suba esta app aproximadamente? (ej. 50, 500, 3000): ")
       ).trim();
       const rec = recommendLimits(Number(volAns) || 0);
       console.log(
-        `\nRecomendado (categoría: ${rec.tierLabel}): rate=${rec.rateLimit}/s burst=${rec.burstLimit} cuota/día=${rec.quotaPerDay}` +
-          " — Enter acepta el valor entre [corchetes], o escribe el tuyo.\n"
+        `\nRecomendado (categoría: ${rec.tierLabel}):` +
+          `\n  escritura ${rec.rateLimit}/s (burst ${rec.burstLimit}) — POST /documents, reprocess, PATCH metadata` +
+          `\n  GET       ${rec.readRateLimit}/s (burst ${rec.readBurstLimit}) — 4× escritura: polling, /file, búsquedas` +
+          `\n  docs/día  ${rec.docsPerDay} — lo cuenta la Lambda, solo documentos nuevos/reprocesos` +
+          `\n  techo requests/día ${rec.quotaPerDay} — cuota de API Gateway, cuenta TODO incluido el polling` +
+          "\nEnter acepta el valor entre [corchetes], o escribe el tuyo.\n"
       );
-      if (needRate) {
-        args["rate-limit"] = (await rl.question(`Rate limit, req/s [${rec.rateLimit}]: `)).trim() || String(rec.rateLimit);
-      }
-      if (needBurst) {
-        args["burst-limit"] = (await rl.question(`Burst [${rec.burstLimit}]: `)).trim() || String(rec.burstLimit);
-      }
-      if (needQuota) {
-        args["quota-per-day"] = (await rl.question(`Cuota diaria [${rec.quotaPerDay}]: `)).trim() || String(rec.quotaPerDay);
-      }
+      const ask = async (flag, label, def) => {
+        if (args[flag] !== undefined) return;
+        args[flag] = (await rl.question(`${label} [${def}]: `)).trim() || String(def);
+      };
+      await ask("rate-limit", "Escritura: rate limit, req/s", rec.rateLimit);
+      await ask("burst-limit", "Escritura: burst", rec.burstLimit);
+      // Si el usuario cambió la escritura, la recomendación de lectura la sigue (4×).
+      const readRec = recommendReadLimits({
+        rateLimit: Number(args["rate-limit"]) || rec.rateLimit,
+        burstLimit: Number(args["burst-limit"]) || rec.burstLimit,
+      });
+      await ask("read-rate-limit", "GET: rate limit, req/s", readRec.readRateLimit);
+      await ask("read-burst-limit", "GET: burst", readRec.readBurstLimit);
+      await ask("docs-per-day", "Documentos por día (`none` = sin tope)", rec.docsPerDay);
+      await ask("quota-per-day", "Techo de requests por día", rec.quotaPerDay);
     }
 
-    console.log(
-      `\nResumen: app='${args.name}' env=${args.env} rate=${args["rate-limit"]}/s ` +
-        `burst=${args["burst-limit"]} cuota/día=${args["quota-per-day"]}`
-    );
+    const limits = resolveRegisterLimits(args);
+    console.log(`\nResumen: app='${args.name}' env=${args.env} → ${describeLimits(limits)}`);
     await confirmOrExit(rl, "¿Crear esta app?");
   } finally {
     rl.close();
@@ -417,13 +523,12 @@ async function cmdRegister(args) {
   const stack = resolveStack(args);
   const table = resolveAppsTable(args);
   const envLabel = args.env === "prod" ? "prod" : "dev";
-  const rateLimit = Number(args["rate-limit"] || 20);
-  const burstLimit = Number(args["burst-limit"] || 40);
-  const quotaPerDay = Number(args["quota-per-day"] || 5000);
-  // Validar TODO (incl. --access-scope) antes de tocar AWS — si esto corriera
-  // después de crear la key/usage plan, un flag inválido dejaría recursos
-  // huérfanos en AWS sin fila en DynamoDB que los referencie.
+  // Validar TODO (límites y --access-scope) antes de tocar AWS — si esto
+  // corriera después de crear la key/usage plan, un flag inválido dejaría
+  // recursos huérfanos en AWS sin fila en DynamoDB que los referencie.
+  const limits = resolveRegisterLimits(args);
   const perms = parsePermissionFlags(args);
+  warnIfWriteAboveRead(limits);
 
   console.log(`📋 Registrando app '${args.name}' (${envLabel}) contra ${stack}...`);
 
@@ -440,7 +545,7 @@ async function cmdRegister(args) {
   const apiId = resolveRestApiId(stack, region);
   const stage = resolveStage(apiId, region);
   const { apiKeyId, apiKeyValue, usagePlanId } = createApiKeyAndPlan({
-    name: args.name, envLabel, apiId, stage, rateLimit, burstLimit, quotaPerDay, region,
+    name: args.name, envLabel, apiId, stage, limits, region,
   });
 
   // Secure by default: AccessScope="own" (solo ve lo que ella subió) y
@@ -453,9 +558,7 @@ async function cmdRegister(args) {
       AppName: { S: args.name },
       UsagePlanId: { S: usagePlanId },
       Status: { S: "ACTIVE" },
-      RateLimit: { N: String(rateLimit) },
-      BurstLimit: { N: String(burstLimit) },
-      QuotaPerDay: { N: String(quotaPerDay) },
+      ...limitAttrs(limits),
       Environment: { S: envLabel },
       CreatedAt: { S: new Date().toISOString() },
       AccessScope: perms.setAttrs.AccessScope || { S: "own" },
@@ -467,7 +570,7 @@ async function cmdRegister(args) {
   );
 
   console.log(`\n✅ App '${args.name}' registrada.`);
-  printNewKey({ name: args.name, apiKeyId, apiKeyValue, usagePlanId, rateLimit, burstLimit, quotaPerDay, region });
+  printNewKey({ name: args.name, apiKeyId, apiKeyValue, usagePlanId, limits, region });
   const scope = perms.setAttrs.AccessScope?.S || "own";
   console.log(`   Permisos: accessScope=${scope}, allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? false}, ` +
     `allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? false}` +
@@ -507,17 +610,31 @@ async function cmdRotate(args) {
   }
 
   // Mismos límites que la key vieja salvo que se pidan otros explícitamente —
-  // rotar no debería cambiar el rate limit de la app por accidente.
-  const rateLimit = Number(args["rate-limit"] || old.RateLimit || 20);
-  const burstLimit = Number(args["burst-limit"] || old.BurstLimit || 40);
-  const quotaPerDay = Number(args["quota-per-day"] || old.QuotaPerDay || 5000);
+  // rotar no debería cambiar el rate limit de la app por accidente. Una app
+  // de antes de separar lectura/escritura no tiene ReadRateLimit: su plan
+  // viejo aplicaba el mismo throttle a todo, así que se conserva tal cual.
+  const lim = parseLimitFlags(args);
+  const write = {
+    rateLimit: lim.rateLimit ?? old.RateLimit ?? 20,
+    burstLimit: lim.burstLimit ?? old.BurstLimit ?? 40,
+  };
+  const limits = {
+    write,
+    read: {
+      rateLimit: lim.readRateLimit ?? old.ReadRateLimit ?? write.rateLimit,
+      burstLimit: lim.readBurstLimit ?? old.ReadBurstLimit ?? write.burstLimit,
+    },
+    docsPerDay: lim.removeDocsPerDay ? null : lim.docsPerDay ?? old.MaxDocsPerDay ?? null,
+    quotaPerDay: lim.quotaPerDay ?? old.QuotaPerDay ?? 5000,
+  };
+  warnIfWriteAboveRead(limits);
 
   console.log(`🔄 Rotando '${args.name}' (${envLabel}) — key vieja ${old.ApiKeyId} quedará deshabilitada, no borrada.`);
 
   const apiId = resolveRestApiId(stack, region);
   const stage = resolveStage(apiId, region);
   const { apiKeyId, apiKeyValue, usagePlanId } = createApiKeyAndPlan({
-    name: args.name, envLabel, apiId, stage, rateLimit, burstLimit, quotaPerDay, region,
+    name: args.name, envLabel, apiId, stage, limits, region,
   });
 
   // Nueva fila primero (si algo falla después, al menos la key nueva ya
@@ -529,9 +646,7 @@ async function cmdRotate(args) {
       AppName: { S: args.name },
       UsagePlanId: { S: usagePlanId },
       Status: { S: "ACTIVE" },
-      RateLimit: { N: String(rateLimit) },
-      BurstLimit: { N: String(burstLimit) },
-      QuotaPerDay: { N: String(quotaPerDay) },
+      ...limitAttrs(limits),
       Environment: { S: envLabel },
       CreatedAt: { S: new Date().toISOString() },
       RotatedFrom: { S: old.ApiKeyId },
@@ -551,8 +666,15 @@ async function cmdRotate(args) {
     region
   );
 
-  console.log(`\n✅ '${args.name}' rotada. Key vieja (${old.ApiKeyId}) deshabilitada; consumidores deben actualizar a la nueva:`);
-  printNewKey({ name: args.name, apiKeyId, apiKeyValue, usagePlanId, rateLimit, burstLimit, quotaPerDay, region });
+  console.log(`\n✅ '${args.name}' rotada. Key vieja (${old.ApiKeyId}) deshabilitada; consumidores deben actualizar a la nueva.`);
+  console.log(`   El contador de documentos/día empieza de cero con la key nueva (va por ApiKeyId).`);
+  printNewKey({ name: args.name, apiKeyId, apiKeyValue, usagePlanId, limits, region });
+}
+
+/** `get-usage-plan` → límites vigentes (ver effectiveLimits en _app-limits.mjs). */
+function getUsagePlan(usagePlanId, region, opts = {}) {
+  const out = run(`apigateway get-usage-plan --usage-plan-id ${usagePlanId} --output json`, region, opts);
+  return out ? JSON.parse(out) : null;
 }
 
 /**
@@ -582,34 +704,60 @@ async function promptReconfigure(args) {
       );
     }
 
-    const needRate = args["rate-limit"] === undefined;
-    const needBurst = args["burst-limit"] === undefined;
-    const needQuota = args["quota-per-day"] === undefined;
-    if (needRate || needBurst || needQuota) {
+    const limitFlags = ["rate-limit", "burst-limit", "read-rate-limit", "read-burst-limit", "docs-per-day", "quota-per-day"];
+    // Solo preguntar límites si no vino NINGÚN flag de cambio: quien pasó
+    // --allow-field-search no quiere que se le pregunte por el rate limit.
+    const anyChangeFlag = limitFlags.some((f) => args[f] !== undefined) ||
+      Object.keys(parsePermissionFlags(args).setAttrs).length > 0 ||
+      args["allowed-doctypes"] !== undefined;
+    let current = null;
+    if (!anyChangeFlag) {
+      const plan = app.UsagePlanId ? getUsagePlan(app.UsagePlanId, region, { silent: true }) : null;
+      current = plan ? effectiveLimits(plan) : null;
       console.log(
-        `\nValores actuales de '${args.name}': rate=${app.RateLimit ?? "-"}/s ` +
-          `burst=${app.BurstLimit ?? "-"} quota/día=${app.QuotaPerDay ?? "-"}`
+        `\nValores actuales de '${args.name}' (leídos del usage plan real): ` +
+          (current
+            ? describeLimits({ ...current, docsPerDay: app.MaxDocsPerDay })
+            : `sin usage plan legible — docs/día ${app.MaxDocsPerDay ?? "sin tope"}`)
       );
+      if (current?.legacy) {
+        console.log("   (plan antiguo: GET y escrituras comparten el mismo throttle — fijar uno de los dos los separa)");
+      }
       console.log("Enter deja ese campo sin cambios; escribe un valor para reemplazarlo.\n");
-      if (needRate) {
-        const ans = (await rl.question(`Rate limit nuevo, req/s [sin cambio]: `)).trim();
-        if (ans) args["rate-limit"] = ans;
-      }
-      if (needBurst) {
-        const ans = (await rl.question(`Burst nuevo [sin cambio]: `)).trim();
-        if (ans) args["burst-limit"] = ans;
-      }
-      if (needQuota) {
-        const ans = (await rl.question(`Cuota diaria nueva [sin cambio]: `)).trim();
-        if (ans) args["quota-per-day"] = ans;
-      }
+      const ask = async (flag, label) => {
+        const ans = (await rl.question(`${label} [sin cambio]: `)).trim();
+        if (ans) args[flag] = ans;
+      };
+      await ask("rate-limit", "Escritura: rate limit nuevo, req/s");
+      await ask("burst-limit", "Escritura: burst nuevo");
+      const writeRate = Number(args["rate-limit"] ?? current?.write.rateLimit);
+      const writeBurst = Number(args["burst-limit"] ?? current?.write.burstLimit);
+      const readRec = Number.isFinite(writeRate) && Number.isFinite(writeBurst)
+        ? recommendReadLimits({ rateLimit: writeRate, burstLimit: writeBurst })
+        : null;
+      await ask(
+        "read-rate-limit",
+        `GET: rate limit nuevo, req/s${readRec ? ` (recomendado 4× escritura = ${readRec.readRateLimit})` : ""}`
+      );
+      await ask(
+        "read-burst-limit",
+        `GET: burst nuevo${readRec ? ` (recomendado ${readRec.readBurstLimit})` : ""}`
+      );
+      await ask("docs-per-day", "Documentos por día nuevo (`none` = quitar tope)");
+      await ask("quota-per-day", "Techo de requests por día nuevo");
     }
 
-    const summary =
-      `rate=${args["rate-limit"] ?? app.RateLimit ?? "-"}/s ` +
-      `burst=${args["burst-limit"] ?? app.BurstLimit ?? "-"} ` +
-      `quota/día=${args["quota-per-day"] ?? app.QuotaPerDay ?? "-"}`;
-    console.log(`\nResumen: '${args.name}' (${args.env}) → ${summary}`);
+    const lim = parseLimitFlags(args);
+    const changes = [
+      lim.rateLimit != null && `escritura rate=${lim.rateLimit}/s`,
+      lim.burstLimit != null && `escritura burst=${lim.burstLimit}`,
+      lim.readRateLimit != null && `GET rate=${lim.readRateLimit}/s`,
+      lim.readBurstLimit != null && `GET burst=${lim.readBurstLimit}`,
+      lim.docsPerDay != null && `docs/día=${lim.docsPerDay}`,
+      lim.removeDocsPerDay && "docs/día=sin tope",
+      lim.quotaPerDay != null && `techo requests/día=${lim.quotaPerDay}`,
+    ].filter(Boolean);
+    console.log(`\nResumen: '${args.name}' (${args.env}) → ${changes.length ? changes.join(", ") : "solo permisos"}`);
     await confirmOrExit(rl, "¿Aplicar estos cambios?");
 
     return { args, app };
@@ -622,20 +770,26 @@ async function cmdReconfigure(args) {
   const prompted = await promptReconfigure(args);
   args = prompted.args;
 
-  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:reconfigure -- --name <appName> [--rate-limit N] [--burst-limit N] [--quota-per-day N]");
+  if (!args.name) {
+    fail(
+      "Falta --name <appName>. Uso: pnpm apps:reconfigure -- --name <appName> [--rate-limit N] [--burst-limit N] " +
+        "[--read-rate-limit N] [--read-burst-limit N] [--docs-per-day N|none] [--quota-per-day N]"
+    );
+  }
   const region = args.region || process.env.AWS_REGION || "us-east-1";
   const table = resolveAppsTable(args);
 
-  const rateLimit = args["rate-limit"] !== undefined ? Number(args["rate-limit"]) : null;
-  const burstLimit = args["burst-limit"] !== undefined ? Number(args["burst-limit"]) : null;
-  const quotaPerDay = args["quota-per-day"] !== undefined ? Number(args["quota-per-day"]) : null;
+  const lim = parseLimitFlags(args);
   const perms = parsePermissionFlags(args);
   const hasPermChanges = Object.keys(perms.setAttrs).length > 0 || perms.removeAttrs.length > 0;
-  if (rateLimit === null && burstLimit === null && quotaPerDay === null && !hasPermChanges) {
+  const wantsThrottle = [lim.rateLimit, lim.burstLimit, lim.readRateLimit, lim.readBurstLimit].some((v) => v !== null);
+  const wantsQuota = lim.quotaPerDay !== null;
+  const wantsDocs = lim.docsPerDay !== null || lim.removeDocsPerDay;
+  if (!wantsThrottle && !wantsQuota && !wantsDocs && !hasPermChanges) {
     fail(
-      "Falta al menos uno de --rate-limit/--burst-limit/--quota-per-day/--access-scope/" +
-        "--allowed-doctypes/--allow-field-search/--allow-metadata-write " +
-        "(esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
+      "Falta al menos uno de --rate-limit/--burst-limit/--read-rate-limit/--read-burst-limit/" +
+        "--docs-per-day/--quota-per-day/--access-scope/--allowed-doctypes/--allow-field-search/" +
+        "--allow-metadata-write (esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
     );
   }
 
@@ -647,44 +801,72 @@ async function cmdReconfigure(args) {
     );
   }
 
-  // Los límites (throttle/quota) viven en el usage plan de API Gateway y
-  // necesitan UsagePlanId; los permisos (AccessScope/AllowedDocTypes/
-  // AllowFieldSearch/AllowMetadataWrite) son solo atributos en DynamoDB — no dependen de él, así
-  // que una app adoptada sin UsagePlanId conocido igual puede reconfigurar sus
-  // permisos, solo no sus límites.
-  const wantsLimitChange = rateLimit !== null || burstLimit !== null || quotaPerDay !== null;
-  if (wantsLimitChange && !app.UsagePlanId) {
+  // Throttle y cuota viven en el usage plan de API Gateway y necesitan
+  // UsagePlanId; docs/día y permisos son solo atributos en DynamoDB — no
+  // dependen de él, así que una app adoptada sin UsagePlanId conocido igual
+  // puede reconfigurarlos, solo no su throttle/cuota.
+  if ((wantsThrottle || wantsQuota) && !app.UsagePlanId) {
     fail(
       `'${args.name}' no tiene UsagePlanId registrado (probablemente adoptada sin uno con 'apps:adopt') — ` +
         `ajusta su usage plan a mano en la consola/CLI, este comando no puede inferir cuál es.`
     );
   }
 
-  // Solo se tocan los campos pedidos — los que no se pasan se quedan como
-  // estaban, tanto en API Gateway (JSON Patch por sub-path) como en DynamoDB.
-  if (wantsLimitChange) {
-    const patches = [];
-    if (rateLimit !== null) patches.push(`op=replace,path=/throttle/rateLimit,value=${rateLimit}`);
-    if (burstLimit !== null) patches.push(`op=replace,path=/throttle/burstLimit,value=${burstLimit}`);
-    if (quotaPerDay !== null) patches.push(`op=replace,path=/quota/limit,value=${quotaPerDay}`);
+  const updates = { UpdatedAt: { S: new Date().toISOString() }, ...perms.setAttrs };
+  const removeAttrs = [...perms.removeAttrs];
+  let applied = null;
+
+  if (wantsThrottle || wantsQuota) {
+    // Se parte de lo que el usage plan tiene DE VERDAD (no de la copia en
+    // DynamoDB) y se completa lo no pedido con eso: un override nuevo
+    // necesita rate y burst juntos. En un plan antiguo (sin overrides) el
+    // throttle del plan hacía de escritura y de lectura a la vez, así que
+    // fijar cualquiera de los dos crea los overrides de escritura con los
+    // valores de hoy — nada se afloja ni se aprieta sin pedirlo.
+    const plan = getUsagePlan(app.UsagePlanId, region);
+    const current = effectiveLimits(plan);
+    let read = null;
+    let write = null;
+    if (wantsThrottle) {
+      write = {
+        rateLimit: lim.rateLimit ?? current.write.rateLimit,
+        burstLimit: lim.burstLimit ?? current.write.burstLimit,
+      };
+      read = {
+        rateLimit: lim.readRateLimit ?? current.read.rateLimit,
+        burstLimit: lim.readBurstLimit ?? current.read.burstLimit,
+      };
+      warnIfWriteAboveRead({ write, read });
+    }
+    const patchOperations = usagePlanPatchOps(plan, { read, write, quotaPerDay: lim.quotaPerDay });
     console.log(`⚙️  Reconfigurando límites de '${args.name}' (UsagePlanId ${app.UsagePlanId})...`);
-    run(`apigateway update-usage-plan --usage-plan-id ${app.UsagePlanId} --patch-operations ${patches.join(" ")} --output json`, region);
+    cliJson("apigateway update-usage-plan", { usagePlanId: app.UsagePlanId, patchOperations }, region);
+
+    applied = { write: write ?? current.write, read: read ?? current.read, quotaPerDay: lim.quotaPerDay ?? current.quotaPerDay };
+    if (write) {
+      updates.RateLimit = { N: String(write.rateLimit) };
+      updates.BurstLimit = { N: String(write.burstLimit) };
+      updates.ReadRateLimit = { N: String(read.rateLimit) };
+      updates.ReadBurstLimit = { N: String(read.burstLimit) };
+    }
+    if (wantsQuota) updates.QuotaPerDay = { N: String(lim.quotaPerDay) };
   }
 
-  const updates = { UpdatedAt: { S: new Date().toISOString() }, ...perms.setAttrs };
-  if (rateLimit !== null) updates.RateLimit = { N: String(rateLimit) };
-  if (burstLimit !== null) updates.BurstLimit = { N: String(burstLimit) };
-  if (quotaPerDay !== null) updates.QuotaPerDay = { N: String(quotaPerDay) };
+  if (lim.docsPerDay !== null) updates.MaxDocsPerDay = { N: String(lim.docsPerDay) };
+  if (lim.removeDocsPerDay) removeAttrs.push("MaxDocsPerDay");
+
   ddbUpdateItem(table, { ApiKeyId: { S: app.ApiKeyId } }, updates, region);
-  if (perms.removeAttrs.length) {
-    ddbRemoveAttrs(table, { ApiKeyId: { S: app.ApiKeyId } }, perms.removeAttrs, region);
+  if (removeAttrs.length) {
+    ddbRemoveAttrs(table, { ApiKeyId: { S: app.ApiKeyId } }, removeAttrs, region);
   }
 
   console.log(`\n✅ '${args.name}' reconfigurada. La API key NO cambió (${app.ApiKeyId}) — los consumidores no necesitan actualizar nada.`);
-  if (wantsLimitChange) {
+  if (applied || wantsDocs) {
+    const docsPerDay = lim.removeDocsPerDay ? null : lim.docsPerDay ?? app.MaxDocsPerDay ?? null;
     console.log(
-      `   rate=${rateLimit ?? app.RateLimit ?? "-"}/s burst=${burstLimit ?? app.BurstLimit ?? "-"} ` +
-        `quota/día=${quotaPerDay ?? app.QuotaPerDay ?? "-"}`
+      applied
+        ? `   ${describeLimits({ ...applied, docsPerDay })}`
+        : `   docs/día ${docsPerDay ?? "sin tope"}`
     );
   }
   if (hasPermChanges) {
@@ -863,10 +1045,12 @@ function cmdList(args) {
   for (const it of items) {
     const icon = it.Status === "ACTIVE" ? "✅" : "🚫";
     console.log(`  ${icon} ${it.AppName}  [${it.Status}]`);
-    console.log(`     ApiKeyId: ${it.ApiKeyId}  UsagePlanId: ${it.UsagePlanId || "-"}`);
-    console.log(
-      `     rate=${it.RateLimit ?? "-"}/s burst=${it.BurstLimit ?? "-"} quota/día=${it.QuotaPerDay ?? "-"}  creada ${it.CreatedAt || "-"}`
-    );
+    console.log(`     ApiKeyId: ${it.ApiKeyId}  UsagePlanId: ${it.UsagePlanId || "-"}  creada ${it.CreatedAt || "-"}`);
+    // Copia registrada en DynamoDB; los valores vigentes de verdad los muestra `apps:usage`.
+    // Sin ReadRateLimit = app de antes de separar lectura/escritura (mismo throttle para todo).
+    const write = { rateLimit: it.RateLimit, burstLimit: it.BurstLimit };
+    const read = it.ReadRateLimit != null ? { rateLimit: it.ReadRateLimit, burstLimit: it.ReadBurstLimit } : write;
+    console.log(`     ${describeLimits({ write, read, docsPerDay: it.MaxDocsPerDay, quotaPerDay: it.QuotaPerDay })}`);
     console.log(
       `     accessScope=${it.AccessScope ?? "own"} allowFieldSearch=${it.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${it.AllowMetadataWrite ?? false}` +
@@ -932,7 +1116,25 @@ async function cmdRevoke(args) {
     console.log(`   Borrando recursos AWS (--delete, irreversible)...`);
     if (app.UsagePlanId) {
       run(`apigateway delete-usage-plan-key --usage-plan-id ${app.UsagePlanId} --key-id ${app.ApiKeyId} --output json`, region, { silent: true });
-      run(`apigateway delete-usage-plan --usage-plan-id ${app.UsagePlanId} --output json`, region, { silent: true });
+      // API Gateway rechaza borrar un usage plan que aún tiene API stages
+      // asociados ("Cannot delete Usage Plan ... because there are API Stages
+      // associated with it") — hay que desasociarlos primero.
+      const plan = getUsagePlan(app.UsagePlanId, region, { silent: true });
+      for (const apiStage of plan?.apiStages || []) {
+        cliJson(
+          "apigateway update-usage-plan",
+          {
+            usagePlanId: app.UsagePlanId,
+            patchOperations: [{ op: "remove", path: "/apiStages", value: `${apiStage.apiId}:${apiStage.stage}` }],
+          },
+          region,
+          { silent: true }
+        );
+      }
+      const deleted = run(`apigateway delete-usage-plan --usage-plan-id ${app.UsagePlanId} --output json`, region, { silent: true });
+      if (deleted === null && getUsagePlan(app.UsagePlanId, region, { silent: true })) {
+        console.warn(`   ⚠️  No se pudo borrar el usage plan ${app.UsagePlanId}; bórralo a mano en la consola/CLI.`);
+      }
     }
     run(`apigateway delete-api-key --api-key ${app.ApiKeyId} --output json`, region, { silent: true });
     console.log(`   Recursos AWS eliminados. El registro en ${table} se conserva como histórico (Status=REVOKED).`);
@@ -1048,19 +1250,28 @@ async function cmdAdopt(args) {
   // Upload Lambda empiece a resolverle un nombre legible en vez de
   // "unregistered". Ver documentacion/AMBIENTES_Y_SEGURIDAD.md.
   let usagePlanId = "";
-  let rateLimit = null;
-  let burstLimit = null;
-  let quotaPerDay = null;
+  let limits = null;
   const plansOut = run(`apigateway get-usage-plans --key-id ${apiKeyId} --output json`, region, { silent: true });
   if (plansOut) {
     const plans = JSON.parse(plansOut).items || [];
     if (plans.length) {
       usagePlanId = plans[0].id;
-      rateLimit = plans[0].throttle?.rateLimit ?? null;
-      burstLimit = plans[0].throttle?.burstLimit ?? null;
-      quotaPerDay = plans[0].quota?.limit ?? null;
+      limits = effectiveLimits(plans[0]);
     }
   }
+  const knownLimitAttrs = limits
+    ? Object.fromEntries(
+        [
+          ["RateLimit", limits.write.rateLimit],
+          ["BurstLimit", limits.write.burstLimit],
+          ["ReadRateLimit", limits.read.rateLimit],
+          ["ReadBurstLimit", limits.read.burstLimit],
+          ["QuotaPerDay", limits.quotaPerDay],
+        ]
+          .filter(([, v]) => v != null)
+          .map(([k, v]) => [k, { N: String(v) }])
+      )
+    : {};
   if (!usagePlanId) {
     console.warn(`⚠️  La key ${apiKeyId} no está asociada a ningún usage plan — se adopta igual, sin límites conocidos.`);
   }
@@ -1072,9 +1283,10 @@ async function cmdAdopt(args) {
       AppName: { S: args.name },
       ...(usagePlanId ? { UsagePlanId: { S: usagePlanId } } : {}),
       Status: { S: "ACTIVE" },
-      ...(rateLimit != null ? { RateLimit: { N: String(rateLimit) } } : {}),
-      ...(burstLimit != null ? { BurstLimit: { N: String(burstLimit) } } : {}),
-      ...(quotaPerDay != null ? { QuotaPerDay: { N: String(quotaPerDay) } } : {}),
+      // Sin MaxDocsPerDay: una key adoptada arranca sin tope de documentos
+      // (el mismo comportamiento que tenía antes de adoptarla); fijarlo es
+      // un `apps:reconfigure --docs-per-day N` explícito.
+      ...knownLimitAttrs,
       Environment: { S: envLabel },
       CreatedAt: { S: new Date().toISOString() },
       AccessScope: { S: "own" },
@@ -1087,16 +1299,121 @@ async function cmdAdopt(args) {
   console.log(`✅ '${apiKeyId}' adoptada como '${args.name}' (${envLabel}) en ${table}.`);
 }
 
+/** YYYY-MM-DD en UTC — el mismo "día" que usan la cuota de API Gateway y daily-doc-cap.mjs. */
+function utcDay(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * `apps:usage` — solo lectura. Para cada app muestra los límites VIGENTES
+ * leídos del usage plan real (no la copia de DynamoDB, que puede haber
+ * quedado vieja si alguien tocó el plan en la consola) y, por día UTC:
+ *   - requests usadas/restantes de la cuota de API Gateway (`get-usage`;
+ *     cuenta TODO: POST, polling, /file, búsquedas);
+ *   - documentos contados por la Lambda contra `MaxDocsPerDay`.
+ * Las requests rechazadas por throttle (429) o por WAF (403) no aparecen en
+ * `get-usage`: nunca llegaron a consumir cuota.
+ */
+function cmdUsage(args) {
+  const region = args.region || process.env.AWS_REGION || "us-east-1";
+  const table = resolveAppsTable(args);
+  const usageTable = resolveUsageTable(args);
+  const daysParsed = parseLimit(args.days ?? 7, "--days", { integer: true });
+  if (daysParsed.error) fail(daysParsed.error);
+  const days = Math.min(daysParsed.value, 90);
+
+  const end = new Date();
+  const dayList = Array.from({ length: days }, (_, i) => utcDay(new Date(end.getTime() - (days - 1 - i) * 86400000)));
+  const startDay = dayList[0];
+  const endDay = dayList[dayList.length - 1];
+
+  let apps = scanApps(table, region)
+    .filter((a) => args.all || a.Status === "ACTIVE")
+    .sort((a, b) => (a.AppName || "").localeCompare(b.AppName || ""));
+  if (args.name) apps = apps.filter((a) => (a.AppName || "").toLowerCase() === String(args.name).toLowerCase());
+  if (!apps.length) {
+    console.log(`(sin apps ${args.all ? "" : "ACTIVE "}${args.name ? `llamadas '${args.name}' ` : ""}en ${table})`);
+    return;
+  }
+
+  console.log(`📊 Uso por app en ${table} — ${startDay} → ${endDay} (días UTC)`);
+  // Medido 2026-09-21: cientos de requests seguían en 0 minutos después. El
+  // contador de documentos (DynamoDB) sí es inmediato.
+  console.log("   Requests: `get-usage` de API Gateway NO es en tiempo real (puede tardar en reflejar lo de hoy).\n");
+  let usageTableMissing = false;
+  for (const app of apps) {
+    const plan = app.UsagePlanId ? getUsagePlan(app.UsagePlanId, region, { silent: true }) : null;
+    const lim = plan ? effectiveLimits(plan) : null;
+    console.log(`  ${app.Status === "ACTIVE" ? "✅" : "🚫"} ${app.AppName}  [${app.Status}]  ApiKeyId ${app.ApiKeyId}  UsagePlan ${app.UsagePlanId || "-"}`);
+    console.log(
+      lim
+        ? `     ${describeLimits({ ...lim, docsPerDay: app.MaxDocsPerDay })}`
+        : `     (usage plan no legible) docs/día ${app.MaxDocsPerDay ?? "sin tope"}`
+    );
+    if (lim?.legacy) console.log("     plan antiguo: GET y escrituras comparten el mismo throttle");
+
+    // get-usage: items[keyId] = [[usadas, restantes], ...], un par por día desde startDate.
+    const requestsByDay = {};
+    if (app.UsagePlanId) {
+      const out = run(
+        `apigateway get-usage --usage-plan-id ${app.UsagePlanId} --key-id ${app.ApiKeyId} ` +
+          `--start-date ${startDay} --end-date ${endDay} --output json`,
+        region,
+        { silent: true }
+      );
+      const series = out ? JSON.parse(out).items?.[app.ApiKeyId] || [] : [];
+      series.forEach(([used, remaining], i) => {
+        if (dayList[i]) requestsByDay[dayList[i]] = { used, remaining };
+      });
+    }
+
+    const docsByDay = {};
+    const docsOut = cliJson(
+      "dynamodb query",
+      {
+        TableName: usageTable,
+        KeyConditionExpression: "ApiKeyId = :k AND #d BETWEEN :a AND :b",
+        ExpressionAttributeNames: { "#d": "Day" },
+        ExpressionAttributeValues: { ":k": { S: app.ApiKeyId }, ":a": { S: startDay }, ":b": { S: endDay } },
+      },
+      region,
+      { silent: true }
+    );
+    if (docsOut) {
+      for (const item of JSON.parse(docsOut).Items || []) {
+        const it = unmarshal(item);
+        docsByDay[it.Day] = it.Docs;
+      }
+    } else {
+      usageTableMissing = true;
+    }
+
+    console.log("     Día (UTC)    Requests usadas/restantes   Docs usados/tope");
+    for (const day of dayList) {
+      const r = requestsByDay[day];
+      // get-usage omite por completo las keys sin ninguna request en el rango.
+      const reqCol = r ? `${r.used} / ${r.remaining}` : lim?.quotaPerDay != null ? `0 / ${lim.quotaPerDay}` : "-";
+      const docs = docsByDay[day];
+      const docsCol = `${docs ?? 0} / ${app.MaxDocsPerDay ?? "sin tope"}`;
+      console.log(`     ${day}   ${reqCol.padEnd(26)}  ${docsOut ? docsCol : "-"}`);
+    }
+    console.log("");
+  }
+  if (usageTableMissing) {
+    console.log(`⚠️  No pude leer ${usageTable} (¿stack sin desplegar todavía?) — la columna de documentos queda en "-".`);
+  }
+}
+
 function printHelp() {
   console.log(`
 Uso: pnpm apps:<comando> -- [opciones]
 
 Comandos (todos interactivos en una terminal real si falta algo — siempre
 piden confirmación S/n antes de tocar AWS, salvo --yes o sin TTY):
-  register     --name X [--rate-limit 20] [--burst-limit 40] [--quota-per-day 5000] [--force]
+  register     --name X [LÍMITES] [--force]
                [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search] [--allow-metadata-write]
-  rotate       --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]
-  reconfigure  --name X [--rate-limit N] [--burst-limit N] [--quota-per-day N]
+  rotate       --name X [LÍMITES]                (sin flags conserva los límites de la key vieja)
+  reconfigure  --name X [LÍMITES]
                [--access-scope own|all] [--allowed-doctypes A,B|none]
                [--allow-field-search] [--disallow-field-search]
                [--allow-metadata-write] [--disallow-metadata-write]
@@ -1108,9 +1425,17 @@ piden confirmación S/n antes de tocar AWS, salvo --yes o sin TTY):
   enable       --name X                          (reactiva una app deshabilitada)
   revoke       --name X [--delete]                (= disable, + borra recursos AWS con --delete)
   adopt        --name X --api-key-id <ApiKeyId>
-  list
+  list                                           (lo registrado en DynamoDB)
+  usage        [--name X] [--days 7] [--all]     (límites REALES del usage plan + consumo por día; solo lectura)
 
-Opciones comunes: --env dev|prod (default dev), --stack <NOMBRE>, --table <NOMBRE>, --region, --yes
+LÍMITES (register usa por default 20/40 escritura, 4× lectura, cuota 5000, sin tope de docs):
+  --rate-limit N --burst-limit N             throttle de escritura (POST /documents, /upload, reprocess, PATCH metadata)
+  --read-rate-limit N --read-burst-limit N   throttle de los GET (recomendado 4× escritura)
+  --docs-per-day N|none                      documentos/día que cuenta la Lambda (429 DAILY_DOCUMENT_LIMIT)
+  --quota-per-day N                          techo de requests/día de API Gateway (cuenta TODO, incluido el polling)
+
+Opciones comunes: --env dev|prod (default dev), --stack <NOMBRE>, --table <NOMBRE>,
+                  --usage-table <NOMBRE>, --region, --yes
 `);
 }
 
@@ -1135,6 +1460,8 @@ async function main() {
       return await cmdEnable(args);
     case "list":
       return cmdList(args);
+    case "usage":
+      return cmdUsage(args);
     case "revoke":
       return await cmdRevoke(args);
     case "adopt":

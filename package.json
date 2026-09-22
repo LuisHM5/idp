@@ -65,6 +65,7 @@
     "apps:disable": "node scripts/manage-apps.mjs disable",
     "apps:enable": "node scripts/manage-apps.mjs enable",
     "apps:list": "node scripts/manage-apps.mjs list",
+    "apps:usage": "node scripts/manage-apps.mjs usage",
     "apps:revoke": "node scripts/manage-apps.mjs revoke",
     "apps:adopt": "node scripts/manage-apps.mjs adopt",
     "destroy": "npx cdk destroy",

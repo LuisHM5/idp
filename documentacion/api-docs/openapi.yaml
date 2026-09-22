@@ -104,7 +104,10 @@ info:
     | Respuesta | Qué significa REALMENTE | Arreglo |
     | --- | --- | --- |
     | `{"message":"Missing Authentication Token"}` | **No existe ninguna ruta con ese método + ese path.** Pese al nombre, **nunca** es un problema de API key | Revisa la URL: ¿pusiste `/prod` con el dominio propio? ¿el método es el correcto? ¿hay un typo en `/documents`? |
-    | `{"message":"Forbidden"}` | La ruta existe, pero falta la `x-api-key` o es inválida | Manda la key. En prod es obligatoria siempre |
+    | `{"message":"Forbidden"}` | La ruta existe, pero falta la `x-api-key` o es inválida — o, en prod, el WAF bloqueó tu IP por exceso de requests (mismo cuerpo) | Manda la key. En prod es obligatoria siempre. Si una key que funcionaba empieza a dar `403` en ráfaga, baja el ritmo |
+    | `429 {"message":"Too Many Requests"}` | Throttle por segundo de tu key (los `GET` tienen uno más holgado que las escrituras) | Reintenta con backoff; en el polling, espera como un `202` |
+    | `429 {"message":"Limit Exceeded"}` | Agotaste el techo diario de requests de tu key (cuenta todo, incluido el polling) | No se arregla reintentando: se reinicia a la medianoche UTC |
+    | `429 DAILY_DOCUMENT_LIMIT` | Tu app ya usó su tope de documentos del día (solo cuentan `POST /documents` y reprocess) | Espera a `resetsAt` (`Retry-After`); los `GET` siguen funcionando |
     | `403 AccessDenied` con `<HeadersNotSigned>` (XML) | En el `PUT` del paso 2 mandaste cabeceras `x-amz-*` | Quítalas: esa metadata ya viaja dentro de la URL |
     | `403 SignatureDoesNotMatch` (XML) | La `uploadUrl` se alteró, o ya expiró | Repite el paso 1; las URLs no se renuevan |
     | `400 INLINE_UPLOAD_REMOVED` | Mandaste el archivo en `contentBase64` | El modo inline ya no existe: usa los dos pasos |
@@ -352,6 +355,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
 
   /documents/{id}/reprocess:
     post:
@@ -427,6 +431,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequestsDocuments" }
 
   /documents/{id}/metadata:
     patch:
@@ -491,6 +496,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
 
   /documents/{id}/file:
     get:
@@ -523,6 +529,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
 
   /documents:
     post:
@@ -699,6 +706,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequestsDocuments" }
 
     get:
       operationId: searchDocuments
@@ -922,6 +930,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
 
   /document-types:
     get:
@@ -958,6 +967,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DocumentTypesPage" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
 
   /document-types/{type}:
     get:
@@ -994,6 +1004,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
 
 components:
   securitySchemes:
@@ -1024,6 +1035,38 @@ components:
 
         **No la mandes en el `PUT` a S3** del paso 2: ese va firmado en la URL
         y no pasa por API Gateway.
+  responses:
+    TooManyRequests:
+      description: >
+        Límite de la API key alcanzado (ver "Límites y 429" arriba). Dos
+        cuerpos posibles, ambos de API Gateway (sin `error` ni `Retry-After`):
+        `{"message":"Too Many Requests"}` = throttle por segundo, reintenta con
+        backoff (en el polling, espera como un `202`); `{"message":"Limit
+        Exceeded"}` = techo diario de requests agotado, se reinicia a la
+        medianoche UTC. Los `GET` tienen un throttle más holgado que las
+        escrituras.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiGatewayMessage" }
+    TooManyRequestsDocuments:
+      description: >
+        Igual que en el resto de las rutas (`Too Many Requests` / `Limit
+        Exceeded`, de API Gateway), más un tercer caso propio de las rutas que
+        crean un proceso: `DAILY_DOCUMENT_LIMIT`, la app ya usó su tope de
+        documentos del día (subidas y reprocesos que pasaron validación). Trae
+        `Retry-After` hasta `resetsAt` (medianoche UTC); los `GET` siguen
+        funcionando.
+      headers:
+        Retry-After:
+          description: Solo en DAILY_DOCUMENT_LIMIT — segundos hasta `resetsAt`.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: "#/components/schemas/DailyDocumentLimitResponse"
+              - $ref: "#/components/schemas/ApiGatewayMessage"
+
   parameters:
     DocumentIdPath:
       name: id
@@ -1032,6 +1075,30 @@ components:
       description: Id completo del documento o un prefijo (gana el primer match).
       schema: { type: string }
   schemas:
+    ApiGatewayMessage:
+      type: object
+      description: >
+        Cuerpo de los errores que genera API Gateway por su cuenta (key
+        inválida, WAF, throttle, cuota): no traen `error`, solo `message`.
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: Too Many Requests
+    DailyDocumentLimitResponse:
+      type: object
+      required: [error, message, limit, resetsAt, retryAfterSeconds]
+      properties:
+        error: { type: string, enum: [DAILY_DOCUMENT_LIMIT] }
+        message: { type: string }
+        limit:
+          type: integer
+          description: Documentos por día permitidos a esta app.
+        resetsAt:
+          type: string
+          format: date-time
+          description: Próxima medianoche UTC, cuando el contador vuelve a cero.
+        retryAfterSeconds: { type: integer }
     ErrorResponse:
       type: object
       required: [error, message]
@@ -1044,7 +1111,7 @@ components:
             DOCUMENT_TYPE_REQUIRED, INVALID_DOCUMENT_TYPE,
             INVALID_OCCURRENCE_MODE, INVALID_JSON, INVALID_METADATA,
             INLINE_UPLOAD_REMOVED, PRESIGN_FAILED,
-            JOB_REGISTRATION_FAILED.
+            JOB_REGISTRATION_FAILED, DAILY_DOCUMENT_LIMIT.
             Consulta/escritura: NOT_FOUND, MISSING_PARAMS, INVALID_PARAMS,
             FORBIDDEN, FORBIDDEN_DOCUMENT_TYPE, EMPTY_PATCH,
             METADATA_CONFLICT, SOURCE_NOT_READY, FILE_NOT_FOUND,

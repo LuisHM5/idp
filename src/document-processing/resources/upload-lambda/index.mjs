@@ -23,7 +23,8 @@
 import { randomUUID } from "node:crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { consumeDailyDocument, dailyLimitResponse } from "./daily-doc-cap.mjs";
 import {
   parseBody,
   normalizeMetadata,
@@ -37,6 +38,7 @@ const s3 = new S3Client({});
 const ddb = new DynamoDBClient({});
 const BUCKET = process.env.DOCUMENT_BUCKET;
 const APPS_TABLE = process.env.APPS_TABLE;
+const APP_USAGE_TABLE = process.env.APP_USAGE_TABLE;
 const DOCUMENT_TABLE = process.env.DOCUMENT_TABLE;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
 // Extensions with no vision-based auto-classification at all: the enrichment
@@ -139,14 +141,15 @@ function validateCommon(fileName, documentType, occurrenceMode) {
  * Resolve the x-api-key used for this request (API Gateway hands its
  * ApiKeyId back on `event.requestContext.identity.apiKeyId` whenever the
  * method has `apiKeyRequired: true`) to the human-readable app name recorded
- * by `pnpm apps:register` (scripts/manage-apps.mjs). Fails open — a lookup
- * problem must never block an upload — and distinguishes "no key on this
- * request" (null, e.g. dev with the key requirement off) from "a valid key
- * API Gateway accepted, but nobody registered it here" ("unregistered", e.g.
- * the legacy idp-default key before `pnpm apps:adopt`).
+ * by `pnpm apps:register` (scripts/manage-apps.mjs), plus the app's
+ * documents-per-day cap (`MaxDocsPerDay`, null = no cap). Fails open — a
+ * lookup problem must never block an upload — and distinguishes "no key on
+ * this request" (appOrigin null, e.g. dev with the key requirement off) from
+ * "a valid key API Gateway accepted, but nobody registered it here"
+ * ("unregistered", e.g. the legacy idp-default key before `pnpm apps:adopt`).
  */
-async function resolveAppOrigin(apiKeyId) {
-  if (!apiKeyId || !APPS_TABLE) return null;
+async function resolveApp(apiKeyId) {
+  if (!apiKeyId || !APPS_TABLE) return { appOrigin: null, maxDocsPerDay: null };
   try {
     const { Item } = await ddb.send(
       new GetItemCommand({
@@ -154,10 +157,13 @@ async function resolveAppOrigin(apiKeyId) {
         Key: { ApiKeyId: { S: apiKeyId } },
       })
     );
-    return Item?.AppName?.S || "unregistered";
+    return {
+      appOrigin: Item?.AppName?.S || "unregistered",
+      maxDocsPerDay: Item?.MaxDocsPerDay?.N ?? null,
+    };
   } catch (err) {
     console.error("Failed to resolve appOrigin:", err);
-    return "unregistered";
+    return { appOrigin: "unregistered", maxDocsPerDay: null };
   }
 }
 
@@ -206,9 +212,9 @@ export async function handler(event) {
   const key = rawKeyFor(manualTypes, documentId, fileName);
 
   // Which app made this request, resolved from its x-api-key (present only
-  // when the method requires one — see resolveAppOrigin above).
+  // when the method requires one — see resolveApp above).
   const apiKeyId = event.requestContext?.identity?.apiKeyId;
-  const appOrigin = await resolveAppOrigin(apiKeyId);
+  const { appOrigin, maxDocsPerDay } = await resolveApp(apiKeyId);
 
   // The caller's own `metadata` rides along as S3 object metadata, normalized
   // to what S3 can actually hold (see normalizeMetadata) — that is also what
@@ -251,6 +257,19 @@ export async function handler(event) {
         "for every file size."
     );
   }
+
+  // Documents-per-day cap (daily-doc-cap.mjs): counted only here and in
+  // reprocess, after every validation above so a rejected request never
+  // spends the budget. Status polling (GET) never reaches this.
+  const cap = await consumeDailyDocument({
+    update: (params) => ddb.send(new UpdateItemCommand(params)),
+    table: APP_USAGE_TABLE,
+    apiKeyId,
+    appName: appOrigin,
+    maxDocsPerDay,
+  });
+  if (!cap.allowed) return dailyLimitResponse(cap);
+
   return handlePresigned(
     documentId, key, manualTypes, objectMetadata, appOrigin, typeCounts, occurrenceMode
   );

@@ -28,6 +28,21 @@ import {
  */
 export const DOCUMENT_TYPE_INDEX = "DocumentTypeIndex";
 
+/**
+ * Every GET route of the REST API, as dev-stage method-setting keys
+ * (`/<resource-path>/<METHOD>`): each gets its own looser throttle bucket than
+ * the stage-wide default that guards the write methods. A unit test
+ * (tests/unit/node/app-limits.test.mjs) fails if a GET route is added below
+ * without being listed here.
+ */
+export const DEV_READ_METHOD_PATHS = [
+  "/documents/GET",
+  "/documents/{id}/GET",
+  "/documents/{id}/file/GET",
+  "/document-types/GET",
+  "/document-types/{type}/GET",
+];
+
 export interface DocumentValidationStackProps extends cdk.StackProps {
   /**
    * Enable DynamoDB-backed catalog for runtime hot-reload of document types.
@@ -82,16 +97,34 @@ export interface DocumentValidationStackProps extends cdk.StackProps {
   certArn?: string;
 
   /**
-   * Per-IP request cap (WAF rate-based rule, requests per 5 min). Prod only.
+   * Per-IP cap on NON-GET requests (WAF rate-based rule, requests per 5 min). Prod only.
    * @default 2000
    */
   wafRateLimit?: number;
 
   /**
-   * Usage plan throttle (steady-state requests/second) and daily quota. Prod only.
-   * @default { rateLimit: 20, burstLimit: 40, quotaPerDay: 5000 }
+   * Per-IP cap on GET requests (status polling, /file, search), requests per
+   * 5 min. Separate from `wafRateLimit` so an integration polling many
+   * documents from one IP is not blocked by the write-oriented rule. Prod only.
+   * @default 10000
    */
-  apiThrottle?: { rateLimit?: number; burstLimit?: number; quotaPerDay?: number };
+  wafReadRateLimit?: number;
+
+  /**
+   * Throttle and daily quota of the CDK-managed `idp-default` usage plan. Prod
+   * only. `rateLimit`/`burstLimit` apply to write methods (per-method override,
+   * see WRITE_METHOD_KEYS); `readRateLimit`/`readBurstLimit` to every GET (the
+   * plan-level throttle); `quotaPerDay` counts every request. Per-app plans are
+   * managed by scripts/manage-apps.mjs, not by this prop.
+   * @default { rateLimit: 20, burstLimit: 40, readRateLimit: 80, readBurstLimit: 160, quotaPerDay: 5000 }
+   */
+  apiThrottle?: {
+    rateLimit?: number;
+    burstLimit?: number;
+    readRateLimit?: number;
+    readBurstLimit?: number;
+    quotaPerDay?: number;
+  };
 
   /**
    * In dev, require `x-api-key` on every method just like prod. Per-app keys
@@ -657,6 +690,29 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Documents-per-day counter per app (daily-doc-cap.mjs in upload-lambda
+    // and query-lambda): one row per (ApiKeyId, UTC day), bumped by a single
+    // conditional UpdateItem on POST /documents, /upload and reprocess only —
+    // GETs never touch it, which is the point: API Gateway's usage-plan quota
+    // counts every request (status polling included) and cannot exclude a
+    // method. The limit itself is `MaxDocsPerDay` on the Apps row. Rows exist
+    // only for `pnpm apps:usage`, so they expire (TTL) after 90 days, and the
+    // table is DESTROY like appsTable: operational, tied to this stack's keys.
+    const appUsageTable = new dynamodb.Table(this, "AppUsageTable", {
+      tableName: `document-validation-app-usage${envSuffix}`,
+      partitionKey: { name: "ApiKeyId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "Day", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ExpiresAt",
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      ...(encryptionKey
+        ? {
+            encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryptionKey,
+          }
+        : { encryption: dynamodb.TableEncryption.DEFAULT }),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // The SQS consumer (patched via patches/default-sqs-consumer-index.py)
     // reads the uploaded object's `app-origin` S3 metadata so appOrigin
     // reaches every document regardless of which pipeline branch handles it
@@ -770,11 +826,14 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       environment: {
         DOCUMENT_BUCKET: documentBucket.bucketName,
         APPS_TABLE: appsTable.tableName,
+        APP_USAGE_TABLE: appUsageTable.tableName,
         DOCUMENT_TABLE: documentTable.tableName,
       },
     });
     documentBucket.grantPut(uploadFn);
     appsTable.grantReadData(uploadFn);
+    // grantWriteData (not grant("UpdateItem")) so prod also gets the table CMK permissions.
+    appUsageTable.grantWriteData(uploadFn);
     documentTable.grant(uploadFn, "dynamodb:PutItem");
 
     // Query Lambda - read/search documents, patch caller-owned metadata and
@@ -825,6 +884,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // valid key being able to read any app's documents.
     queryFn.addEnvironment("APPS_TABLE", appsTable.tableName);
     appsTable.grantReadData(queryFn);
+    // Reprocess spends the same documents-per-day budget as an upload.
+    queryFn.addEnvironment("APP_USAGE_TABLE", appUsageTable.tableName);
+    appUsageTable.grantWriteData(queryFn);
 
     // API Gateway for document upload
     const api = new apigateway.RestApi(this, "DocumentUploadApi", {
@@ -835,17 +897,26 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
       },
-      // Dev has no API key / WAF (open on purpose, for easy testing — see
-      // methodOptions below), so without a stage-wide default it has no rate
-      // limit at all: a bug or accidental script loop could fire uploads as
-      // fast as the client can send them, each one billing Textract+Bedrock.
-      // This is a blunt, key-independent cap — every caller shares it, unlike
-      // prod's per-API-key usage plan below. Prod already has WAF + a usage
-      // plan, so this only applies to dev.
+      // Dev has no WAF (and keys are optional, see methodOptions below), so
+      // without a stage-wide default it has no rate limit at all: a bug or
+      // accidental script loop could fire uploads as fast as the client can
+      // send them, each one billing Textract+Bedrock. This is a blunt,
+      // key-independent cap — every caller shares it, on top of each app's own
+      // usage plan when keys are required. The default (10/20) guards the
+      // write methods; every GET gets its own, 4× looser bucket (per-method
+      // stage settings are separate buckets), so status polling from several
+      // apps doesn't starve on the cap meant for uploads. Prod already has
+      // WAF + per-app usage plans, so this only applies to dev.
       ...(!isProd && {
         deployOptions: {
           throttlingRateLimit: 10,
           throttlingBurstLimit: 20,
+          methodOptions: Object.fromEntries(
+            DEV_READ_METHOD_PATHS.map((methodPath) => [
+              methodPath,
+              { throttlingRateLimit: 40, throttlingBurstLimit: 80 },
+            ])
+          ),
         },
       }),
     });
@@ -867,14 +938,24 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // PATCH /documents/{id}/metadata              → merge external metadata (not validation status)
     const uploadIntegration = new apigateway.LambdaIntegration(uploadFn);
     const queryIntegration = new apigateway.LambdaIntegration(queryFn);
+    // Every non-GET method is collected in `writeMethods`: the prod usage plan
+    // gives them the (stricter) write throttle as a per-method override, the
+    // same split scripts/manage-apps.mjs applies to per-app plans
+    // (WRITE_METHODS in scripts/_app-limits.mjs — a unit test keeps that list
+    // and these routes in sync).
+    const writeMethods: apigateway.Method[] = [];
     const documentsResource = api.root.addResource("documents");
-    documentsResource.addMethod("POST", uploadIntegration, methodOptions);
+    writeMethods.push(documentsResource.addMethod("POST", uploadIntegration, methodOptions));
     documentsResource.addMethod("GET", queryIntegration, methodOptions);
     const documentByIdResource = documentsResource.addResource("{id}");
     documentByIdResource.addMethod("GET", queryIntegration, methodOptions);
     documentByIdResource.addResource("file").addMethod("GET", queryIntegration, methodOptions);
-    documentByIdResource.addResource("reprocess").addMethod("POST", queryIntegration, methodOptions);
-    documentByIdResource.addResource("metadata").addMethod("PATCH", queryIntegration, methodOptions);
+    writeMethods.push(
+      documentByIdResource.addResource("reprocess").addMethod("POST", queryIntegration, methodOptions)
+    );
+    writeMethods.push(
+      documentByIdResource.addResource("metadata").addMethod("PATCH", queryIntegration, methodOptions)
+    );
 
     // GET /document-types                 → catálogo de tipos, paginado (5/página)
     // GET /document-types/{type}           → un tipo por su TYPE_ID exacto
@@ -891,23 +972,35 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // funcionando. El nombre dejó de ser cierto cuando el endpoint dejó de
     // recibir el archivo. Misma Lambda, misma respuesta. Retirarlo es borrar
     // estas dos líneas — cambio incompatible, avisar antes.
-    api.root.addResource("upload").addMethod("POST", uploadIntegration, methodOptions);
+    writeMethods.push(api.root.addResource("upload").addMethod("POST", uploadIntegration, methodOptions));
 
     // ---- Prod hardening: API keys + usage plan, WAF, custom domain ----------
     if (isProd) {
-      const throttle = {
+      const writeThrottle = {
         rateLimit: props?.apiThrottle?.rateLimit ?? 20,
         burstLimit: props?.apiThrottle?.burstLimit ?? 40,
       };
+      const readThrottle = {
+        rateLimit: props?.apiThrottle?.readRateLimit ?? 80,
+        burstLimit: props?.apiThrottle?.readBurstLimit ?? 160,
+      };
       const quotaPerDay = props?.apiThrottle?.quotaPerDay ?? 5000;
 
-      // Usage plan enforces rate/burst + a daily quota per key.
+      // Usage plan: the plan-level throttle is the READ one (every GET) and
+      // each write method gets the stricter one as a per-method override —
+      // lowering a method below the plan always works, whereas AWS does not
+      // document whether an override may exceed it. The daily quota counts
+      // every request; the documents-per-day budget lives in the Lambdas
+      // (daily-doc-cap.mjs), see appUsageTable above.
       const usagePlan = api.addUsagePlan("DefaultUsagePlan", {
         name: "idp-default",
-        throttle,
+        throttle: readThrottle,
         quota: { limit: quotaPerDay, period: apigateway.Period.DAY },
       });
-      usagePlan.addApiStage({ stage: api.deploymentStage });
+      usagePlan.addApiStage({
+        stage: api.deploymentStage,
+        throttle: writeMethods.map((method) => ({ method, throttle: writeThrottle })),
+      });
 
       // One key to start; add more (one per consuming system) as needed.
       const apiKey = api.addApiKey("DefaultApiKey", { apiKeyName: "idp-default" });
@@ -919,7 +1012,18 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       });
 
       // WAF: rate-based anti-DDoS + AWS managed rule groups. Blocked requests
-      // (403) are dropped before the integration → no Lambda cost.
+      // (403) are dropped before the integration → no Lambda cost. Two
+      // per-IP rate rules: GETs (status polling can legitimately add up when
+      // one integration polls many documents from a single IP) get their own,
+      // looser budget instead of sharing the write-oriented one.
+      const getRequest: wafv2.CfnWebACL.StatementProperty = {
+        byteMatchStatement: {
+          fieldToMatch: { method: {} },
+          positionalConstraint: "EXACTLY",
+          searchString: "GET",
+          textTransformations: [{ priority: 0, type: "NONE" }],
+        },
+      };
       const webAcl = new wafv2.CfnWebACL(this, "ApiWebAcl", {
         defaultAction: { allow: {} },
         scope: "REGIONAL",
@@ -937,11 +1041,29 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
               rateBasedStatement: {
                 limit: props?.wafRateLimit ?? 2000,
                 aggregateKeyType: "IP",
+                scopeDownStatement: { notStatement: { statement: getRequest } },
               },
             },
             visibilityConfig: {
               cloudWatchMetricsEnabled: true,
               metricName: "idp-rate-limit",
+              sampledRequestsEnabled: true,
+            },
+          },
+          {
+            name: "RateLimitPerIpReads",
+            priority: 1,
+            action: { block: {} },
+            statement: {
+              rateBasedStatement: {
+                limit: props?.wafReadRateLimit ?? 10000,
+                aggregateKeyType: "IP",
+                scopeDownStatement: getRequest,
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: "idp-rate-limit-reads",
               sampledRequestsEnabled: true,
             },
           },
@@ -951,7 +1073,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
             "AWSManagedRulesAmazonIpReputationList",
           ].map((name, i) => ({
             name,
-            priority: i + 1,
+            priority: i + 2,
             overrideAction: { none: {} },
             statement: {
               managedRuleGroupStatement: { vendorName: "AWS", name },

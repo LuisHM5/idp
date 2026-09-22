@@ -152,6 +152,9 @@ En cuanto S3 recibe el archivo, el pipeline arranca solo
 El procesamiento **no es instantáneo**: tarda segundos, y un expediente grande
 más. Mientras corre, la consulta responde `202` con `processingStatus` y
 `Retry-After`. `404` significa que el id no existe o la app no puede verlo.
+Un `429 {"message":"Too Many Requests"}` es throttle y se espera igual que un
+`202`; `429 {"message":"Limit Exceeded"}` es el techo diario agotado y no se
+arregla reintentando (ver `API_USO.md` → "Límites y `429`").
 
 ```bash
 delay=5
@@ -159,7 +162,8 @@ while :; do
   code=$(curl -sS -o result.json -w '%{http_code}' \
     "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
   [ "$code" = 200 ] && break
-  [ "$code" = 202 ] || { cat result.json; exit 1; }
+  if [ "$code" = 429 ] && grep -q "Limit Exceeded" result.json; then cat result.json; exit 1; fi
+  [ "$code" = 202 ] || [ "$code" = 429 ] || { cat result.json; exit 1; }
   sleep $((delay + RANDOM % 3))
   delay=$((delay < 15 ? delay * 2 : 30))
 done

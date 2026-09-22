@@ -27,6 +27,15 @@ UPLOAD_URL="<UPLOAD_URL_DEVUELTA_POR_EL_POST>"
 7. GET  /documents?...       → buscar/listar      (opcional)
 ```
 
+**Límites (por API key):** los `GET` tienen un throttle más holgado que las
+escrituras y no cuentan como documentos. `429` en cualquier ruta:
+`{"message":"Too Many Requests"}` = throttle, reintenta con backoff (en el
+polling, espera como un `202`) · `{"message":"Limit Exceeded"}` = techo diario
+de requests agotado · `{"error":"DAILY_DOCUMENT_LIMIT"}` = tope de documentos
+del día (solo `POST /documents` y reprocess), con `Retry-After` hasta la
+medianoche UTC. En prod el WAF por IP responde `403`. Detalle: `API_USO.md` →
+"Límites y `429`".
+
 ---
 
 ## 1. `POST /documents`
@@ -112,7 +121,7 @@ mismo nivel que `fileName`, no dentro de `metadata`.
 | `documentTypeCounts` | decisiones explícitas del POST (`:N`/`:all`, o el modo materializado); los defaults de catálogo no aparecen aquí |
 | `classificationMode` | `manual` (un tipo, honrado) · `guided` (varios, se clasifica sólo entre ellos) · `auto` (ninguno) |
 
-`400` `MISSING_FIELD` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` `INVALID_DOCUMENT_TYPE` `INVALID_OCCURRENCE_MODE` `INVALID_JSON` `INVALID_METADATA` `INLINE_UPLOAD_REMOVED` · `500` `PRESIGN_FAILED` `JOB_REGISTRATION_FAILED`
+`400` `MISSING_FIELD` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` `INVALID_DOCUMENT_TYPE` `INVALID_OCCURRENCE_MODE` `INVALID_JSON` `INVALID_METADATA` `INLINE_UPLOAD_REMOVED` · `429` `DAILY_DOCUMENT_LIMIT` · `500` `PRESIGN_FAILED` `JOB_REGISTRATION_FAILED`
 
 ---
 
@@ -244,7 +253,7 @@ curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
 `400` `INVALID_JSON` `INVALID_BODY` `INVALID_DOCUMENT_TYPE`
 `INVALID_OCCURRENCE_MODE` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` ·
 `403` `FORBIDDEN` `FORBIDDEN_DOCUMENT_TYPE` · `404` `NOT_FOUND` `FILE_NOT_FOUND` ·
-`409` `SOURCE_NOT_READY` · `500` `JOB_REGISTRATION_FAILED`
+`409` `SOURCE_NOT_READY` · `429` `DAILY_DOCUMENT_LIMIT` · `500` `JOB_REGISTRATION_FAILED`
 `REPROCESS_COPY_FAILED`
 
 ---

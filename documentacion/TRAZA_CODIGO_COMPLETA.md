@@ -215,9 +215,10 @@ Ruta: `POST /documents` → `upload-lambda/index.mjs:handler` (`:141`).
    - varios: `raw/{A,B}/{uuid}/{fileName}` — **un solo segmento**, porque el
      consumidor de SQS ancla el `documentId` en `key_parts[-2]`;
    - automática: `raw/{uuid}/{fileName}`.
-6. `resolveAppOrigin(apiKeyId)` (`:122`) hace `GetItem` en `AppsTable`. El
-   lookup es best-effort: devuelve `null` sin llave y `unregistered` si una
-   llave válida no está registrada o la consulta falla.
+6. `resolveApp(apiKeyId)` hace `GetItem` en `AppsTable` y devuelve
+   `{appOrigin, maxDocsPerDay}`. El lookup es best-effort: `appOrigin` es
+   `null` sin llave y `unregistered` si una llave válida no está registrada o
+   la consulta falla (en ambos casos sin tope de documentos/día).
 7. Normaliza la `metadata` del request con `normalizeMetadata`
    (`body-parser.mjs`) a lo que S3 puede guardar —claves en minúsculas,
    valores escalares US-ASCII, 2 KB en total— y descarta ahí mismo las claves
@@ -1277,8 +1278,9 @@ Archivo: `src/document-processing/resources/upload-lambda/index.mjs`.
 | `validateCommon()` | `handler` | nombre y tipo(s) opcionales | valida presencia, extensión admitida, tipo obligatorio (y único) para XML/XLSX/CSV, y delega la lista de tipos a `parseDocumentTypes` | `{manualTypes, ext}` o respuesta de error → `handler` | `ALLOWED_EXTENSIONS`, `REQUIRES_DECLARED_TYPE`, `parseDocumentTypes` |
 | `parseDocumentTypes()` (`body-parser.mjs`) | `validateCommon` | `documentType` crudo | corta por comas, valida forma, dedupe con orden, topes 8/200 | `{types}` o `{error}` | regex, sin I/O |
 | `rawKeyFor()` (`body-parser.mjs`) | `handler` | tipos, id, nombre | une los tipos por coma en UN segmento de la llave | string de llave S3 | ninguna |
-| `resolveAppOrigin()` (`:122`) | `handler` | `apiKeyId` | consulta `AppsTable`; obtiene nombre humano | string para metadata S3 → `handler`; fallback best-effort | DynamoDB `GetItem` |
-| `handler()` (`:141`) | API Gateway | evento proxy | parsea body, valida, genera UUID/key, arma metadata y siempre responde con URL prefirmada (rechaza `contentBase64` con 400) | respuesta HTTP; delega a `handlePresigned` | `randomUUID`, `validateCommon`, `resolveAppOrigin` |
+| `resolveApp()` | `handler` | `apiKeyId` | consulta `AppsTable`; obtiene nombre humano y `MaxDocsPerDay` | `{appOrigin, maxDocsPerDay}` → `handler`; fallback best-effort | DynamoDB `GetItem` |
+| `consumeDailyDocument()` (`daily-doc-cap.mjs`) | `handler` (y `reprocessById` en query-lambda) | tabla, `apiKeyId`, app, tope | `UpdateItem` condicional `ADD Docs` por (key, día UTC); fail-open ante errores | `{allowed}` o 429 `DAILY_DOCUMENT_LIMIT` con `Retry-After` | DynamoDB `UpdateItem` en `AppUsageTable` |
+| `handler()` (`:141`) | API Gateway | evento proxy | parsea body, valida, genera UUID/key, arma metadata y siempre responde con URL prefirmada (rechaza `contentBase64` con 400) | respuesta HTTP; delega a `handlePresigned` | `randomUUID`, `validateCommon`, `resolveApp`, `consumeDailyDocument` |
 | `handlePresigned()` (`:203`) | `handler` | id, key, tipo y metadata | firma exactamente el futuro `PutObject` | `{documentId,key,uploadUrl,headers}` → cliente; después cliente → S3 raw | S3 presigner, `PutObjectCommand` |
 
 Flujo de datos exacto del módulo:
@@ -1288,9 +1290,10 @@ API body
   → handler
   → validateCommon → ext
   → randomUUID → documentId
-  → resolveAppOrigin → Metadata.app-origin
+  → resolveApp → Metadata.app-origin + MaxDocsPerDay
   ├─ contentBase64 presente → 400 INLINE_UPLOAD_REMOVED
-  └─ siempre                → handlePresigned → URL → cliente → PUT → S3 raw/...
+  ├─ tope de docs/día lleno → 429 DAILY_DOCUMENT_LIMIT (consumeDailyDocument)
+  └─ si no                  → handlePresigned → URL → cliente → PUT → S3 raw/...
 ```
 
 ### 27.5 Consumidor S3/SQS
