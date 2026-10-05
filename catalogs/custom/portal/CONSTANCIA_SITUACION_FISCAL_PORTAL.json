@@ -10,14 +10,14 @@
       "W-9",
       "W9"
     ],
-    "description": "Constancia con la que una empresa o persona acredita su identificación y situación fiscal ante la autoridad tributaria de SU país, tal como la sube al portal. Mexicana: la Constancia de Situación Fiscal del SAT, con los encabezados 'CONSTANCIA DE SITUACIÓN FISCAL' y 'CÉDULA DE IDENTIFICACIÓN FISCAL', el código QR, el RFC y las secciones 'Datos de Identificación del Contribuyente', 'Datos del domicilio registrado', 'Actividades Económicas', 'Regímenes' y 'Obligaciones'. Extranjera: el documento equivalente de cada país, por ejemplo el formulario W-9 'Request for Taxpayer Identification Number and Certification' del IRS de Estados Unidos (nombre, clasificación fiscal, domicilio, SSN o EIN, firma y fecha), un certificado de situación censal o una tarjeta de identificación fiscal de la Agencia Tributaria de España (NIF), una confirmación de Business Number o de cuenta GST/HST de la Canada Revenue Agency, un 'Certificate of Residency' de la Australian Taxation Office (ABN) o un extracto del registro mercantil de los Países Bajos (KVK, con RSIN). Lo que lo define es que identifica al contribuyente con su número de identificación fiscal, su nombre o razón social y su domicilio. No confundir con una factura o CFDI, una Opinión del Cumplimiento, una declaración de impuestos ni un acta constitutiva.",
+    "description": "Documento oficial con el que una empresa o persona acredita su identificación y situación fiscal en SU país, tal como lo sube al portal. Vale el de CUALQUIER país y en cualquier idioma: constancia o certificado fiscal, tarjeta o comprobante del número de identificación fiscal, certificado de residencia fiscal, confirmación de registro de una cuenta de impuestos o extracto de un registro mercantil oficial. Los formatos que siguen son ejemplos, no una lista cerrada: un documento de otro país o con otro formato se extrae igual, con los datos equivalentes que traiga. Mexicana: la Constancia de Situación Fiscal del SAT, con los encabezados 'CONSTANCIA DE SITUACIÓN FISCAL' y 'CÉDULA DE IDENTIFICACIÓN FISCAL', el código QR, el RFC y las secciones 'Datos de Identificación del Contribuyente', 'Datos del domicilio registrado', 'Actividades Económicas', 'Regímenes' y 'Obligaciones'. Extranjera: el documento equivalente de cada país, por ejemplo el formulario W-9 'Request for Taxpayer Identification Number and Certification' del IRS de Estados Unidos (nombre, clasificación fiscal, domicilio, SSN o EIN, firma y fecha), un certificado de situación censal o una tarjeta de identificación fiscal de la Agencia Tributaria de España (NIF), una confirmación de Business Number o de cuenta GST/HST de la Canada Revenue Agency, un 'Certificate of Residency' de la Australian Taxation Office (ABN) o un extracto del registro mercantil de los Países Bajos (KVK, con RSIN). Lo que lo define es que identifica al contribuyente con su número de identificación fiscal, su nombre o razón social y su domicilio. No confundir con una factura o CFDI, una Opinión del Cumplimiento, una declaración de impuestos ni un acta constitutiva.",
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "pipeline": "single_document",
     "segmentation_candidate": false,
     "min_confidence": 0.8,
-    "__COMENTARIO_proposito__": "Mapeo para el portal: los MISMOS campos, con los mismos nombres, que CONSTANCIA_SITUACION_FISCAL (catalogs/base/fiscal), más PAIS y la identificación fiscal neutral (ID_FISCAL, TIPO_ID_FISCAL, OTROS_IDENTIFICADORES), para que una sola carga acepte la constancia de un contribuyente mexicano o la de uno extranjero. Los nombres son los de la constancia mexicana porque es el contrato que el portal ya consume; en una constancia extranjera cada campo recibe el dato EQUIVALENTE y lo que ese documento no trae queda vacío, nunca inventado. CONSTANCIA_SITUACION_FISCAL manda sobre la parte mexicana: si allá cambia un hint o una regla del formato del SAT, replícalo aquí.",
+    "__COMENTARIO_proposito__": "Mapeo para el portal: los MISMOS campos, con los mismos nombres, que CONSTANCIA_SITUACION_FISCAL (catalogs/base/fiscal), más PAIS y la identificación fiscal neutral (ID_FISCAL, TIPO_ID_FISCAL, OTROS_IDENTIFICADORES), para que una sola carga acepte la constancia de un contribuyente mexicano o la de uno extranjero. Los nombres son los de la constancia mexicana porque es el contrato que el portal ya consume; en una constancia extranjera cada campo recibe el dato EQUIVALENTE y lo que ese documento no trae queda vacío, nunca inventado. CONSTANCIA_SITUACION_FISCAL manda sobre la parte mexicana: si allá cambia un hint o una regla del formato del SAT, replícalo aquí. La descripción dice expresamente que la lista de formatos NO es cerrada: medido con MiniMax M2.5 (el modelo del stack), una descripción que solo nombraba la constancia del SAT, el W-9 y el NIF hacía que un extracto del registro mercantil holandés se devolviera COMPLETAMENTE vacío — el modelo decidía que el documento no era del tipo y no extraía ni el nombre. Calibra este tipo con el modelo desplegado, no solo con el default de `pnpm procesar`.",
     "__COMENTARIO_id_fiscal__": "Quién es el contribuyente se lee SIEMPRE de ID_FISCAL, sea del país que sea. RFC es solo el RFC mexicano: en una constancia extranjera queda vacío, y si el modelo metiera ahí un identificador extranjero su regla de formato lo marca. En una mexicana ID_FISCAL no lo lee el modelo: se COPIA del RFC (`derived` con `value_from`), así que hereda el valor recuperado del QR del SAT y nunca puede contradecirlo; TIPO_ID_FISCAL se fija en 'RFC' por la misma vía. En una extranjera los dos los lee el modelo. Cuando el documento trae más de un identificador (ABN y TFN en Australia, RSIN y KVK en Países Bajos), ID_FISCAL lleva el tributario principal y los demás van en OTROS_IDENTIFICADORES, cada uno con su sigla. Esa lista se lee en una llamada aparte, que no sabe qué quedó en ID_FISCAL, y el modelo tiende a repetirlo (medido en 3 de 4 constancias extranjeras): `exclude_rows` quita de forma determinista las filas cuyo NUMERO ya está en ID_FISCAL, RFC, CURP o ID_CIF. ID_FISCAL y TIPO_ID_FISCAL se llaman igual en ESTADO_CUENTA_PORTAL y ACTA_CONSTITUTIVA_PORTAL (PROVEEDOR_ID_FISCAL en el contrato): el portal compara documentos campo contra campo. Ver catalogs/README.md -> 'Copiar el valor de otro campo (value_from)'.",
-    "__COMENTARIO_pais__": "PAIS es lo que decide qué reglas corren. Las reglas propias del formato del SAT (RFC obligatorio, QR del SAT obligatorio, estatus en el padrón, código postal de 5 dígitos, al menos una actividad y un régimen) llevan `when` sobre PAIS y solo aplican a una constancia mexicana; a una extranjera se le exige lo que cualquier constancia fiscal trae: identificador fiscal, nombre o razón social, domicilio, fecha y país. La condición acepta MEX, MX o MÉXICO a propósito: si el modelo escribiera el país fuera de la clave de 3 letras, la regla `regex` de PAIS lo marca, pero las reglas mexicanas siguen aplicando en vez de apagarse en silencio. Para agregar reglas propias de otro país (p. ej. el formato del EIN), declara la regla en el campo con su propio `when`: no hace falta tocar código. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
+    "__COMENTARIO_pais__": "PAIS es lo que decide qué reglas corren, y CADA PAÍS EXIGE SOLO SU PROPIO IDENTIFICADOR. Constancia mexicana: se exige el RFC con su formato (más lo propio del formato del SAT: QR obligatorio, estatus en el padrón, código postal de 5 dígitos, al menos una actividad y un régimen); ID_FISCAL NO se le exige — es una copia del RFC, y si faltara no reprueba nada. Constancia extranjera: se exige ID_FISCAL; RFC no se le exige y debe venir vacío. A cualquiera se le exige lo que toda constancia trae: nombre o razón social, domicilio, fecha y país. La condición mexicana acepta MEX, MX o MÉXICO a propósito: si el modelo escribiera el país fuera de la clave de 3 letras, la regla `regex` de PAIS lo marca, pero las reglas mexicanas siguen aplicando en vez de apagarse en silencio; la extranjera es su negación exacta. Para agregar reglas propias de otro país, declara la regla en el campo con su propio `when` (como el formato de 9 dígitos del EIN/SSN para USA, que entró tras medir un EIN leído con un dígito de más): no hace falta tocar código. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
     "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática por la misma razón que PEDIMENTO_ERP: una constancia mexicana es el MISMO papel físico que ya reconoce CONSTANCIA_SITUACION_FISCAL, así que un clasificador que lee texto no tiene con qué elegir entre los dos, y elegir mal cambia el contrato de salida. Se pide declarándolo: documentType=CONSTANCIA_SITUACION_FISCAL_PORTAL, que es justo lo que hace el portal: ya sabe que está cargando la constancia fiscal de una empresa. Quitar esta línea lo devuelve a la lista de candidatos.",
     "qr_recovery": {
       "confidence": 0.99,
@@ -84,7 +84,7 @@
       },
       "ID_FISCAL": {
         "type": "string",
-        "required": true,
+        "required": false,
         "hint": "Identificador fiscal PRINCIPAL del contribuyente: el número con el que la autoridad tributaria de su país lo identifica, tal como está impreso o escrito, conservando sus espacios y guiones. MÉXICO: el mismo RFC. ESTADOS UNIDOS (W-9): el número de la Parte I, 'Employer identification number' (EIN, formato NN-NNNNNNN) o 'Social security number' (SSN), el que esté lleno. ESPAÑA: el NIF ('Número de Identificación Fiscal'). CANADÁ: el Business Number de 9 dígitos o, si el documento da el número de cuenta de programa (por ejemplo 'GST/HST account is 12345 6789 RT0001'), ese número completo. AUSTRALIA: el ABN. PAÍSES BAJOS: el RSIN. En cualquier otro país, su número de identificación tributaria (Tax ID, TIN, VAT, CUIT, NIT...). Cuando el documento trae varios números, aquí va SOLO el tributario; si no trae ninguno tributario pero sí el número con el que un registro oficial identifica a la empresa, usar ése. NUNCA un número que identifica al documento y no al contribuyente ('Our reference', 'Nº Certificado', 'Nº de Remesa', código de verificación), ni un teléfono, código postal o número de cuenta. Leer cada dígito sin agregar ni quitar ninguno.",
         "derived": {
           "from": "RFC",
@@ -98,7 +98,25 @@
             }
           ]
         },
-        "validation": []
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "La constancia extranjera debe indicar el identificador fiscal del contribuyente",
+            "when": {
+              "field": "PAIS",
+              "matches": "^(?!\\s*(MEX|MX|M[EÉ]XICO)\\s*$)"
+            }
+          },
+          {
+            "rule_type": "regex",
+            "pattern": "^\\s*(\\d{2}\\s*-?\\s*\\d{7}|\\d{3}\\s*-?\\s*\\d{2}\\s*-?\\s*\\d{4})\\s*$",
+            "message": "El identificador fiscal de Estados Unidos debe tener 9 dígitos (EIN NN-NNNNNNN o SSN NNN-NN-NNNN)",
+            "when": {
+              "field": "PAIS",
+              "eq": "USA"
+            }
+          }
+        ]
       },
       "TIPO_ID_FISCAL": {
         "type": "string",
@@ -121,7 +139,7 @@
       "OTROS_IDENTIFICADORES": {
         "type": "array",
         "required": false,
-        "hint": "Identificadores oficiales SECUNDARIOS del mismo contribuyente, una fila por cada uno. El identificador tributario PRINCIPAL nunca va en esta lista, porque ya tiene su propio campo: el RFC (México), el EIN o SSN (Estados Unidos), el NIF (España), el Business Number o la cuenta GST/HST (Canadá), el ABN (Australia), el RSIN (Países Bajos), o el Tax ID/TIN/VAT del país que sea. Aquí van solo los DEMÁS números con los que una autoridad identifica a ese contribuyente: por ejemplo el TFN de un certificado australiano que también trae el ABN, o el número KVK/CCI de un extracto holandés que también trae el RSIN. Tampoco van aquí: la CURP ni el idCIF de una constancia mexicana (tienen su propio campo); los números que identifican al DOCUMENTO y no al contribuyente (referencia, folio, número de certificado o de remesa, código de verificación, cadena original); los números de un establecimiento o sucursal; ni los identificadores de otra persona o empresa (accionistas, administradores, la autoridad emisora). Si el documento solo trae el identificador principal, la lista queda vacía: es lo normal.",
+        "hint": "Identificadores oficiales SECUNDARIOS del mismo contribuyente, una fila por cada uno. El identificador tributario PRINCIPAL nunca va en esta lista, porque ya tiene su propio campo: el RFC (México), el EIN o SSN (Estados Unidos), el NIF (España), el Business Number o la cuenta GST/HST (Canadá), el ABN (Australia), el RSIN (Países Bajos), o el Tax ID/TIN/VAT del país que sea. Aquí van solo los DEMÁS números con los que una autoridad identifica a ese contribuyente: por ejemplo el TFN de un certificado australiano que también trae el ABN, o el número del registro mercantil de un extracto holandés ('CCI number', número KVK) que también trae el RSIN. Tampoco van aquí: la CURP ni el idCIF de una constancia mexicana (tienen su propio campo); los números que identifican al DOCUMENTO y no al contribuyente (referencia, folio, número de certificado o de remesa, código de verificación, cadena original); los números de un establecimiento o sucursal; ni los identificadores de otra persona o empresa (accionistas, administradores, la autoridad emisora). Si el documento solo trae el identificador principal, la lista queda vacía: es lo normal.",
         "exclude_rows": {
           "column": "NUMERO",
           "equal_to": [
@@ -257,7 +275,7 @@
       "LUGAR_EMISION": {
         "type": "string",
         "required": false,
-        "hint": "Lugar de emisión cuando el documento lo declara. MÉXICO: el de la línea 'Lugar y Fecha de Emisión' del encabezado; extraer solamente la localidad y entidad anteriores a la fecha, sin incluir la fecha ni el texto de la etiqueta. EXTRANJERA: solo si el documento imprime un lugar de expedición o firma; no usar el domicilio del contribuyente. Si no aparece, dejar null.",
+        "hint": "Lugar de emisión cuando el documento lo declara. MÉXICO: el de la línea 'Lugar y Fecha de Emisión' del encabezado; extraer solamente la localidad y entidad anteriores a la fecha, sin incluir la fecha ni el texto de la etiqueta. EXTRANJERA: solo si el documento dice expresamente DÓNDE se expidió o firmó (la mayoría no lo dice: null); no usar el domicilio del contribuyente ni poner solo el nombre del país. Si no aparece, dejar null.",
         "validation": []
       },
       "FECHA_EMISION": {
@@ -376,7 +394,7 @@
           "ENTIDAD_FEDERATIVA": {
             "type": "string",
             "required": false,
-            "hint": "MÉXICO: campo 'Nombre de la Entidad Federativa'. EXTRANJERA: el estado, provincia o región del domicilio tal como está escrito (por ejemplo 'CA' en un W-9, 'Ontario', 'Madrid').",
+            "hint": "MÉXICO: campo 'Nombre de la Entidad Federativa'. EXTRANJERA: el estado, provincia o región del domicilio tal como está escrito (por ejemplo 'CA' en un W-9, 'Ontario', 'Madrid'); null si el domicilio impreso no lo trae: NUNCA deducirlo de la ciudad o del código postal, ni poner el nombre del país.",
             "validation": []
           },
           "ENTRE_CALLE": {
@@ -396,7 +414,7 @@
       "ACTIVIDADES_ECONOMICAS": {
         "type": "array",
         "required": false,
-        "hint": "Actividades económicas del contribuyente. MÉXICO: tabla 'Actividades Económicas'; extraer una fila por cada actividad y conservar el orden impreso, continuando la misma tabla si abarca más de una página. EXTRANJERA: solo si el documento lista actividades (por ejemplo los epígrafes del IAE en un certificado censal español, o 'Activities' con su código SBI en un extracto holandés, sin repetir la misma actividad), una fila por actividad; un formulario como el W-9 no las trae y la lista queda vacía. No resumir varias actividades en una sola cadena ni inventar una a partir del giro o del nombre.",
+        "hint": "Actividades económicas del contribuyente. MÉXICO: tabla 'Actividades Económicas'; extraer una fila por cada actividad y conservar el orden impreso, continuando la misma tabla si abarca más de una página. EXTRANJERA: solo si el documento lista actividades (por ejemplo los epígrafes del IAE en un certificado censal español, o 'Activities' con su código SBI en un extracto holandés, una sola fila por actividad aunque el documento la imprima en más de un bloque), una fila por actividad; un formulario como el W-9 no las trae y la lista queda vacía. No resumir varias actividades en una sola cadena ni inventar una a partir del giro o del nombre.",
         "validation": [
           {
             "rule_type": "minimum_items",

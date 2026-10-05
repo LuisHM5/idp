@@ -257,10 +257,31 @@ def test_en_una_mexicana_el_id_fiscal_es_una_copia_del_rfc(leido):
     assert fallas(checks) == []
 
 
-def test_sin_rfc_legible_no_se_inventa_el_id_fiscal():
+def test_a_una_mexicana_solo_se_le_exige_el_rfc_nunca_el_id_fiscal():
+    """Cada país exige su propio identificador: sin RFC legible reprueba el
+    RFC, y el ID_FISCAL (que es su copia) ni se inventa ni cuenta como falla."""
     arbol, checks = procesar(mexicana(RFC=None))
     assert arbol["ID_FISCAL"]["value"] is None
-    assert fallas(checks) == ["ID_FISCAL", "RFC"]
+    assert arbol["ID_FISCAL"]["valid"] is True
+    assert fallas(checks) == ["RFC"]
+
+
+def test_a_una_extranjera_solo_se_le_exige_el_id_fiscal_nunca_el_rfc():
+    arbol, checks = procesar(w9(ID_FISCAL=None, TIPO_ID_FISCAL=None))
+    assert fallas(checks) == ["ID_FISCAL"]
+    assert arbol["RFC"]["valid"] is True
+
+
+@pytest.mark.parametrize("id_fiscal, valido", [
+    ("12-3456789", True), ("123456789", True), ("123-45-6789", True),
+    ("12-34567890", False),  # un dígito de más: medido en un W-9 real leído por MiniMax
+    ("12-345678", False),
+])
+def test_el_identificador_de_estados_unidos_tiene_nueve_digitos(id_fiscal, valido):
+    _, checks = procesar(w9(ID_FISCAL=id_fiscal))
+    assert fallas(checks) == ([] if valido else ["ID_FISCAL"])
+    _, checks = procesar(w9(PAIS="CAN", ID_FISCAL=id_fiscal))  # la regla es solo de USA
+    assert fallas(checks) == []
 
 
 # --- el QR del SAT decide el país -------------------------------------------

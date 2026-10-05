@@ -44,12 +44,21 @@ un archivo tiene la estructura mínima de una identificación y extraer sus dato
 fundamentales; no compite con tipos específicos ni afirma autenticidad.
 
 `CONSTANCIA_SITUACION_FISCAL_PORTAL` (`custom/portal/`, beta) entrega los mismos
-campos que `CONSTANCIA_SITUACION_FISCAL` más `PAIS`, y acepta tanto la
-constancia del SAT como la de un contribuyente extranjero (W-9 del IRS,
-certificado censal de la AEAT, Business Number de la CRA...). Las reglas
-propias del formato mexicano llevan `when` sobre `PAIS`, así que solo juzgan a
-una constancia mexicana — ver [`when`](#when-a-qué-documentos-aplica-la-regla).
-También declara `segmentation_candidate: false`: se usa enviando `documentType`.
+campos que `CONSTANCIA_SITUACION_FISCAL` más `PAIS` y la identificación fiscal
+neutral (`ID_FISCAL`, `TIPO_ID_FISCAL`, `OTROS_IDENTIFICADORES`), y acepta tanto
+la constancia del SAT como el documento equivalente de cualquier país (W-9 del
+IRS, tarjeta NIF de la AEAT, cuenta GST/HST de la CRA, certificado de la ATO,
+extracto del registro mercantil holandés...). **Cada país exige solo su propio
+identificador**: a una mexicana se le exige el `RFC` con su formato (y lo propio
+del SAT); a una extranjera, `ID_FISCAL`, y su `RFC` queda vacío. `ID_FISCAL` se
+puede leer siempre: en una mexicana es una copia del RFC
+([`value_from`](#copiar-el-valor-de-otro-campo-value_from-y-no-repetirlo-en-una-lista-exclude_rows)).
+Las reglas llevan [`when`](#when-a-qué-documentos-aplica-la-regla) sobre `PAIS`.
+`ESTADO_CUENTA_PORTAL`, `ACTA_CONSTITUTIVA_PORTAL` y `CONTRATO_SERVICIO_PORTAL`
+(`PROVEEDOR_ID_FISCAL`) siguen la misma convención: en ninguno un `RFC` carga un
+identificador extranjero. También declara `segmentation_candidate: false`: se
+usa enviando `documentType`. **Se calibra con el modelo desplegado** (MiniMax),
+no solo con el default de `pnpm procesar`: se comportan distinto.
 
 Los otros cinco tipos de `custom/portal/` (beta) cubren el resto del expediente
 de alta de un proveedor y siguen el mismo patrón: **un tipo por casilla de carga
@@ -242,7 +251,9 @@ como en el DSL viejo.
   deciden donde no hay tipo declarado: el DSL legacy. Un array de escalares
   usa su `item_type`.
 - **Objeto** (`type: "object"`) → sale como
-  `{valid, reason, fields: {SUBCAMPO: {...recursivo...}}}`. Su propio
+  `{valid, reason, fields: {SUBCAMPO: {...recursivo...}}}`. Un objeto
+  `required` cuyos subcampos están TODOS vacíos cuenta como faltante: el objeto
+  es lo que traen sus subcampos (antes pasaba como "presente" sin un solo dato). Su propio
   `validation` corre a nivel del objeto completo (ej. una suma que cruza dos
   subcampos — usa `"subfield": "TOTAL"` en la regla para apuntar a uno
   específico, ver `CUADRO_LIQUIDACION` en `PEDIMENTO_ADUANAL.json`).
@@ -1671,6 +1682,46 @@ que ya declaró, no algo que haya que pagarle a un modelo por adivinar.
   nombre, sin `source` = lo leyó el modelo. Si tampoco hubo lectura, sale el
   `default`. En un tipo XML/tabular no hay modelo: ahí el contenido se decide
   con casos `from` sobre campos ya extraídos y el campo sí es `computed`.
+
+#### Copiar el valor de otro campo (`value_from`) y no repetirlo en una lista (`exclude_rows`)
+
+Dos extensiones más, del mismo módulo y con la misma regla de fondo (nada de
+expresiones, solo valores que ya existen):
+
+```jsonc
+"ID_FISCAL": {
+  "type": "string", "hint": "El identificador fiscal en cualquier país...",
+  "derived": {
+    "from": "RFC",
+    "keep_extracted": true,
+    "cases": [
+      { "when": { "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$" }, "value_from": "RFC" }
+    ]
+  }
+},
+"OTROS_IDENTIFICADORES": {
+  "type": "array", "hint": "Los demás identificadores...",
+  "exclude_rows": { "column": "NUMERO", "equal_to": ["ID_FISCAL", "RFC", "CURP", "ID_CIF"] },
+  "item_fields": { "TIPO": { "type": "string" }, "NUMERO": { "type": "string" } }
+}
+```
+
+- **`value_from`** en un `case` copia el valor de ese campo en vez de emitir la
+  constante `value`. Es UN path leído tal cual, y la confianza se hereda **del
+  campo copiado**. Si ese campo está vacío el caso no decide: sigue el
+  siguiente, o `keep_extracted`, o el `default`. Como `derived` corre después
+  de la recuperación del QR, lo copiado es el valor ya recuperado: `ID_FISCAL`
+  nunca puede contradecir al `RFC` del SAT.
+- **`exclude_rows`** va en un campo `array` y quita las filas cuya `column`
+  repite el valor de alguno de los campos de `equal_to`, comparando sin
+  mayúsculas, espacios ni puntuación (`12345 6789 RT0001` = `123456789rt0001`).
+  Existe porque una lista se extrae en su propia llamada al modelo, que no sabe
+  qué quedó en los escalares: "todos menos el principal" no lo garantiza un
+  hint (medido: 3 de 4 constancias extranjeras repetían el identificador
+  principal en la lista). Corre al final, con los valores ya derivados; un
+  bloque mal escrito o un campo de referencia vacío no quita nada.
+
+Ejemplo real: `custom/portal/CONSTANCIA_SITUACION_FISCAL_PORTAL.json`.
 
 **¿Código o IA?** El criterio para decidir dónde va una regla:
 

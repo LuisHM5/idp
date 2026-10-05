@@ -170,3 +170,23 @@ def test_un_when_mal_escrito_se_reporta_como_regla_omitida(when, problema):
         (check,) = checks_de(checks, "FOLIO")
         assert check.skipped and check.severity == "warning"
         assert "invalid 'when'" in check.message and problema in check.message
+
+
+# --- un objeto obligatorio sin un solo dato no está "presente" ---------------
+
+
+def test_un_objeto_obligatorio_con_todos_sus_subcampos_vacios_cuenta_como_faltante():
+    """El extractor siempre arma el dict del objeto declarado, con cada
+    subcampo en None si el modelo no leyó nada: eso no es tener el dato."""
+    tipo = catalogo(())
+    tipo["fields"]["DOMICILIO"]["required"] = True
+    entry = _parse_entry("TIPO_PRUEBA", tipo)
+
+    def presencia(domicilio):
+        _, checks, _ = resolve_field_tree({"DOMICILIO": domicilio}, {}, entry, default_confidence=CONFIANZA)
+        return next(c for c in checks if c.field == "DOMICILIO" and c.rule == "presence").valid
+
+    assert presencia({"CP": None}) is False
+    assert presencia({"CP": "  "}) is False
+    assert presencia({}) is False
+    assert presencia({"CP": "25280"}) is True

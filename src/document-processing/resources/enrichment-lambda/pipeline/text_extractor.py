@@ -504,8 +504,77 @@ def _coerce_container(node: Any, expect: type) -> Any:
     try:
         parsed, _end = json.JSONDecoder().raw_decode(text)
     except (ValueError, TypeError):
-        return node
+        # One more recoverable shape, measured with MiniMax M2.5 on a scanned
+        # W-9: the object arrived as a string whose JSON was complete except
+        # for its LAST closing brace. Appending the closers it still owes adds
+        # no data; a string cut anywhere else is not touched.
+        closed = _close_unbalanced(text)
+        if closed is None:
+            return node
+        try:
+            parsed, _end = json.JSONDecoder().raw_decode(closed)
+        except (ValueError, TypeError):
+            return node
     return parsed if isinstance(parsed, expect) else node
+
+
+def _close_unbalanced(text: str) -> Optional[str]:
+    """`text` plus the `}`/`]` it still owes, or None when that is not the
+    only thing wrong with it: a bracket closed out of order, a cut inside a
+    string, or nothing left open."""
+    owed: List[str] = []
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            owed.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not owed or owed.pop() != ch:
+                return None
+    if in_string or not owed:
+        return None
+    return text + "".join(reversed(owed))
+
+
+def _unwrap_container(node: Any, expect: type, own_keys: Any = ()) -> Any:
+    """An object/array the model wrapped in the SCALAR envelope, unwrapped.
+
+    The response format asks for `{"value": ..., "confidence": ...}` around
+    scalars only, with objects carrying their subfields directly. Some models
+    apply the envelope to containers too. Measured with MiniMax M2.5 on a real
+    Dutch business-register extract:
+
+        "DOMICILIO_FISCAL": {"value": {"CODIGO_POSTAL": {...}, ...}, "confidence": 1.0}
+
+    — the parser then looked for CODIGO_POSTAL next to `value`, found nothing,
+    and the whole address the model HAD read came back empty (while the object
+    itself still counted as present).
+
+    Only that exact shape is accepted: nothing but `value`/`confidence` at this
+    level, `value` holding the expected container, and `value` not being one of
+    the object's own subfield names (`own_keys`) — so a legitimate object is
+    never mistaken for an envelope. The envelope's own confidence is dropped:
+    the subfields carry theirs.
+    """
+    node = _coerce_container(node, expect)
+    if (
+        isinstance(node, dict)
+        and "value" in node
+        and "value" not in own_keys
+        and set(node) <= {"value", "confidence"}
+    ):
+        inner = _coerce_container(node["value"], expect)
+        if isinstance(inner, expect):
+            return inner
+    return node
 
 
 def _parse_field_tree_response(
@@ -537,13 +606,13 @@ def _parse_field_tree_response(
         node = raw.get(name)
         if spec.type == "object":
             sub_entity, sub_conf, sub_rows = _parse_field_tree_response(
-                _coerce_container(node, dict), spec.fields, seg_conf, path + ".", in_row
+                _unwrap_container(node, dict, spec.fields), spec.fields, seg_conf, path + ".", in_row
             )
             entity[name] = sub_entity
             confidences.update(sub_conf)
             row_confidences.update(sub_rows)
         elif spec.type == "array":
-            node = _coerce_container(node, list)
+            node = _unwrap_container(node, list)
             items = node if isinstance(node, list) else []
             if spec.item_fields:
                 rows = []

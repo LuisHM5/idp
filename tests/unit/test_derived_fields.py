@@ -498,3 +498,49 @@ def test_value_from_lee_un_path_anidado():
     }
     entities, _, _ = derivar(campos, {"DOMICILIO": {"CP": "25280"}})
     assert entities["CP_PLANO"] == "25280"
+
+
+# --- `exclude_rows`: una lista no repite lo que ya tiene campo propio --------
+
+OTROS = {
+    "ID": {"type": "string", "hint": "h"},
+    "CURP": {"type": "string", "hint": "h"},
+    "OTROS": {
+        "type": "array", "hint": "h",
+        "exclude_rows": {"column": "NUMERO", "equal_to": ["ID", "CURP"]},
+        "item_fields": {"TIPO": {"type": "string", "hint": "h"}, "NUMERO": {"type": "string", "hint": "h"}},
+    },
+}
+
+
+def test_exclude_rows_quita_las_filas_que_repiten_otro_campo():
+    filas = [
+        {"TIPO": "GST/HST", "NUMERO": "12345 6789 rt0001"},  # el mismo, escrito distinto
+        {"TIPO": "KVK", "NUMERO": "87654321"},
+        {"TIPO": "CURP", "NUMERO": "XAXX010101HDFXXX00"},
+    ]
+    entities, _, _ = derivar(OTROS, {"ID": "123456789RT0001", "CURP": "XAXX010101HDFXXX00", "OTROS": filas})
+    assert entities["OTROS"] == [{"TIPO": "KVK", "NUMERO": "87654321"}]
+
+
+def test_exclude_rows_compara_contra_el_valor_ya_derivado():
+    """Corre al final: el campo de referencia puede ser una copia (`value_from`)."""
+    campos = {**COPIA, "OTROS": {**OTROS["OTROS"], "exclude_rows": {"column": "NUMERO", "equal_to": ["ID_FISCAL"]}}}
+    entities, _, _ = derivar(campos, {"RFC": "XAXX010101AB1", "OTROS": [{"TIPO": "RFC", "NUMERO": "XAXX010101AB1"}]})
+    assert entities["OTROS"] == []
+
+
+def test_exclude_rows_no_quita_nada_sin_valor_de_referencia_ni_celdas_vacias():
+    filas = [{"TIPO": "KVK", "NUMERO": None}, {"TIPO": "TFN", "NUMERO": "123"}]
+    entities, _, _ = derivar(OTROS, {"OTROS": list(filas)})
+    assert entities["OTROS"] == filas
+    entities, _, _ = derivar(OTROS, {"ID": "999", "OTROS": list(filas)})
+    assert entities["OTROS"] == filas
+
+
+def test_un_exclude_rows_mal_escrito_no_toca_la_lista():
+    filas = [{"TIPO": "KVK", "NUMERO": "1"}]
+    for bloque in ({"equal_to": ["ID"]}, {"column": "NUMERO"}, "ID"):
+        campos = {**OTROS, "OTROS": {**OTROS["OTROS"], "exclude_rows": bloque}}
+        entities, _, _ = derivar(campos, {"ID": "1", "OTROS": list(filas)})
+        assert entities["OTROS"] == filas

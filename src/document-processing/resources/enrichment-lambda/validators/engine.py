@@ -101,8 +101,15 @@ def _is_empty(value: Any) -> bool:
         return True
     if isinstance(value, str):
         return not value.strip()
-    if isinstance(value, (list, dict)):
+    if isinstance(value, list):
         return len(value) == 0
+    if isinstance(value, dict):
+        # An object is what its subfields hold. The extractor always builds
+        # the dict of a declared object, every subfield None when the model
+        # read nothing — so `len() == 0` called a `required` object "present"
+        # with not one value in it (measured: a tax certificate approved its
+        # obligatory address block while every line of it was blank).
+        return all(_is_empty(v) for v in value.values())
     return False
 
 
