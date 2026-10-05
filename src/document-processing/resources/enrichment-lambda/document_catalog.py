@@ -351,14 +351,33 @@ def _parse_field_spec(name: str, data: Dict[str, Any], common_item_fields: Dict[
 def _parse_field_tree(
     fields_data: Dict[str, Any], common_item_fields: Dict[str, Any]
 ) -> Dict[str, FieldSpec]:
-    """Parse a `fields` (or `item_fields`) block, expanding `$common` refs.
+    """Parse a `fields` (or `item_fields`) block, expanding `$common` and
+    `$presets` refs.
 
     `"$common": ["PAGINA", "ORDEN", ...]` pulls those subfield definitions
     from `_shared.json`'s `_common_item_fields` instead of repeating them —
     see catalogs/_TEMPLATE.json for the convention.
+
+    `"$presets": ["INTEGRIDAD_PDF", ...]` pulls WHOLE field sets from
+    `_shared.json`'s `_field_presets` (the authenticity/integrity computed
+    fields, with their rules and messages) so a type opts into a verification
+    with one line. Preset fields come first; a field the type declares itself
+    under the same name REPLACES the preset's — that is how a type hardens
+    one signal from `review` to `reject` without copying the rest.
     """
     result: Dict[str, FieldSpec] = {}
+    for preset_name in _as_name_list(fields_data.get("$presets")):
+        preset = _FIELD_PRESETS.get(preset_name)
+        if not isinstance(preset, dict):
+            logger.warning("unknown field preset '%s' (see _shared.json → _field_presets); ignored", preset_name)
+            continue
+        for name, raw in preset.items():
+            if name.startswith("__") or not isinstance(raw, dict):
+                continue
+            result[name] = _parse_field_spec(name, raw, common_item_fields)
     for name, raw in fields_data.items():
+        if name == "$presets":
+            continue
         if name == "$common":
             for common_name in raw:
                 common_raw = common_item_fields.get(common_name)
@@ -367,6 +386,14 @@ def _parse_field_tree(
             continue
         result[name] = _parse_field_spec(name, raw, common_item_fields)
     return result
+
+
+def _as_name_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
 
 
 # Value-normalization modes accepted by a unique key declaration. The
@@ -431,7 +458,7 @@ def _parse_unique_keys(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 add(_unique_key_spec(name, item))
 
     for name, field_data in (data.get("fields") or {}).items():
-        if name == "$common" or not isinstance(field_data, dict):
+        if name in ("$common", "$presets") or not isinstance(field_data, dict):
             continue
         if "unique_key" in field_data:
             add(_unique_key_spec(name, field_data["unique_key"]))
@@ -534,6 +561,10 @@ _CROSS_DOC_RULES: List[Dict[str, Any]] = []
 # DynamoDB hot-reload path (_load_from_dynamodb, which parses one item at a
 # time with no access to the bundled file) can resolve `$common` refs too.
 _COMMON_ITEM_FIELDS: Dict[str, Any] = {}
+# Same for `_field_presets` / `$presets`. Both live in the BUNDLED file: a
+# change to a preset needs `pnpm build` + deploy, while a type's own override
+# of a preset field is hot-reloadable like any other field.
+_FIELD_PRESETS: Dict[str, Any] = {}
 
 
 def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
@@ -559,6 +590,11 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
     if common_item_fields:
         _COMMON_ITEM_FIELDS.update(
             {k: v for k, v in common_item_fields.items() if not k.startswith("__")}
+        )
+    field_presets = data.get("_field_presets", {}) or {}
+    if field_presets:
+        _FIELD_PRESETS.update(
+            {k: v for k, v in field_presets.items() if not k.startswith("__") and isinstance(v, dict)}
         )
 
     catalog: Dict[str, TypeRegistryEntry] = {}
@@ -667,6 +703,7 @@ def reload_catalog() -> None:
     _CROSS_DOC_RULES.clear()
     _SCHEMA_VERSIONS.clear()
     _COMMON_ITEM_FIELDS.clear()
+    _FIELD_PRESETS.clear()
 
 
 def get_schema_info() -> Dict[str, Any]:

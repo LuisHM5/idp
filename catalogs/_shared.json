@@ -155,6 +155,357 @@
       "validation": []
     }
   },
+  "_field_presets": {
+    "__COMENTARIO__": "Conjuntos de campos `computed` que un tipo del DSL field-centric inyecta con `\"$presets\": [\"NOMBRE\", ...]` dentro de `fields` (mismo mecanismo que `$common`). Son las señales de la etapa de autenticidad/integridad (`authenticity_source`): la etapa corre SOLO las capas que los campos piden, así que INTEGRIDAD_* nunca rasteriza ni llama a un modelo. Un campo que el tipo redeclara con el mismo nombre gana sobre el del preset (así se sube una señal de review a reject por tipo). Cambiar un preset requiere `pnpm build` + deploy (viaja en el bundle); el override en el tipo es hot-reloadable con `pnpm sync:one`. Spec: catalogs/README.md -> 'Presets de campos'.",
+    "INTEGRIDAD_PDF": {
+      "__COMENTARIO__": "Integridad de un PDF: ¿fue tocado después de generarse? Todas las señales salen de los bytes del archivo (capa `integrity`, gratis, sin rasterizar ni modelo). Arrancan en on_fail=review; cada tipo sube a reject la que haya medido. `FIRMA_DIGITAL_INTACTA` y los campos que dependen de una imagen de página completa quedan VACÍOS cuando no aplican (sin firma digital, sin escaneo): vacío no es falso.",
+      "AUTENTICIDAD_EVALUADA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "evaluated",
+        "hint": "Verdadero cuando todas las capas de verificación que este tipo pide pudieron correr.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "on_fail": "review",
+            "message": "No se pudo completar la verificación de integridad del archivo; requiere revisión manual"
+          }
+        ]
+      },
+      "ARCHIVO_SIN_REGUARDADO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.single_generation",
+        "hint": "Verdadero cuando el archivo se escribió una sola vez. Falso cuando un editor lo guardó encima de sí mismo (actualizaciones incrementales) o después de firmarlo digitalmente.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El archivo fue guardado de nuevo después de generarse (actualizaciones incrementales de un editor de PDF); se requiere el archivo original"
+          }
+        ]
+      },
+      "FIRMA_DIGITAL_INTACTA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.signature_intact",
+        "hint": "Verdadero cuando la firma digital más reciente cubre el archivo completo. Vacío si el archivo no está firmado digitalmente.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El archivo fue modificado después de firmarse digitalmente: la firma ya no cubre todo el contenido"
+          }
+        ]
+      },
+      "FECHAS_METADATOS_CONSISTENTES": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.dates_consistent",
+        "hint": "Verdadero cuando las fechas de creación y modificación (Info y XMP) son coherentes entre sí. Vacío si el archivo no trae fechas.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Las fechas de creación/modificación del archivo no son consistentes entre sí: metadatos alterados o archivo reescrito"
+          }
+        ]
+      },
+      "SIN_EDITOR_EN_METADATOS": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.producer_consistent",
+        "hint": "Verdadero cuando ningún metadato del archivo (Producer, Creator, historial XMP) nombra un editor de PDF.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Los metadatos del archivo nombran un editor de PDF; se requiere el archivo tal como lo generó el sistema emisor"
+          }
+        ]
+      },
+      "SIN_ANOTACIONES": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_annotations",
+        "hint": "Verdadero cuando ninguna página tiene anotaciones (texto libre, sellos, tachaduras, formas) encima del contenido. Los vínculos no cuentan.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El PDF tiene anotaciones agregadas encima del contenido original"
+          }
+        ]
+      },
+      "SIN_CAMPOS_FORMULARIO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_form_fields",
+        "hint": "Verdadero cuando el PDF no tiene campos de formulario (AcroForm) editables.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El PDF tiene campos de formulario editables; el contenido puede haberse capturado después de generar el archivo"
+          }
+        ]
+      },
+      "SIN_TEXTO_SOBRE_ESCANEO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_text_overlay",
+        "hint": "Verdadero cuando no hay texto visible escrito encima de la imagen escaneada de la página. Vacío si la página no es un escaneo.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Hay texto escrito encima del escaneo: el documento fue editado después de digitalizarse"
+          }
+        ]
+      },
+      "SIN_IMAGEN_SOBRE_TEXTO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_image_over_text",
+        "hint": "Verdadero cuando ninguna imagen fue colocada encima del texto original de la página (parche). Vacío si la página no tiene texto nativo.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Hay una imagen colocada encima del texto original: posible parche sobre un dato del documento"
+          }
+        ]
+      },
+      "SIN_CONTENIDO_ACTIVO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_active_content",
+        "hint": "Verdadero cuando el PDF no trae JavaScript, acciones automáticas ni archivos adjuntos no permitidos.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El PDF contiene contenido activo o adjuntos; no es un documento estático"
+          }
+        ]
+      },
+      "EDITOR_DETECTADO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.editor",
+        "hint": "Nombre del editor de PDF o de imágenes encontrado en los metadatos. Solo evidencia.",
+        "validation": []
+      },
+      "VEREDICTO_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "verdict",
+        "hint": "AUTENTICO, SOSPECHOSO, NO_AUTENTICO o NO_EVALUADO.",
+        "validation": []
+      },
+      "MOTIVOS_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "reasons",
+        "hint": "Códigos de los hallazgos de autenticidad e integridad, separados por coma.",
+        "validation": []
+      }
+    },
+    "INTEGRIDAD_IMAGEN": {
+      "__COMENTARIO__": "Integridad de una foto o imagen suelta (JPG/PNG): software de edición en EXIF/APP13/PNG/XMP, fechas EXIF, datos de cámara y análisis de nivel de error de compresión. Las dos últimas son evidencia (on_fail=info): la mensajería quita el EXIF, y el ELA no está calibrado con imágenes reales; súbelas a review solo con datos de `pnpm autenticidad`.",
+      "AUTENTICIDAD_EVALUADA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "evaluated",
+        "hint": "Verdadero cuando todas las capas de verificación que este tipo pide pudieron correr.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "on_fail": "review",
+            "message": "No se pudo completar la verificación de integridad del archivo; requiere revisión manual"
+          }
+        ]
+      },
+      "SIN_EDITOR_EN_METADATOS": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.producer_consistent",
+        "hint": "Verdadero cuando la imagen no fue guardada por un programa de edición (EXIF Software, segmento APP13 de Photoshop, PNG Software, historial XMP).",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La imagen fue guardada por un programa de edición de imágenes; se requiere la foto o el escaneo original"
+          }
+        ]
+      },
+      "FECHAS_METADATOS_CONSISTENTES": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.dates_consistent",
+        "hint": "Verdadero cuando la fecha de modificación EXIF no es posterior a la de captura. Vacío si la imagen no trae ambas fechas.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La imagen fue modificada después de capturarse (fechas EXIF)"
+          }
+        ]
+      },
+      "METADATOS_DE_CAMARA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.camera_metadata",
+        "hint": "Verdadero cuando la imagen conserva datos de cámara (marca, modelo, fecha de captura). Falso no acusa: la mensajería los elimina.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "info",
+            "message": "La imagen no trae metadatos de cámara (pudo pasar por mensajería o ser una captura de pantalla)"
+          }
+        ]
+      },
+      "NIVEL_DE_ERROR_UNIFORME": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "pixels.error_level_uniform",
+        "hint": "Verdadero cuando el análisis de nivel de error (ELA) no encuentra una zona con compresión distinta al resto. Vacío si no es JPEG. Evidencia.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "info",
+            "message": "Una zona de la imagen tiene un nivel de error de compresión distinto al resto: posible parche"
+          }
+        ]
+      },
+      "EDITOR_DETECTADO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.editor",
+        "hint": "Nombre del programa de edición encontrado en los metadatos de la imagen. Solo evidencia.",
+        "validation": []
+      },
+      "VEREDICTO_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "verdict",
+        "hint": "AUTENTICO, SOSPECHOSO, NO_AUTENTICO o NO_EVALUADO.",
+        "validation": []
+      },
+      "MOTIVOS_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "reasons",
+        "hint": "Códigos de los hallazgos de autenticidad e integridad, separados por coma.",
+        "validation": []
+      }
+    },
+    "CAPTURA_FISICA": {
+      "__COMENTARIO__": "Captura física: el documento debe ser el escaneo o la foto de un papel, no una composición digital. Las dos capas gratuitas de CARTA_NOM35 (estructura y pixeles), reutilizables por cualquier tipo que exija papel. Declara `\"authenticity\": {\"expected_capture\": \"FISICO\"}` en el tipo (es el default cuando se pide structure.physical_capture).",
+      "AUTENTICIDAD_EVALUADA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "evaluated",
+        "hint": "Verdadero cuando todas las capas de verificación que este tipo pide pudieron correr.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "on_fail": "review",
+            "message": "No se pudo completar la verificación de integridad del archivo; requiere revisión manual"
+          }
+        ]
+      },
+      "CAPTURA_FISICA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "structure.physical_capture",
+        "hint": "Verdadero cuando el archivo es la captura (escaneo o foto) de una hoja de papel; falso cuando es un documento digital con imágenes insertadas.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El archivo es un documento digital con elementos insertados como imagen: debe imprimirse, firmarse y escanearse"
+          }
+        ]
+      },
+      "ORIGEN_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "structure.origin",
+        "hint": "Programa que generó el archivo: ESCANER, APP_CAPTURA, OFIMATICA, DESCONOCIDO o IMAGEN. Solo evidencia.",
+        "validation": []
+      },
+      "FONDO_NATURAL": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "pixels.natural_background",
+        "hint": "Verdadero cuando el fondo de la hoja tiene ruido de captura (papel/sensor).",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El fondo es perfectamente uniforme: posible exportación digital o captura de pantalla"
+          }
+        ]
+      },
+      "VEREDICTO_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "verdict",
+        "hint": "AUTENTICO, SOSPECHOSO, NO_AUTENTICO o NO_EVALUADO.",
+        "validation": []
+      },
+      "MOTIVOS_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "reasons",
+        "hint": "Códigos de los hallazgos de autenticidad e integridad, separados por coma.",
+        "validation": []
+      }
+    }
+  },
   "cross_document_validation_rules": [
     {
       "rule_type": "same_pedimento",

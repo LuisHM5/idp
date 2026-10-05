@@ -15,10 +15,17 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from catalog_paths import active_catalog_path  # noqa: E402
 from pipeline import pdf_forensics as pf  # noqa: E402
+from pipeline import pdf_integrity as pi  # noqa: E402
 
 ESPERADO = json.loads((REPO_ROOT / "tests/integration/expected_autenticidad.json").read_text(encoding="utf-8"))
 VEREDICTOS = {pf.PAGE_PHYSICAL, pf.PAGE_PHYSICAL_OCR, pf.PAGE_DIGITAL, pf.PAGE_UNDETERMINED}
 MOTIVOS = {pf.REASON_PASTED_IMAGE, pf.REASON_NO_CAPTURE, pf.REASON_TRANSPARENCY, pf.REASON_OFFICE_ORIGIN}
+# Layer 0 (integrity) and the pixels/vision additions: a ground truth may pin
+# these too (`integrity_reasons_include` / `integrity_reasons_exclude`).
+MOTIVOS_INTEGRIDAD = set(pi.SEVERITY) | {
+    "NIVEL_DE_ERROR_NO_UNIFORME", "CAPTURA_DISTINTA_DE_LA_ESPERADA", "INDICIOS_DE_EDICION_EN_PAGINA",
+    "VISION_OMITIDA_SIN_SOSPECHA",
+}
 
 
 def test_el_tipo_existe_y_declara_la_etapa():
@@ -33,6 +40,8 @@ def test_cada_archivo_usa_veredictos_y_motivos_que_el_codigo_conoce():
         assert caso["structure"] in VEREDICTOS, ruta
         assert caso["physical_capture"] in (True, False, None), ruta
         assert set(caso.get("reasons_include") or []) <= MOTIVOS, ruta
+        assert set(caso.get("integrity_reasons_include") or []) <= MOTIVOS_INTEGRIDAD, ruta
+        assert set(caso.get("integrity_reasons_exclude") or []) <= MOTIVOS_INTEGRIDAD, ruta
         assert len(caso["sha256"]) == 64, ruta
 
 

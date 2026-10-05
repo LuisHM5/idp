@@ -57,6 +57,35 @@ function validateOccurrenceMode(typeId, entry, file) {
   }
 }
 
+/**
+ * `"$presets": ["INTEGRIDAD_PDF"]` dentro de `fields` inyecta los campos de
+ * ese preset (`_shared.json` → `_field_presets`) ANTES de los propios del
+ * tipo; un campo redeclarado por el tipo gana. Espejo de
+ * `document_catalog._parse_field_tree`: el índice que ve el query Lambda debe
+ * mostrar los campos reales, no la referencia.
+ */
+export function expandPresets(fields, fieldPresets, typeId = "") {
+  if (!fields || typeof fields !== "object" || !("$presets" in fields)) return fields;
+  const requested = Array.isArray(fields.$presets) ? fields.$presets : [fields.$presets];
+  const expanded = {};
+  for (const name of requested) {
+    const preset = fieldPresets[name];
+    if (!preset || typeof preset !== "object") {
+      console.warn(`  ${typeId}: preset de campos desconocido '${name}' (ver _shared.json → _field_presets); ignorado`);
+      continue;
+    }
+    for (const [field, spec] of Object.entries(preset)) {
+      if (field.startsWith("__") || !spec || typeof spec !== "object") continue;
+      expanded[field] = spec;
+    }
+  }
+  for (const [field, spec] of Object.entries(fields)) {
+    if (field === "$presets") continue;
+    expanded[field] = spec;
+  }
+  return expanded;
+}
+
 /** "PEDIMENTO_ADUANAL" -> "Pedimento Aduanal" (nombre por defecto del tipo). */
 function titleize(typeId) {
   return typeId
@@ -86,7 +115,7 @@ function titleize(typeId) {
  * `GET /document-types`, deliberadamente sin recortar ni traducir: la fuente
  * de verdad de esa forma sigue siendo `catalogs/README.md`.
  */
-function writeTypeIndex(documentTypes) {
+function writeTypeIndex(documentTypes, fieldPresets = {}) {
   const types = Object.entries(documentTypes).map(([typeId, entry]) => {
     const uniqueKeys = uniqueKeysOf(entry);
     return {
@@ -95,7 +124,7 @@ function writeTypeIndex(documentTypes) {
       description: entry.description || null,
       aliases: entry.aliases || [],
       ...(uniqueKeys.length && { uniqueKeys }),
-      fields: entry.fields || null,
+      fields: entry.fields ? expandPresets(entry.fields, fieldPresets, typeId) : null,
     };
   });
   writeFileSync(
@@ -122,6 +151,7 @@ function main() {
     _global_output_fields: shared._global_output_fields || [],
     _field_sets: shared._field_sets || {},
     _common_item_fields: shared._common_item_fields || {},
+    _field_presets: shared._field_presets || {},
     document_types: documentTypes,
     cross_document_validation_rules: shared.cross_document_validation_rules || [],
   };
@@ -131,7 +161,7 @@ function main() {
     `bundled ${Object.keys(documentTypes).length} tipos activos de ${CATALOGS_DIR}/**/*.json -> ${OUTPUT}`
   );
 
-  writeTypeIndex(documentTypes);
+  writeTypeIndex(documentTypes, combined._field_presets);
 
   // Remove superseded bundled configs (single base = catalogs.json).
   for (const stale of ["document_types.json", "customs_catalog.json"]) {

@@ -92,6 +92,11 @@ DEFAULT_POLICY: Dict[str, Any] = {
 _BILEVEL_FILTERS = ("/CCITTFaxDecode", "/JBIG2Decode")
 _MAX_FORM_DEPTH = 3
 _IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+# Text runs are kept only to answer "was this drawn OVER that?"; a dense
+# pedimento page shows thousands of strings, and past this many the geometry
+# adds nothing a verdict needs (counters keep counting regardless).
+_MAX_TEXT_RUNS = 4000
+_DEFAULT_GLYPH_WIDTH = 500.0   # /1000 text-space units, when the font declares none
 
 Matrix = Tuple[float, float, float, float, float, float]
 
@@ -113,13 +118,46 @@ def _concat(first: Matrix, then: Matrix) -> Matrix:
     )
 
 
+def _bbox_through(m: Matrix, x0: float, y0: float, x1: float, y1: float) -> Tuple[float, float, float, float]:
+    """Axis-aligned bounds of a rectangle after a matrix: its four corners
+    through `m`."""
+    a, b, c, d, e, f = m
+    xs, ys = [], []
+    for x, y in ((x0, y0), (x1, y0), (x0, y1), (x1, y1)):
+        xs.append(a * x + c * y + e)
+        ys.append(b * x + d * y + f)
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _unit_square_bbox(ctm: Matrix) -> Tuple[float, float, float, float]:
     """Where an image lands in page space: images are painted into the unit
     square, so its four corners through the CTM bound the placement."""
-    a, b, c, d, e, f = ctm
-    xs = [e, a + e, c + e, a + c + e]
-    ys = [f, b + f, d + f, b + d + f]
-    return min(xs), min(ys), max(xs), max(ys)
+    return _bbox_through(ctm, 0.0, 0.0, 1.0, 1.0)
+
+
+def _visual_rect(
+    x0: float, y0: float, x1: float, y1: float, box: Tuple[float, float, float, float], rotation: int
+) -> List[float]:
+    """Page-space bounds -> `[x0, y0, x1, y1]` in rendered space (0..1, origin
+    top-left), the one coordinate system every layer compares boxes in."""
+    left, bottom, page_w, page_h = box
+    if page_w <= 0 or page_h <= 0:
+        return [0.0, 0.0, 0.0, 0.0]
+    corners = [_to_visual((x - left) / page_w, (y - bottom) / page_h, rotation) for x, y in ((x0, y0), (x1, y1))]
+    vx = sorted(_clamp01(c[0]) for c in corners)
+    vy = sorted(_clamp01(c[1]) for c in corners)
+    return [round(vx[0], 4), round(vy[0], 4), round(vx[1], 4), round(vy[1], 4)]
+
+
+def _overlap_ratio(a: Sequence[float], b: Sequence[float], relative_to: str = "a") -> float:
+    """Intersection of two visual rects over the area of `a` (or `b`)."""
+    if not a or not b or len(a) != 4 or len(b) != 4:
+        return 0.0
+    ix = max(min(a[2], b[2]) - max(a[0], b[0]), 0.0)
+    iy = max(min(a[3], b[3]) - max(a[1], b[1]), 0.0)
+    base = a if relative_to == "a" else b
+    area = max(base[2] - base[0], 0.0) * max(base[3] - base[1], 0.0)
+    return (ix * iy) / area if area > 0 else 0.0
 
 
 def _to_visual(u: float, v: float, rotation: int) -> Tuple[float, float]:
@@ -193,7 +231,8 @@ def _colorspace_name(obj: Any) -> str:
 
 
 def _image_record(
-    obj: Any, name: str, ctm: Matrix, box: Tuple[float, float, float, float], rotation: int
+    obj: Any, name: str, ctm: Matrix, box: Tuple[float, float, float, float], rotation: int,
+    seq: int = 0, annotation: Optional[str] = None,
 ) -> Dict[str, Any]:
     left, bottom, page_w, page_h = box
     x0, y0, x1, y1 = _unit_square_bbox(ctm)
@@ -205,13 +244,6 @@ def _image_record(
     visible_area = max(ix1 - ix0, 0.0) * max(iy1 - iy0, 0.0)
     page_area = page_w * page_h
     coverage = visible_area / page_area if page_area > 0 else 0.0
-
-    corners = [
-        _to_visual((x - left) / page_w, (y - bottom) / page_h, rotation)
-        for x, y in ((x0, y0), (x1, y1))
-    ] if page_w > 0 and page_h > 0 else [(0.0, 0.0), (0.0, 0.0)]
-    vx = sorted(_clamp01(c[0]) for c in corners)
-    vy = sorted(_clamp01(c[1]) for c in corners)
 
     try:
         px_w, px_h = int(obj.get("/Width", 0)), int(obj.get("/Height", 0))
@@ -237,17 +269,56 @@ def _image_record(
         "transparency": "/SMask" in obj or "/Mask" in obj,
         "coverage": round(coverage, 4),
         # [x0, y0, x1, y1] in rendered page space, 0..1, origin top-left.
-        "rect": [round(vx[0], 4), round(vy[0], 4), round(vx[1], 4), round(vy[1], 4)],
+        "rect": _visual_rect(x0, y0, x1, y1, box, rotation),
+        # Paint order on the page (text and images share one counter): what
+        # was drawn AFTER what is how "typed onto a scan" is told from "a scan".
+        "seq": seq,
+        # Painted from an annotation's appearance stream (a /Stamp pasted with
+        # an editor), not from the page content itself.
+        "fromAnnotation": annotation is not None,
+        **({"annotSubtype": annotation} if annotation else {}),
     }
 
 
 # ------------------------------------------------------------------ the walker
 
 
+class _TextState:
+    """The slice of the PDF text state a run's placement depends on. Text
+    space is approximate on purpose (glyph widths from `/Widths` or a default,
+    a fixed ascender/descender): what is asked of it is "does this string sit
+    ON that image?", a question a 10% error does not change."""
+
+    __slots__ = ("tm", "tlm", "size", "leading", "hscale", "char_spacing", "word_spacing",
+                 "widths", "default_width", "bytes_per_char", "render_mode")
+
+    def __init__(self) -> None:
+        self.tm: Matrix = _IDENTITY
+        self.tlm: Matrix = _IDENTITY
+        self.size = 0.0
+        self.leading = 0.0
+        self.hscale = 1.0
+        self.char_spacing = 0.0
+        self.word_spacing = 0.0
+        self.widths: Dict[int, float] = {}
+        self.default_width = _DEFAULT_GLYPH_WIDTH
+        self.bytes_per_char = 1
+        self.render_mode = 0
+
+    def copy(self) -> "_TextState":
+        other = _TextState()
+        for name in self.__slots__:
+            setattr(other, name, getattr(self, name))
+        return other
+
+
 class _PageWalk:
     """One pass over a page's content stream (and the Form XObjects it
-    paints), tracking just enough graphics state to answer two things: how
-    much text is drawn VISIBLY vs invisibly, and where each image lands."""
+    paints), tracking just enough graphics state to answer three things: how
+    much text is drawn VISIBLY vs invisibly, where each image lands, and in
+    what ORDER text and images were painted (with where each visible string
+    sits), so "text typed over a scan" and "an image dropped over text" can be
+    read off the file."""
 
     def __init__(self, reader: Any, box: Tuple[float, float, float, float], rotation: int):
         self.reader = reader
@@ -257,6 +328,13 @@ class _PageWalk:
         self.invisible_chars = 0
         self.images: List[Dict[str, Any]] = []
         self.fonts: set = set()
+        self.text_runs: List[Dict[str, Any]] = []
+        self.seq = 0
+        # False while walking an annotation's appearance: its text is not the
+        # page's text (the counters and verdict stay untouched), but the images
+        # it paints ARE placed on the page and are recorded, flagged.
+        self.counting = True
+        self.annotation: Optional[str] = None
 
     def walk(self, stream_source: Any, resources: Any, ctm: Matrix, depth: int) -> None:
         from pypdf.generic import ContentStream
@@ -269,52 +347,128 @@ class _PageWalk:
 
         fonts = _resolve(resources, "/Font") or {}
         xobjects = _resolve(resources, "/XObject") or {}
-        stack: List[Tuple[Matrix, int]] = []
-        render_mode = 0
-        bytes_per_char = 1
+        stack: List[Tuple[Matrix, _TextState]] = []
+        ts = _TextState()
 
         for operands, operator in content.operations:
             if operator == b"q":
-                stack.append((ctm, render_mode))
+                stack.append((ctm, ts.copy()))
             elif operator == b"Q":
                 if stack:
-                    ctm, render_mode = stack.pop()
+                    ctm, ts = stack.pop()
             elif operator == b"cm":
                 values = _as_float_list(operands)
                 if values and len(values) == 6:
                     ctm = _concat(tuple(values), ctm)  # type: ignore[arg-type]
+            elif operator == b"BT":
+                ts.tm = ts.tlm = _IDENTITY
+            elif operator == b"Tm":
+                values = _as_float_list(operands)
+                if values and len(values) == 6:
+                    ts.tm = ts.tlm = tuple(values)  # type: ignore[assignment]
+            elif operator in (b"Td", b"TD"):
+                values = _as_float_list(operands)
+                if values and len(values) == 2:
+                    if operator == b"TD":
+                        ts.leading = -values[1]
+                    self._next_line(ts, values[0], values[1])
+            elif operator == b"T*":
+                self._next_line(ts, 0.0, -ts.leading)
+            elif operator == b"TL":
+                values = _as_float_list(operands)
+                if values:
+                    ts.leading = values[0]
+            elif operator == b"Tz":
+                values = _as_float_list(operands)
+                if values:
+                    ts.hscale = values[0] / 100.0
+            elif operator == b"Tc":
+                values = _as_float_list(operands)
+                if values:
+                    ts.char_spacing = values[0]
+            elif operator == b"Tw":
+                values = _as_float_list(operands)
+                if values:
+                    ts.word_spacing = values[0]
             elif operator == b"Tr":
                 values = _as_float_list(operands)
                 if values:
-                    render_mode = int(values[0])
+                    ts.render_mode = int(values[0])
             elif operator == b"Tf":
                 font_name = str(operands[0]) if operands else ""
-                bytes_per_char = _bytes_per_char(fonts, font_name)
+                size = _as_float_list(operands[1:2]) if len(operands) > 1 else None
+                ts.size = size[0] if size else ts.size
+                ts.bytes_per_char = _bytes_per_char(fonts, font_name)
+                ts.widths, ts.default_width = _font_widths(fonts, font_name)
                 if font_name:
                     self.fonts.add(_base_font(fonts, font_name) or font_name)
-            elif operator in (b"Tj", b"'", b'"'):
+            elif operator == b"Tj":
                 if operands:
-                    self._count(_shown_length(operands[-1]), bytes_per_char, render_mode)
+                    self._show(ts, ctm, [operands[-1]])
+            elif operator == b"'":
+                self._next_line(ts, 0.0, -ts.leading)
+                if operands:
+                    self._show(ts, ctm, [operands[-1]])
+            elif operator == b'"':
+                values = _as_float_list(operands[:2]) if len(operands) >= 3 else None
+                if values:
+                    ts.word_spacing, ts.char_spacing = values[0], values[1]
+                self._next_line(ts, 0.0, -ts.leading)
+                if operands:
+                    self._show(ts, ctm, [operands[-1]])
             elif operator == b"TJ":
                 if operands and isinstance(operands[0], (list, tuple)):
-                    total = sum(_shown_length(item) for item in operands[0])
-                    self._count(total, bytes_per_char, render_mode)
+                    self._show(ts, ctm, list(operands[0]))
             elif operator == b"Do":
                 name = str(operands[0]) if operands else ""
                 self._paint(xobjects, name, ctm, depth)
             elif operator == b"INLINE IMAGE":
                 settings = (operands or {}).get("settings") if isinstance(operands, dict) else None
                 if settings is not None:
-                    self.images.append(_inline_record(settings, operands, ctm, self.box, self.rotation))
+                    self.seq += 1
+                    self.images.append(_inline_record(settings, operands, ctm, self.box, self.rotation,
+                                                      self.seq, self.annotation))
 
-    def _count(self, shown_bytes: int, bytes_per_char: int, render_mode: int) -> None:
-        chars = shown_bytes // max(bytes_per_char, 1)
-        # Render mode 3 = neither filled nor stroked: the OCR layer of a
-        # searchable scan. Mode 7 only adds the glyphs to the clip path.
-        if render_mode in (3, 7):
-            self.invisible_chars += chars
-        else:
-            self.visible_chars += chars
+    @staticmethod
+    def _next_line(ts: _TextState, tx: float, ty: float) -> None:
+        ts.tlm = _concat((1.0, 0.0, 0.0, 1.0, tx, ty), ts.tlm)
+        ts.tm = ts.tlm
+
+    def _show(self, ts: _TextState, ctm: Matrix, items: Sequence[Any]) -> None:
+        """One text-showing operator: count its characters, record where the
+        string lands, and advance the text matrix past it."""
+        chars = 0
+        advance = 0.0   # text-space units, before Tm
+        for item in items:
+            if isinstance(item, (bytes, bytearray, str)):
+                raw = _original_bytes(item)
+                n = len(raw) // max(ts.bytes_per_char, 1)
+                chars += n
+                advance += _string_advance(raw, ts)
+            else:
+                try:
+                    advance -= (float(item) / 1000.0) * ts.size * ts.hscale
+                except (TypeError, ValueError):
+                    pass
+        visible = ts.render_mode not in (3, 7)
+        if self.counting:
+            # Render mode 3 = neither filled nor stroked: the OCR layer of a
+            # searchable scan. Mode 7 only adds the glyphs to the clip path.
+            if visible:
+                self.visible_chars += chars
+            else:
+                self.invisible_chars += chars
+        if chars > 0:
+            self.seq += 1
+            if self.counting and len(self.text_runs) < _MAX_TEXT_RUNS:
+                trm = _concat(ts.tm, ctm)
+                x0, y0, x1, y1 = _bbox_through(trm, 0.0, -0.25 * ts.size, max(advance, 0.0), 0.8 * ts.size)
+                self.text_runs.append({
+                    "rect": _visual_rect(x0, y0, x1, y1, self.box, self.rotation),
+                    "chars": chars, "visible": visible, "seq": self.seq,
+                })
+        if advance:
+            ts.tm = _concat((1.0, 0.0, 0.0, 1.0, advance, 0.0), ts.tm)
 
     def _paint(self, xobjects: Any, name: str, ctm: Matrix, depth: int) -> None:
         try:
@@ -323,11 +477,78 @@ class _PageWalk:
             return
         subtype = str(obj.get("/Subtype", ""))
         if subtype == "/Image":
-            self.images.append(_image_record(obj, name, ctm, self.box, self.rotation))
+            self.seq += 1
+            self.images.append(_image_record(obj, name, ctm, self.box, self.rotation, self.seq, self.annotation))
         elif subtype == "/Form" and depth < _MAX_FORM_DEPTH:
             matrix = _as_float_list(obj.get("/Matrix") or [])
             inner = _concat(tuple(matrix), ctm) if matrix and len(matrix) == 6 else ctm  # type: ignore[arg-type]
             self.walk(obj, obj.get("/Resources") or {}, inner, depth + 1)
+
+    def walk_annotation(self, annot: Any, subtype: str) -> bool:
+        """Paint an annotation's normal appearance (`/AP /N`) onto the page, the
+        way a viewer does (PDF 32000 §12.5.5: the form's `/BBox` through its
+        `/Matrix`, fitted into the annotation's `/Rect`). Returns whether an
+        appearance was walked. Text inside is not counted as page text."""
+        rect = _as_float_list(annot.get("/Rect") or [])
+        ap = _resolve(annot, "/AP")
+        if not rect or len(rect) != 4 or ap is None:
+            return False
+        normal = _resolve(ap, "/N")
+        if normal is None:
+            return False
+        if not hasattr(normal, "get_data") and hasattr(normal, "keys") and "/BBox" not in normal:
+            # A dictionary of appearance states: the selected one, or any.
+            state = annot.get("/AS")
+            try:
+                chosen = normal.get(state) if state is not None else None
+                normal = (chosen if chosen is not None else next(iter(normal.values()))).get_object()
+            except Exception:
+                return False
+        bbox = _as_float_list(normal.get("/BBox") or [])
+        if not bbox or len(bbox) != 4:
+            return False
+        matrix = _as_float_list(normal.get("/Matrix") or []) or list(_IDENTITY)
+        if len(matrix) != 6:
+            matrix = list(_IDENTITY)
+        tx0, ty0, tx1, ty1 = _bbox_through(tuple(matrix), bbox[0], bbox[1], bbox[2], bbox[3])  # type: ignore[arg-type]
+        rx0, ry0, rx1, ry1 = min(rect[0], rect[2]), min(rect[1], rect[3]), max(rect[0], rect[2]), max(rect[1], rect[3])
+        sx = (rx1 - rx0) / (tx1 - tx0) if tx1 > tx0 else 1.0
+        sy = (ry1 - ry0) / (ty1 - ty0) if ty1 > ty0 else 1.0
+        fit: Matrix = (sx, 0.0, 0.0, sy, rx0 - tx0 * sx, ry0 - ty0 * sy)
+        previous = (self.counting, self.annotation)
+        self.counting, self.annotation = False, subtype
+        try:
+            self.walk(normal, normal.get("/Resources") or {}, _concat(tuple(matrix), fit), 1)  # type: ignore[arg-type]
+        finally:
+            self.counting, self.annotation = previous
+        return True
+
+
+def _original_bytes(item: Any) -> bytes:
+    """The string operand as the bytes the font will look up."""
+    if isinstance(item, (bytes, bytearray)):
+        return bytes(item)
+    getter = getattr(item, "get_original_bytes", None)
+    if callable(getter):
+        try:
+            return bytes(getter())
+        except Exception:
+            pass
+    return str(item).encode("latin-1", "replace")
+
+
+def _string_advance(raw: bytes, ts: _TextState) -> float:
+    """Horizontal displacement of one shown string in text space (PDF 32000
+    §9.4.4), with the font's widths when it declares them."""
+    step = max(ts.bytes_per_char, 1)
+    total = 0.0
+    for i in range(0, len(raw) - step + 1, step):
+        code = int.from_bytes(raw[i:i + step], "big")
+        w0 = ts.widths.get(code, ts.default_width) / 1000.0
+        total += w0 * ts.size + ts.char_spacing
+        if step == 1 and code == 32:
+            total += ts.word_spacing
+    return total * ts.hscale
 
 
 def _resolve(container: Any, key: str) -> Any:
@@ -368,13 +589,67 @@ def _base_font(fonts: Any, name: str) -> str:
     return str(font.get("/BaseFont", "")).lstrip("/") if font is not None else ""
 
 
+def _font_widths(fonts: Any, name: str) -> Tuple[Dict[int, float], float]:
+    """Glyph widths by character code (in /1000 units) and the width to
+    assume for codes the font doesn't list. Simple fonts: `/Widths` from
+    `/FirstChar`; composite fonts: the descendant's `/W` array and `/DW`. A
+    font that declares nothing (the standard 14) gets a flat default."""
+    font = _font_object(fonts, name)
+    widths: Dict[int, float] = {}
+    if font is None:
+        return widths, _DEFAULT_GLYPH_WIDTH
+    try:
+        if str(font.get("/Subtype", "")) == "/Type0":
+            descendants = _resolve(font, "/DescendantFonts") or []
+            descendant = descendants[0].get_object() if descendants else None
+            if descendant is None:
+                return widths, _DEFAULT_GLYPH_WIDTH
+            default = float(descendant.get("/DW", 1000) or 1000)
+            array = _resolve(descendant, "/W") or []
+            i = 0
+            while i < len(array):
+                first = int(float(array[i].get_object() if hasattr(array[i], "get_object") else array[i]))
+                nxt = array[i + 1].get_object() if i + 1 < len(array) and hasattr(array[i + 1], "get_object") else (array[i + 1] if i + 1 < len(array) else None)
+                if isinstance(nxt, (list, tuple)):
+                    for offset, w in enumerate(nxt):
+                        widths[first + offset] = float(w)
+                    i += 2
+                elif nxt is not None and i + 2 < len(array):
+                    last = int(float(nxt))
+                    w = float(array[i + 2])
+                    if last - first < 65536:
+                        for code in range(first, last + 1):
+                            widths[code] = w
+                    i += 3
+                else:
+                    break
+            return widths, default
+        array = _resolve(font, "/Widths") or []
+        first = int(float(font.get("/FirstChar", 0) or 0))
+        for offset, w in enumerate(array):
+            try:
+                widths[first + offset] = float(w)
+            except (TypeError, ValueError):
+                continue
+        descriptor = _resolve(font, "/FontDescriptor")
+        missing = float(descriptor.get("/MissingWidth", 0) or 0) if descriptor is not None else 0.0
+        default = missing if missing > 0 else (
+            sum(widths.values()) / len(widths) if widths else _DEFAULT_GLYPH_WIDTH
+        )
+        return widths, default
+    except Exception:
+        return {}, _DEFAULT_GLYPH_WIDTH
+
+
 def _shown_length(operand: Any) -> int:
     if isinstance(operand, (bytes, bytearray, str)):
         return len(operand)
     return 0  # TJ kerning adjustments are numbers
 
 
-def _inline_record(settings: Any, operands: Any, ctm: Matrix, box, rotation: int) -> Dict[str, Any]:
+def _inline_record(
+    settings: Any, operands: Any, ctm: Matrix, box, rotation: int, seq: int = 0, annotation: Optional[str] = None
+) -> Dict[str, Any]:
     class _Inline(dict):
         """Adapts an inline image's abbreviated keys to the XObject ones."""
 
@@ -383,7 +658,7 @@ def _inline_record(settings: Any, operands: Any, ctm: Matrix, box, rotation: int
     for key, value in dict(settings).items():
         adapted[aliases.get(str(key), str(key))] = value
     adapted._data = operands.get("data") or b""  # type: ignore[attr-defined]
-    return _image_record(adapted, "inline", ctm, box, rotation)
+    return _image_record(adapted, "inline", ctm, box, rotation, seq, annotation)
 
 
 # ------------------------------------------------------------------ public API
@@ -419,12 +694,18 @@ def document_metadata(reader: Any) -> Dict[str, str]:
     return out
 
 
-def inspect_page(reader: Any, page_index: int) -> Dict[str, Any]:
+def inspect_page(reader: Any, page_index: int, policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Raw structural facts of one page (0-based). Never raises: a page that
-    can't be walked reports `error` and is judged INDETERMINADO downstream."""
+    can't be walked reports `error` and is judged INDETERMINADO downstream.
+
+    Besides the page content, the normal appearance of every annotation is
+    painted too, so an image dropped on the page as a `/Stamp` by an editor is
+    seen (flagged `fromAnnotation`); the annotations themselves are listed
+    under `annotations`, and `overlay` holds the paint-order facts the
+    integrity layer reads (see `overlay_facts`)."""
     report: Dict[str, Any] = {
         "page": page_index + 1, "visibleTextChars": 0, "invisibleTextChars": 0,
-        "fonts": [], "images": [],
+        "fonts": [], "images": [], "annotations": [],
     }
     try:
         page = reader.pages[page_index]
@@ -435,17 +716,172 @@ def inspect_page(reader: Any, page_index: int) -> Dict[str, Any]:
         walk = _PageWalk(reader, geometry, rotation)
         if contents is not None:
             walk.walk(contents, page.get("/Resources") or {}, _IDENTITY, 0)
+        annotations = _page_annotations(page, walk, geometry, rotation)
         report.update({
             "visibleTextChars": walk.visible_chars,
             "invisibleTextChars": walk.invisible_chars,
             "fonts": sorted(walk.fonts),
             "images": walk.images,
+            "annotations": annotations,
             "rotation": rotation % 360,
+            "overlay": overlay_facts(walk, policy),
         })
     except Exception as e:
         logger.warning("pdf_forensics: could not inspect page %d: %s", page_index + 1, e)
         report["error"] = str(e)[:200]
     return report
+
+
+def _page_annotations(page: Any, walk: _PageWalk, geometry, rotation: int) -> List[Dict[str, Any]]:
+    """Every annotation on the page, as the integrity layer wants it: its
+    subtype, where it sits, whether it is hidden, whether it carries an
+    appearance and whether that appearance paints an image."""
+    out: List[Dict[str, Any]] = []
+    try:
+        annots = page.get("/Annots")
+        annots = annots.get_object() if hasattr(annots, "get_object") else annots
+    except Exception:
+        annots = None
+    for ref in annots or []:
+        try:
+            annot = ref.get_object()
+            subtype = str(annot.get("/Subtype", "") or "")
+            rect = _as_float_list(annot.get("/Rect") or [])
+            try:
+                flags = int(annot.get("/F", 0) or 0)
+            except (TypeError, ValueError):
+                flags = 0
+            before = len(walk.images)
+            walked = walk.walk_annotation(annot, subtype)
+            painted = walk.images[before:]
+            out.append({
+                "subtype": subtype,
+                "rect": _visual_rect(min(rect[0], rect[2]), min(rect[1], rect[3]),
+                                     max(rect[0], rect[2]), max(rect[1], rect[3]), geometry, rotation)
+                if rect and len(rect) == 4 else None,
+                "hidden": bool(flags & 2),
+                "hasAppearance": walked,
+                "hasImage": any(i.get("fromAnnotation") for i in painted),
+                **({"fieldType": str(annot.get("/FT"))} if annot.get("/FT") is not None else {}),
+                **({"action": _action_kind(annot)} if annot.get("/A") is not None else {}),
+                **({"contents": str(annot.get("/Contents"))[:120]} if annot.get("/Contents") else {}),
+            })
+        except Exception as e:
+            logger.debug("pdf_forensics: unreadable annotation: %s", e)
+            out.append({"subtype": "?", "error": str(e)[:100]})
+    return out
+
+
+def _action_kind(annot: Any) -> str:
+    try:
+        action = annot.get("/A").get_object()
+        return str(action.get("/S", "") or "")
+    except Exception:
+        return "?"
+
+
+def overlay_facts(walk: _PageWalk, policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Paint-order facts of one walked page, pure:
+
+    - `textAfterFullPageImageChars`: visible characters drawn AFTER an image
+      that is the page itself (a scan) — text typed onto a scan. None when
+      the page holds no full-page image (nothing to be "over"). Strings that
+      sit entirely in the top/bottom `overlay_margin` band are not counted:
+      page numbers, Bates stamps and headers a document system adds are not
+      an edit of the content.
+    - `imagesOverText`: images (not decoration, not the page itself) painted
+      AFTER a visible string they cover — the "white box over the amount"
+      edit. None when the page has no visible text.
+    """
+    cfg = {**DEFAULT_POLICY, **(policy or {})}
+    full_coverage = float(cfg.get("full_page_coverage", DEFAULT_POLICY["full_page_coverage"]))
+    smallest = float(cfg.get("ignore_image_coverage_below", DEFAULT_POLICY["ignore_image_coverage_below"]))
+    margin = float(cfg.get("overlay_margin", 0.06))
+    min_overlap = float(cfg.get("image_over_text_min_overlap", 0.5))
+
+    page_images = [i for i in walk.images if not i.get("fromAnnotation")]
+    full = [i for i in page_images if float(i.get("coverage") or 0) >= full_coverage]
+    visible_runs = [r for r in walk.text_runs if r.get("visible")]
+
+    after_full: Optional[int] = None
+    if full:
+        first_full = min(int(i.get("seq") or 0) for i in full)
+        after_full = 0
+        for run in visible_runs:
+            if int(run["seq"]) <= first_full:
+                continue
+            _, y0, _, y1 = run["rect"]
+            if y1 <= margin or y0 >= 1.0 - margin:
+                continue
+            after_full += int(run["chars"])
+
+    over_text: Optional[List[Dict[str, Any]]] = None
+    if visible_runs:
+        over_text = []
+        for image in page_images:
+            coverage = float(image.get("coverage") or 0)
+            if coverage < smallest or coverage >= full_coverage or not image.get("rect"):
+                continue
+            covered = [
+                r for r in visible_runs
+                if int(r["seq"]) < int(image.get("seq") or 0)
+                and _overlap_ratio(r["rect"], image["rect"], "a") >= min_overlap
+            ]
+            if covered:
+                over_text.append({
+                    "name": image.get("name"), "rect": image["rect"], "coverage": coverage,
+                    "coveredRuns": len(covered), "coveredChars": sum(int(r["chars"]) for r in covered),
+                    "sampleRuns": [r["rect"] for r in covered[:3]],
+                })
+        over_text = over_text[:10]
+
+    return {
+        "fullPageImages": len(full),
+        "visibleRuns": len(visible_runs),
+        "textAfterFullPageImageChars": after_full,
+        "imagesOverText": over_text,
+    }
+
+
+def dct_stream_bytes(reader: Any, page_index: int, image_name: str) -> Optional[bytes]:
+    """The stored bytes of an image XObject when — and only when — they ARE a
+    JPEG file (`/DCTDecode` as the sole filter): what error-level analysis and
+    the embedded-metadata check need. Looks in the page's resources and in the
+    Form XObjects it paints. None otherwise."""
+    try:
+        page = reader.pages[page_index]
+        found = _find_xobject(page.get("/Resources") or {}, image_name, 0)
+        if found is None:
+            return None
+        filters = _filters_of(found)
+        if filters != ["/DCTDecode"]:
+            return None
+        data = _raw_stream_bytes(found)
+        return data if data[:2] == b"\xff\xd8" else None
+    except Exception as e:
+        logger.debug("pdf_forensics: no DCT bytes for %s: %s", image_name, e)
+        return None
+
+
+def _find_xobject(resources: Any, name: str, depth: int) -> Any:
+    xobjects = _resolve(resources, "/XObject") or {}
+    try:
+        if name in xobjects:
+            return xobjects[name].get_object()
+    except Exception:
+        pass
+    if depth >= _MAX_FORM_DEPTH:
+        return None
+    for key in list(xobjects.keys()) if hasattr(xobjects, "keys") else []:
+        try:
+            obj = xobjects[key].get_object()
+        except Exception:
+            continue
+        if str(obj.get("/Subtype", "")) == "/Form":
+            found = _find_xobject(obj.get("/Resources") or {}, name, depth + 1)
+            if found is not None:
+                return found
+    return None
 
 
 def page_verdict(report: Dict[str, Any], policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -500,7 +936,7 @@ def inspect_pdf(
 
     per_page: List[Dict[str, Any]] = []
     for index in page_indexes:
-        facts = inspect_page(reader, index)
+        facts = inspect_page(reader, index, policy)
         facts.update(page_verdict(facts, policy))
         per_page.append(facts)
 

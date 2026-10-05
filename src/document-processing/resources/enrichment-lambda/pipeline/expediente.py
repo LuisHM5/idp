@@ -230,6 +230,10 @@ def _truncate_pdf(pdf_bytes: bytes, max_pages: int) -> Tuple[bytes, Optional[int
     None when no truncation was needed (page count <= max_pages) or the PDF
     can't be parsed here — `load_pages()`'s own error handling takes over in
     that case, unchanged. Never raises.
+
+    Keeps a PREFIX of the pages, in order. The authenticity stage relies on
+    that: it reads the ORIGINAL bytes for file integrity and indexes both
+    files with the same page numbers (`authenticity.PageSource`).
     """
     from pypdf import PdfReader, PdfWriter  # deferred: pulls pypdf
 
@@ -440,6 +444,7 @@ def process_pdf(
     selection_drives_cap = False
     qr_reader = None
 
+    original_bytes = pdf_bytes
     if is_image:
         # No pypdf involved at all: a raw JPEG/PNG has no PDF container for
         # pypdf to parse (that mismatch is exactly what used to surface as
@@ -452,6 +457,10 @@ def process_pdf(
             return _fail(f"unreadable {source_format} image: {e}", stage="page_load", exception=e)
     else:
         page_cap, selection_drives_cap = _page_cap_for(types)
+        # The upload AS RECEIVED, kept for the authenticity stage: truncation
+        # rewrites the file and erases the edit history its integrity layer
+        # reads (see `authenticity.PageSource`).
+        original_bytes = pdf_bytes
         pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, page_cap)
         try:
             pages = load_pages(pdf_bytes)
@@ -508,7 +517,7 @@ def process_pdf(
     # (the issuer the stamp must name, the employee+date that identify the
     # letter), and deserves its own line in `tracking.timings`. A type without
     # an `authenticity` block costs one dict lookup.
-    _run_authenticity(documents, pdf_bytes, qr_reader, is_image, context)
+    _run_authenticity(documents, pdf_bytes, qr_reader, is_image, context, original_bytes)
     _mark("authenticity")
 
     # ---- validation pass (with sibling context)
@@ -727,12 +736,17 @@ def _run_authenticity(
     reader: Optional[Any],
     is_image: bool,
     context: Optional[Dict[str, Any]],
+    original_bytes: Optional[bytes] = None,
 ) -> None:
-    """Run the physical-authenticity stage on every document whose type
+    """Run the authenticity/integrity stage on every document whose type
     declares it. Detected by catalog SHAPE (`authenticity.applies_to`), never
     by TYPE_ID. Documents are independent, so they run concurrently; each one
     is isolated — the stage itself never raises, and the guard here covers the
-    import too (a missing imaging wheel must cost a review, not the upload)."""
+    import too (a missing imaging wheel must cost a review, not the upload).
+
+    `original_bytes` is the upload before `_truncate_pdf`; `file_bytes` is
+    what the rest of the pipeline processed. They differ only when the page
+    cap kicked in, and the stage needs both (see `authenticity.PageSource`)."""
     try:
         from . import authenticity
     except Exception as e:  # pragma: no cover - only a broken deployment
@@ -749,7 +763,7 @@ def _run_authenticity(
     if not targets:
         return
 
-    source = authenticity.source_for(file_bytes, reader, is_image)
+    source = authenticity.source_for(file_bytes, reader, is_image, raw_bytes=original_bytes)
 
     def _one(target) -> None:
         doc, entry = target

@@ -351,6 +351,76 @@ def inspect(
     return parsed, meta
 
 
+EDIT_SIGNS = [
+    "TEXTO_SUPERPUESTO",       # a string whose font, size or baseline breaks the line it sits in
+    "PARCHE_DE_FONDO",         # a rectangle of different tone/noise covering part of the content
+    "FUENTE_INCONSISTENTE",    # one value set in a font the rest of the document does not use
+    "ALINEACION_ROTA",         # a figure out of its column, a label out of its row
+    "BORDE_DE_RECORTE",        # a straight seam where content was pasted in
+    "RESOLUCION_DISTINTA",     # a region visibly sharper or blurrier than its surroundings
+]
+
+
+def review_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "indicios": {
+                "type": "array", "items": {"type": "string", "enum": EDIT_SIGNS},
+                "description": "Indicios INEQUÍVOCOS de edición visibles en la página. Lista vacía si no ves ninguno.",
+            },
+            "certeza": {"type": "number", "description": "0..1"},
+            "descripcion": {"type": "string", "description": "Dónde y qué se ve, en una frase. Vacío si no hay indicios."},
+        },
+        "required": ["indicios"],
+    }
+
+
+def review_prompt(monochrome: bool) -> str:
+    lines = [
+        "La imagen PÁGINA es una hoja de un documento. Examina si el CONTENIDO fue editado después "
+        "de generarse: un dato sobrescrito, un parche que tapa el original, un valor en una fuente "
+        "distinta, una cifra fuera de su columna, una costura de recorte, una zona con otra nitidez.",
+        "Marca un indicio SOLO si es inequívoco a simple vista. Un documento normal — algo borroso, "
+        "con compresión JPEG, con sellos o firmas en tinta, con notas manuscritas al margen — NO es "
+        "un documento editado. Ante la duda, lista vacía: acusar a un documento genuino es el error "
+        "más caro.",
+    ]
+    if monochrome:
+        lines.append("La captura es monocroma (blanco y negro puro): no hay información de color.")
+    return "\n".join(lines)
+
+
+def review_page(
+    page_jpeg: bytes,
+    type_entry: Any,
+    vision_spec: Optional[Dict[str, Any]] = None,
+    monochrome: bool = False,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """`vision.page_review`: does the rendered page show signs of editing?
+    One call, forced tool output of enums. A judgement — review-level at
+    most, never a rejection. Raises on a failed/empty call."""
+    tool_input, meta = bedrock.converse_structured(
+        review_prompt(monochrome),
+        review_schema(),
+        "reportar_revision",
+        "Reporta los indicios de edición visibles en la página.",
+        model_id=bedrock.resolve_model(STAGE, type_entry),
+        max_tokens=600,
+        system=_SYSTEM,
+        stage=STAGE,
+        images=[{"label": "PÁGINA", "format": "jpeg", "bytes": page_jpeg}],
+        fallback_models=_fallbacks(vision_spec or {}),
+    )
+    if not tool_input or not isinstance(tool_input.get("indicios"), list):
+        raise ValueError("vision page review returned no tool input")
+    return {
+        "editSigns": [s for s in tool_input.get("indicios") or [] if s in EDIT_SIGNS],
+        "certainty": _unit(tool_input.get("certeza")),
+        "description": str(tool_input.get("descripcion") or "").strip()[:300],
+    }, meta
+
+
 # ------------------------------------------------------------------ helpers
 
 

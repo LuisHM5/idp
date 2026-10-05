@@ -59,7 +59,7 @@ export function uniqueKeysOf(entry) {
   }
 
   for (const [name, field] of Object.entries(entry.fields || {})) {
-    if (name === "$common" || !field || typeof field !== "object") continue;
+    if (name === "$common" || name === "$presets" || !field || typeof field !== "object") continue;
     if ("unique_key" in field) add(spec(name, field.unique_key));
   }
 

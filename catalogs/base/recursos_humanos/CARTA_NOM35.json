@@ -16,6 +16,7 @@
     "min_confidence": 0.85,
     "authenticity": {
       "enabled": true,
+      "expected_capture": "FISICO",
       "pages": {
         "max_pages": 2
       },

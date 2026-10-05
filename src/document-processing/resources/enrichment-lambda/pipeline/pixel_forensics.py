@@ -42,7 +42,20 @@ DEFAULT_PIXELS: Dict[str, Any] = {
     "pure_white_ratio_min": 0.999,
     # Fewer blank cells than this and the page can't be judged either way.
     "min_regions": 8,
+    # Error-level analysis (`error_level_stats`): a JPEG re-saved at this
+    # quality shows a uniform error everywhere it was compressed ONCE, and a
+    # region pasted from another source (different quality, different
+    # generation) stands out. Ratio of the noisiest block to the typical one.
+    "ela_quality": 90,
+    "ela_block": 32,
+    "ela_max_ratio": 6.0,
+    "ela_min_blocks": 20,
+    "ela_floor": 0.002,
 }
+
+# Above this many pixels the ELA difference is computed in horizontal bands
+# so a 300-dpi A4 JPEG never holds two float copies of itself at once.
+_ELA_BAND_PIXELS = 6_000_000
 
 
 def to_gray(rgb: Any) -> Any:
@@ -118,6 +131,128 @@ def background_stats(rgb: Any, policy: Optional[Dict[str, Any]] = None) -> Dict[
         ),
     })
     return result
+
+
+def error_level_stats(jpeg_bytes: bytes, policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Error-level analysis of a JPEG: re-encode it once more and look at how
+    much each block changes. A file compressed once changes about the same
+    everywhere; a region that came from somewhere else (a pasted crop, a
+    patch saved at another quality) changes differently, and stands out
+    against its neighbours.
+
+    `errorLevelUniform`: True (no block stands out), False (one does), None
+    (not a JPEG, too small, or too little content to compare). Soft by
+    nature — text edges and a heavily recompressed genuine scan can look
+    non-uniform too — so the block grid is median-filtered and the ratio is
+    taken against a floor. Only ever run on bytes the FILE holds (the upload
+    or a scan's `/DCTDecode` stream), never on the pipeline's own raster.
+    """
+    import numpy as np
+
+    cfg = {**DEFAULT_PIXELS, **{k: v for k, v in (policy or {}).items() if k in DEFAULT_PIXELS}}
+    result: Dict[str, Any] = {"errorLevelUniform": None}
+    if not jpeg_bytes or jpeg_bytes[:2] != b"\xff\xd8":
+        result["reason"] = "not_jpeg"
+        return result
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(jpeg_bytes)) as img:
+            if img.format != "JPEG":
+                result["reason"] = "not_jpeg"
+                return result
+            quant = getattr(img, "quantization", None) or {}
+            if quant:
+                table = list(quant.get(0) or [])
+                if table:
+                    result["estimatedQuality"] = _quality_from_table(table)
+            original = img.convert("RGB")
+            width, height = original.size
+            if max(width, height) < 256:
+                result["reason"] = "too_small"
+                return result
+            buf = io.BytesIO()
+            original.save(buf, format="JPEG", quality=int(cfg["ela_quality"]))
+            buf.seek(0)
+            with Image.open(buf) as resaved:
+                resaved = resaved.convert("RGB")
+                block = max(int(cfg["ela_block"]), 8)
+                rows, cols = height // block, width // block
+                if rows < 2 or cols < 2:
+                    result["reason"] = "too_small"
+                    return result
+                levels = np.zeros((rows, cols), dtype=np.float32)
+                energy = np.zeros((rows, cols), dtype=np.float32)
+                band_rows = max(1, _ELA_BAND_PIXELS // max(width * block, 1))
+                for r0 in range(0, rows, band_rows):
+                    r1 = min(rows, r0 + band_rows)
+                    y0, y1 = r0 * block, r1 * block
+                    a = np.asarray(original.crop((0, y0, cols * block, y1)), dtype=np.float32)
+                    b = np.asarray(resaved.crop((0, y0, cols * block, y1)), dtype=np.float32)
+                    diff = np.abs(a - b).mean(axis=2)
+                    gray = a.mean(axis=2)
+                    # Re-compression error scales with local detail: a flat
+                    # margin changes ~0 and a text edge changes a lot whatever
+                    # the file's history. Normalizing by edge energy compares
+                    # like with like, so a text block from another source is
+                    # what stands out — not every text block.
+                    gx = np.abs(np.diff(gray, axis=1, append=gray[:, -1:]))
+                    gy = np.abs(np.diff(gray, axis=0, append=gray[-1:, :]))
+                    levels[r0:r1] = diff.reshape(r1 - r0, block, cols, block).mean(axis=(1, 3))
+                    energy[r0:r1] = (gx + gy).reshape(r1 - r0, block, cols, block).mean(axis=(1, 3))
+    except Exception as e:
+        result["reason"] = f"error: {str(e)[:80]}"
+        return result
+
+    content = energy >= 1.0
+    blocks = int(content.sum())
+    result["blocks"] = blocks
+    if blocks < int(cfg["ela_min_blocks"]):
+        result["reason"] = "too_little_content"
+        return result
+    filtered = _median3(np.where(content, levels / np.maximum(energy, 0.5), 0.0))
+    values = filtered[content]
+    median = float(np.median(values))
+    peak = float(values.max())
+    ratio = peak / max(median, float(cfg["ela_floor"]))
+    result.update({
+        "median": round(median, 5),
+        "p95": round(float(np.percentile(values, 95)), 5),
+        "max": round(peak, 5),
+        "ratio": round(ratio, 2),
+        "errorLevelUniform": ratio <= float(cfg["ela_max_ratio"]),
+    })
+    if ratio > float(cfg["ela_max_ratio"]):
+        row, col = np.unravel_index(int(np.argmax(np.where(content, filtered, -1.0))), filtered.shape)
+        result["peakBlock"] = [round(float(col) / cols, 3), round(float(row) / rows, 3),
+                               round(float(col + 1) / cols, 3), round(float(row + 1) / rows, 3)]
+    return result
+
+
+def _median3(grid: Any) -> Any:
+    """3x3 median filter of a small 2-D grid, edges padded by replication."""
+    import numpy as np
+
+    padded = np.pad(grid, 1, mode="edge")
+    stack = np.stack([padded[dy:dy + grid.shape[0], dx:dx + grid.shape[1]] for dy in range(3) for dx in range(3)])
+    return np.median(stack, axis=0)
+
+
+def _quality_from_table(table: Any) -> Optional[int]:
+    """Rough IJG quality of a luminance quantization table (the standard
+    table scaled): informational only."""
+    _STANDARD = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55]
+    try:
+        values = [int(v) for v in list(table)[:16]]
+        if len(values) < 16 or any(v <= 0 for v in _STANDARD):
+            return None
+        scale = sum(values) / sum(_STANDARD) * 100.0
+        quality = 5000.0 / scale if scale >= 100 else 100.0 - scale / 2.0
+        return int(max(1, min(100, round(quality))))
+    except Exception:
+        return None
 
 
 # ------------------------------------------------------------------ ink

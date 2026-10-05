@@ -10,26 +10,51 @@ ordinary `computed` fields that each name what they want through a per-field
 review, just inform — is catalog config, not code. Nothing here knows any
 TYPE_ID, field name or element name.
 
-Four layers, each independently switchable in the block:
+Five layers, each independently switchable in the block — and, more to the
+point, each run ONLY when a field of the type asks for one of its signals
+(`_layers_needed`). A type that wants nothing but "was this file edited?"
+never rasterizes a page and never calls a model; a layer nobody reads is
+reported `NO_SOLICITADA` and does not count against `evaluated`:
 
-  1. structure  `pdf_forensics`      PDF internals. Deterministic, free.
-  2. pixels     `pixel_forensics`    Paper/sensor noise. Free, soft.
+  0. integrity  `pdf_integrity`      Was the FILE touched after it was made?
+                                     Incremental saves, dates, editors, annotations,
+                                     forms, text over a scan, images over text,
+                                     signature coverage, active content, EXIF.
+                                     Deterministic, free, reads the raw bytes.
+  1. structure  `pdf_forensics`      PDF internals: capture of a paper or not.
+  2. pixels     `pixel_forensics`    Paper/sensor noise; error-level analysis.
   3. vision     `vision_inspector`   A multimodal model looks at the page.
   4. memory     `fingerprint_store`  Reuse across letters + registered references.
 
 Signals a field can ask for (`authenticity_source`):
 
-  evaluated                          every enabled layer ran (bool)
-  verdict | reasons | capture_kind   summary strings
+  evaluated                          every REQUESTED layer ran (bool)
+  verdict | reasons | capture_kind   summary strings (capture_kind needs vision)
+  integrity.single_generation        True = written once; False = saved over itself / after signing
+  integrity.generations              how many times the file was written (int, info)
+  integrity.dates_consistent         Info vs XMP dates agree, modification not before creation
+  integrity.producer_consistent      no PDF/image editor named in the metadata
+  integrity.editor                   the editor string found (info)
+  integrity.no_annotations           no annotation over the content (links/popups/widgets ignored)
+  integrity.no_form_fields           no AcroForm fields (signature fields excluded)
+  integrity.no_text_overlay          no visible text typed AFTER the full-page scan image
+  integrity.no_image_over_text       no image painted OVER visible text
+  integrity.digitally_signed         info
+  integrity.signature_intact         the latest signature reaches the end of the file / EMPTY if unsigned
+  integrity.no_active_content        no JavaScript, OpenAction, attachments (configurable)
+  integrity.camera_metadata          image uploads: EXIF camera data present (info)
   structure.physical_capture         True / False / (empty = undeterminable)
   structure.origin                   ESCANER | APP_CAPTURA | OFIMATICA | DESCONOCIDO | IMAGEN
+  structure.capture_as_expected      matches the block's `expected_capture` / empty when ANY
   pixels.natural_background          bool / empty
+  pixels.error_level_uniform         JPEG error-level analysis / empty when not a JPEG
   element.<KIND>.present             bool / empty (no vision)
   element.<KIND>.not_pasted          bool / empty
   element.<KIND>.text                the stamp's legend
   element.<KIND>.ink_colour          NEGRA | AZUL | OTRO_COLOR | NO_DETERMINABLE
   element.<KIND>.issuer_consistent   bool / empty
   element.<KIND>.matches_reference   bool / EMPTY when the supplier has none registered
+  vision.no_edit_signs               `vision.page_review`: the model sees no edit signs on the page
   memory.elements_unique             False = same ink as ANOTHER letter (reject-level)
   memory.elements_not_similar        False = suspiciously alike (review-level or worse)
   memory.not_duplicate               False = this very letter was already received
@@ -41,6 +66,10 @@ to a person, never approve it silently. That includes the kill-switch
 (`AUTHENTICITY_ENABLED=false`): switching the fraud check off does not turn
 unchecked letters into approved ones.
 
+The `authenticity` block itself is optional: fields carrying an
+`authenticity_source` are what opt a type in (typically through the shared
+`$presets` in `_shared.json`); the block only tunes thresholds and elements.
+
 Known limit, stated plainly: someone who prints the composed letter and
 re-scans it defeats layers 1 and 2 (the file IS then a genuine capture). Only
 the vision judgement and cross-letter ink reuse can catch that.
@@ -50,15 +79,17 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set
 
-from . import fingerprint_store, page_raster, pdf_forensics, pixel_forensics
+from . import fingerprint_store, page_raster, pdf_forensics, pdf_integrity, pixel_forensics
 from .pricing import merge_bedrock_usage
 
 logger = logging.getLogger(__name__)
@@ -74,6 +105,20 @@ VERDICT_REJECTED = "NO_AUTENTICO"
 VERDICT_NOT_EVALUATED = "NO_EVALUADO"
 
 LAYER_OK, LAYER_FAIL, LAYER_NA, LAYER_ERROR, LAYER_OFF = "OK", "FALLA", "NO_APLICA", "ERROR", "DESACTIVADA"
+# No field of the type asked for anything this layer produces: it did not run,
+# costs nothing, and says nothing about `evaluated`.
+LAYER_NOT_REQUESTED = "NO_SOLICITADA"
+ALL_LAYERS = ("integrity", "structure", "pixels", "vision", "memory")
+
+# Reasons that describe a circumstance, not a finding: they never make a
+# document SOSPECHOSO on their own.
+INFORMATIONAL_CODES = {
+    "SIN_REFERENCIAS_REGISTRADAS", "SIN_CLAVE_DE_REFERENCIAS", "PAGINAS_SIN_ANALIZAR",
+    "CARTA_YA_RECIBIDA", "VISION_OMITIDA_SIN_SOSPECHA", pdf_forensics.REASON_OFFICE_ORIGIN,
+    *(code for code, severity in pdf_integrity.SEVERITY.items() if severity == "info"),
+}
+
+EXPECTED_CAPTURE_VALUES = ("FISICO", "DIGITAL", "ANY")
 
 _DETERMINISTIC_CONFIDENCE = 0.99
 _VISION_CONFIDENCE = 0.95
@@ -94,22 +139,60 @@ def enabled() -> bool:
 class PageSource:
     """The upload as the stage needs it: an open pypdf reader for a PDF, or
     the raw bytes of a JPG/PNG. `file_sha256` identifies the FILE, so the same
-    upload processed twice is recognized as itself."""
+    upload processed twice is recognized as itself.
+
+    `raw_bytes`/`raw_reader` are the upload AS RECEIVED — before
+    `expediente._truncate_pdf` rewrote it to the page cap. Rewriting with
+    `PdfWriter` erases exactly the evidence the integrity layer reads
+    (incremental updates, the Info dictionary, signatures), so that layer
+    always works from the original; `reader` (the truncated one) stays what
+    the other layers rasterize from. Truncation keeps a PREFIX of the pages,
+    so a document's page range indexes both readers the same way.
+    """
 
     reader: Any = None
     image_bytes: Optional[bytes] = None
     file_sha256: str = ""
+    raw_bytes: Optional[bytes] = None
+    raw_reader: Any = None
+    _file_report: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
 
     @property
     def is_image(self) -> bool:
         return self.reader is None and self.image_bytes is not None
 
+    def file_report(self, policy: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The file-level integrity report, computed once per upload and
+        shared by every document in it (they run concurrently)."""
+        if self.is_image or self.raw_reader is None:
+            return None
+        with self._lock:
+            if self._file_report is None:
+                self._file_report = pdf_integrity.file_report(self.raw_bytes or b"", self.raw_reader, policy)
+            return self._file_report
 
-def source_for(file_bytes: bytes, reader: Any, is_image: bool) -> PageSource:
+
+def source_for(file_bytes: bytes, reader: Any, is_image: bool, raw_bytes: Optional[bytes] = None) -> PageSource:
+    original = raw_bytes if raw_bytes is not None else file_bytes
+    raw_reader = None
+    if not is_image:
+        if original is file_bytes or original == file_bytes:
+            raw_reader = reader
+        else:
+            try:
+                from pypdf import PdfReader
+
+                raw_reader = PdfReader(io.BytesIO(original))
+            except Exception as e:  # the integrity layer will report ERROR, the upload goes on
+                logger.warning("authenticity: could not open the original PDF: %s", e)
+                raw_reader = None
     return PageSource(
         reader=None if is_image else reader,
         image_bytes=file_bytes if is_image else None,
-        file_sha256=hashlib.sha256(file_bytes or b"").hexdigest(),
+        file_sha256=hashlib.sha256(original or b"").hexdigest(),
+        raw_bytes=original,
+        raw_reader=raw_reader,
     )
 
 
@@ -118,11 +201,14 @@ def source_for(file_bytes: bytes, reader: Any, is_image: bool) -> PageSource:
 
 def spec_for(entry: Any) -> Optional[Dict[str, Any]]:
     """The type's `authenticity` block plus the fields that consume it, or
-    None when the type doesn't take part (no block, `enabled: false`, or no
-    field asks for anything — a stage nobody reads is not worth its cost)."""
+    None when the type doesn't take part (`enabled: false`, or no field asks
+    for anything — a stage nobody reads is not worth its cost). The block is
+    optional: a type whose fields carry `authenticity_source` runs with the
+    defaults. `layers` is the set of layers those fields actually need."""
     block = getattr(entry, "authenticity", None)
-    if not isinstance(block, dict) or block.get("enabled") is False:
+    if block is False or (isinstance(block, dict) and block.get("enabled") is False):
         return None
+    block = block if isinstance(block, dict) else {}
     outputs: Dict[str, str] = {}
     for name, field_spec in (getattr(entry, "field_tree", None) or {}).items():
         source = (getattr(field_spec, "params", None) or {}).get("authenticity_source")
@@ -135,7 +221,56 @@ def spec_for(entry: Any) -> Optional[Dict[str, Any]]:
         str(kind): dict(spec or {})
         for kind, spec in (block.get("elements") or {}).items()
     }
-    return {**block, "elements": elements, "outputs": outputs}
+    wanted = set(outputs.values())
+    # A type that reads `structure.physical_capture` is, by that very fact,
+    # expecting the capture of a paper; every other type expects nothing
+    # unless it says so.
+    default_expected = "FISICO" if "structure.physical_capture" in wanted else "ANY"
+    expected = str(block.get("expected_capture") or default_expected).upper()
+    if expected not in EXPECTED_CAPTURE_VALUES:
+        expected = default_expected
+    return {
+        **block, "elements": elements, "outputs": outputs, "wanted": wanted,
+        "layers": _layers_needed(wanted, elements, block), "expected_capture": expected,
+    }
+
+
+def _layers_needed(wanted: Set[str], elements: Dict[str, Any], block: Optional[Dict[str, Any]] = None) -> Set[str]:
+    """Which layers the requested signals need. Pure. The rule that keeps the
+    stage cheap: nothing runs because it is configured, only because a field
+    will read it.
+
+      integrity.*                 -> integrity (raw bytes; never a raster)
+      structure.*                 -> structure
+      pixels.natural_background   -> structure + pixels (a raster)
+      pixels.error_level_uniform  -> structure + pixels (the file's JPEG bytes, no raster)
+      element.* | capture_kind |
+      vision.*                    -> vision + structure + pixels (candidates come from
+                                     the page report and the ink regions of the raster)
+      memory.*                    -> memory (+ vision when there are elements to fingerprint)
+      evaluated|verdict|reasons   -> nothing on their own
+    """
+    needed: Set[str] = set()
+    block = block or {}
+    for signal in wanted:
+        head = signal.split(".", 1)[0]
+        if head == "integrity":
+            needed.add("integrity")
+        elif head == "structure":
+            needed.add("structure")
+        elif head == "pixels":
+            needed.update({"structure", "pixels"})
+        elif head in ("element", "vision") or signal == "capture_kind":
+            needed.update({"vision", "structure", "pixels"})
+        elif head == "memory":
+            needed.add("memory")
+            if elements:
+                needed.update({"vision", "structure", "pixels"})
+    return needed
+
+
+def layer_requested(spec: Dict[str, Any], name: str) -> bool:
+    return name in (spec.get("layers") or set())
 
 
 def _plain(value: Any) -> Any:
@@ -176,7 +311,7 @@ def run(doc: Dict[str, Any], entry: Any, source: PageSource, context: Optional[D
     confidences: Dict[str, float] = {}
 
     if not enabled():
-        audit["layers"] = {name: LAYER_OFF for name in ("structure", "pixels", "vision", "memory")}
+        audit["layers"] = {name: LAYER_OFF if name in spec["layers"] else LAYER_NOT_REQUESTED for name in ALL_LAYERS}
         _reason(audit, "ETAPA_DESACTIVADA", "kill-switch", False,
                 "La verificación de autenticidad está desactivada (AUTHENTICITY_ENABLED=false)")
         signals["evaluated"] = False
@@ -203,48 +338,67 @@ def _evaluate(
 ) -> None:
     layers = audit["layers"]
     elements: Dict[str, Dict[str, Any]] = spec["elements"]
+    needed: Set[str] = spec["layers"]
+    wanted: Set[str] = spec["wanted"]
     page_indexes = _segment_pages(doc, source)
+    for name in ALL_LAYERS:
+        if name not in needed:
+            layers[name] = LAYER_NOT_REQUESTED
 
-    # ---- layer 1: structure
-    structure = _run_structure(spec, source, page_indexes, audit, signals)
+    # ---- layer 1: structure (the page reports layer 0 reads too)
+    structure = _run_structure(spec, source, page_indexes, audit, signals) if "structure" in needed else None
     digital = structure is not None and structure.get("physicalCapture") is False
     content_pages = [p - 1 for p in (structure or {}).get("contentPages") or []] or page_indexes
     max_pages = max(int((spec.get("pages") or {}).get("max_pages", 2)), 1)
     analysed = content_pages[:max_pages]
     audit["pagesAnalysed"] = [i + 1 for i in analysed]
 
-    # ---- rasters (shared by layers 2-4)
-    dpi = int((spec.get("pixels") or {}).get("dpi", 150))
+    # ---- layer 0: integrity (raw bytes, no raster, no model)
+    if "integrity" in needed:
+        _run_integrity(spec, source, page_indexes, structure, analysed, audit, signals)
+
+    # ---- rasters (shared by layers 2-4) — only when something will look at pixels
     rasters: Dict[int, Any] = {}
-    for index in analysed:
-        raster = _raster(source, index, dpi)
-        if raster is not None:
-            rasters[index] = raster
+    needs_raster = "vision" in needed or "pixels.natural_background" in wanted
+    if needs_raster:
+        dpi = int((spec.get("pixels") or {}).get("dpi", 150))
+        for index in analysed:
+            raster = _raster(source, index, dpi)
+            if raster is not None:
+                rasters[index] = raster
 
     # ---- layer 2: pixels
-    _run_pixels(spec, structure, rasters, audit, signals)
+    if "pixels" in needed:
+        _run_pixels(spec, source, structure, rasters, analysed, wanted, audit, signals)
 
     # ---- layer 3: vision
     page_index = next(iter(rasters), None)
-    located = _run_vision_locate(spec, entry, elements, rasters, page_index, structure, audit, signals, doc)
+    located = None
+    element_state: Dict[str, Dict[str, Any]] = {kind: {} for kind in elements}
+    references: Dict[str, List[Dict[str, Any]]] = {}
+    if "vision" in needed:
+        located = _run_vision_locate(spec, entry, elements, rasters, page_index, structure, audit, signals, doc)
 
-    # Per-element evidence that needs no model: crops, fingerprints, and — on a
-    # born-digital page — whether an embedded image sits under the element.
-    element_state = _element_evidence(
-        elements, located, rasters.get(page_index) if page_index is not None else None,
-        _page_report(structure, page_index), audit,
-    )
+        # Per-element evidence that needs no model: crops, fingerprints, and — on a
+        # born-digital page — whether an embedded image sits under the element.
+        element_state = _element_evidence(
+            elements, located, rasters.get(page_index) if page_index is not None else None,
+            _page_report(structure, page_index), audit,
+        )
 
-    references = _load_references(spec, context, element_state, audit)
-    _run_vision_inspect(spec, entry, elements, element_state, references, digital, structure, audit, doc)
-    _element_signals(elements, element_state, references, doc, audit, signals, confidences)
+        references = _load_references(spec, context, element_state, audit)
+        _run_vision_inspect(spec, entry, elements, element_state, references, digital, structure, audit, doc)
+        _element_signals(elements, element_state, references, doc, audit, signals, confidences)
+        _run_vision_page_review(spec, entry, rasters, page_index, structure, audit, signals, doc)
 
     # ---- layer 4: memory
-    _run_memory(spec, entry, doc, source, context, elements, element_state, audit, signals)
+    if "memory" in needed:
+        _run_memory(spec, entry, doc, source, context, elements, element_state, audit, signals)
 
-    expected = ["structure", "pixels", "vision", "memory"]
-    signals["evaluated"] = all(layers.get(name) in (LAYER_OK, LAYER_FAIL, LAYER_NA, LAYER_OFF) for name in expected)
-    if len(content_pages) > len(analysed):
+    signals["evaluated"] = all(
+        layers.get(name) in (LAYER_OK, LAYER_FAIL, LAYER_NA, LAYER_OFF) for name in needed
+    )
+    if needs_raster and len(content_pages) > len(analysed):
         _reason(audit, "PAGINAS_SIN_ANALIZAR", "pages", False,
                 f"Se analizaron {len(analysed)} de {len(content_pages)} páginas con contenido "
                 "(`authenticity.pages.max_pages`)")
@@ -282,11 +436,31 @@ def _run_structure(spec, source: PageSource, page_indexes, audit, signals) -> Op
     audit["structure"] = structure
     signals["structure.origin"] = structure["origin"]
     signals["structure.physical_capture"] = structure["physicalCapture"]
-    layers["structure"] = LAYER_FAIL if structure["physicalCapture"] is False else LAYER_OK
-    for code in structure["reasons"]:
-        _reason(audit, code, "structure", code != pdf_forensics.REASON_OFFICE_ORIGIN, _STRUCTURE_MESSAGES.get(code, code))
+    expected = spec.get("expected_capture") or "ANY"
+    physical = structure["physicalCapture"]
+    if expected == "FISICO":
+        # The classic question: the DIGITAL reasons below already carry the
+        # hard evidence; this signal only names the expectation.
+        signals["structure.capture_as_expected"] = physical
+        layers["structure"] = LAYER_FAIL if physical is False else LAYER_OK
+        for code in structure["reasons"]:
+            _reason(audit, code, "structure", code != pdf_forensics.REASON_OFFICE_ORIGIN, _STRUCTURE_MESSAGES.get(code, code))
+    else:
+        # A type born digital (an invoice, a pedimento) is not "suspicious"
+        # for being digital: the capture facts are evidence, integrity decides.
+        as_expected = None if expected == "ANY" or physical is None else (physical is False)
+        signals["structure.capture_as_expected"] = as_expected
+        layers["structure"] = LAYER_FAIL if as_expected is False else LAYER_OK
+        if as_expected is False:
+            _reason(audit, REASON_CAPTURE_UNEXPECTED, "structure", False,
+                    "Se esperaba un documento digital de origen y el archivo es la captura de un papel")
+        if structure["origin"] == pdf_forensics.ORIGIN_OFFICE and pdf_forensics.REASON_OFFICE_ORIGIN in structure["reasons"]:
+            _reason(audit, pdf_forensics.REASON_OFFICE_ORIGIN, "structure", False,
+                    _STRUCTURE_MESSAGES[pdf_forensics.REASON_OFFICE_ORIGIN])
     return structure
 
+
+REASON_CAPTURE_UNEXPECTED = "CAPTURA_DISTINTA_DE_LA_ESPERADA"
 
 _STRUCTURE_MESSAGES = {
     pdf_forensics.REASON_PASTED_IMAGE: "El PDF tiene texto nativo y una imagen insertada: no es la captura de un papel",
@@ -296,45 +470,187 @@ _STRUCTURE_MESSAGES = {
 }
 
 
+def _run_integrity(spec, source: PageSource, page_indexes, structure, analysed, audit, signals) -> None:
+    """Layer 0: file-level facts once per upload (cached on the source),
+    page-level facts for THIS document's pages only, and the metadata of the
+    image the upload is — or the JPEG each analysed scan page embeds."""
+    layers = audit["layers"]
+    policy = spec.get("integrity")
+    if policy is False or (isinstance(policy, dict) and policy.get("enabled") is False):
+        layers["integrity"] = LAYER_OFF
+        return
+    policy = pdf_integrity.policy_for(policy if isinstance(policy, dict) else {})
+    try:
+        file_rep = source.file_report(policy)
+        page_reps: List[Dict[str, Any]] = []
+        image_rep: Optional[Dict[str, Any]] = None
+        if source.is_image:
+            image_rep = pdf_integrity.image_report(source.image_bytes or b"", policy)
+        else:
+            if source.raw_reader is None:
+                raise RuntimeError("original PDF unreadable")
+            if page_indexes and max(page_indexes) >= len(source.raw_reader.pages):
+                raise RuntimeError("document page range beyond the original file")
+            structure_pages = {p.get("page"): p for p in (structure or {}).get("perPage") or []}
+            for index in page_indexes:
+                facts = structure_pages.get(index + 1)
+                if facts is None or "overlay" not in facts:
+                    # Structure was not requested (or ran on other pages):
+                    # walk the page here — pypdf only, still free.
+                    facts = pdf_forensics.inspect_page(source.raw_reader, index, policy)
+                page_reps.append(pdf_integrity.page_report(facts, policy))
+            # The JPEG a scan stores keeps the metadata of whatever wrote it —
+            # an image edited in Photoshop and "printed" to PDF included.
+            for index in analysed:
+                facts = structure_pages.get(index + 1) or {}
+                full = [i for i in facts.get("images") or [] if float(i.get("coverage") or 0) >= 0.85
+                        and "/DCTDecode" in (i.get("filters") or [])]
+                if not full:
+                    continue
+                data = pdf_forensics.dct_stream_bytes(source.raw_reader, index, str(full[0].get("name")))
+                if data:
+                    image_rep = pdf_integrity.image_report(data, policy)
+                    break
+        found, reasons = pdf_integrity.signals_from(file_rep, page_reps, image_rep, policy, is_image=source.is_image)
+    except Exception as e:
+        logger.warning("authenticity: integrity layer failed: %s", e)
+        layers["integrity"] = LAYER_ERROR
+        _reason(audit, pdf_integrity.R_UNDETERMINED, "integrity", False,
+                pdf_integrity.MESSAGES[pdf_integrity.R_UNDETERMINED].format(detail=str(e)[:80]))
+        return
+    audit["integrity"] = {
+        **({"file": _integrity_file_view(file_rep)} if file_rep else {}),
+        **({"perPage": page_reps} if page_reps else {}),
+        **({"image": {k: v for k, v in image_rep.items() if k not in ("pngText",) or v}} if image_rep else {}),
+    }
+    signals.update(found)
+    failing = False
+    for code, severity, message in reasons:
+        _reason(audit, code, "integrity", severity == "hard", message)
+        failing = failing or severity != "info"
+    layers["integrity"] = LAYER_FAIL if failing else LAYER_OK
+
+
+def _integrity_file_view(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The file report minus the long xref chain (offsets are noise in the
+    audit; generations and counts say it all)."""
+    out = dict(report)
+    chain = dict(report.get("chain") or {})
+    chain.pop("chain", None)
+    out["chain"] = chain
+    return out
+
+
 def _raster(source: PageSource, index: int, dpi: int) -> Any:
     if source.is_image:
         return page_raster.decode_image(source.image_bytes or b"")
     return page_raster.render_page_rgb(source.reader, index, dpi=dpi)
 
 
-def _run_pixels(spec, structure, rasters, audit, signals) -> None:
+def _run_pixels(spec, source: PageSource, structure, rasters, analysed, wanted, audit, signals) -> None:
     layers = audit["layers"]
     policy = spec.get("pixels")
     if policy is False or (isinstance(policy, dict) and policy.get("enabled") is False):
         layers["pixels"] = LAYER_OFF
         return
-    if not rasters:
+    policy = policy if isinstance(policy, dict) else {}
+    pixels_audit: Dict[str, Any] = {}
+    states: List[str] = []
+
+    if "pixels.natural_background" in wanted or "vision" in spec["layers"]:
+        if not rasters:
+            states.append(LAYER_ERROR)
+        elif structure is not None and structure.get("bilevel"):
+            # A 1-bit scan is 0/255 by construction: its "perfect" background says
+            # nothing about paper. Abstain rather than accuse.
+            states.append(LAYER_NA)
+            pixels_audit["bilevel"] = True
+        else:
+            per_page = {index + 1: pixel_forensics.background_stats(raster, policy)
+                        for index, raster in rasters.items()}
+            verdicts = [s.get("naturalBackground") for s in per_page.values()]
+            natural = False if False in verdicts else True if True in verdicts else None
+            pixels_audit.update({"naturalBackground": natural, "perPage": per_page})
+            signals["pixels.natural_background"] = natural
+            states.append(LAYER_FAIL if natural is False else LAYER_OK)
+            if natural is False:
+                _reason(audit, "FONDO_SIN_RUIDO_DE_CAPTURA", "pixels", False,
+                        "El fondo es perfectamente uniforme: posible exportación digital o captura de pantalla")
+
+    if "pixels.error_level_uniform" in wanted:
+        # Error-level analysis runs on the JPEG bytes the FILE holds — the
+        # upload itself, or the scan each page embeds — never on our raster.
+        ela_pages: Dict[str, Any] = {}
+        if source.is_image:
+            ela_pages["1"] = pixel_forensics.error_level_stats(source.image_bytes or b"", policy)
+        elif source.raw_reader is not None:
+            structure_pages = {p.get("page"): p for p in (structure or {}).get("perPage") or []}
+            for index in analysed:
+                facts = structure_pages.get(index + 1) or {}
+                full = [i for i in facts.get("images") or [] if float(i.get("coverage") or 0) >= 0.85
+                        and "/DCTDecode" in (i.get("filters") or [])]
+                if not full:
+                    continue
+                data = pdf_forensics.dct_stream_bytes(source.raw_reader, index, str(full[0].get("name")))
+                if data:
+                    ela_pages[str(index + 1)] = pixel_forensics.error_level_stats(data, policy)
+        verdicts = [s.get("errorLevelUniform") for s in ela_pages.values()]
+        uniform = False if False in verdicts else True if True in verdicts else None
+        pixels_audit["errorLevel"] = {"uniform": uniform, "perPage": ela_pages}
+        signals["pixels.error_level_uniform"] = uniform
+        states.append(LAYER_FAIL if uniform is False else LAYER_OK if uniform is True else LAYER_NA)
+        if uniform is False:
+            _reason(audit, "NIVEL_DE_ERROR_NO_UNIFORME", "pixels", False,
+                    "Una zona de la imagen tiene un nivel de error de compresión distinto al resto: posible parche")
+
+    audit["pixels"] = pixels_audit
+    if LAYER_ERROR in states:
         layers["pixels"] = LAYER_ERROR
-        return
-    if structure is not None and structure.get("bilevel"):
-        # A 1-bit scan is 0/255 by construction: its "perfect" background says
-        # nothing about paper. Abstain rather than accuse.
+    elif LAYER_FAIL in states:
+        layers["pixels"] = LAYER_FAIL
+    elif LAYER_OK in states:
+        layers["pixels"] = LAYER_OK
+    else:
         layers["pixels"] = LAYER_NA
-        audit["pixels"] = {"bilevel": True}
-        return
-    per_page = {index + 1: pixel_forensics.background_stats(raster, policy if isinstance(policy, dict) else {})
-                for index, raster in rasters.items()}
-    verdicts = [s.get("naturalBackground") for s in per_page.values()]
-    natural = False if False in verdicts else True if True in verdicts else None
-    audit["pixels"] = {"naturalBackground": natural, "perPage": per_page}
-    signals["pixels.natural_background"] = natural
-    layers["pixels"] = LAYER_FAIL if natural is False else LAYER_OK
-    if natural is False:
-        _reason(audit, "FONDO_SIN_RUIDO_DE_CAPTURA", "pixels", False,
-                "El fondo es perfectamente uniforme: posible exportación digital o captura de pantalla")
 
 
 def _vision_spec(spec) -> Optional[Dict[str, Any]]:
     vision = spec.get("vision")
-    if vision is False or not spec.get("elements"):
+    if vision is False:
         return None
     vision = vision if isinstance(vision, dict) else {}
+    if not spec.get("elements") and not vision.get("page_review"):
+        return None
     return None if vision.get("enabled") is False else vision
+
+
+def _suspicious(audit) -> bool:
+    """Did a FREE layer find anything worth paying a model to look at?"""
+    return any(
+        r["layer"] in ("integrity", "structure", "pixels") and r["code"] not in INFORMATIONAL_CODES
+        for r in audit["reasons"]
+    )
+
+
+def _vision_gate(spec, vision, rasters, page_index, audit) -> Optional[bytes]:
+    """The page JPEG the vision calls share, or None with the layer state
+    already set: off, no raster, or `trigger: on_suspicion` with nothing to
+    be suspicious about (the cost lever — a clean file pays no model)."""
+    layers = audit["layers"]
+    if page_index is None:
+        layers["vision"] = LAYER_ERROR
+        return None
+    if str(vision.get("trigger") or "always").lower() == "on_suspicion" and not _suspicious(audit):
+        layers["vision"] = LAYER_NA
+        audit["visionSkipped"] = "SIN_SOSPECHA"
+        _reason(audit, "VISION_OMITIDA_SIN_SOSPECHA", "vision", False,
+                "Las capas gratuitas no encontraron nada sospechoso: no se pagó la revisión visual (`vision.trigger`)")
+        return None
+    page_jpeg = page_raster.encode_jpeg(rasters[page_index])
+    if not page_jpeg:
+        layers["vision"] = LAYER_ERROR
+        return None
+    return page_jpeg
 
 
 def _run_vision_locate(spec, entry, elements, rasters, page_index, structure, audit, signals, doc):
@@ -343,15 +659,13 @@ def _run_vision_locate(spec, entry, elements, rasters, page_index, structure, au
     if vision is None:
         layers["vision"] = LAYER_OFF
         return None
-    if page_index is None:
-        layers["vision"] = LAYER_ERROR
+    if not elements:
+        # Nothing to locate: `page_review` alone drives this layer.
+        return None
+    page_jpeg = _vision_gate(spec, vision, rasters, page_index, audit)
+    if page_jpeg is None:
         return None
     from . import vision_inspector
-
-    page_jpeg = page_raster.encode_jpeg(rasters[page_index])
-    if not page_jpeg:
-        layers["vision"] = LAYER_ERROR
-        return None
     digital = structure is not None and structure.get("physicalCapture") is False
     candidates = _candidates(spec, _page_report(structure, page_index), rasters[page_index], digital)
     try:
@@ -378,6 +692,45 @@ def _run_vision_locate(spec, entry, elements, rasters, page_index, structure, au
         for index, candidate in enumerate(candidates)
     ]
     return located
+
+
+def _run_vision_page_review(spec, entry, rasters, page_index, structure, audit, signals, doc) -> None:
+    """`vision.page_review`: one call asking the model whether the rendered
+    page shows signs of editing. A judgement, so review-level at most; it runs
+    under the same trigger as `locate` and is billed on the same line."""
+    layers = audit["layers"]
+    vision = _vision_spec(spec)
+    if vision is None or not vision.get("page_review"):
+        return
+    if layers.get("vision") == LAYER_ERROR or audit.get("visionSkipped"):
+        return
+    if layers.get("vision") == LAYER_OK:
+        # `locate` already ran on this page: same JPEG, no second gate.
+        page_jpeg = page_raster.encode_jpeg(rasters[page_index]) if page_index is not None else None
+    else:
+        page_jpeg = _vision_gate(spec, vision, rasters, page_index, audit)
+    if page_jpeg is None:
+        return
+    from . import vision_inspector
+
+    try:
+        review, meta = vision_inspector.review_page(
+            page_jpeg, entry, vision, monochrome=bool((structure or {}).get("bilevel")),
+        )
+    except Exception as e:
+        logger.warning("authenticity: vision page review failed: %s", e)
+        layers["vision"] = LAYER_ERROR
+        audit["visionError"] = str(e)[:200]
+        return
+    _bill(doc, meta)
+    layers["vision"] = LAYER_OK if layers.get("vision") != LAYER_FAIL else LAYER_FAIL
+    audit["pageReview"] = review
+    signs = review.get("editSigns") or []
+    signals["vision.no_edit_signs"] = not signs
+    if signs:
+        layers["vision"] = LAYER_FAIL
+        _reason(audit, "INDICIOS_DE_EDICION_EN_PAGINA", "vision", False,
+                f"El modelo ve indicios de edición en la página ({', '.join(signs)})")
 
 
 def _candidates(spec, page_report: Dict[str, Any], raster: Any, digital: bool) -> List[Dict[str, Any]]:
@@ -778,9 +1131,7 @@ def _verdict(audit, signals) -> str:
         return VERDICT_REJECTED
     if not signals.get("evaluated"):
         return VERDICT_NOT_EVALUATED
-    soft = {"SIN_REFERENCIAS_REGISTRADAS", "SIN_CLAVE_DE_REFERENCIAS", "PAGINAS_SIN_ANALIZAR",
-            "CARTA_YA_RECIBIDA", pdf_forensics.REASON_OFFICE_ORIGIN}
-    if any(r["code"] not in soft for r in audit["reasons"]):
+    if any(r["code"] not in INFORMATIONAL_CODES for r in audit["reasons"]):
         return VERDICT_SUSPICIOUS
     return VERDICT_AUTHENTIC
 
@@ -807,7 +1158,9 @@ def _write_fields(doc, outputs: Dict[str, str], signals: Dict[str, Any], confide
             entities.pop(field_name, None)
             continue
         entities[field_name] = value
-        deterministic = signal.split(".", 1)[0] in ("structure", "pixels", "memory", "evaluated", "verdict", "reasons")
+        deterministic = signal.split(".", 1)[0] in (
+            "integrity", "structure", "pixels", "memory", "evaluated", "verdict", "reasons",
+        )
         field_confidences[field_name] = confidences.get(
             signal, _DETERMINISTIC_CONFIDENCE if deterministic else _VISION_CONFIDENCE
         )

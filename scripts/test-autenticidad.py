@@ -40,16 +40,32 @@ COSTO_VISION_POR_CARTA = 0.009
 
 
 def _entry(type_id: str, vision: bool):
+    import document_catalog
     from document_catalog import _parse_entry
+    from pipeline import pdf_integrity
 
+    compartido = REPO / "catalogs" / "_shared.json"
+    if compartido.is_file():
+        datos = json.loads(compartido.read_text(encoding="utf-8"))
+        document_catalog._FIELD_PRESETS.update(
+            {k: v for k, v in (datos.get("_field_presets") or {}).items() if not k.startswith("__")})
     rutas = [p for p in (REPO / "catalogs").rglob(f"{type_id}.json")
              if "save" not in p.relative_to(REPO / "catalogs").parts]
     crudo = copy.deepcopy(json.loads(rutas[0].read_text(encoding="utf-8"))[type_id])
+    bloque = crudo.setdefault("authenticity", {})
     if not vision:
-        crudo["authenticity"]["vision"] = False
-    crudo["authenticity"]["memory"] = {"enabled": False}
-    crudo["authenticity"]["references"] = {"enabled": False}
-    return _parse_entry(type_id, crudo), crudo["authenticity"].get("elements") or {}
+        bloque["vision"] = False
+    bloque["memory"] = {"enabled": False}
+    bloque["references"] = {"enabled": False}
+    # La capa de integridad corre siempre (gratis): el ground truth puede fijar
+    # qué motivos debe o no debe levantar cada archivo.
+    campos = crudo.setdefault("fields", {})
+    for señal in pdf_integrity.SIGNALS:
+        if not any(isinstance(f, dict) and f.get("authenticity_source") == señal for f in campos.values()):
+            campos["_CAL_" + señal.upper().replace(".", "_")] = {
+                "type": "string", "required": False, "computed": True,
+                "authenticity_source": señal, "hint": "calibración", "validation": []}
+    return _parse_entry(type_id, crudo), bloque.get("elements") or {}
 
 
 def main() -> int:
@@ -104,6 +120,20 @@ def main() -> int:
         # Invariante del dataset: ninguna captura genuina se acusa de fondo artificial.
         if exp["physical_capture"] is True and (auditoria.get("pixels") or {}).get("naturalBackground") is False:
             problemas.append("captura física marcada con fondo artificial (falso positivo de la capa de pixeles)")
+        # Integridad: lo que el ground truth fije, y el invariante de que una
+        # captura genuina verificada a ojo nunca levanta un motivo DURO de integridad.
+        for codigo in exp.get("integrity_reasons_include") or []:
+            if codigo not in codigos:
+                problemas.append(f"falta el motivo de integridad {codigo}")
+        for codigo in exp.get("integrity_reasons_exclude") or []:
+            if codigo in codigos:
+                problemas.append(f"sobra el motivo de integridad {codigo}")
+        duros = [r["code"] for r in auditoria.get("reasons") or [] if r.get("layer") == "integrity" and r.get("hard")]
+        if exp.get("verified_by_eye") and exp["physical_capture"] is True and duros:
+            problemas.append(f"captura genuina con motivo duro de integridad: {', '.join(duros)}")
+        integridad = (auditoria.get("layers") or {}).get("integrity")
+        if integridad == authenticity.LAYER_ERROR:
+            problemas.append("la capa de integridad no pudo leer el archivo")
 
         detalle = ""
         if args.vision:
@@ -121,7 +151,10 @@ def main() -> int:
                 for k, v in vistos.items())
 
         marca = f"{GREEN}ok{RESET}" if not problemas else f"{RED}FALLA{RESET}"
-        print(f"  {marca}  {rel:22s} {estructura.get('verdict', '-'):14s} {auditoria.get('verdict', '-'):14s}{detalle}")
+        generaciones = (((auditoria.get("integrity") or {}).get("file") or {}).get("chain") or {}).get("generations")
+        integridad_txt = f"integridad={integridad or '-'}" + (f" g={generaciones}" if generaciones is not None else "")
+        print(f"  {marca}  {rel:22s} {estructura.get('verdict', '-'):14s} {auditoria.get('verdict', '-'):14s} "
+              f"{integridad_txt:20s}{detalle}")
         for problema in problemas:
             print(f"        - {problema}")
             fallas.append(f"{rel}: {problema}")

@@ -67,6 +67,8 @@ reportes-costos/
 reportes-documentos/
 # Reporte unificado (costos + documentos) generado por scripts/reporte.py
 reportes/
+# Corridas del benchmark de latencia por modelo (scripts/bench-latencia.py)
+bench-latencia/
 # Historial y artefactos locales de las suites de calidad/E2E (pueden contener PII)
 resultados-pruebas/
 
