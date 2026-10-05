@@ -1,18 +1,26 @@
-# Autenticidad física y referencias por proveedor
+# Autenticidad e integridad: la etapa `authenticity` y las referencias por proveedor
 
-Guía completa de la **etapa de autenticidad** (`authenticity`): qué revisa, cómo
-decide, cómo **dar de alta los sellos, firmas y logotipos válidos de cada
-proveedor**, cómo se opera y cuáles son sus límites.
+Guía completa de la **etapa de autenticidad e integridad** (`authenticity`):
+qué revisa, cómo decide, qué cuesta cada capa, cómo **dar de alta los sellos,
+firmas y logotipos válidos de cada proveedor**, cómo se opera y cuáles son sus
+límites.
 
 > **¿Solo quieres probarla o usarla con la carta NOM-035?** Empieza por la guía
 > práctica: [`CARTA_NOM35.md`](CARTA_NOM35.md) — tres pasos, de gratis a caro, con
 > lo que debe salir en cada uno.
 >
-> Primer tipo que la usa: `CARTA_NOM35` (la carta NOM-035 que entrega cada
-> promotor). La etapa es **genérica**: cualquier tipo de documento que deba
-> llegar *impreso, firmado con tinta, sellado y escaneado* la activa declarando
-> un bloque en su catálogo — sin tocar código. La especificación del bloque está
-> en [`catalogs/README.md`](../catalogs/README.md) → «Autenticidad física».
+> La etapa responde dos preguntas distintas y es **genérica** para las dos:
+>
+> - **¿El archivo fue tocado después de generarse?** (capa 0, `integrity`) —
+>   para cualquier tipo, digital de origen o escaneado: un tipo lo pide con
+>   `"$presets": ["INTEGRIDAD_PDF"]` (o `INTEGRIDAD_IMAGEN` para JPG/PNG) en su
+>   catálogo, sin bloque `authenticity` ni código, y paga solo CPU.
+> - **¿Es la captura de un papel impreso, firmado con tinta y sellado?** (capas
+>   1-4) — el caso de `CARTA_NOM35`, primer tipo que la usa.
+>
+> La especificación del bloque, los presets y la tabla de señales están en
+> [`catalogs/README.md`](../catalogs/README.md) → «Autenticidad e integridad» y
+> «Presets de campos».
 
 ---
 
@@ -44,17 +52,19 @@ Dos cosas que **no** sirven, también medidas:
 
 ---
 
-## 2. Las cuatro capas
+## 2. Las cinco capas
 
 ```
-                      ┌────────────────────────────────────────────────────┐
-  PDF / JPG / PNG ──► │ 1 ESTRUCTURA   pdf_forensics.py    gratis, exacta  │──► CAPTURA_FISICA
-                      │ 2 PIXELES      pixel_forensics.py  gratis, suave   │──► FONDO_NATURAL
-                      │ 3 VISIÓN       vision_inspector.py ~$0.005-0.01    │──► *_PRESENTE, *_SIN_INSERCION,
-                      │                                                    │    SELLO_CORRESPONDE_EMISOR,
-                      │                                                    │    *_COINCIDE_REFERENCIA
-                      │ 4 MEMORIA      fingerprint_store.py DynamoDB       │──► FIRMA_SELLO_NO_REUTILIZADOS,
-                      └────────────────────────────────────────────────────┘    CARTA_NO_DUPLICADA
+                      ┌──────────────────────────────────────────────────────┐
+  bytes originales ─► │ 0 INTEGRIDAD   pdf_integrity.py    gratis, exacta    │──► ARCHIVO_SIN_REGUARDADO, SIN_ANOTACIONES,
+  (antes de truncar)  │                                                      │    SIN_TEXTO_SOBRE_ESCANEO, FIRMA_DIGITAL_INTACTA…
+  PDF / JPG / PNG ──► │ 1 ESTRUCTURA   pdf_forensics.py    gratis, exacta    │──► CAPTURA_FISICA
+                      │ 2 PIXELES      pixel_forensics.py  gratis, suave     │──► FONDO_NATURAL, NIVEL_DE_ERROR_UNIFORME
+                      │ 3 VISIÓN       vision_inspector.py ~$0.005-0.01      │──► *_PRESENTE, *_SIN_INSERCION,
+                      │                                                      │    SELLO_CORRESPONDE_EMISOR,
+                      │                                                      │    *_COINCIDE_REFERENCIA
+                      │ 4 MEMORIA      fingerprint_store.py DynamoDB         │──► FIRMA_SELLO_NO_REUTILIZADOS,
+                      └──────────────────────────────────────────────────────┘    CARTA_NO_DUPLICADA
                                  │
                                  ▼
              campos `computed` del catálogo  ──►  motor de reglas (`boolean_true` + `on_fail`)
@@ -63,8 +73,9 @@ Dos cosas que **no** sirven, también medidas:
 
 | Capa | Qué responde | Cómo | ¿Puede rechazar? |
 |---|---|---|---|
-| **1 Estructura** | ¿El archivo es la *captura* de un papel o una *composición* digital? | Lee el PDF por dentro: caracteres de texto **visibles** vs invisibles (la capa OCR de un escaneo «buscable» es invisible), y dónde cae y cuánto cubre cada imagen. Sin modelo: no hay IA a la que engañar. | **Sí** — es determinista |
-| **2 Pixeles** | ¿La hoja pasó por papel? | Ruido en las zonas en blanco. Una exportación digital tiene blanco 255 perfecto, desviación 0.000. | No (solo revisión). Un escáner con «limpieza de fondo» también deja blancos perfectos |
+| **0 Integridad** | ¿El *archivo* fue tocado después de generarse? | Lee los bytes **originales** de la carga (antes del recorte de páginas, que reescribe el PDF y borraría justo esta evidencia): cuántas veces se escribió el archivo (la cadena `startxref`/`/Prev` que un editor deja al «guardar»; descuenta la sección extra de un linearizado y una generación por firma digital), fechas Info vs XMP, qué software lo produjo y lo tocó (Producer, Creator, historial XMP), anotaciones por página, campos de formulario, JavaScript/adjuntos, si la firma digital más reciente cubre el archivo completo (**solo la geometría del `/ByteRange`: no verifica criptografía**), y el orden de pintado de la página: texto visible pintado *después* de la imagen del escaneo, una imagen pintada *encima* del texto. En JPG/PNG: EXIF `Software`, el segmento APP13 de Photoshop, PNG `Software`, historial XMP, fechas EXIF, datos de cámara. Sin raster, sin OCR, sin modelo. | **Sí** — es determinista. Solo «modificado después de firmar» es duro por defecto; el resto arranca suave (§6, medición) |
+| **1 Estructura** | ¿El archivo es la *captura* de un papel o una *composición* digital? | Lee el PDF por dentro: caracteres de texto **visibles** vs invisibles (la capa OCR de un escaneo «buscable» es invisible), y dónde cae y cuánto cubre cada imagen. Sin modelo: no hay IA a la que engañar. Con `expected_capture: "DIGITAL"` (una factura) la pregunta se invierte: lo raro es un escaneo. | **Sí** — es determinista |
+| **2 Pixeles** | ¿La hoja pasó por papel? ¿Un JPEG tiene una zona comprimida distinta al resto? | Ruido en las zonas en blanco. Una exportación digital tiene blanco 255 perfecto, desviación 0.000. Además, análisis de nivel de error (ELA) sobre los bytes JPEG que trae el archivo — nunca sobre nuestro raster. | No (solo revisión). Un escáner con «limpieza de fondo» también deja blancos perfectos; el ELA no está calibrado con imágenes reales y es solo evidencia (`info`) |
 | **3 Visión** | ¿Están firma, sello y logo? ¿Se ven insertados? ¿El sello nombra al emisor? ¿Corresponden a lo registrado? | **El código calcula DÓNDE y el modelo solo dice QUÉ** (ver abajo). Primera llamada: la página + recortes de las regiones candidatas → qué es cada una. Segunda: los recortes elegidos a resolución nativa + las referencias del proveedor → examen. Todo lo que hay en la imagen es *dato*, nunca instrucción; la salida es una herramienta forzada con booleanos y enums. | No (solo revisión). Es un juicio, y un juicio puede equivocarse |
 | **4 Memoria** | ¿Esta firma/sello ya apareció en la carta de **otro** empleado? ¿Esta carta ya se recibió? | Huella de tinta de cada elemento + hash de cualquier imagen incrustada bajo la firma/sello, guardados por proveedor. | **Sí** — una firma autógrafa nunca se repite exacta |
 
@@ -98,14 +109,44 @@ inequívocos.
 La leyenda del sello contra el emisor se compara **en Python**, entre dos cadenas
 (ignorando «S.A. de C.V.», «Grupo»…): el modelo solo transcribe, no opina.
 
+### Capas bajo demanda: un tipo paga solo lo que lee
+
+Ninguna capa corre por estar configurada: corre porque **algún campo del tipo va
+a leer una señal suya** (`_layers_needed` en `authenticity.py`; tabla exacta en
+`catalogs/README.md` → «Capas bajo demanda»). Una capa que nadie lee queda
+`NO_SOLICITADA` en el resultado y no cuenta en `AUTENTICIDAD_EVALUADA`.
+
+Lo que eso significa en costo:
+
+| El tipo declara | Capas que corren | Lo que paga |
+|---|---|---|
+| `"$presets": ["INTEGRIDAD_PDF"]` | 0 | milisegundos de CPU en la Lambda. **Ni un raster ni una llamada a Bedrock** |
+| `"$presets": ["INTEGRIDAD_IMAGEN"]` | 0 + el ELA de la capa 2 sobre los bytes de la imagen | ídem |
+| `"$presets": ["CAPTURA_FISICA"]` | 1 + 2 | rasterizar `pages.max_pages` páginas (CPU) |
+| `elements` en el bloque (como `CARTA_NOM35`) | 1 + 2 + 3 + 4 | las llamadas de visión (§6) |
+
+Dos palancas más para la capa de visión, en el bloque: `vision.trigger:
+"on_suspicion"` (la llamada de ubicación solo se paga si una capa gratis levantó
+un motivo no informativo; un archivo limpio sale con `VISION_OMITIDA_SIN_SOSPECHA`)
+y `vision.page_review: true` (una llamada más que busca indicios de edición en
+la página rendereada → `vision.no_edit_signs`; juicio, revisión como máximo).
+
 ### Lo que NO detecta (límite honesto)
 
 Quien **imprime** el Word con la firma pegada y **lo vuelve a escanear** pasa las
-capas 1 y 2: el archivo *es* entonces una captura genuina. Para ese caso solo
+capas 0, 1 y 2: el archivo *es* entonces una captura genuina. Para ese caso solo
 quedan la capa 3 (halo rectangular, nitidez distinta, trama de puntos de un
 «sello» que salió de una impresora → revisión humana) y la capa 4 (la misma tinta
 bajo la carta de otro empleado → rechazo). Por eso la memoria entre cartas no es
 un adorno: es la única defensa contra ese hueco.
+
+La capa 0 tiene su propio hueco, igual de honesto: «Guardar como…» en Acrobat,
+exportar de nuevo desde Word o pasar el archivo por Vista Previa de macOS
+**reescriben el archivo completo** — una sola generación, fechas frescas — y
+esconden la historia; quedan solo el productor/historial XMP, las anotaciones
+que sobrevivan y el orden de pintado. Y de una firma digital solo se revisa que
+su `/ByteRange` llegue al final del archivo: **no se verifica el certificado ni
+el hash** (no hay `cryptography` en el bundle).
 
 ---
 
@@ -296,6 +337,27 @@ Campos `computed` de `CARTA_NOM35` (en `documents[i].fields`, como cualquier otr
 | `CARTA_NO_DUPLICADA` | Esta misma carta (empleado + fecha) ya se recibió | aviso |
 | `ORIGEN_DOCUMENTO`, `TEXTO_SELLO`, `VEREDICTO_AUTENTICIDAD`, `MOTIVOS_AUTENTICIDAD` | informativos | — |
 
+Campos de los **presets** (`catalogs/_shared.json` → `_field_presets`; un tipo
+los pide con `"$presets": [...]`, todos arrancan en `review` salvo donde se dice):
+
+| Preset | Campo | Falso significa |
+|---|---|---|
+| `INTEGRIDAD_PDF` | `ARCHIVO_SIN_REGUARDADO` | un editor guardó el archivo sobre sí mismo, o después de firmarlo |
+| | `FIRMA_DIGITAL_INTACTA` | la firma digital más reciente ya no cubre el archivo. **Vacío** sin firma |
+| | `FECHAS_METADATOS_CONSISTENTES` | modificación anterior a la creación, o Info y XMP en desacuerdo. **Vacío** sin fechas |
+| | `SIN_EDITOR_EN_METADATOS` | Producer/Creator/historial XMP nombran un editor de PDF |
+| | `SIN_ANOTACIONES` | hay anotaciones (texto libre, sello, tachadura…) encima del contenido; los vínculos no cuentan |
+| | `SIN_CAMPOS_FORMULARIO` | hay campos AcroForm editables |
+| | `SIN_TEXTO_SOBRE_ESCANEO` | texto visible escrito encima de la imagen del escaneo. **Vacío** si no es un escaneo |
+| | `SIN_IMAGEN_SOBRE_TEXTO` | una imagen colocada encima del texto original (parche). **Vacío** sin texto nativo |
+| | `SIN_CONTENIDO_ACTIVO` | JavaScript, acciones automáticas o adjuntos no permitidos |
+| | `EDITOR_DETECTADO`, `AUTENTICIDAD_EVALUADA`, `VEREDICTO_AUTENTICIDAD`, `MOTIVOS_AUTENTICIDAD` | como arriba |
+| `INTEGRIDAD_IMAGEN` | `SIN_EDITOR_EN_METADATOS` | EXIF `Software`, APP13 de Photoshop, PNG `Software` o historial XMP nombran un editor |
+| | `FECHAS_METADATOS_CONSISTENTES` | fecha EXIF de modificación posterior a la de captura |
+| | `METADATOS_DE_CAMARA` (`info`) | sin marca/modelo/fecha de captura — la mensajería los quita, no acusa |
+| | `NIVEL_DE_ERROR_UNIFORME` (`info`) | ELA: un bloque comprimido distinto al resto — sin calibrar, evidencia |
+| `CAPTURA_FISICA` | `CAPTURA_FISICA`, `ORIGEN_DOCUMENTO`, `FONDO_NATURAL` | las capas 1-2 de la tabla de arriba, para cualquier tipo que exija papel |
+
 **Vacío ≠ falso.** Un campo vacío es «no se pudo determinar» (no aplica a ese
 archivo, no hay referencias, no hay tabla) y **no** cuenta como «no». La única
 excepción es `AUTENTICIDAD_EVALUADA`: si la etapa no pudo correr, el documento va
@@ -347,6 +409,24 @@ por página, hashes de imagen, huellas) queda en `results/<documentId>.json`.
 | `<ELEMENTO>_MUY_SIMILAR_EN_OTRA_CARTA` | memoria | no |
 | `CARTA_YA_RECIBIDA` | memoria | no (informativo) |
 | `PAGINAS_SIN_ANALIZAR` · `ETAPA_DESACTIVADA` | — | no |
+| `MODIFICADO_DESPUES_DE_FIRMAR` | integridad | **sí** |
+| `ARCHIVO_CON_ACTUALIZACIONES_INCREMENTALES` | integridad | no (suave; `integrity.severity` lo sube) |
+| `FECHAS_DE_METADATOS_INCONSISTENTES` | integridad | no (suave) |
+| `EDITOR_DE_PDF_EN_METADATOS` | integridad | no (suave) |
+| `ANOTACIONES_EN_PAGINA` · `CAMPOS_DE_FORMULARIO` | integridad | no (suave) |
+| `TEXTO_ESCRITO_SOBRE_ESCANEO` · `IMAGEN_SOBRE_TEXTO_NATIVO` | integridad | no (suave) |
+| `CONTENIDO_ACTIVO_EN_PDF` | integridad | no (suave) |
+| `IMAGEN_CON_SOFTWARE_DE_EDICION` · `FECHAS_EXIF_INCONSISTENTES` | integridad (imágenes) | no (suave) |
+| `FIRMA_DIGITAL_PRESENTE` · `MODIFICADO_DESPUES_DE_CREADO` · `SIN_METADATOS_DE_CAMARA` · `INTEGRIDAD_NO_DETERMINABLE` | integridad | no (informativo) |
+| `NIVEL_DE_ERROR_NO_UNIFORME` | pixeles (ELA) | no (suave) |
+| `CAPTURA_DISTINTA_DE_LA_ESPERADA` | estructura (`expected_capture`) | no (suave) |
+| `INDICIOS_DE_EDICION_EN_PAGINA` | visión (`page_review`) | no |
+| `VISION_OMITIDA_SIN_SOSPECHA` | visión (`trigger: on_suspicion`) | no (informativo) |
+
+«Duro» hace el veredicto `NO_AUTENTICO`; «suave», `SOSPECHOSO`; «informativo» no
+lo mueve. Lo que le pasa al DOCUMENTO sigue siendo el `on_fail` del campo. La
+severidad de cada código de integridad vive en `pdf_integrity.SEVERITY` y un tipo
+la sobreescribe con `authenticity.integrity.severity`.
 
 </details>
 
@@ -376,8 +456,8 @@ debe imprimirse, firmarse con tinta, sellarse y escanearse»*.
 
 | Quiero… | Comando | Costo |
 |---|---|---|
-| Ver qué diría la etapa de una carpeta de cartas | `pnpm autenticidad -- --dir <carpeta>` | $0, sin AWS |
-| Entender por qué un archivo salió `DIGITAL` | `pnpm autenticidad -- --file x.pdf --detalle` | $0 |
+| Ver qué diría la etapa de una carpeta de documentos — integridad incluida, aunque el tipo no la declare (`--sin-integridad` para quitarla) | `pnpm autenticidad -- --dir <carpeta> [--type TIPO]` | $0, sin AWS |
+| Entender por qué un archivo salió `DIGITAL` o con un motivo de integridad (cadena de guardados, fechas, software, firmas, anotaciones, texto sobre imagen) | `pnpm autenticidad -- --file x.pdf --detalle` | $0 |
 | Regresión tras tocar umbrales o código | `pnpm test:autenticidad` | $0 |
 | Probar también la capa de visión (carpetas ancla) | `pnpm test:autenticidad -- --vision` | ~$0.08 |
 | Procesar una carta completa en local | `pnpm procesar carta.pdf CARTA_NOM35 --meta proveedor=10040` | ~$0.015 |
@@ -396,6 +476,58 @@ en su propia línea, `BedrockAuthenticity`, en `pnpm costos`.
 `model_ids.vision` del catálogo → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5 — y
 **nunca** hereda `BEDROCK_MODEL_ID` ni la lista de fallback: en este despliegue
 son modelos de solo texto.
+
+**Lo que no cuesta, y las dos palancas.** La capa 0 (integridad) y el ELA de la
+capa 2 no facturan nada en Bedrock ni Textract: corren en la Lambda, en
+milisegundos, sobre bytes que ya están en memoria. En la capa de visión,
+`vision.trigger: "on_suspicion"` omite la llamada de ubicación (`locate`) cuando
+ninguna capa gratis levantó un motivo no informativo — el archivo limpio no paga
+modelo —, y `vision.page_review: true` agrega una llamada más, del tamaño de
+`locate` (la página a 1568 px; ESTIMADA en ~3,300 tokens de entrada, no medida
+aún), en la misma línea `BedrockAuthenticity`.
+
+### Medido sobre las 49 cartas reales (2026-09-24)
+
+`pnpm autenticidad -- --dir test-docs/nom35/samples` con la capa de integridad
+forzada sobre las 46 cartas (23 capturas genuinas, 22 de Word, 1 indeterminada) y
+las 3 capturas de pantalla. Dos lecciones salieron de la PRIMERA corrida y ya
+están en el código; la tabla es la corrida final:
+
+- **Word escribe todo PDF en dos pasadas** (el documento y luego una sección
+  incremental con su XMP, con creación == modificación al segundo): 17 de 49
+  archivos daban `ARCHIVO_CON_ACTUALIZACIONES_INCREMENTALES`, casi todos
+  cartas de Word y también 3 escaneos exportados a través de Word
+  (`10223/doc3`, `10275/doc2`, `10275/doc3`). Esa segunda sección se descuenta
+  cuando cae dentro de `date_tolerance_s` de la creación (`chain.generatorTwoPass`);
+  un editor que vuelve días después mueve `/ModDate` y sí cuenta.
+- **Word sobre un membrete-imagen** a página completa daba
+  `TEXTO_ESCRITO_SOBRE_ESCANEO` en 3 cartas (800+ caracteres sobre la imagen):
+  de ahí `max_overlay_chars: 200` — a partir de ese volumen es una
+  composición digital y decide la estructura, no un escaneo con texto encima.
+- **El ELA acusaba 3 escaneos genuinos** (`10040/doc3` ratio 10.9,
+  `10110/doc1`, `10329/doc1` ratio 8.1): `ela_max_ratio` subió a 12 y el
+  preset lo deja en `info`. No está calibrado con parches reales: es evidencia
+  en `--detalle`, no una regla.
+
+| Hallazgo (corrida final) | Archivos | Lectura |
+|---|---|---|
+| `ARCHIVO_CON_ACTUALIZACIONES_INCREMENTALES` | 0 de 49 | tras descontar las dos pasadas de Word |
+| `IMAGEN_SOBRE_TEXTO_NATIVO` | 7 de 49 | todas cartas de Word con la firma/sello pegados sobre la línea de firma — el mismo fraude que ya atrapa `CAPTURA_FISICA` |
+| `MODIFICADO_DESPUES_DE_CREADO` | 4 de 49 | informativo, no mueve nada |
+| `EDITOR_DE_PDF_EN_METADATOS` | 2 de 49 | las dos cartas de `10177`: `Producer = iLovePDF` |
+| `SIN_METADATOS_DE_CAMARA` | 3 de 49 | las tres capturas de pantalla; informativo |
+| `TEXTO_ESCRITO_SOBRE_ESCANEO` · `NIVEL_DE_ERROR_NO_UNIFORME` | 0 de 49 | ver arriba |
+| `10329/doc1` (RICOH) | linearizado real: 2 `startxref`, **1 generación** | la excepción de linearización funciona con un archivo de verdad |
+
+Y el invariante que importa: **cada escaneo genuino verificado a ojo tiene
+exactamente 1 generación y ningún motivo duro de integridad** (`pnpm
+test:autenticidad` lo vigila desde ahora). La conclusión operativa: `CARTA_NOM35`
+**no** lleva el preset `INTEGRIDAD_PDF` todavía — lo que encontraría en estas
+cartas ya lo atrapa `CAPTURA_FISICA`, y ningún archivo real editado a mano ha
+pasado por la capa. El preset está pensado para los tipos digitales de origen,
+donde un guardado posterior, una anotación o un parche sí son la anomalía. Antes
+de ponérselo a
+cualquier tipo: mide con su carpeta real.
 
 ### Calibración (de dónde salen los umbrales)
 
@@ -427,6 +559,11 @@ incrustada) lo hace. Todos estos umbrales viven en el catálogo del tipo.
 | `refs:register` rechaza todo por «muy chica» | Recortes de captura de pantalla. Escanea a 200–300 dpi |
 | Un reenvío legítimo sale como duplicado | Es un aviso (`info`), no cambia el estatus. La misma carta = mismo empleado + misma fecha |
 | Se reprocesó una carta y ahora «choca consigo misma» | No debería: la fila se identifica por empleado+fecha y por el hash del archivo. Si pasa, es un bug — reportarlo con el `documentId` |
+| Un escaneo genuino sale con `ARCHIVO_CON_ACTUALIZACIONES_INCREMENTALES` | Alguien lo abrió y lo guardó encima: Acrobat con «Reconocer texto» (OCR) + Guardar, un escaneo pegado en Word y exportado, una app que «optimiza» al enviar. Es exactamente por lo que la señal arranca suave: mide la tasa en tu carpeta (`pnpm autenticidad --detalle` imprime la cadena de guardados) antes de subirla con `integrity.severity` o `on_fail: reject` |
+| Un PDF grande o «web-optimized» sale con 2 secciones de referencias cruzadas | Es un archivo **linearizado**: dos secciones por diseño. La capa lo detecta (`/Linearized` + `/L` igual al largo del archivo) y lo cuenta como UNA generación; si aun así acusa, el archivo se modificó después de linearizarlo (el `/L` ya no cuadra) |
+| Un PDF firmado digitalmente siempre trae 2 generaciones | Firmar ES un guardado incremental; la capa descuenta una generación por firma. Solo acusa (`MODIFICADO_DESPUES_DE_FIRMAR`, duro) cuando el `/ByteRange` de la firma más reciente no llega al final del archivo |
+| Una foto de identificación sale con `SIN_METADATOS_DE_CAMARA` | WhatsApp, Telegram y la mayoría de los correos quitan el EXIF; una captura de pantalla nunca lo tuvo. Es informativo y no mueve el estatus. Solo `IMAGEN_CON_SOFTWARE_DE_EDICION` (Photoshop, GIMP… en EXIF/APP13/XMP) es una señal |
+| Un CFDI en PDF sale con `CONTENIDO_ACTIVO_EN_PDF` por su XML adjunto | PDF/A-3 lleva el XML como archivo incrustado, y es legítimo: declara `"integrity": {"allow_embedded_files": true}` en el bloque del tipo |
 
 ---
 
@@ -434,14 +571,17 @@ incrustada) lo hace. Todos estos umbrales viven en el catálogo del tipo.
 
 | Archivo | Rol |
 |---|---|
-| `enrichment-lambda/pipeline/authenticity.py` | Orquestador: lee el bloque del catálogo, corre las capas, escribe los campos `computed` y el bloque de auditoría |
-| `…/pipeline/pdf_forensics.py` | Capa 1 (solo pypdf) |
-| `…/pipeline/pixel_forensics.py` | Capa 2 y huellas de tinta (solo numpy) |
+| `enrichment-lambda/pipeline/authenticity.py` | Orquestador: lee el bloque del catálogo (opcional), decide qué capas piden los campos (`_layers_needed`), las corre, escribe los campos `computed` y el bloque de auditoría |
+| `…/pipeline/pdf_integrity.py` | Capa 0 (pypdf + regex + Pillow sobre los bytes originales): cadena de guardados, fechas, software, firmas, formularios, contenido activo, EXIF/APP13/XMP; `SEVERITY`, `MESSAGES` y `SIGNALS` de sus motivos |
+| `…/pipeline/pdf_forensics.py` | Capa 1 (solo pypdf); el walker registra además el orden de pintado y dónde cae cada string (`overlay_facts`) y pinta las apariencias de las anotaciones |
+| `…/pipeline/pixel_forensics.py` | Capa 2 (ruido de fondo y ELA, `error_level_stats`) y huellas de tinta (solo numpy) |
+| `enrichment-lambda/document_catalog.py` · `scripts/catalog-files.mjs` (`expandPresets`, usado por `sync-catalogs.mjs`) | `$presets`: inyección de los campos de `_shared.json` → `_field_presets` en el loader y en el índice de tipos del query Lambda |
 | `…/pipeline/vision_inspector.py` | Capa 3: prompts, esquemas y llamadas de visión |
 | `…/pipeline/fingerprint_store.py` | Capa 4: tabla de huellas y lectura de referencias |
 | `…/pipeline/page_raster.py` | Página/imagen → arreglo → JPEG (pypdfium2 + Pillow) |
 | `…/pipeline/bedrock.py` | Bloques de imagen en Converse y la etapa `vision` |
 | `…/validators/engine.py` | `on_fail` (reject/review/info) y `allow_empty` en `boolean_true` |
 | `catalogs/base/recursos_humanos/CARTA_NOM35.json` | El tipo: bloque `authenticity` + campos |
-| `scripts/analizar-autenticidad.py` · `test-autenticidad.py` · `manage-references.py` | `pnpm autenticidad` · `test:autenticidad` · `refs:*` |
+| `scripts/analizar-autenticidad.py` · `test-autenticidad.py` · `manage-references.py` | `pnpm autenticidad` (integridad siempre encendida; `--sin-integridad` la quita) · `test:autenticidad` (`integrity_reasons_include/exclude` opcionales en el ground truth) · `refs:*` |
 | `tests/unit/test_{pdf_forensics,pixel_forensics,fingerprint_store,authenticity_stage,bedrock_vision_stage,rule_on_fail}.py` | Pruebas, todas gratis |
+| `tests/unit/test_pdf_integrity.py` · `test_pdf_forensics_overlay.py` · `test_pixel_forensics_ela.py` · `test_field_presets.py` · `test_authenticity_integrity.py` | Capa 0 (cada manipulación reproducida con pypdf/Pillow), orden de pintado, ELA, `$presets`, y el contrato de la etapa con capas bajo demanda (un tipo solo-integridad jamás rasteriza ni llama a un modelo) |

@@ -119,3 +119,33 @@ export function staleEnabledTypeIds(localTypeIds, remoteItems) {
     .filter((typeId) => !local.has(typeId) && !typeId.startsWith("_"))
     .sort();
 }
+
+/**
+ * `"$presets": ["INTEGRIDAD_PDF"]` dentro de `fields` inyecta los campos de
+ * ese preset (`_shared.json` → `_field_presets`) ANTES de los propios del
+ * tipo; un campo redeclarado por el tipo gana. Espejo de
+ * `document_catalog._parse_field_tree` (Python): el índice de tipos que ve el
+ * query Lambda (`document-types.json`) debe mostrar los campos reales, no la
+ * referencia. Solo aplica al `fields` de nivel de tipo, no a `item_fields`.
+ */
+export function expandPresets(fields, fieldPresets, typeId = "", warn = console.warn) {
+  if (!fields || typeof fields !== "object" || !("$presets" in fields)) return fields;
+  const requested = Array.isArray(fields.$presets) ? fields.$presets : [fields.$presets];
+  const expanded = {};
+  for (const name of requested) {
+    const preset = fieldPresets?.[name];
+    if (!preset || typeof preset !== "object") {
+      warn(`  ${typeId}: preset de campos desconocido '${name}' (ver _shared.json → _field_presets); ignorado`);
+      continue;
+    }
+    for (const [field, spec] of Object.entries(preset)) {
+      if (field.startsWith("__") || !spec || typeof spec !== "object") continue;
+      expanded[field] = spec;
+    }
+  }
+  for (const [field, spec] of Object.entries(fields)) {
+    if (field === "$presets") continue;
+    expanded[field] = spec;
+  }
+  return expanded;
+}

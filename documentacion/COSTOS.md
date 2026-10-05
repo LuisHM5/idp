@@ -914,6 +914,21 @@ menos y lo dice en `reasons`, nunca recorta en silencio): `pages.max_pages`,
 `vision.max_references_per_kind`, `vision.inspect_crops`, `vision.enabled`.
 Interruptor global: `AUTHENTICITY_ENABLED` (apagado manda a revisión, no aprueba).
 
+**Capa 0 (integridad) y ELA: $0 (2026-09-24).** La capa `integrity`
+(`pipeline/pdf_integrity.py`: guardados incrementales, fechas, editor en los
+metadatos, anotaciones, formularios, texto sobre el escaneo, firma digital,
+EXIF) y el análisis de nivel de error de la capa de pixeles no facturan nada en
+Bedrock ni Textract: corren en la Lambda, en milisegundos, sobre bytes que ya
+están en memoria. Y como las capas corren **bajo demanda** (solo si un campo del
+tipo lee una señal suya), un tipo que declara únicamente
+`"$presets": ["INTEGRIDAD_PDF"]` nunca rasteriza ni llama a un modelo: su costo
+de autenticidad es exactamente cero. Dos palancas más en la capa de visión, sin
+medir todavía: `vision.trigger: "on_suspicion"` omite la llamada `locate` cuando
+ninguna capa gratis levantó un motivo no informativo (un archivo limpio no paga
+modelo), y `vision.page_review: true` agrega UNA llamada más del tamaño de
+`locate` — la página a 1568 px, **~3,300 tokens de entrada ESTIMADOS**, en la
+misma línea `BedrockAuthenticity`.
+
 En la auditoría (`pnpm costos`, §7) aparece como servicio propio,
 **`BedrockAuthenticity`** — mismo criterio que `BedrockPageLocator`: una llamada
 real y opcional nunca se esconde dentro de `BedrockExtraction`. La Lambda pasó de

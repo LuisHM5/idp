@@ -146,6 +146,40 @@ def test_incremental_produce_el_motivo_y_la_senal():
     assert motivos[pi.R_INCREMENTAL] == "soft"
 
 
+def test_las_dos_pasadas_de_word_no_son_un_reguardado():
+    """Medido: Word escribe el PDF y luego una sección incremental con su XMP,
+    con creación == modificación al segundo. Es el generador terminando su
+    archivo, no un editor volviendo a él."""
+    raw = pdf_bytes(metadata={"/Producer": "Microsoft® Word para Microsoft 365",
+                              "/CreationDate": "D:20220831020712Z", "/ModDate": "D:20220831020712Z"})
+    # La segunda pasada agrega algo (Word agrega su XMP) sin mover /ModDate.
+    dos_pasadas = incremental(raw, **{"/Title": "Carta"})
+
+    archivo, señales, motivos = evaluar(dos_pasadas)
+
+    assert archivo["chain"]["generations"] == 2
+    assert archivo["chain"]["generatorTwoPass"] is True
+    assert señales["integrity.single_generation"] is True
+    assert pi.R_INCREMENTAL not in motivos
+
+
+def test_un_reguardado_posterior_si_cuenta_aunque_sea_el_segundo():
+    raw = pdf_bytes(metadata={"/CreationDate": "D:20220831020712Z", "/ModDate": "D:20220831020712Z"})
+    despues = incremental(raw, **{"/ModDate": "D:20220905100000Z"})
+
+    archivo, señales, motivos = evaluar(despues)
+
+    assert archivo["chain"]["generatorTwoPass"] is False
+    assert señales["integrity.single_generation"] is False
+    assert pi.R_INCREMENTAL in motivos
+
+
+def test_sin_fechas_un_segundo_guardado_se_cuenta():
+    _, señales, _ = evaluar(incremental(pdf_bytes()))
+
+    assert señales["integrity.single_generation"] is False
+
+
 def _linearizado(largo_correcto=True) -> bytes:
     """Un archivo linearizado sintético: diccionario /Linearized al inicio, una
     sección de primera página cuyo trailer apunta (/Prev) a la principal."""
@@ -156,7 +190,7 @@ def _linearizado(largo_correcto=True) -> bytes:
     cuerpo += b"2 0 obj\n<< /Type /Catalog /Pages 3 0 R >>\nendobj\n3 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
     principal = len(cuerpo)
     cuerpo += b"xref\n0 4\n0000000000 65535 f \ntrailer\n<< /Size 4 >>\nstartxref\n" + str(primera_xref).encode() + b"\n%%EOF\n"
-    cuerpo = cuerpo.replace(b"PPPPPPPPPP", str(principal).rjust(10, b"0"[0:1].decode()).encode() if False else str(principal).encode().rjust(10, b"0"))
+    cuerpo = cuerpo.replace(b"PPPPPPPPPP", str(principal).encode().rjust(10, b"0"))
     largo = len(cuerpo) if largo_correcto else len(cuerpo) + 99
     return cuerpo.replace(b"LLLLLLLLLL", str(largo).encode().rjust(10, b"0"))
 
@@ -189,11 +223,14 @@ def test_el_xrefstm_de_un_hibrido_no_cuenta_como_generacion():
 
 def test_una_cadena_ilegible_se_abstiene_en_vez_de_acusar():
     assert pi.update_chain(b"esto no es un pdf")["generations"] is None
-    roto = pdf_bytes().replace(b"startxref", b"startxref\n999999999\n%%EOF\nstartxref", 1)
+
+    # El último startxref apunta fuera del archivo: la cadena no se puede seguir.
+    raw = pdf_bytes()
+    roto = raw[:raw.rfind(b"startxref")] + b"startxref\n999999999\n%%EOF\n"
     assert pi.update_chain(roto)["generations"] is None
-    _, señales, motivos = evaluar(b"%PDF-1.4\n" + pdf_bytes()[9:].replace(b"startxref", b"startxref\n999999999\n%%EOF\nstartxref", 1)) \
-        if False else (None, {"integrity.single_generation": None}, {})
+    señales, _ = pi.signals_from({"chain": pi.update_chain(roto)}, [], None)
     assert señales["integrity.single_generation"] is None
+    assert señales["integrity.generations"] is None
 
 
 # ------------------------------------------------------------------ fechas y software
@@ -481,6 +518,18 @@ def test_la_capa_ocr_invisible_no_es_texto_sobre_el_escaneo():
     _, señales, _ = evaluar(raw)
 
     assert señales["integrity.no_text_overlay"] is True
+
+
+def test_una_carta_de_word_sobre_un_membrete_de_fondo_no_es_texto_sobre_escaneo():
+    """Medido en cartas reales: Word pone la imagen del membrete a página
+    completa y el cuerpo entero encima. Eso es una composición digital (lo
+    dice la capa de estructura), no un escaneo al que le escribieron algo."""
+    raw = pdf_bytes(PAGINA_COMPLETA + texto_en(72, 600, TEXTO_CARTA), {"Pag": {}})
+
+    _, señales, motivos = evaluar(raw)
+
+    assert señales["integrity.no_text_overlay"] is None
+    assert pi.R_TEXT_OVER_SCAN not in motivos
 
 
 def test_sin_imagen_de_pagina_completa_la_senal_queda_vacia():

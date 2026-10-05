@@ -29,10 +29,23 @@ pnpm autenticidad -- --dir test-docs/nom35                              # toda l
 | `10037/doc1.pdf` | `DIGITAL` + `TEXTO_NATIVO_CON_IMAGEN_PEGADA` | PDF de Word: 821 caracteres de texto real y una imagen de 340×332 que cubre 8 % de la página (el bloque firma+sello) |
 | `10021/doc3.pdf` | `FISICO`, origen `ESCANER`, fondo `natural` | Escaneo de multifuncional: cero texto, una imagen a página completa |
 
-Esto corre solo las dos capas deterministas (estructura del PDF y pixeles). **Pásale
-cualquier carta tuya** con `--file`: en 5 segundos sabes si el sistema la ve como
-papel real o como documento digital, sin gastar nada. Al final te dice cuántas de
-la carpeta caerían si la regla ya rechazara.
+Esto corre solo las capas deterministas (integridad del archivo, estructura del
+PDF y pixeles). **Pásale cualquier carta tuya** con `--file`: en 5 segundos sabes
+si el sistema la ve como papel real o como documento digital, sin gastar nada. Al
+final te dice cuántas de la carpeta caerían si la regla ya rechazara, y cuántas
+caerían por cada señal de integridad.
+
+> **Sobre la columna `integridad`.** El catálogo de `CARTA_NOM35` declara ahora
+> `"expected_capture": "FISICO"` de forma explícita (es lo que siempre exigió) y
+> **no** lleva el preset `INTEGRIDAD_PDF` a propósito: medido el 2026-09-24
+> sobre las 49 cartas reales, lo único que encontraría (`IMAGEN_SOBRE_TEXTO_NATIVO`
+> en 7 cartas de Word con la firma pegada) ya lo manda a revisión
+> `CAPTURA_FISICA`, y ningún archivo editado a mano ha pasado por la capa.
+> Activarlo hoy solo duplicaría el motivo.
+> Para volver a medir antes de decidir:
+> `pnpm autenticidad -- --dir test-docs/nom35/samples` (la integridad corre ahí
+> aunque el tipo no la declare; detalle en
+> [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md) §6).
 
 ### Paso 2 — Una carta completa, en local (~$0.015 cada una)
 

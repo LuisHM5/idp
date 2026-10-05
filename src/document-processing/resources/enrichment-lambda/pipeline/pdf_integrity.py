@@ -86,6 +86,11 @@ DEFAULT_INTEGRITY: Dict[str, Any] = {
     # Visible characters drawn after the full-page image before the page
     # counts as "typed onto a scan": a stray glyph is not an edit.
     "min_overlay_chars": 8,
+    # ...and at or above this many the page is not a scan somebody typed on
+    # but a digital composition over a full-page background (a Word letter on
+    # an image letterhead — measured on real letters). That is the structure
+    # layer's business; here the signal abstains.
+    "max_overlay_chars": 200,
     # Top/bottom band (fraction of the page) where text over a scan is a
     # folio, a Bates number or a header, not an edit.
     "overlay_margin": 0.06,
@@ -285,6 +290,20 @@ def file_report(raw: bytes, reader: Any, policy: Optional[Dict[str, Any]] = None
     report["software"] = _software(reader, xmp_raw, cfg)
     report["signatures"], report["forms"] = _acroform(reader, len(raw or b""))
     report["activeContent"] = _active_content(reader, cfg)
+    # Measured on real files: Microsoft Word writes EVERY PDF in two passes —
+    # the document, then an incremental section adding its XMP metadata — so
+    # a plain Word export shows two generations with creation == modification
+    # to the second. That is the generator finishing its own file, not an
+    # editor coming back to it: a second section written within the date
+    # tolerance of creation is folded into the first generation. An editor
+    # that saves later moves /ModDate and is still counted.
+    chain = report["chain"]
+    dates = report["dates"]
+    same_session = (
+        dates.get("creation") is not None and dates.get("modification") is not None
+        and not dates.get("modifiedAfterCreation") and dates.get("consistent") is not False
+    )
+    chain["generatorTwoPass"] = bool(chain.get("generations") == 2 and same_session)
     return report
 
 
@@ -568,7 +587,10 @@ def page_report(structure_page: Dict[str, Any], policy: Optional[Dict[str, Any]]
     overlay = structure_page.get("overlay") or {}
     chars = overlay.get("textAfterFullPageImageChars")
     out["textAfterFullPageImageChars"] = chars
-    out["noTextOverlay"] = None if chars is None else chars < int(cfg.get("min_overlay_chars") or 0)
+    if chars is None or chars >= int(cfg.get("max_overlay_chars") or 0):
+        out["noTextOverlay"] = None
+    else:
+        out["noTextOverlay"] = chars < int(cfg.get("min_overlay_chars") or 0)
     over = overlay.get("imagesOverText")
     out["imagesOverText"] = over
     out["noImageOverText"] = None if over is None else not over
@@ -714,6 +736,8 @@ def signals_from(
                 signals["integrity.single_generation"] = False
         if signals["integrity.single_generation"] is None and generations is not None:
             extra = int(generations) - 1 - (int(sigs.get("count") or 0) if signed else 0)
+            if chain.get("generatorTwoPass") and extra == 1:
+                extra = 0
             signals["integrity.single_generation"] = extra <= 0
             if extra > 0:
                 say(R_INCREMENTAL, n=extra)

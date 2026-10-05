@@ -46,9 +46,12 @@ DEFAULT_PIXELS: Dict[str, Any] = {
     # quality shows a uniform error everywhere it was compressed ONCE, and a
     # region pasted from another source (different quality, different
     # generation) stands out. Ratio of the noisiest block to the typical one.
+    # NOT calibrated on real forgeries: measured on genuine scans the ratio
+    # reached 10.9 (CamScanner, q98) and 8.1 (RICOH), so the default sits
+    # above those and the preset grades the signal `info`. Evidence only.
     "ela_quality": 90,
     "ela_block": 32,
-    "ela_max_ratio": 6.0,
+    "ela_max_ratio": 12.0,
     "ela_min_blocks": 20,
     "ela_floor": 0.002,
 }

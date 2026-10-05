@@ -349,7 +349,7 @@ def _parse_field_spec(name: str, data: Dict[str, Any], common_item_fields: Dict[
 
 
 def _parse_field_tree(
-    fields_data: Dict[str, Any], common_item_fields: Dict[str, Any]
+    fields_data: Dict[str, Any], common_item_fields: Dict[str, Any], presets: bool = False
 ) -> Dict[str, FieldSpec]:
     """Parse a `fields` (or `item_fields`) block, expanding `$common` and
     `$presets` refs.
@@ -366,7 +366,9 @@ def _parse_field_tree(
     one signal from `review` to `reject` without copying the rest.
     """
     result: Dict[str, FieldSpec] = {}
-    for preset_name in _as_name_list(fields_data.get("$presets")):
+    if "$presets" in fields_data and not presets:
+        logger.warning("`$presets` only applies to a type's top-level `fields`, not to item_fields; ignored")
+    for preset_name in _as_name_list(fields_data.get("$presets")) if presets else []:
         preset = _FIELD_PRESETS.get(preset_name)
         if not isinstance(preset, dict):
             logger.warning("unknown field preset '%s' (see _shared.json → _field_presets); ignored", preset_name)
@@ -503,7 +505,7 @@ def _parse_entry(
             pipeline=data.get("pipeline"),
             model_id=data.get("model_id") or None,
             model_ids=data.get("model_ids", {}) or {},
-            field_tree=_parse_field_tree(data["fields"], common_item_fields or {}),
+            field_tree=_parse_field_tree(data["fields"], common_item_fields or {}, presets=True),
             unique_keys=_parse_unique_keys(data),
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   discoverCatalogTypes,
+  expandPresets,
   isCatalogPathActive,
   selectCatalogFile,
   staleEnabledTypeIds,
@@ -207,4 +208,38 @@ test("sync:one selectors resolve nested catalogs by exact or fuzzy TYPE_ID", () 
     () => selectCatalogFile({ opts: { file: "catalogs/no-existe.json" }, positional: [] }, types, catalogsDir),
     /archivo no encontrado/
   );
+});
+
+test("$presets expands into the type's real fields for the bundled type index", () => {
+  const presets = {
+    __COMENTARIO__: "ignorado",
+    INTEGRIDAD_PDF: {
+      __COMENTARIO__: "ignorado",
+      AUTENTICIDAD_EVALUADA: { type: "boolean", computed: true, authenticity_source: "evaluated" },
+      SIN_ANOTACIONES: { type: "boolean", computed: true, authenticity_source: "integrity.no_annotations",
+                         validation: [{ rule_type: "boolean_true", on_fail: "review" }] },
+    },
+  };
+  const warnings = [];
+  const expanded = expandPresets(
+    {
+      $presets: ["INTEGRIDAD_PDF", "NO_EXISTE"],
+      SIN_ANOTACIONES: { type: "boolean", computed: true, authenticity_source: "integrity.no_annotations",
+                         validation: [{ rule_type: "boolean_true", on_fail: "reject" }] },
+      FOLIO: { type: "string", required: true },
+    },
+    presets, "FACTURA", (m) => warnings.push(m),
+  );
+
+  // Preset fields first, the type's own after; the type's redeclaration wins.
+  assert.deepEqual(Object.keys(expanded), ["AUTENTICIDAD_EVALUADA", "SIN_ANOTACIONES", "FOLIO"]);
+  assert.equal(expanded.SIN_ANOTACIONES.validation[0].on_fail, "reject");
+  assert.ok(!("$presets" in expanded) && !("__COMENTARIO__" in expanded));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /NO_EXISTE/);
+
+  // No `$presets`: the object goes through untouched (same reference).
+  const plain = { FOLIO: { type: "string" } };
+  assert.equal(expandPresets(plain, presets, "X"), plain);
+  assert.equal(expandPresets(null, presets, "X"), null);
 });

@@ -9,7 +9,7 @@ pública del tipo.
 
 ```
 catalogs/
-├── _shared.json      → globals: _field_sets, _common_item_fields, cross_document_validation_rules, _global_output_fields
+├── _shared.json      → globals: _field_sets, _common_item_fields, _field_presets, cross_document_validation_rules, _global_output_fields
 ├── _TEMPLATE.json     → plantilla para crear un tipo nuevo (se ignora en build/sync)
 ├── base/
 │   ├── aduanas/       → contratos neutrales de comercio exterior
@@ -231,6 +231,10 @@ como en el DSL viejo.
   `_shared.json` → `_common_item_fields` (hoy: `PAGINA`, `ORDEN`, `CONFIANZA`,
   `VALOR_CRUDO`) — evita repetir el mismo hint/validation en cada grupo
   repetible del catálogo entero.
+- **`$presets`** en `fields` (nivel de tipo) inyecta CONJUNTOS completos de
+  campos `computed` definidos una sola vez en `_shared.json` →
+  `_field_presets`: las señales de la etapa de autenticidad e integridad.
+  Ver «Presets de campos» justo abajo.
 - **`computed: true`** marca un campo que llena el pipeline
   **determinísticamente después de la extracción**, no el modelo — se excluye
   del prompt/tool-schema de Bedrock (pedirle al modelo que adivine un valor
@@ -245,6 +249,82 @@ como en el DSL viejo.
   condición" más abajo.
 - **`unique_key`** marca el campo por el que se busca este tipo — ver la
   sección siguiente.
+
+### Presets de campos (`$presets`): pedir una verificación con una línea
+
+Cada señal de la etapa de autenticidad e integridad es un campo `computed`
+completo (tipo, hint, `authenticity_source`, regla, mensaje, `on_fail`).
+`CARTA_NOM35` los declara a mano — 19 campos, ~250 líneas — porque es un caso
+especial. Para el resto, `_shared.json` → `_field_presets` define esos campos
+UNA vez y un tipo los pide dentro de `fields`, con el mismo mecanismo que
+`$common`:
+
+```jsonc
+"fields": {
+  "$presets": ["INTEGRIDAD_PDF"],       // se inyectan PRIMERO, en este orden
+  "SIN_ANOTACIONES": {                  // redeclarar un campo del preset = override: gana el tipo
+    "type": "boolean", "required": false, "computed": true,
+    "authenticity_source": "integrity.no_annotations",
+    "hint": "…",
+    "validation": [{ "rule_type": "boolean_true", "allow_empty": true, "on_fail": "reject", "message": "…" }]
+  },
+  "FOLIO": { ... }                      // los campos propios del tipo, después
+}
+```
+
+Los tres presets (campo → `authenticity_source`; todos `computed`, `required:
+false`, `allow_empty: true` salvo `AUTENTICIDAD_EVALUADA`):
+
+| Preset | Campos | `on_fail` inicial |
+|---|---|---|
+| `INTEGRIDAD_PDF` | `AUTENTICIDAD_EVALUADA` → `evaluated` · `ARCHIVO_SIN_REGUARDADO` → `integrity.single_generation` · `FIRMA_DIGITAL_INTACTA` → `integrity.signature_intact` · `FECHAS_METADATOS_CONSISTENTES` → `integrity.dates_consistent` · `SIN_EDITOR_EN_METADATOS` → `integrity.producer_consistent` · `SIN_ANOTACIONES` → `integrity.no_annotations` · `SIN_CAMPOS_FORMULARIO` → `integrity.no_form_fields` · `SIN_TEXTO_SOBRE_ESCANEO` → `integrity.no_text_overlay` · `SIN_IMAGEN_SOBRE_TEXTO` → `integrity.no_image_over_text` · `SIN_CONTENIDO_ACTIVO` → `integrity.no_active_content` · `EDITOR_DETECTADO` → `integrity.editor` (string) · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` (los strings no llevan regla) |
+| `INTEGRIDAD_IMAGEN` | `AUTENTICIDAD_EVALUADA` · `SIN_EDITOR_EN_METADATOS` → `integrity.producer_consistent` · `FECHAS_METADATOS_CONSISTENTES` → `integrity.dates_consistent` · `METADATOS_DE_CAMARA` → `integrity.camera_metadata` · `NIVEL_DE_ERROR_UNIFORME` → `pixels.error_level_uniform` · `EDITOR_DETECTADO` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review`, salvo `METADATOS_DE_CAMARA` y `NIVEL_DE_ERROR_UNIFORME` en `info` (la mensajería quita el EXIF; el ELA no está calibrado con imágenes reales) |
+| `CAPTURA_FISICA` | `AUTENTICIDAD_EVALUADA` · `CAPTURA_FISICA` → `structure.physical_capture` · `ORIGEN_DOCUMENTO` → `structure.origin` · `FONDO_NATURAL` → `pixels.natural_background` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` |
+
+Lo que importa del mecanismo:
+
+- **Un preset no enciende nada por sí mismo: enciende exactamente las capas que
+  sus señales necesitan** (ver «Capas bajo demanda» en la sección de
+  autenticidad). `INTEGRIDAD_PDF` e `INTEGRIDAD_IMAGEN` solo piden señales
+  `integrity.*` (y el ELA sobre los bytes JPEG del archivo): **nunca rasterizan
+  una página ni llaman a un modelo**. El tipo paga milisegundos de CPU.
+- **El bloque `authenticity` es opcional.** Con el preset basta; el bloque solo
+  afina umbrales (`integrity.*`, `expected_capture`, `pixels.ela_*`).
+- **Override por campo:** para endurecer una señal, redeclara ese campo con el
+  mismo nombre y tu `on_fail`; el resto del preset se conserva. Un preset
+  desconocido se ignora con un warning en el log, no truena el tipo.
+- **Solo en `fields` de nivel de tipo**, no dentro de `item_fields`.
+- **Gotcha de despliegue:** `_field_presets` viaja en el bundle
+  (`config/catalogs.json`, como `_common_item_fields`), así que **cambiar un
+  preset requiere `pnpm build` + deploy**; en cambio el override que un tipo
+  hace de un campo del preset es hot-reloadable con `pnpm sync:one`, como
+  cualquier campo. `pnpm build` también expande los presets en el índice que
+  ve `GET /document-types/{type}?includeSchema=1` (`scripts/catalog-files.mjs`
+  → `expandPresets`, que usa `sync-catalogs.mjs`), así que la API muestra los campos reales, no la
+  referencia.
+- Los scripts gratuitos (`pnpm autenticidad`, `pnpm test:autenticidad`) cargan
+  los presets directo de `_shared.json`, sin `pnpm build`.
+
+Ejemplo mínimo — una factura digital de origen que debe llegar tal como la
+generó el sistema emisor, con su XML adjunto (PDF/A-3):
+
+```jsonc
+"FACTURA_PROVEEDOR": {
+  "description": "…",
+  "authenticity": {
+    "expected_capture": "DIGITAL",           // un escaneo de la factura es lo raro, no lo normal
+    "integrity": { "allow_embedded_files": true }   // el CFDI adjunto no es «contenido activo»
+  },
+  "fields": {
+    "$presets": ["INTEGRIDAD_PDF"],
+    "FOLIO": { "type": "string", "required": true, "hint": "…" },
+    "TOTAL": { "type": "number", "required": true, "hint": "…" }
+  }
+}
+```
+
+Antes de activarlo en un tipo real: `pnpm autenticidad -- --type <TIPO> --dir
+<carpeta>` reporta gratis cuántos archivos reales caerían por cada señal.
 
 ### Unique keys (`unique_key`): buscar por un campo sin recorrer el tipo
 
@@ -642,25 +722,82 @@ Cuando además se quieren mapear parámetros y validar el QR:
   `qr_source` junto al campo.
 - `QR_RECOVERY_ENABLED=false` desactiva globalmente este mecanismo.
 
-### Autenticidad física (`authenticity`)
+### Autenticidad e integridad (`authenticity`)
 
-Para tipos que deben llegar **impresos, firmados con tinta, sellados y
-escaneados** — y donde el riesgo no es leer mal un dato sino que alguien entregue
-un Word con la firma y el sello *pegados como imagen*. Es el segundo bloque
-no-textual del DSL (el primero es `qr_recovery`, y está calcado de él): un bloque
-de tipo + un marcador por campo + booleanos `computed` que el motor de reglas
-normal califica. **Nada en el código conoce un `TYPE_ID`, un nombre de campo ni un
-nombre de elemento**: todo sale de aquí. Primer tipo que lo usa:
-`base/recursos_humanos/CARTA_NOM35.json`.
+Dos preguntas distintas, una sola etapa (`pipeline/authenticity.py`):
 
-Guía operativa completa (qué detecta, cómo dar de alta las firmas y sellos de
-cada proveedor, arranque en observación, límites):
+- **¿El archivo fue tocado después de generarse?** — para CUALQUIER tipo: una
+  factura, un pedimento, un estado de cuenta, una foto de identificación.
+  Guardado incremental de un editor, anotaciones encima del contenido, texto
+  escrito sobre el escaneo, una imagen que tapa el texto original, una firma
+  digital que ya no cubre el archivo, Photoshop en el EXIF. Capa 0,
+  `integrity`: determinista, gratis, lee los bytes del archivo.
+- **¿Es la captura de un papel impreso, firmado con tinta y sellado?** — para
+  tipos como `CARTA_NOM35`, donde el riesgo es un Word con la firma *pegada como
+  imagen*. Capas 1-4: estructura, pixeles, visión y memoria.
+
+Es el segundo bloque no-textual del DSL (el primero es `qr_recovery`, y está
+calcado de él): marcadores por campo (`authenticity_source`) sobre campos
+`computed` que el motor de reglas normal califica, más un bloque de tipo
+**opcional** que afina umbrales. **Nada en el código conoce un `TYPE_ID`, un
+nombre de campo ni un nombre de elemento**: todo sale de aquí. La forma corta de
+declararlo es un preset (`"$presets": ["INTEGRIDAD_PDF"]`, ver «Presets de
+campos»); la forma larga, campo por campo, es `base/recursos_humanos/CARTA_NOM35.json`.
+
+Guía operativa completa (qué detecta cada capa, medición sobre cartas reales,
+cómo dar de alta las firmas y sellos de cada proveedor, arranque en observación,
+límites):
 [`documentacion/AUTENTICIDAD_Y_REFERENCIAS.md`](../documentacion/AUTENTICIDAD_Y_REFERENCIAS.md).
+
+#### Capas bajo demanda: lo que no se pide no corre
+
+La etapa no corre una capa porque esté configurada, sino porque **algún campo
+del tipo va a leer una señal suya** (`_layers_needed` en `authenticity.py`).
+Es lo que hace que declarar la verificación sea barato: un tipo que solo pide
+señales `integrity.*` jamás rasteriza una página ni llama a Bedrock.
+
+| Señales que el tipo pide | Capas que corren |
+|---|---|
+| `integrity.*` | `integrity` (bytes crudos; nunca un raster) |
+| `structure.*` | `structure` |
+| `pixels.natural_background` | `structure` + `pixels` (rasteriza) |
+| `pixels.error_level_uniform` | `structure` + `pixels` (los bytes JPEG del archivo, sin raster) |
+| `element.*`, `capture_kind`, `vision.*` | `vision` + `structure` + `pixels` (las regiones candidatas salen del reporte de página y de la tinta del raster) |
+| `memory.*` | `memory` (+ `vision`, `structure` y `pixels` cuando hay `elements` que tomar huella) |
+| `evaluated`, `verdict`, `reasons` | ninguna por sí solas |
+
+Una capa no pedida queda `NO_SOLICITADA` en `authenticity.layers` del resultado:
+no corrió, no costó y **no cuenta en `evaluated`**. `"<capa>": false` en el bloque
+sigue dando `DESACTIVADA`. Un tipo sin ningún campo con `authenticity_source` no
+pasa por la etapa (una búsqueda de diccionario).
+
+#### El bloque (todo opcional)
 
 ```jsonc
 "authenticity": {
   "enabled": true,
+  "expected_capture": "ANY",            // FISICO | DIGITAL | ANY. Default: FISICO si algún campo pide
+                                        //   structure.physical_capture, ANY si no → structure.capture_as_expected
   "pages": { "max_pages": 2 },          // páginas con contenido a rasterizar (fail-open: si hay más, se avisa)
+
+  "integrity": {                        // CAPA 0 — integridad del archivo. Gratis, determinista, sin raster.
+    "ignored_annotations": ["/Link", "/Popup", "/Widget"],   // no son una edición del contenido
+    "editor_patterns": ["acrobat pro", "acrobat dc", "acrobat 2", "pdf-xchange", "foxit", "nitro",
+                        "pdfelement", "wondershare", "sejda", "ilovepdf", "smallpdf", "pdfescape",
+                        "pdffiller", "photoshop", "gimp", "pixlr", "affinity", "inkscape", "pdf24",
+                        "soda pdf", "master pdf", "pdfgear", "xodo", "lumin", "pdfsam", "pdf architect",
+                        "picsart", "snapseed", "lightroom"],   // subcadenas (minúsculas) que nombran un EDITOR
+    "capture_exceptions": ["paper capture", "scan", "pdfmaker"],  // …salvo si la cadena trae esto: es software de captura
+    "date_tolerance_s": 120,            //   segundos de diferencia tolerados entre dos sellos de tiempo del mismo evento
+    "min_overlay_chars": 8,             //   caracteres visibles tras la imagen de página completa para acusar
+    "max_overlay_chars": 200,           //   a partir de aquí no es un escaneo con texto encima sino una composición
+                                        //   digital sobre un membrete-imagen (medido en cartas de Word): se abstiene
+    "overlay_margin": 0.06,             //   banda superior/inferior de la página: folios, Bates y encabezados no cuentan
+    "image_over_text_min_overlap": 0.5, //   parte de un renglón que una imagen debe tapar para contar como "encima"
+    "allow_embedded_files": false,      //   true en CFDI PDF/A-3 que llevan el XML adjunto
+    "active_actions": ["/JavaScript", "/Launch", "/SubmitForm", "/ImportData"],   // acciones de anotación que son contenido activo
+    "severity": {}                      //   override por código: {"ARCHIVO_CON_ACTUALIZACIONES_INCREMENTALES": "hard"}
+  },
 
   "structure": {                        // CAPA 1 — estructura del PDF. Gratis, determinista.
     "min_native_text_chars": 200,       //   texto VISIBLE ≥ esto => documento digital
@@ -670,13 +807,19 @@ cada proveedor, arranque en observación, límites):
     "origin_patterns": { "ESCANER": ["lexmark", "..."] }   // opcional; solo evidencia
   },
 
-  "pixels": {                           // CAPA 2 — ruido de fondo. Gratis, señal suave.
+  "pixels": {                           // CAPA 2 — ruido de fondo y ELA. Gratis, señal suave.
     "dpi": 150, "grid": 8, "min_regions": 8,
-    "noise_std_min": 0.05, "pure_white_ratio_min": 0.999
+    "noise_std_min": 0.05, "pure_white_ratio_min": 0.999,
+    "ela_quality": 90, "ela_block": 32, "ela_max_ratio": 12.0,   // análisis de nivel de error sobre los bytes
+    "ela_min_blocks": 20, "ela_floor": 0.002                   //   JPEG del archivo (pixels.error_level_uniform)
   },
 
   "vision": {                           // CAPA 3 — un modelo multimodal ve la página. De pago.
     "enabled": true,
+    "trigger": "always",                //   "on_suspicion": solo si una capa gratis (0-2) levantó un motivo no informativo;
+                                        //   un archivo limpio no paga la llamada (motivo VISION_OMITIDA_SIN_SOSPECHA)
+    "page_review": false,               //   true: una llamada más que busca indicios de edición en la página
+                                        //   → vision.no_edit_signs (juicio: revisión, nunca rechazo)
     "inspect_crops": true,              //   2ª llamada: examina recortes a resolución nativa
     "inspect_when_digital": "with_references",  // false: si la capa 1 ya probó que es digital, no se paga el examen
                                         //   true: siempre · "with_references": solo si el proveedor tiene referencias
@@ -722,14 +865,19 @@ cada proveedor, arranque en observación, límites):
 }
 ```
 
-Cada capa se apaga por separado (`"vision": false`, `"memory": {"enabled": false}`,
-`"pixels": false`…). Un tipo **sin** el bloque no paga nada: una búsqueda de
-diccionario. El interruptor global es `AUTHENTICITY_ENABLED` — y `false` **no
-aprueba** lo que no se revisó: manda a revisión.
+Cada capa se apaga por separado (`"integrity": false`, `"vision": false`,
+`"memory": {"enabled": false}`, `"pixels": false`…), aunque casi nunca hace
+falta: la capa que ningún campo lee no corre. El interruptor global es
+`AUTHENTICITY_ENABLED` — y `false` **no aprueba** lo que no se revisó: manda a
+revisión.
+
+`vision` se activa cuando hay `elements` **o** `page_review: true`; con
+`page_review` y sin `elements` corre solo esa llamada.
 
 #### Cómo recibe un campo su valor: `authenticity_source`
 
-Los resultados caen en campos `computed` normales. Cada uno dice qué señal quiere:
+Los resultados caen en campos `computed` normales. Cada uno dice qué señal quiere
+(los presets ya traen estos campos hechos):
 
 ```jsonc
 "CAPTURA_FISICA": {
@@ -744,16 +892,32 @@ Los resultados caen en campos `computed` normales. Cada uno dice qué señal qui
 
 | `authenticity_source` | Valor |
 |---|---|
-| `evaluated` | `true` si todas las capas habilitadas corrieron. **Sin `allow_empty`** en su regla: si la etapa no corrió, el documento va a revisión |
-| `verdict` · `reasons` · `capture_kind` | `AUTENTICO`/`SOSPECHOSO`/`NO_AUTENTICO`/`NO_EVALUADO` · códigos separados por coma · cómo se capturó la hoja |
+| `evaluated` | `true` si todas las capas **pedidas** corrieron. **Sin `allow_empty`** en su regla: si la etapa no corrió, el documento va a revisión |
+| `verdict` · `reasons` · `capture_kind` | `AUTENTICO`/`SOSPECHOSO`/`NO_AUTENTICO`/`NO_EVALUADO` · códigos separados por coma · cómo se capturó la hoja (`capture_kind` la produce **visión**) |
+| `integrity.single_generation` | `true` el archivo se escribió una sola vez · `false` guardado sobre sí mismo (actualizaciones incrementales) o después de firmarse · *vacío* si la cadena de referencias cruzadas es ilegible. Descuenta la sección extra de un linearizado y una generación por firma digital |
+| `integrity.generations` | cuántas veces se escribió el archivo (entero, evidencia) |
+| `integrity.dates_consistent` | `false` = modificación anterior a la creación, o Info y XMP en desacuerdo más de `date_tolerance_s` · *vacío* sin fechas. Una modificación POSTERIOR a la creación es solo información |
+| `integrity.producer_consistent` | `false` = Producer/Creator/XMP nombran un editor (`editor_patterns`), o creador de captura con productor ofimático · en imágenes, EXIF `Software`/APP13/PNG `Software`/historial XMP |
+| `integrity.editor` | la cadena del editor encontrado (string, evidencia) |
+| `integrity.no_annotations` | `false` = alguna página del documento tiene anotaciones fuera de `ignored_annotations` |
+| `integrity.no_form_fields` | `false` = hay campos AcroForm (los `/Sig` no cuentan) |
+| `integrity.no_text_overlay` | `false` = ≥ `min_overlay_chars` caracteres visibles pintados DESPUÉS de la imagen de página completa · *vacío* sin imagen de página completa o con ≥ `max_overlay_chars` (composición digital, no escaneo editado) |
+| `integrity.no_image_over_text` | `false` = una imagen pintada DESPUÉS de texto visible que tapa · *vacío* sin texto visible |
+| `integrity.digitally_signed` | hay firma digital (evidencia) |
+| `integrity.signature_intact` | `false` = el `/ByteRange` de la firma más reciente no llega al fin del archivo (modificado tras firmar; motivo **duro**) · *vacío* sin firma. **No verifica criptografía** |
+| `integrity.no_active_content` | `false` = JavaScript, `/OpenAction`, `/AA`, adjuntos (salvo `allow_embedded_files`) o acciones de `active_actions` |
+| `integrity.camera_metadata` | imágenes: EXIF de cámara presente · *vacío* en PDF. `false` NO acusa (la mensajería quita el EXIF): `info` |
 | `structure.physical_capture` | `true` captura de papel · `false` composición digital (determinista) · *vacío* si la estructura sola no alcanza |
 | `structure.origin` | `ESCANER` · `APP_CAPTURA` · `OFIMATICA` · `DESCONOCIDO` · `IMAGEN` — solo evidencia |
+| `structure.capture_as_expected` | la captura coincide con `expected_capture`: con `FISICO` es `structure.physical_capture`; con `DIGITAL`, `false` si el archivo es un escaneo (`CAPTURA_DISTINTA_DE_LA_ESPERADA`, suave) · *vacío* con `ANY` o indeterminado |
 | `pixels.natural_background` | `false` = fondo perfectamente uniforme · *vacío* en bitonales o sin área en blanco |
+| `pixels.error_level_uniform` | ELA sobre los bytes JPEG del archivo (la carga, o la imagen de página completa de un escaneo): `false` = un bloque con nivel de error muy distinto al resto · *vacío* si no es JPEG, es chico o tiene poco contenido. **Sin calibrar con imágenes reales: evidencia** |
 | `element.<KIND>.present` | se ve en la página · *vacío* si la visión no corrió |
 | `element.<KIND>.not_pasted` | `false` si hay una imagen incrustada justo ahí (determinista) o el modelo ve indicios |
 | `element.<KIND>.text` · `.ink_colour` | leyenda transcrita (con `read_text`) · color de tinta |
 | `element.<KIND>.issuer_consistent` | la leyenda nombra al `issuer_field`. Se compara **en Python**, no opina el modelo |
 | `element.<KIND>.matches_reference` | corresponde a una referencia registrada · ***vacío* si no hay referencias** |
+| `vision.no_edit_signs` | con `vision.page_review`: `false` = el modelo ve indicios de edición en la página (`TEXTO_SUPERPUESTO`, `PARCHE_DE_FONDO`, `FUENTE_INCONSISTENTE`, `ALINEACION_ROTA`, `BORDE_DE_RECORTE`, `RESOLUCION_DISTINTA`) · *vacío* si no corrió |
 | `memory.elements_unique` | `false` = la misma tinta/imagen en **otra** carta (nivel rechazo) |
 | `memory.elements_not_similar` | `false` = demasiado parecida (nivel revisión o peor) |
 | `memory.not_duplicate` | `false` = esta misma carta ya se recibió |
@@ -766,16 +930,24 @@ Tres reglas para declarar estos campos:
    pudo determinar», no «no». Es lo que hace que un proveedor sin referencias no
    se rechace.
 3. **`on_fail` dice la política**: `reject` solo para lo determinista
-   (`structure.*`, `memory.elements_unique`); `review` para todo lo que sale de
-   la visión. El modelo puede equivocarse y puede ser engañado: nunca rechaza solo.
+   (`integrity.*`, `structure.*`, `memory.elements_unique`) y solo después de
+   medirlo; `review` para todo lo que sale de la visión. El modelo puede
+   equivocarse y puede ser engañado: nunca rechaza solo. Los presets arrancan
+   todo en `review` (observación).
 
 Un `authenticity_source` que no existe deja el campo vacío (y con `allow_empty`
 pasa en silencio): si un campo nunca se llena, revisa que el nombre de la señal
 esté en la tabla de arriba.
 
-Antes de activar el bloque en un tipo, y antes de pasar un `on_fail` de `review` a
-`reject`, **mide con `pnpm autenticidad -- --type <TIPO> --dir <carpeta>`** (gratis,
-sin AWS): dice cuántos documentos reales caerían.
+Antes de activar la verificación en un tipo, y antes de pasar un `on_fail` de
+`review` a `reject`, **mide con `pnpm autenticidad -- --type <TIPO> --dir
+<carpeta>`** (gratis, sin AWS): dice cuántos documentos reales caerían por cada
+señal — la capa de integridad corre ahí siempre, aunque el tipo todavía no la
+declare. Medido el 2026-09-24 sobre 49 cartas reales: la primera corrida acusó
+de guardado incremental al 35 % — eran las dos pasadas con que Word escribe
+todo PDF, hoy descontadas — y el ELA a 3 escaneos genuinos; por eso el ELA es
+`info` y `CARTA_NOM35` **no** lleva el preset todavía (detalle en
+`AUTENTICIDAD_Y_REFERENCIAS.md` §6).
 
 ### Selección de páginas de interés (`page_selection`)
 
@@ -1582,7 +1754,14 @@ cualquier catálogo sin tocar nada más.
   gobierna la normalización (ver la sección del shape de un campo).
 - **`field_sets` es del DSL viejo únicamente** — en un tipo con `fields` no
   tiene ningún efecto, aunque `_TEMPLATE.json` todavía lo liste (es un
-  remanente, seguro dejarlo en `[]` o quitarlo).
+  remanente, seguro dejarlo en `[]` o quitarlo). Lo que sí funciona en el DSL
+  nuevo es `$presets` (ver «Presets de campos»).
+- **Un preset editado no llega con `pnpm sync:one`.** `_field_presets` viaja
+  en el bundle, así que cambiar un campo DENTRO de `_shared.json` requiere
+  `pnpm build` + deploy; lo hot-reloadable es el override que hace el tipo
+  redeclarando ese campo. Y un tipo que pide un preset que no existe sigue
+  funcionando sin él (warning en el log, no error): si «no aparecen los campos
+  de integridad», revisa el nombre.
 - Después de cualquier edición: `pnpm sync:one -- --type TU_TIPO` para
   probar en caliente, y `pnpm run build && pnpm run deploy` cuando quieras
   que quede como línea base permanente (sobrevive a que DynamoDB se vacíe o

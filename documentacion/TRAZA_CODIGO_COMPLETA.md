@@ -1657,7 +1657,7 @@ Archivos: `pipeline/authenticity.py`, `pdf_forensics.py`, `pixel_forensics.py`,
 | --- | --- | --- | --- | --- |
 | `authenticity.enabled()` | env | boolean global | `false` → `evaluated=false` (revisión, no aprobación) | `AUTHENTICITY_ENABLED` |
 | `authenticity.spec_for()` | entry | bloque + campos con `authenticity_source` | spec o None | `FieldSpec.params` |
-| `authenticity.run()` | doc, entry, `PageSource`, context | orquesta las 4 capas; nunca lanza | campos `computed`, `doc["authenticity"]`, `authenticityMeta` | todos los de abajo |
+| `authenticity.run()` | doc, entry, `PageSource`, context | orquesta las 5 capas (0 integridad, 1 estructura, 2 pixeles, 3 visión, 4 memoria), solo las que los campos piden; nunca lanza | campos `computed`, `doc["authenticity"]`, `authenticityMeta` | todos los de abajo |
 | `pdf_forensics.inspect_page()` | reader, índice | recorre el content stream (`q/Q/cm/Tr/Tj/TJ/Do`, Form XObjects hasta 3 niveles) | texto visible/invisible, imágenes con rect/cobertura/sha256/ppi | pypdf |
 | `pdf_forensics.page_verdict()` | hechos de la página + política | pura | `FISICO`/`ESCANEO_CON_OCR`/`DIGITAL`/`INDETERMINADO`/`EN_BLANCO` + motivos | — |
 | `pdf_forensics.inspect_pdf()` | reader, índices, política | agrega páginas + origen por productor | `{verdict, physicalCapture, origin, reasons, bilevel, perPage}` | — |

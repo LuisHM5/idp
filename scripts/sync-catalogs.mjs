@@ -5,16 +5,18 @@
  *
  * `catalogs/` is the ONE source of truth:
  *   - catalogs/_shared.json  → { _field_sets, cross_document_validation_rules,
- *                                _global_output_fields, _common_item_fields }
+ *                                _global_output_fields, _common_item_fields,
+ *                                _field_presets }
  *                                (shared globals; _common_item_fields is the
- *                                field-centric DSL's reusable item_fields, see
+ *                                field-centric DSL's reusable item_fields and
+ *                                _field_presets the `$presets` field sets, see
  *                                catalogs/_TEMPLATE.json)
  *   - catalogs/_TEMPLATE.json → template for new types (ignored here)
  *   - recursive <TYPE_ID>.json files → one document type, except any `save/` subtree
  *
  * Output: config/catalogs.json in the customs shape the loaders understand:
- *   { _global_output_fields, _field_sets, _common_item_fields, document_types,
- *     cross_document_validation_rules }
+ *   { _global_output_fields, _field_sets, _common_item_fields, _field_presets,
+ *     document_types, cross_document_validation_rules }
  *
  * Runs as part of `pnpm build`. Editing a type in `catalogs/` and rebuilding is
  * all that is needed to bake it into the deployed Lambda.
@@ -24,7 +26,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { uniqueKeysOf } from "./_unique_keys.mjs";
-import { discoverCatalogTypes } from "./catalog-files.mjs";
+import { discoverCatalogTypes, expandPresets } from "./catalog-files.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(__dirname, "..");
@@ -55,35 +57,6 @@ function validateOccurrenceMode(typeId, entry, file) {
       `${file}: ${typeId}.occurrence_mode debe ser "single" o "multiple"`
     );
   }
-}
-
-/**
- * `"$presets": ["INTEGRIDAD_PDF"]` dentro de `fields` inyecta los campos de
- * ese preset (`_shared.json` → `_field_presets`) ANTES de los propios del
- * tipo; un campo redeclarado por el tipo gana. Espejo de
- * `document_catalog._parse_field_tree`: el índice que ve el query Lambda debe
- * mostrar los campos reales, no la referencia.
- */
-export function expandPresets(fields, fieldPresets, typeId = "") {
-  if (!fields || typeof fields !== "object" || !("$presets" in fields)) return fields;
-  const requested = Array.isArray(fields.$presets) ? fields.$presets : [fields.$presets];
-  const expanded = {};
-  for (const name of requested) {
-    const preset = fieldPresets[name];
-    if (!preset || typeof preset !== "object") {
-      console.warn(`  ${typeId}: preset de campos desconocido '${name}' (ver _shared.json → _field_presets); ignorado`);
-      continue;
-    }
-    for (const [field, spec] of Object.entries(preset)) {
-      if (field.startsWith("__") || !spec || typeof spec !== "object") continue;
-      expanded[field] = spec;
-    }
-  }
-  for (const [field, spec] of Object.entries(fields)) {
-    if (field === "$presets") continue;
-    expanded[field] = spec;
-  }
-  return expanded;
 }
 
 /** "PEDIMENTO_ADUANAL" -> "Pedimento Aduanal" (nombre por defecto del tipo). */
