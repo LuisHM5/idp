@@ -1,0 +1,186 @@
+{
+  "IDENTIFICACION_OFICIAL_PORTAL": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "display_name": "Identificación oficial (portal, nacional o extranjera)",
+    "aliases": [
+      "identificación oficial portal",
+      "identificación del representante legal",
+      "ID representante",
+      "IdRepresentante"
+    ],
+    "description": "Identificación oficial vigente con fotografía de una persona, tal como la sube al portal el representante legal o el titular de una empresa proveedora. Mexicana: la Credencial para Votar del INE ('INSTITUTO NACIONAL ELECTORAL', 'CREDENCIAL PARA VOTAR', clave de elector, CURP, vigencia y, al reverso, la zona de lectura mecánica que empieza con 'IDMEX'), o el pasaporte mexicano ('PASAPORTE', 'Estados Unidos Mexicanos'). Extranjera: el pasaporte de cualquier país (página de datos con la zona de lectura mecánica que empieza con 'P<'), una licencia de conducir ('DRIVER LICENSE' de un estado de Estados Unidos), un documento nacional de identidad o una tarjeta de residencia. El archivo puede traer el anverso y el reverso en una o dos páginas, o ser una copia certificada por notario. No confundir con una constancia fiscal, un comprobante de domicilio, un acta de nacimiento ni un poder notarial.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+
+    "__COMENTARIO_proposito__": "Mapeo para el portal: UN solo contrato para la identificación del representante legal, sea credencial del INE, pasaporte mexicano o extranjero, licencia de conducir extranjera u otra identificación oficial. Los campos que ya existen en IDENTIFICACION (catalogs/base/identidad) conservan su nombre (TIPO_IDENTIFICACION, NOMBRE_COMPLETO, NUMERO_DOCUMENTO, AUTORIDAD_EMISORA, FECHA_VENCIMIENTO) y los del nombre separado son los mismos de CONSTANCIA_SITUACION_FISCAL_PORTAL (NOMBRES, PRIMER_APELLIDO, SEGUNDO_APELLIDO), para que el portal compare a la persona entre documentos sin mapeos intermedios. Lo que una identificación no trae queda vacío, nunca inventado.",
+
+    "__COMENTARIO_reglas__": "TIPO_IDENTIFICACION es una lista cerrada y es lo que decide qué reglas corren (param `when`): la clave de elector de 18 caracteres solo se exige a una credencial del INE, el formato del número de pasaporte solo a un pasaporte, y la fecha de vencimiento solo a los tipos que la imprimen (una cédula profesional no vence). PAIS se fija en MEX sin depender del modelo cuando el tipo es INE. Este tipo lee el TEXTO de la identificación: no mira la fotografía ni certifica autenticidad. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
+
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática: una credencial del INE o un pasaporte son el MISMO papel que ya reconocen INE y PASAPORTE, y un clasificador que lee texto no tiene con qué elegir entre ellos. Se pide declarándolo (documentType=IDENTIFICACION_OFICIAL_PORTAL), que es lo que hace el portal.",
+
+    "fields": {
+      "PAIS": {
+        "type": "string",
+        "required": true,
+        "hint": "País que emite la identificación, como clave ISO 3166-1 alfa-3 en MAYÚSCULAS: MEX para una credencial del INE o un pasaporte de los Estados Unidos Mexicanos; USA para una licencia de conducir de cualquier estado de Estados Unidos (California, Florida, Texas...) o un pasaporte estadounidense; ESP para un pasaporte o DNI de España; y así para cualquier otro país. En un pasaporte es el 'código del Estado emisor' impreso junto al tipo de documento y repetido en la zona de lectura mecánica (P<ESP..., P<MEX...). Deducirlo de la autoridad emisora, NUNCA de la nacionalidad, del lugar de nacimiento ni del domicilio del titular. Devolver únicamente las 3 letras. Si no puede determinarse con certeza, dejar null.",
+        "derived": {
+          "from": "TIPO_IDENTIFICACION",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "eq": "INE"
+              },
+              "value": "MEX"
+            }
+          ]
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}$",
+            "message": "El país debe ser una clave ISO 3166-1 de 3 letras (MEX, USA, ESP, CAN...)"
+          }
+        ]
+      },
+      "TIPO_IDENTIFICACION": {
+        "type": "string",
+        "required": true,
+        "hint": "Clase de identificación, con UNO de estos valores exactos: INE (Credencial para Votar del Instituto Nacional Electoral o del antiguo IFE); PASAPORTE (pasaporte de cualquier país); LICENCIA_CONDUCIR (licencia de conducir o 'Driver License', de cualquier país o estado); CEDULA_PROFESIONAL (cédula profesional mexicana); TARJETA_RESIDENCIA (tarjeta de residente temporal o permanente, 'Permanent Resident Card'); DOCUMENTO_NACIONAL_IDENTIDAD (DNI, cédula de identidad o tarjeta nacional de identidad de un país extranjero); OTRO (cualquier otra identificación con nombre y número individual). Decidirlo por los rótulos impresos en el documento. Si el archivo no es una identificación, dejar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(INE|PASAPORTE|LICENCIA_CONDUCIR|CEDULA_PROFESIONAL|TARJETA_RESIDENCIA|DOCUMENTO_NACIONAL_IDENTIDAD|OTRO)$",
+            "message": "El tipo de identificación debe ser INE, PASAPORTE, LICENCIA_CONDUCIR, CEDULA_PROFESIONAL, TARJETA_RESIDENCIA, DOCUMENTO_NACIONAL_IDENTIDAD u OTRO"
+          }
+        ]
+      },
+      "NOMBRE_COMPLETO": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo del titular en el orden natural: nombre(s) y después apellidos, en mayúsculas, sin títulos ni etiquetas. La credencial del INE imprime bajo 'NOMBRE' primero el apellido paterno, luego el materno y al final el o los nombres, cada uno en su renglón: reordenarlos (PEREZ / LOPEZ / JUAN CARLOS se entrega como JUAN CARLOS PEREZ LOPEZ). En un pasaporte unir 'Nombres' y 'Apellidos'; en una licencia de Estados Unidos unir el nombre (línea 2, 'FN') y el apellido (línea 1, 'LN'). Dentro de los nombres y dentro de los apellidos conservar el orden de las palabras tal como están impresas (ALVARO JAVIER nunca se convierte en JAVIER ALVARO). Si el anverso salió incompleto o ilegible y el archivo trae la zona de lectura mecánica, completar con ella: en el reverso de la INE la tercera línea es APELLIDO<APELLIDO<<NOMBRE<NOMBRE y en un pasaporte la primera es P<PAIS seguido de APELLIDOS<<NOMBRES. No tomar el nombre de un notario, de un funcionario que firma ni de otra persona mencionada en una certificación.",
+        "validation": []
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre(s) de pila del titular, sin apellidos. INE: el último renglón bajo 'NOMBRE'. Pasaporte: campo 'Nombres' / 'Given names'. Licencia de Estados Unidos: línea 2 o 'FN'. Todos los nombres de pila, en el orden impreso; si el anverso de la INE perdió alguno, la zona de lectura mecánica del reverso los trae después de '<<'. Si el documento imprime el nombre completo en una sola línea sin distinguir apellidos, dejar null en vez de partirlo por cuenta propia.",
+        "validation": []
+      },
+      "PRIMER_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Primer apellido del titular. INE: el primer renglón bajo 'NOMBRE'. Pasaporte mexicano o español: el primer apellido del campo 'Apellidos'. Documento de un país de un solo apellido (licencia o pasaporte de Estados Unidos, Canadá, Países Bajos...): el apellido completo ('Surname', 'LN', línea 1), aunque tenga varias palabras. Null si el documento no separa los apellidos del nombre.",
+        "validation": []
+      },
+      "SEGUNDO_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido del titular, solo cuando el documento lo imprime: en la INE es el segundo renglón bajo 'NOMBRE'; en un pasaporte mexicano o español, el segundo apellido del campo 'Apellidos'. Null cuando la persona tiene un solo apellido o el documento es de un país que no lo usa; no inferirlo.",
+        "validation": []
+      },
+      "NUMERO_DOCUMENTO": {
+        "type": "string",
+        "required": true,
+        "hint": "Número que individualiza la identificación, en mayúsculas y sin espacios. INE: la CLAVE DE ELECTOR de 18 caracteres impresa en el anverso junto a esa etiqueta (por ejemplo PRLPJN85010109H400); no confundirla con la CURP, que también tiene 18 caracteres pero va bajo la etiqueta 'CURP', ni con los números del reverso. PASAPORTE: el número de pasaporte ('Pasaporte No.', 'Passport No.'), que también es el inicio de la segunda línea de la zona de lectura mecánica. LICENCIA_CONDUCIR: el número de licencia ('DL', 'Driver License No.', 'Número de licencia'), conservando sus guiones tal como están impresos. Otros: el número o folio principal del documento. Leer cada carácter tal como está impreso; no completar ni corregir.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{18}$",
+            "message": "La clave de elector debe tener 18 caracteres alfanuméricos",
+            "when": {
+              "field": "TIPO_IDENTIFICACION",
+              "eq": "INE"
+            }
+          },
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z0-9]{6,12}$",
+            "message": "El número de pasaporte debe tener entre 6 y 12 caracteres alfanuméricos",
+            "when": {
+              "field": "TIPO_IDENTIFICACION",
+              "eq": "PASAPORTE"
+            }
+          }
+        ]
+      },
+      "CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "CURP de 18 caracteres del titular, solo cuando la identificación la imprime bajo la etiqueta 'CURP': la credencial del INE (anverso) y el pasaporte mexicano. En mayúsculas y sin espacios. En una identificación extranjera este dato no existe y debe quedar null; NUNCA sustituirla con la clave de elector ni con otro número.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "CIC": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo credencial del INE cuando el archivo incluye el reverso: Código de Identificación de la Credencial, los 9 dígitos que siguen a 'IDMEX' en la primera línea de la zona de lectura mecánica, SIN el décimo dígito (verificador). En 'IDMEX1234567890<<1234567890123' el CIC es 123456789. Null si el reverso no viene en el archivo, si la credencial es de un modelo sin esa línea o si la identificación no es del INE.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{9}$",
+            "message": "El CIC debe contener exactamente 9 dígitos"
+          }
+        ]
+      },
+      "NACIONALIDAD": {
+        "type": "string",
+        "required": false,
+        "hint": "Nacionalidad del titular cuando el documento la imprime en un campo propio (pasaportes y tarjetas de residencia: 'Nacionalidad' / 'Nationality'), literal: MEXICANA, ESPAÑOLA, USA... Una credencial del INE o una licencia de conducir no la declaran y debe quedar null; no deducirla del país emisor.",
+        "validation": []
+      },
+      "FECHA_NACIMIENTO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de nacimiento del titular ('FECHA DE NACIMIENTO', 'Date of birth', 'DOB'). Normalizar a YYYY-MM-DD interpretando el orden del país emisor: México y Europa usan día/mes/año; una licencia de Estados Unidos usa mes/día/año, así que DOB 08/22/1985 es 1985-08-22. No confundir con la fecha de expedición ni con el año de registro del INE.",
+        "validation": []
+      },
+      "FECHA_EXPEDICION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de expedición o emisión cuando esté impresa completa ('Fecha de expedición', 'Date of issue', 'ISS'). Normalizar a YYYY-MM-DD con el orden de fecha del país emisor. La credencial del INE solo imprime años ('AÑO DE REGISTRO', 'EMISIÓN'): en ese caso dejar null, no construir una fecha.",
+        "validation": []
+      },
+      "FECHA_VENCIMIENTO": {
+        "type": "date",
+        "required": false,
+        "hint": "Último día de vigencia de la identificación, normalizado a YYYY-MM-DD con el orden de fecha del país emisor. Pasaporte: 'Fecha de caducidad' / 'Date of expiry'. Licencia: 'EXP' / 'Expires' / 'Vencimiento'. Credencial del INE: solo imprime 'VIGENCIA' con un año o un rango de años (por ejemplo '2026 - 2036' o '2029'); la credencial vale hasta el 31 de diciembre del ÚLTIMO año impreso, así que 'VIGENCIA 2026 - 2036' se entrega como 2036-12-31. Si el documento no tiene vencimiento (por ejemplo una cédula profesional) o no se alcanza a leer, dejar null.",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "No se pudo leer la vigencia de la identificación",
+            "when": {
+              "field": "TIPO_IDENTIFICACION",
+              "in": [
+                "INE",
+                "PASAPORTE",
+                "LICENCIA_CONDUCIR",
+                "TARJETA_RESIDENCIA"
+              ]
+            }
+          },
+          {
+            "rule_type": "date_expiry",
+            "allow_empty": true,
+            "message": "La identificación está vencida"
+          }
+        ]
+      },
+      "AUTORIDAD_EMISORA": {
+        "type": "string",
+        "required": false,
+        "hint": "Institución o autoridad que emitió el documento, copiada literalmente: 'INSTITUTO NACIONAL ELECTORAL', 'SECRETARÍA DE RELACIONES EXTERIORES', 'California DMV', 'DGP' ... Solo si está impresa; no inferirla por el diseño ni por los colores.",
+        "validation": []
+      }
+    },
+    "cross_field_validation": []
+  }
+}

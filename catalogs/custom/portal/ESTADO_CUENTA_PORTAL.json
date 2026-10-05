@@ -1,0 +1,269 @@
+{
+  "ESTADO_CUENTA_PORTAL": {
+    "catalog_status": "beta",
+    "schema_version": "1.1.0",
+    "display_name": "Estado de cuenta bancario (portal, nacional o extranjero)",
+    "aliases": [
+      "estado de cuenta portal",
+      "estado de cuenta bancario",
+      "carátula bancaria",
+      "carta bancaria",
+      "datos bancarios del proveedor",
+      "wire instructions"
+    ],
+    "description": "Documento de un banco que acredita la cuenta en la que una empresa o persona proveedora recibe sus pagos, tal como lo sube al portal. Mexicano: la carátula o primera página de un estado de cuenta ('Estado de Cuenta', 'Periodo', 'Fecha de Corte', 'No. de Cuenta', 'No. de Cliente', 'R.F.C.', 'No. Cuenta CLABE' o 'Clave Bancaria Estandarizada (CLABE)') de BBVA, Banorte, Santander, Afirme, Banamex, HSBC, Banregio u otro banco. Extranjero: un estado de cuenta, una carta del banco que confirma la cuenta ('Statement Current Account', 'Balance Confirmation', 'Bank Reference Letter', 'To whom it may concern') o una hoja de instrucciones de transferencia ('Wire Instructions'), con el nombre del titular y el número de cuenta, IBAN, código SWIFT/BIC o número de ruta ABA. Lo que lo define es que un banco identifica una cuenta y a su titular. No confundir con un comprobante de transferencia, una factura, un cheque ni una constancia fiscal.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "__COMENTARIO_proposito__": "Mapeo para el portal: UN solo contrato para los datos bancarios de un proveedor, sea la carátula de un estado de cuenta mexicano o el documento equivalente de un banco extranjero (carta del banco, instrucciones de transferencia). Se extraen los datos que se necesitan para pagar y para comprobar de quién es la cuenta; NO los saldos ni los movimientos, que el portal no usa y que solo encarecen la lectura. RFC, ID_FISCAL, TIPO_ID_FISCAL y PAIS siguen la convención de CONSTANCIA_SITUACION_FISCAL_PORTAL: RFC es solo el RFC mexicano, ID_FISCAL lleva el identificador fiscal del titular en cualquier país (en México se copia del RFC, `derived` con `value_from`) y PAIS es la clave ISO de 3 letras, para comparar directo entre los dos documentos.",
+    "__COMENTARIO_pais__": "PAIS es el país del banco donde vive la cuenta y decide qué reglas corren (param `when`). Cuenta mexicana: se exige la CLABE de 18 dígitos y, si el RFC viene impreso, su formato. Cuenta extranjera: se exige el número de cuenta o el IBAN, lo que el documento traiga. Una CLABE de 18 dígitos fija PAIS = MEX sin depender del modelo (`derived`): fuera de México ese dato no existe. La condición acepta MEX, MX o MÉXICO a propósito, igual que en la constancia fiscal: si el modelo se sale de la clave de 3 letras, la regla `regex` de PAIS lo marca y las reglas mexicanas siguen corriendo. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
+    "__COMENTARIO_antiguedad__": "A propósito NO hay regla de antigüedad sobre FECHA_EMISION: las muestras reales del portal traen estados de cuenta y cartas de más de un año. Si el negocio fija un máximo, se agrega aquí una regla `date_max_age` (en años enteros) con el `on_fail` que corresponda; no hace falta tocar código.",
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, como los demás tipos del portal: su salida está acoplada a ese sistema, que ya sabe qué documento está cargando. Se pide declarándolo: documentType=ESTADO_CUENTA_PORTAL.",
+    "fields": {
+      "PAIS": {
+        "type": "string",
+        "required": true,
+        "hint": "País del banco en el que está abierta la cuenta, como clave ISO 3166-1 alfa-3 en MAYÚSCULAS: MEX para una cuenta con CLABE en un banco de México; USA para una cuenta en un banco de Estados Unidos (número de ruta ABA, domicilio del banco en ese país); NLD para Países Bajos, ESP para España, CAN para Canadá, y así para cualquier otro. Deducirlo del domicilio del banco, del prefijo del IBAN (NL, ES, DE...) o del tipo de identificadores bancarios; NUNCA solo del idioma ni del domicilio del titular, que puede vivir en otro país. Devolver únicamente las 3 letras. Si no puede determinarse con certeza, dejar null.",
+        "derived": {
+          "from": "CLABE",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^\\d{18}$"
+              },
+              "value": "MEX"
+            }
+          ]
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}$",
+            "message": "El país debe ser una clave ISO 3166-1 de 3 letras (MEX, USA, NLD, ESP...)"
+          }
+        ]
+      },
+      "TIPO_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Qué clase de documento bancario es, con UNO de estos valores exactos: ESTADO_CUENTA (estado de cuenta periódico, con periodo o fecha de corte); CARTA_BANCARIA (carta o constancia en la que el banco confirma la cuenta y su titular: 'Statement Current Account', 'Balance Confirmation', 'carta de referencia bancaria', 'constancia de cuenta'); INSTRUCCIONES_TRANSFERENCIA (hoja con los datos para recibir transferencias: 'Wire Instructions'); OTRO (otro documento del banco que identifique la cuenta). Si el archivo no es un documento bancario, dejar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(ESTADO_CUENTA|CARTA_BANCARIA|INSTRUCCIONES_TRANSFERENCIA|OTRO)$",
+            "message": "El tipo de documento debe ser ESTADO_CUENTA, CARTA_BANCARIA, INSTRUCCIONES_TRANSFERENCIA u OTRO"
+          }
+        ]
+      },
+      "BANCO": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre del banco que lleva la cuenta del titular, tal como aparece en el encabezado, el logotipo o el pie legal: 'BBVA', 'BANORTE', 'Santander', 'AFIRME', 'Rabobank', 'Wells Fargo Bank, N.A.', 'Mission Bank'. Nombre corto y reconocible, sin la leyenda legal completa ('Institución de Banca Múltiple, Grupo Financiero...'). Si el logotipo no salió en el texto, tomarlo del pie legal de la página ('BBVA MEXICO, S.A., INSTITUCION DE BANCA MULTIPLE, GRUPO FINANCIERO BBVA MEXICO' es BBVA) o del nombre del producto; en una cuenta mexicana los 3 primeros dígitos de la CLABE lo confirman: 002 Banamex, 012 BBVA, 014 Santander, 021 HSBC, 030 BanBajío, 036 Inbursa, 044 Scotiabank, 058 Banregio, 062 Afirme, 072 Banorte, 127 Banco Azteca. NUNCA tomarlo de la dirección ni del nombre de la sucursal ('SUCURSAL', 'DIRECCION', 'PLAZA'). En unas instrucciones de transferencia es el banco del BENEFICIARIO ('Bank name'), NUNCA el banco intermediario o corresponsal.",
+        "validation": []
+      },
+      "TITULAR": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo de la persona o razón social de la empresa titular de la cuenta, tal como lo imprime el banco, incluido su régimen o sufijo societario si forma parte del nombre impreso (SA DE CV, Inc., LLC, B.V.). En un estado de cuenta mexicano es el nombre que encabeza el bloque del domicilio del cliente. En una carta es 'Name', 'Legal title' o el cliente al que se refiere; en unas instrucciones de transferencia, 'Title of account' o 'Beneficiary name'. No tomar el nombre del banco, del ejecutivo que firma ni de un firmante autorizado distinto del titular.",
+        "validation": []
+      },
+      "RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "RFC del TITULAR, solo cuando el documento lo imprime: el que sigue a la etiqueta 'R.F.C.' en los datos del cliente, 12 caracteres para persona moral o 13 para persona física, en mayúsculas y sin espacios ni guiones. NUNCA el RFC del banco, que aparece en el pie de página o en el bloque del CFDI junto a su razón social. En un documento extranjero este campo queda null: su identificador fiscal va en ID_FISCAL, NUNCA aquí.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del titular no cumple el formato de 12 o 13 caracteres"
+          }
+        ]
+      },
+      "ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Identificador fiscal del TITULAR, solo cuando el documento lo imprime, tal como está impreso y conservando sus guiones. MÉXICO: el mismo RFC del titular. EXTRANJERO: el identificador equivalente ('TAX ID', 'EIN', 'VAT', 'NIF'). NUNCA el del banco ni un número de cuenta o de cliente. Si el documento no lo trae, dejar null.",
+        "derived": {
+          "from": "RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value_from": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "TIPO_ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Sigla del identificador que quedó en ID_FISCAL, en MAYÚSCULAS y sin puntos: RFC (México), EIN o SSN (Estados Unidos), NIF (España), BN (Business Number de Canadá, también cuando viene como cuenta GST/HST), ABN (Australia), RSIN (Países Bajos), o la que use el documento en cualquier otro país (VAT, TIN, CUIT, NIT...). Solo la sigla, sin el número. Null si ID_FISCAL quedó vacío o el documento no nombra el identificador.",
+        "derived": {
+          "from": "RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "NUMERO_CUENTA": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de cuenta del titular en su banco, como string para conservar ceros iniciales: 'No. de Cuenta', 'Número de cuenta', 'Account number', 'Your account number'. Solo dígitos y letras, sin espacios; conservar los guiones cuando el banco los imprime como parte del número (por ejemplo 60-12345678-9). NUNCA poner aquí la CLABE, el IBAN, el número de cliente, el número de ruta ABA, un número de tarjeta ni la cuenta de un banco intermediario. Si el estado de cuenta lista varios productos, tomar la cuenta de cheques o de depósito principal, la misma a la que pertenece la CLABE. Si el documento solo identifica la cuenta con un IBAN, dejar null.",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "Una cuenta extranjera debe traer el número de cuenta o el IBAN",
+            "when": [
+              {
+                "field": "PAIS",
+                "matches": "^(?!\\s*(MEX|MX|M[EÉ]XICO)\\s*$).+"
+              },
+              {
+                "field": "IBAN",
+                "empty": true
+              }
+            ]
+          }
+        ]
+      },
+      "CLABE": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo cuenta mexicana: Clave Bancaria Estandarizada de 18 dígitos, impresa junto a 'CLABE', 'No. Cuenta CLABE', 'Cuenta CLABE' o 'Clave Bancaria Estándar (CLABE)'. Devolver exactamente los 18 dígitos seguidos, quitando los espacios con que algunos bancos la separan en grupos (012 345 67890123456 7 se entrega como 012345678901234567). Leer dígito por dígito, sin agregar ni quitar ninguno; no confundirla con el número de cuenta (10 u 11 dígitos), el número de cliente ni un número de tarjeta (16 dígitos). En una cuenta extranjera este dato no existe y debe quedar null.",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "Una cuenta mexicana debe traer la CLABE",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          },
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{18}$",
+            "message": "La CLABE debe contener exactamente 18 dígitos"
+          }
+        ]
+      },
+      "IBAN": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo cuenta extranjera que lo use: International Bank Account Number, junto a la etiqueta 'IBAN'. En mayúsculas y SIN espacios (NL00 BANK 0123 4567 89 se entrega como NL00BANK0123456789): dos letras de país, dos dígitos de control y el resto de la cuenta. Si el documento repite el mismo IBAN para varias monedas, entregarlo una sola vez. Estados Unidos, Canadá y México no usan IBAN: dejar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{2}\\d{2}[A-Z0-9]{11,30}$",
+            "message": "El IBAN no cumple el formato internacional (2 letras de país, 2 dígitos y la cuenta)"
+          }
+        ]
+      },
+      "SWIFT_BIC": {
+        "type": "string",
+        "required": false,
+        "hint": "Código SWIFT o BIC del banco del TITULAR, de 8 u 11 caracteres en mayúsculas y sin espacios ('SWIFT', 'BIC', 'Swift code'). Si el documento solo da el SWIFT de un banco intermediario o corresponsal ('Intermediary bank swift code'), ese código va en BANCO_INTERMEDIARIO y este campo queda null. Los estados de cuenta mexicanos normalmente no lo imprimen: dejar null, no buscarlo de memoria.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$",
+            "message": "El código SWIFT/BIC debe tener 8 u 11 caracteres"
+          }
+        ]
+      },
+      "ABA_ROUTING": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo cuenta en Estados Unidos: número de ruta ABA de 9 dígitos del banco del titular para recibir transferencias ('Wire ABA', 'Wire transit ABA number (routing)', 'Bank ABA number (routing number)'). Si el documento imprime dos números de ruta distintos, uno para transferencias (wire) y otro para ACH o cheques ('Routing/Transit number'), aquí va el de transferencias y el otro en ABA_ROUTING_ACH. Si solo imprime uno, va aquí. Nunca el número de ruta de un banco intermediario.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{9}$",
+            "message": "El número de ruta ABA debe contener exactamente 9 dígitos"
+          }
+        ]
+      },
+      "ABA_ROUTING_ACH": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo cuando el documento imprime un SEGUNDO número de ruta de 9 dígitos, distinto del de transferencias, para ACH, depósitos electrónicos o cheques ('Routing/Transit number', 'ACH routing'). Si el documento trae un solo número de ruta, este campo queda null: no repetirlo.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d{9}$",
+            "message": "El número de ruta ACH debe contener exactamente 9 dígitos"
+          }
+        ]
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Moneda de la cuenta como clave ISO 4217 de 3 letras en mayúsculas: MXN cuando el documento dice 'MONEDA NACIONAL', 'M.N.' o 'PESOS'; USD para dólares de Estados Unidos; EUR para euros. Solo si el documento la declara. Si el banco confirma la MISMA cuenta para varias monedas, entregarlas separadas por coma y sin espacios, en el orden impreso (EUR,USD). No deducirla del país.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}(,[A-Z]{3})*$",
+            "message": "La moneda debe ser una clave ISO 4217 de 3 letras (MXN, USD, EUR)"
+          }
+        ]
+      },
+      "FECHA_EMISION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha del documento. Estado de cuenta: la 'Fecha de Corte' o, si no la rotula, el último día del periodo ('DEL 01/03/2026 AL 31/03/2026' es 2026-03-31). Carta del banco: la fecha en que se expide o firma ('Date'); NUNCA la fecha 'as of' a la que se refieren los datos ni la fecha de apertura de la cuenta. Instrucciones de transferencia sin fecha propia: null; no tomar la fecha de revisión del formato ('REV 02/2020'). Normalizar a YYYY-MM-DD interpretando el orden que usa el país: en México y Europa día/mes/año, en Estados Unidos mes/día/año.",
+        "validation": []
+      },
+      "DOMICILIO_TITULAR": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio del titular tal como lo imprime el banco, en una sola línea separando sus partes con comas: calle y número, colonia, ciudad, estado, país y código postal. En un estado de cuenta mexicano es el bloque bajo el nombre del cliente (si además hay un bloque 'DOMICILIO FISCAL', usar ese). No tomar el domicilio de la sucursal ni el del banco. Null si el documento no lo trae.",
+        "validation": []
+      },
+      "BANCO_INTERMEDIARIO": {
+        "type": "object",
+        "required": false,
+        "hint": "Solo cuando el documento indica un banco intermediario o corresponsal para recibir transferencias internacionales ('Intermediary bank', 'Correspondent bank'). Si no lo menciona, dejar todos sus subcampos en null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "subfield": "SWIFT_BIC",
+            "pattern": "^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$",
+            "message": "El código SWIFT/BIC del banco intermediario debe tener 8 u 11 caracteres"
+          }
+        ],
+        "fields": {
+          "NOMBRE": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre del banco intermediario o corresponsal ('Intermediary bank name'), sin su domicilio.",
+            "validation": []
+          },
+          "SWIFT_BIC": {
+            "type": "string",
+            "required": false,
+            "hint": "Código SWIFT/BIC del banco intermediario ('Intermediary bank swift code'), 8 u 11 caracteres en mayúsculas y sin espacios.",
+            "validation": []
+          },
+          "NUMERO_CUENTA": {
+            "type": "string",
+            "required": false,
+            "hint": "Cuenta que el banco del titular tiene en el banco intermediario ('Intermediary account number'), tal como está impresa, con sus guiones. No es la cuenta del titular.",
+            "validation": []
+          }
+        }
+      }
+    },
+    "cross_field_validation": []
+  }
+}

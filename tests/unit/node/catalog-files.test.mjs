@@ -94,9 +94,9 @@ test("stale-row detection ignores disabled and internal DynamoDB entries", () =>
   );
 });
 
-test("the repository ships 24 active catalogs with explicit maturity", () => {
+test("the repository ships 30 active catalogs with explicit maturity", () => {
   const types = discoverCatalogTypes(resolve("catalogs"));
-  assert.equal(types.length, 24);
+  assert.equal(types.length, 30);
   assert.ok(types.every(({ entry }) => ["stable", "beta"].includes(entry.catalog_status)));
 
   const beta = new Map(
@@ -105,6 +105,7 @@ test("the repository ships 24 active catalogs with explicit maturity", () => {
       .map(({ typeId, entry }) => [typeId, entry])
   );
   assert.deepEqual([...beta.keys()].sort(), [
+    "ACTA_CONSTITUTIVA_PORTAL",
     "ACTA_NACIMIENTO",
     "CARTA_NOM35",
     "CEDULA_PROFESIONAL",
@@ -113,13 +114,18 @@ test("the repository ships 24 active catalogs with explicit maturity", () => {
     "COMPROBANTE_DOMICILIO",
     "COMPROBANTE_ESTUDIOS",
     "CONSTANCIA_NSS",
+    "CONSTANCIA_SITUACION_FISCAL_PORTAL",
+    "CONTRATO_SERVICIO_PORTAL",
     "CURP",
+    "ESTADO_CUENTA_PORTAL",
     "FACTURA_LOGISTICA_XML",
     "IDENTIFICACION",
+    "IDENTIFICACION_OFICIAL_PORTAL",
     "PASAPORTE",
     "PEDIMENTO_ERP_XML",
     "PEDIMENTO_GASTOS_ADUANALES_ERP",
     "PEDIMENTO_GASTOS_ADUANALES_ERP_XML",
+    "REGISTRO_PUBLICO_COMERCIO_PORTAL",
   ]);
   assert.equal(beta.get("COMPROBANTE_DOMICILIO").segmentation_candidate, false);
   assert.equal(beta.get("CEDULA_PROFESIONAL").segmentation_candidate, false);
@@ -130,6 +136,20 @@ test("the repository ships 24 active catalogs with explicit maturity", () => {
   // PEDIMENTO_ERP (see that catalog's __COMENTARIO_segmentation_candidate__).
   assert.equal(beta.get("PEDIMENTO_GASTOS_ADUANALES_ERP").segmentation_candidate, false);
   assert.equal(beta.get("PEDIMENTO_GASTOS_ADUANALES_ERP_XML").segmentation_candidate, false);
+  // Same reasoning for the portal rendering of the tax certificate: a Mexican
+  // one is the very paper CONSTANCIA_SITUACION_FISCAL already recognizes.
+  assert.equal(beta.get("CONSTANCIA_SITUACION_FISCAL_PORTAL").segmentation_candidate, false);
+  // Every portal type is coupled to that system's upload slots, which always
+  // declare the type; an INE or a passport is also the paper INE/PASAPORTE own.
+  for (const typeId of [
+    "IDENTIFICACION_OFICIAL_PORTAL",
+    "ESTADO_CUENTA_PORTAL",
+    "CONTRATO_SERVICIO_PORTAL",
+    "ACTA_CONSTITUTIVA_PORTAL",
+    "REGISTRO_PUBLICO_COMERCIO_PORTAL",
+  ]) {
+    assert.equal(beta.get(typeId).segmentation_candidate, false);
+  }
   for (const typeId of ["CURP", "ACTA_NACIMIENTO", "CONSTANCIA_NSS", "PASAPORTE"]) {
     assert.notEqual(beta.get(typeId).segmentation_candidate, false);
   }

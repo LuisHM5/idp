@@ -1,0 +1,253 @@
+{
+  "REGISTRO_PUBLICO_COMERCIO_PORTAL": {
+    "catalog_status": "beta",
+    "schema_version": "1.0.0",
+    "display_name": "Registro Público de Comercio (portal)",
+    "aliases": [
+      "registro público de comercio portal",
+      "registro público de comercio",
+      "registro público",
+      "boleta de inscripción",
+      "boleta de inscripción RPC",
+      "RPC"
+    ],
+    "description": "Constancia de que una sociedad y sus actos están inscritos en el registro mercantil, tal como se sube al portal. Mexicana: la 'BOLETA DE INSCRIPCIÓN' del Registro Público de Comercio (SIGER, Secretaría de Economía), con el encabezado 'Registro Público de Comercio' y la oficina registral, el 'Número Único de Documento', las secciones 'ANTECEDENTES REGISTRALES' (FME o folio mercantil electrónico y denominación), 'DATOS DE INGRESO' (NCI, fecha y hora, solicitante), 'DATOS DEL DOCUMENTO QUE SE PRESENTA', 'ACTOS INSCRITOS' (forma precodificada como 'M4-Constitución de Sociedad' o 'M47-Constitución de Sociedad por Acciones Simplificada'), 'SELLO DIGITAL DE TIEMPO' y la firma electrónica; suele ir seguida de la forma precodificada con el detalle del acto (instrumento, notario, duración, domicilio, objeto social, capital, socios, administración y apoderados, 'Datos de inscripción'). También una boleta o sello de inscripción de un registro estatal anterior a SIGER. Extranjera: el extracto o certificado equivalente del registro mercantil del país ('Certificate of Good Standing', 'Certificate of Status', 'Uittreksel Handelsregister' de la Kamer van Koophandel, nota simple o certificación del Registro Mercantil). No confundir con la escritura constitutiva (un instrumento de la notaría, que la boleta solo cita), con una constancia fiscal ni con un aviso de uso de denominación.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+
+    "__COMENTARIO_proposito__": "Mapeo para el portal: con qué folio está inscrita la sociedad, qué acto se inscribió y con qué instrumento. Cuando la boleta trae además la forma precodificada (M4, M47...), de ahí salen los mismos datos societarios que entrega ACTA_CONSTITUTIVA_PORTAL, con los mismos nombres (NUMERO_ESCRITURA, FECHA_ESCRITURA, NOTARIO_NOMBRE, NOTARIA_NUMERO, NOTARIA_PLAZA, DOMICILIO_SOCIAL, DURACION, OBJETO_SOCIAL, CAPITAL_SOCIAL, SOCIOS, REPRESENTANTES_LEGALES), y NOMBRE_O_RAZON_SOCIAL, REGIMEN_CAPITAL y PAIS son los de CONSTANCIA_SITUACION_FISCAL_PORTAL: el portal compara los tres documentos campo contra campo. Si cambias un nombre aquí, cámbialo allá.",
+
+    "__COMENTARIO_reglas__": "PAIS decide qué reglas corren (param `when`): a una boleta mexicana se le exige el folio mercantil y al menos un acto inscrito; a un extracto extranjero, lo que cualquiera trae (denominación, fecha de inscripción y país). El folio mercantil no lleva regla de formato a propósito: SIGER 2.0 lo escribe 'N-2019012345', pero los folios anteriores son '12345*10' o '12345-1' y siguen siendo válidos. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
+
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, como los demás tipos del portal: su salida está acoplada a ese sistema, que ya sabe qué documento está cargando. Se pide declarándolo: documentType=REGISTRO_PUBLICO_COMERCIO_PORTAL.",
+
+    "fields": {
+      "PAIS": {
+        "type": "string",
+        "required": true,
+        "hint": "País del registro mercantil que emite el documento, como clave ISO 3166-1 alfa-3 en MAYÚSCULAS: MEX para una boleta del Registro Público de Comercio (Secretaría de Economía, SIGER, o un registro estatal mexicano); USA para un certificado de un Secretary of State de Estados Unidos; NLD para un extracto de la Kamer van Koophandel; ESP para el Registro Mercantil de España; y así para cualquier otro país. Deducirlo de la autoridad que lo emite, NUNCA de la nacionalidad de los socios. Devolver únicamente las 3 letras. Si no puede determinarse con certeza, dejar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}$",
+            "message": "El país debe ser una clave ISO 3166-1 de 3 letras (MEX, USA, ESP, NLD...)"
+          }
+        ]
+      },
+      "NOMBRE_O_RAZON_SOCIAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Denominación o razón social de la sociedad inscrita, en mayúsculas y SIN el régimen de capital. Boleta mexicana: el campo 'Nombre/Denominación razón social' de 'ANTECEDENTES REGISTRALES' o 'Se constituyó la sociedad denominada'; de 'EJEMPLO COMERCIAL, SOCIEDAD ANONIMA DE CAPITAL VARIABLE' se entrega EJEMPLO COMERCIAL. No tomar el nombre del solicitante, del fedatario ni de una sociedad que aparezca como socia. En un extracto extranjero, el nombre legal completo con su sufijo societario si forma parte del nombre (Inc., LLC, B.V.).",
+        "validation": []
+      },
+      "REGIMEN_CAPITAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Tipo de sociedad que acompaña a la denominación, desarrollado y en mayúsculas: 'SOCIEDAD ANÓNIMA DE CAPITAL VARIABLE', 'SOCIEDAD DE RESPONSABILIDAD LIMITADA DE CAPITAL VARIABLE'. Si la denominación no lo trae, deducirlo SOLO de lo que la boleta imprime: el tipo de sociedad de la forma ('Sociedad mercantil: Sociedad Anónima' con 'Modalidad de capital variable: SI') o el nombre del acto ('Constitución de Sociedad por Acciones Simplificada' es SOCIEDAD POR ACCIONES SIMPLIFICADA). En un extracto extranjero, la forma jurídica declarada ('Besloten Vennootschap', 'Limited Liability Company'). Null si no puede leerse.",
+        "validation": []
+      },
+      "FOLIO_MERCANTIL": {
+        "type": "string",
+        "required": false,
+        "hint": "Folio mercantil electrónico con el que está inscrita la sociedad: el valor bajo 'FME' en 'ANTECEDENTES REGISTRALES' (por ejemplo N-2019012345), tal como está impreso, con su letra y su guion. En una boleta anterior a SIGER 2.0, el 'Folio Mercantil' o 'Folio Mercantil Electrónico' (12345*10). No confundirlo con el NCI ni con el Número Único de Documento. En un extracto extranjero, el número de registro de la sociedad ('KvK-nummer', 'Entity number', 'Company number').",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "Una boleta del Registro Público de Comercio debe indicar el folio mercantil",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ]
+      },
+      "NUMERO_UNICO_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo boleta de SIGER: el 'Número Único de Documento' impreso en la esquina superior derecha de cada página, sobre esa etiqueta (por ejemplo 20190001234500AB), sin espacios. Null si el documento no lo trae.",
+        "validation": []
+      },
+      "NCI": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo boleta de SIGER: Número de Control Interno, el valor bajo 'NCI' en 'DATOS DE INGRESO' o en 'Datos de inscripción' (12 dígitos, por ejemplo 201900012345), como string. Null si no aparece.",
+        "validation": []
+      },
+      "OFICINA_REGISTRAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Oficina del registro que hace la inscripción: la ciudad impresa bajo el encabezado 'Registro Público de Comercio' ('Guadalajara', 'Chihuahua') o el campo 'Oficina registral'. En un extracto extranjero, la oficina o el estado del registro. Null si no se indica.",
+        "validation": []
+      },
+      "FECHA_INSCRIPCION": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha en que quedó inscrito el acto. Boleta mexicana: 'Fecha inscripción' / 'Fecha de inscripción' de 'Datos de inscripción'; si la boleta no trae esa sección, la 'Fecha y hora' de 'DATOS DE INGRESO' o la 'Fecha de ingreso' del acto. Solo la fecha, sin la hora ni la zona ('15/03/2021 10:30:00 T.CENTRO' es 2021-03-15). No tomar la fecha del instrumento notarial, la del pago de derechos ni la del sello digital de tiempo. En un extracto extranjero, la fecha de registro o de constitución inscrita. Normalizar a YYYY-MM-DD (México usa día/mes/año).",
+        "validation": []
+      },
+      "ACTOS_INSCRITOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Actos que la boleta declara inscritos, una fila por cada renglón de la tabla 'ACTOS INSCRITOS'. En un extracto extranjero, lista vacía.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "Una boleta del Registro Público de Comercio debe listar al menos un acto inscrito",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN"
+          ],
+          "FORMA_PRECODIFICADA": {
+            "type": "string",
+            "required": false,
+            "hint": "Clave de la forma precodificada de la columna 'Formas precodificadas', solo la clave que antecede al guion: de 'M4-Constitución de Sociedad' se entrega M4; de 'M47-Constitución de Sociedad por Acciones Simplificada', M47.",
+            "validation": []
+          },
+          "NOMBRE_ACTO": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre del acto inscrito, de la columna 'Nombre acto', completo aunque la celda lo parta en varios renglones: 'Constitución de sociedad mercantil', 'Asamblea extraordinaria', 'Poder'.",
+            "validation": []
+          },
+          "FECHA_INGRESO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de la columna 'Fecha de ingreso' de esa fila, sin la hora. Normalizar a YYYY-MM-DD.",
+            "validation": []
+          }
+        }
+      },
+      "NUMERO_ESCRITURA": {
+        "type": "string",
+        "required": false,
+        "hint": "Número del instrumento notarial que se inscribió: 'No. de documento' en 'DATOS DEL DOCUMENTO QUE SE PRESENTA' o 'Por instrumento No.' en la forma precodificada, solo los dígitos (12345). En una Sociedad por Acciones Simplificada, que no pasa por notario, el 'folio de constitución' (por ejemplo SAS2019123456). Null si la boleta no lo indica.",
+        "validation": []
+      },
+      "FECHA_ESCRITURA": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha del instrumento que se inscribió: el campo 'De fecha' de la forma precodificada, o la 'Fecha de constitución' en una Sociedad por Acciones Simplificada. Sin la hora. No confundirla con la fecha de ingreso ni con la de inscripción en el registro. Normalizar a YYYY-MM-DD. Null si la boleta no la trae.",
+        "validation": []
+      },
+      "NOTARIO_NOMBRE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre completo del notario o corredor público que otorgó el instrumento: 'Fedatario / Autoridad' en 'DATOS DEL DOCUMENTO QUE SE PRESENTA' o 'Nombre' bajo 'Formalizado ante: Notario Público' en la forma. Sin títulos. Si en lugar de un fedatario la boleta nombra una autoridad ('Secretaría de Economía', como en una Sociedad por Acciones Simplificada), dejar null. No tomar al responsable de la oficina registral que firma la boleta.",
+        "validation": []
+      },
+      "NOTARIA_NUMERO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de la notaría o correduría del fedatario: el campo 'No.' junto a su nombre en la forma precodificada, solo los dígitos. Null si no aparece.",
+        "validation": []
+      },
+      "NOTARIA_PLAZA": {
+        "type": "string",
+        "required": false,
+        "hint": "Municipio y estado de la notaría, de los campos 'Municipio' y 'Estado' que acompañan al fedatario en la forma precodificada: 'MUNICIPIO, ESTADO' (por ejemplo 'GUADALAJARA, JALISCO'). No usar el domicilio de la sociedad. Null si no aparece.",
+        "validation": []
+      },
+      "DOMICILIO_SOCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio de la sociedad según la forma precodificada, en una sola línea: 'Domicilio en' con su 'Municipio' y 'Entidad', o en una Sociedad por Acciones Simplificada la 'Dirección' de 'Domicilio Social' con municipio y entidad federativa. Null si la boleta no trae la forma.",
+        "validation": []
+      },
+      "DURACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Duración de la sociedad, del campo 'Con duración' de la forma precodificada, literal: 'TIEMPO INDEFINIDO', 'INDEFINIDA', '99 AÑOS'. Null si no aparece.",
+        "validation": []
+      },
+      "OBJETO_SOCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Actividad principal de la sociedad, resumida del 'Objeto social principal' de la forma precodificada en UNA sola frase de no más de 40 palabras, con las palabras del documento. Ese apartado suele ocupar varias páginas con decenas de incisos numerados: NO transcribirlo ni enumerar sus incisos; solo las actividades centrales del primero o de los dos primeros. Es un resumen: si pasa de 40 palabras, recortarlo. Si es corto ('Venta al por mayor por comisión y consignación'), literal. Null si la boleta no lo contiene.",
+        "validation": []
+      },
+      "CAPITAL_SOCIAL": {
+        "type": "number",
+        "required": false,
+        "hint": "Capital social inscrito, como número sin símbolos ni separadores de miles: el 'Capital social mínimo' de la forma precodificada (100,000.00 es 100000.00) o, si la forma no lo totaliza, la suma del capital FIJO de la tabla de socios. No tomar el valor nominal de una acción. Null si la boleta no lo trae.",
+        "validation": []
+      },
+      "SOCIOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Socios o accionistas que la forma precodificada lista en su tabla ('Suscrito como sigue', o la tabla de apellidos, nombre, nacionalidad y acciones de una Sociedad por Acciones Simplificada), UNA fila por socio. Si la tabla parte a un mismo socio en dos renglones (capital FIJO y capital VARIABLE), unirlos en una sola fila sumando sus acciones y su importe. Un socio puede ser una persona o una sociedad. No incluir renglones de totales. Si la boleta no trae la forma, lista vacía.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN"
+          ],
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo del socio en el orden natural (nombres y después apellidos), uniendo las columnas de nombre, primer apellido y segundo apellido; o la denominación completa si el socio es una sociedad.",
+            "validation": []
+          },
+          "RFC": {
+            "type": "string",
+            "required": false,
+            "hint": "RFC del socio, de la columna 'RFC' de su fila, en mayúsculas y sin espacios ni guiones. Null si la celda está vacía.",
+            "validation": []
+          },
+          "ACCIONES": {
+            "type": "number",
+            "required": false,
+            "hint": "Número de acciones o partes sociales del socio (columna 'No. acciones o partes sociales' o 'Número de Acciones').",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": false,
+            "hint": "Importe total de la participación del socio, como número sin símbolos ni separadores de miles (columna 'Total' o 'Monto Total'; no la columna 'Valor' o 'Valor de la Acción', que es el valor nominal de una sola acción).",
+            "validation": []
+          }
+        }
+      },
+      "REPRESENTANTES_LEGALES": {
+        "type": "array",
+        "required": false,
+        "hint": "Administradores y apoderados que la forma precodificada inscribe, una fila por persona: los de la tabla de administración ('A cargo de', con su nombramiento), el 'Nombre del Administrador' de una Sociedad por Acciones Simplificada y los de 'Se nombró apoderado(s) a'. NO incluir al órgano de vigilancia o comisario, al fedatario, al solicitante ni al responsable de la oficina registral. Si la boleta no trae la forma, lista vacía.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN"
+          ],
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo de la persona en el orden natural (nombres y después apellidos), uniendo las columnas de nombre y apellidos.",
+            "validation": []
+          },
+          "CARGO": {
+            "type": "string",
+            "required": false,
+            "hint": "Cargo inscrito, en mayúsculas: el de la columna 'Nombramiento' ('ADMINISTRADOR GENERAL ÚNICO', 'PRESIDENTE DEL CONSEJO'), 'ADMINISTRADOR' para el 'Nombre del Administrador' de una Sociedad por Acciones Simplificada, o 'APODERADO' para los de 'Se nombró apoderado(s) a'.",
+            "validation": []
+          },
+          "FACULTADES": {
+            "type": "string",
+            "required": false,
+            "hint": "Poderes inscritos a su favor, resumidos de 'Con facultades para' o de la columna 'Facultades' en una frase de no más de 30 palabras con los nombres de los poderes: 'Poder general para pleitos y cobranzas, actos de administración y de dominio, y para suscribir títulos de crédito'. Null si la boleta no los detalla.",
+            "validation": []
+          }
+        }
+      }
+    },
+    "cross_field_validation": []
+  }
+}

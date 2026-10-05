@@ -1,0 +1,525 @@
+{
+  "CONSTANCIA_SITUACION_FISCAL_PORTAL": {
+    "catalog_status": "beta",
+    "schema_version": "1.1.0",
+    "display_name": "Constancia de situación fiscal (portal, nacional o extranjera)",
+    "aliases": [
+      "constancia fiscal portal",
+      "constancia fiscal de proveedor",
+      "constancia fiscal extranjera",
+      "W-9",
+      "W9"
+    ],
+    "description": "Constancia con la que una empresa o persona acredita su identificación y situación fiscal ante la autoridad tributaria de SU país, tal como la sube al portal. Mexicana: la Constancia de Situación Fiscal del SAT, con los encabezados 'CONSTANCIA DE SITUACIÓN FISCAL' y 'CÉDULA DE IDENTIFICACIÓN FISCAL', el código QR, el RFC y las secciones 'Datos de Identificación del Contribuyente', 'Datos del domicilio registrado', 'Actividades Económicas', 'Regímenes' y 'Obligaciones'. Extranjera: el documento equivalente de cada país, por ejemplo el formulario W-9 'Request for Taxpayer Identification Number and Certification' del IRS de Estados Unidos (nombre, clasificación fiscal, domicilio, SSN o EIN, firma y fecha), un certificado de situación censal o una tarjeta de identificación fiscal de la Agencia Tributaria de España (NIF), una confirmación de Business Number o de cuenta GST/HST de la Canada Revenue Agency, un 'Certificate of Residency' de la Australian Taxation Office (ABN) o un extracto del registro mercantil de los Países Bajos (KVK, con RSIN). Lo que lo define es que identifica al contribuyente con su número de identificación fiscal, su nombre o razón social y su domicilio. No confundir con una factura o CFDI, una Opinión del Cumplimiento, una declaración de impuestos ni un acta constitutiva.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "__COMENTARIO_proposito__": "Mapeo para el portal: los MISMOS campos, con los mismos nombres, que CONSTANCIA_SITUACION_FISCAL (catalogs/base/fiscal), más PAIS y la identificación fiscal neutral (ID_FISCAL, TIPO_ID_FISCAL, OTROS_IDENTIFICADORES), para que una sola carga acepte la constancia de un contribuyente mexicano o la de uno extranjero. Los nombres son los de la constancia mexicana porque es el contrato que el portal ya consume; en una constancia extranjera cada campo recibe el dato EQUIVALENTE y lo que ese documento no trae queda vacío, nunca inventado. CONSTANCIA_SITUACION_FISCAL manda sobre la parte mexicana: si allá cambia un hint o una regla del formato del SAT, replícalo aquí.",
+    "__COMENTARIO_id_fiscal__": "Quién es el contribuyente se lee SIEMPRE de ID_FISCAL, sea del país que sea. RFC es solo el RFC mexicano: en una constancia extranjera queda vacío, y si el modelo metiera ahí un identificador extranjero su regla de formato lo marca. En una mexicana ID_FISCAL no lo lee el modelo: se COPIA del RFC (`derived` con `value_from`), así que hereda el valor recuperado del QR del SAT y nunca puede contradecirlo; TIPO_ID_FISCAL se fija en 'RFC' por la misma vía. En una extranjera los dos los lee el modelo. Cuando el documento trae más de un identificador (ABN y TFN en Australia, RSIN y KVK en Países Bajos), ID_FISCAL lleva el tributario principal y los demás van en OTROS_IDENTIFICADORES, cada uno con su sigla. Esa lista se lee en una llamada aparte, que no sabe qué quedó en ID_FISCAL, y el modelo tiende a repetirlo (medido en 3 de 4 constancias extranjeras): `exclude_rows` quita de forma determinista las filas cuyo NUMERO ya está en ID_FISCAL, RFC, CURP o ID_CIF. ID_FISCAL y TIPO_ID_FISCAL se llaman igual en ESTADO_CUENTA_PORTAL y ACTA_CONSTITUTIVA_PORTAL (PROVEEDOR_ID_FISCAL en el contrato): el portal compara documentos campo contra campo. Ver catalogs/README.md -> 'Copiar el valor de otro campo (value_from)'.",
+    "__COMENTARIO_pais__": "PAIS es lo que decide qué reglas corren. Las reglas propias del formato del SAT (RFC obligatorio, QR del SAT obligatorio, estatus en el padrón, código postal de 5 dígitos, al menos una actividad y un régimen) llevan `when` sobre PAIS y solo aplican a una constancia mexicana; a una extranjera se le exige lo que cualquier constancia fiscal trae: identificador fiscal, nombre o razón social, domicilio, fecha y país. La condición acepta MEX, MX o MÉXICO a propósito: si el modelo escribiera el país fuera de la clave de 3 letras, la regla `regex` de PAIS lo marca, pero las reglas mexicanas siguen aplicando en vez de apagarse en silencio. Para agregar reglas propias de otro país (p. ej. el formato del EIN), declara la regla en el campo con su propio `when`: no hace falta tocar código. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática por la misma razón que PEDIMENTO_ERP: una constancia mexicana es el MISMO papel físico que ya reconoce CONSTANCIA_SITUACION_FISCAL, así que un clasificador que lee texto no tiene con qué elegir entre los dos, y elegir mal cambia el contrato de salida. Se pide declarándolo: documentType=CONSTANCIA_SITUACION_FISCAL_PORTAL, que es justo lo que hace el portal: ya sabe que está cargando la constancia fiscal de una empresa. Quitar esta línea lo devuelve a la lista de candidatos.",
+    "qr_recovery": {
+      "confidence": 0.99,
+      "page_marker_min_matches": 2,
+      "short_segment_max_pages": 8,
+      "page_markers": [
+        "C[ÉE]DULA DE IDENTIFICACI[ÓO]N FISCAL",
+        "CONSTANCIA DE SITUACI[ÓO]N FISCAL",
+        "LUGAR Y FECHA DE EMISI[ÓO]N",
+        "DATOS DE IDENTIFICACI[ÓO]N DEL CONTRIBUYENTE"
+      ],
+      "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf"
+    },
+    "fields": {
+      "PAIS": {
+        "type": "string",
+        "required": true,
+        "hint": "País de la autoridad tributaria que emite la constancia, como clave ISO 3166-1 alfa-3 en MAYÚSCULAS (la misma del catálogo c_Pais del SAT): MEX para una Constancia de Situación Fiscal del SAT; USA para un formulario del IRS / Department of the Treasury como el W-9; ESP para un documento de la Agencia Tributaria (AEAT); CAN para la Canada Revenue Agency; y así para cualquier otro país. Deducirlo de la autoridad emisora, del nombre del formulario y del tipo de identificador fiscal; NUNCA solo del idioma ni del domicilio del contribuyente. Devolver únicamente las 3 letras, sin el nombre del país. Si no puede determinarse con certeza, dejar null.",
+        "derived": {
+          "from": "CONSTANCIA_QR_VALIDO",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "eq": true
+              },
+              "value": "MEX"
+            }
+          ]
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}$",
+            "message": "El país debe ser una clave ISO 3166-1 de 3 letras (MEX, USA, ESP, CAN...)"
+          }
+        ]
+      },
+      "RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo constancia mexicana: Registro Federal de Contribuyentes impreso junto a la etiqueta 'RFC' en la Cédula de Identificación Fiscal y repetido en 'Datos de Identificación del Contribuyente'. Extraer 12 caracteres para persona moral o 13 para persona física, en mayúsculas, sin espacios, guiones ni prefijos. NUNCA tomar la CURP, el idCIF ni un RFC mencionado dentro de la cadena original. En una constancia extranjera este campo debe quedar null: su identificador fiscal va en ID_FISCAL, NUNCA aquí.",
+        "qr_source": {
+          "param": "d3",
+          "split": "_",
+          "part": -1,
+          "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+        },
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "La constancia mexicana debe indicar el RFC",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          },
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC no cumple el formato de 12 o 13 caracteres"
+          }
+        ]
+      },
+      "ID_FISCAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Identificador fiscal PRINCIPAL del contribuyente: el número con el que la autoridad tributaria de su país lo identifica, tal como está impreso o escrito, conservando sus espacios y guiones. MÉXICO: el mismo RFC. ESTADOS UNIDOS (W-9): el número de la Parte I, 'Employer identification number' (EIN, formato NN-NNNNNNN) o 'Social security number' (SSN), el que esté lleno. ESPAÑA: el NIF ('Número de Identificación Fiscal'). CANADÁ: el Business Number de 9 dígitos o, si el documento da el número de cuenta de programa (por ejemplo 'GST/HST account is 12345 6789 RT0001'), ese número completo. AUSTRALIA: el ABN. PAÍSES BAJOS: el RSIN. En cualquier otro país, su número de identificación tributaria (Tax ID, TIN, VAT, CUIT, NIT...). Cuando el documento trae varios números, aquí va SOLO el tributario; si no trae ninguno tributario pero sí el número con el que un registro oficial identifica a la empresa, usar ése. NUNCA un número que identifica al documento y no al contribuyente ('Our reference', 'Nº Certificado', 'Nº de Remesa', código de verificación), ni un teléfono, código postal o número de cuenta. Leer cada dígito sin agregar ni quitar ninguno.",
+        "derived": {
+          "from": "RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value_from": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "TIPO_ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Sigla del identificador que quedó en ID_FISCAL, en MAYÚSCULAS y sin puntos: RFC (México), EIN o SSN (Estados Unidos), NIF (España), BN (Business Number de Canadá, también cuando viene como cuenta GST/HST), ABN (Australia), RSIN (Países Bajos), o la que use el documento en cualquier otro país (VAT, TIN, CUIT, NIT...). Solo la sigla, sin el número. Null si ID_FISCAL quedó vacío o el documento no nombra el identificador.",
+        "derived": {
+          "from": "RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "OTROS_IDENTIFICADORES": {
+        "type": "array",
+        "required": false,
+        "hint": "Identificadores oficiales SECUNDARIOS del mismo contribuyente, una fila por cada uno. El identificador tributario PRINCIPAL nunca va en esta lista, porque ya tiene su propio campo: el RFC (México), el EIN o SSN (Estados Unidos), el NIF (España), el Business Number o la cuenta GST/HST (Canadá), el ABN (Australia), el RSIN (Países Bajos), o el Tax ID/TIN/VAT del país que sea. Aquí van solo los DEMÁS números con los que una autoridad identifica a ese contribuyente: por ejemplo el TFN de un certificado australiano que también trae el ABN, o el número KVK/CCI de un extracto holandés que también trae el RSIN. Tampoco van aquí: la CURP ni el idCIF de una constancia mexicana (tienen su propio campo); los números que identifican al DOCUMENTO y no al contribuyente (referencia, folio, número de certificado o de remesa, código de verificación, cadena original); los números de un establecimiento o sucursal; ni los identificadores de otra persona o empresa (accionistas, administradores, la autoridad emisora). Si el documento solo trae el identificador principal, la lista queda vacía: es lo normal.",
+        "exclude_rows": {
+          "column": "NUMERO",
+          "equal_to": [
+            "ID_FISCAL",
+            "RFC",
+            "CURP",
+            "ID_CIF"
+          ]
+        },
+        "validation": [],
+        "item_fields": {
+          "TIPO": {
+            "type": "string",
+            "required": true,
+            "hint": "Sigla o nombre corto de este identificador, en MAYÚSCULAS, tal como lo llama el documento (TFN, KVK, CCI, VAT...).",
+            "validation": []
+          },
+          "NUMERO": {
+            "type": "string",
+            "required": true,
+            "hint": "El número tal como está impreso, conservando sus espacios y guiones.",
+            "validation": []
+          }
+        }
+      },
+      "CURP": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo constancia mexicana: CURP de 18 caracteres de una persona física, visible únicamente en 'Datos de Identificación del Contribuyente'. Extraer en mayúsculas y sin espacios. Para personas morales y para cualquier constancia extranjera este campo no existe y debe quedar null; NUNCA sustituirlo con el RFC ni con otro identificador.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
+            "message": "La CURP no cumple el formato de 18 caracteres"
+          }
+        ]
+      },
+      "NOMBRE_O_RAZON_SOCIAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo de la persona o denominación/razón social de la empresa titular de la constancia. MÉXICO: el visible en la Cédula de Identificación Fiscal o en los datos del contribuyente; para persona física conservar nombres y apellidos tal como aparecen impresos; para persona moral conservar la denominación o razón social completa, sin el régimen de capital. EXTRANJERA: el nombre legal del contribuyente tal como está escrito, incluyendo su sufijo societario si forma parte del nombre (Inc., LLC, S.L., Ltd.); en un W-9 es la línea 1 'Name of entity/individual'; en un certificado, el nombre de quien se certifica ('This is to certify that ...'); en un extracto de registro, 'Name given in the articles'; en una página de cuenta de la CRA, el 'Account name' literal. No incluir el identificador fiscal ni el nombre comercial.",
+        "validation": []
+      },
+      "NOMBRES": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre(s) de pila de una persona física, solo cuando el documento lo da en un campo propio (en México, 'Nombre (s)' dentro de 'Datos de Identificación del Contribuyente'). No copiar aquí una denominación o razón social ni partir por cuenta propia un nombre completo impreso en una sola línea: en ese caso dejar null.",
+        "validation": []
+      },
+      "PRIMER_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Primer apellido de una persona física, solo cuando el documento lo da en un campo propio (en México, 'Primer Apellido'). Debe quedar null para una empresa o cuando el documento no lo separe.",
+        "validation": []
+      },
+      "SEGUNDO_APELLIDO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido de una persona física, solo cuando el documento lo da en un campo propio (en México, 'Segundo Apellido'). Debe quedar null cuando no aparezca; no inferirlo a partir del nombre completo.",
+        "validation": []
+      },
+      "REGIMEN_CAPITAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Forma jurídica de una persona moral cuando el documento la declara en un campo propio. MÉXICO: campo 'Régimen Capital', por ejemplo 'SOCIEDAD ANÓNIMA DE CAPITAL VARIABLE'. EXTRANJERA: la forma societaria declarada en un campo propio (por ejemplo 'Legal form: Besloten Vennootschap' en un extracto holandés), literal. No confundir con los regímenes o clasificaciones fiscales, que van en REGIMENES_FISCALES, ni deducirla del sufijo del nombre.",
+        "validation": []
+      },
+      "NOMBRE_COMERCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre comercial del contribuyente cuando el documento lo da aparte del nombre legal. MÉXICO: campo 'Nombre Comercial' de los datos de identificación. W-9: línea 2 'Business name/disregarded entity name, if different from above'. Otros: 'Trade name', 'Anagrama Comercial'. Conservarlo literal; dejar null cuando ese campo esté vacío, sin repetir la razón social.",
+        "validation": []
+      },
+      "ID_CIF": {
+        "type": "string",
+        "required": false,
+        "hint": "Solo constancia mexicana: identificador idCIF asociado a la Cédula de Identificación Fiscal. Se recupera preferentemente de la parte anterior al guion bajo en el parámetro D3 del QR del SAT; si el QR no se decodifica, extraerlo únicamente cuando esté impreso. Conservar todos los dígitos como string y no confundirlo con RFC, CURP o folio. En una constancia extranjera dejar null.",
+        "qr_source": {
+          "param": "d3",
+          "split": "_",
+          "part": 0,
+          "pattern": "^\\d+$"
+        },
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^\\d+$",
+            "message": "El idCIF debe contener únicamente dígitos"
+          }
+        ]
+      },
+      "QR_CONSTANCIA": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "hint": "URL completa decodificada del código QR de la Constancia de Situación Fiscal del SAT. Nunca inferir ni completar este campo: se llena determinísticamente desde el QR embebido y queda null cuando no puede decodificarse o la constancia es extranjera.",
+        "qr_source": "payload",
+        "validation": [],
+        "derived": {
+          "from": "QR_CONSTANCIA",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^(?!.*siat\\.sat\\.gob\\.mx)"
+              },
+              "value": null
+            }
+          ]
+        }
+      },
+      "CONSTANCIA_QR_VALIDO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "hint": "Verificación determinística del QR del SAT: true únicamente cuando el código apunta al validador del SAT y permite recuperar tanto ID_CIF como RFC desde el parámetro D3. Solo se exige en una constancia mexicana; en una extranjera sale false y no cuenta como falla.",
+        "qr_source": "valid",
+        "qr_requires": [
+          "ID_CIF",
+          "RFC"
+        ],
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "message": "No se localizó un QR válido de Constancia de Situación Fiscal o no fue posible recuperar ID_CIF y RFC",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ]
+      },
+      "LUGAR_EMISION": {
+        "type": "string",
+        "required": false,
+        "hint": "Lugar de emisión cuando el documento lo declara. MÉXICO: el de la línea 'Lugar y Fecha de Emisión' del encabezado; extraer solamente la localidad y entidad anteriores a la fecha, sin incluir la fecha ni el texto de la etiqueta. EXTRANJERA: solo si el documento imprime un lugar de expedición o firma; no usar el domicilio del contribuyente. Si no aparece, dejar null.",
+        "validation": []
+      },
+      "FECHA_EMISION": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha en que se generó o firmó la constancia. MÉXICO: la de 'Lugar y Fecha de Emisión' en la parte superior; NUNCA tomar la fecha de inicio de operaciones, la de un régimen, actividad u obligación, ni una fecha contenida en la cadena original. EXTRANJERA: la fecha de expedición del documento ('Issue date', 'Extract was made on', la fecha de su firma electrónica); en un formulario firmado como el W-9, la fecha escrita junto a la firma ('Date'); en una página web impresa sin fecha propia, la fecha de impresión del encabezado. NUNCA la fecha de revisión del formulario (por ejemplo 'Rev. March 2024'), el inicio o fin de un periodo de validez, ni la fecha de alta o de constitución. Normalizar a YYYY-MM-DD interpretando el orden que usa el país del documento: en Estados Unidos y Canadá es mes/día/año (3/15/25 es 2025-03-15); en Europa es día-mes-año (14-01-2025 es 2025-01-14).",
+        "validation": [
+          {
+            "rule_type": "date_max_age",
+            "pattern": "5",
+            "message": "La constancia supera la antigüedad máxima configurada de 5 años"
+          }
+        ]
+      },
+      "FECHA_INICIO_OPERACIONES": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha de inicio de operaciones del contribuyente. MÉXICO: campo 'Fecha inicio de operaciones' dentro de 'Datos de Identificación del Contribuyente'. EXTRANJERA: la fecha de alta, registro o inicio de actividad si el documento la imprime ('Company start date', 'Effective date' de la cuenta); si no, null. Normalizar a YYYY-MM-DD y no confundir con FECHA_EMISION.",
+        "validation": []
+      },
+      "ESTATUS_EN_PADRON": {
+        "type": "string",
+        "required": false,
+        "hint": "Estatus del contribuyente ante la autoridad tributaria. MÉXICO: valor literal del campo 'Estatus en el padrón', por ejemplo ACTIVO o SUSPENDIDO; extraer únicamente el estatus, sin la etiqueta ni la fecha de cambio de estado. EXTRANJERA: solo si el documento declara expresamente un estatus (por ejemplo 'Active' o 'De alta en el censo'), literal; un formulario como el W-9 no lo trae y debe quedar null. Nunca deducirlo.",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "La constancia mexicana debe indicar el estatus en el padrón",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ]
+      },
+      "FECHA_ULTIMO_CAMBIO_ESTADO": {
+        "type": "date",
+        "required": false,
+        "hint": "Solo cuando el documento la imprime (en México, campo 'Fecha de último cambio de estado' dentro de los datos de identificación). Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "DOMICILIO_FISCAL": {
+        "type": "object",
+        "required": true,
+        "hint": "Domicilio fiscal del contribuyente. MÉXICO: bloque completo 'Datos del domicilio registrado', cada dato de su etiqueta. EXTRANJERA: el domicilio declarado en el documento (en un W-9, las líneas 5 'Address (number, street, and apt. or suite no.)' y 6 'City, state, and ZIP code'), repartido en los subcampos equivalentes; en otros documentos, el 'Domicilio Fiscal', la 'Visiting address', la 'Physical location' (antes que la 'Mailing address') o el domicilio impreso junto al nombre del contribuyente. No tomar direcciones presentes en sellos, cadenas originales o instrucciones del formulario, ni el domicilio del solicitante ('Requester'), ni el de la oficina de la autoridad que emite el documento (el del membrete).",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "subfield": "CODIGO_POSTAL",
+            "message": "La constancia mexicana debe indicar el código postal del domicilio",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          },
+          {
+            "rule_type": "regex",
+            "subfield": "CODIGO_POSTAL",
+            "pattern": "^\\d{5}$",
+            "message": "El código postal debe contener exactamente 5 dígitos",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ],
+        "fields": {
+          "CODIGO_POSTAL": {
+            "type": "string",
+            "required": false,
+            "hint": "Código postal del domicilio, como string. MÉXICO: campo 'Código Postal', exactamente 5 dígitos, incluidos ceros iniciales. EXTRANJERA: el código postal tal como está escrito (ZIP code de Estados Unidos, código postal canadiense como 'K1A 0B1', etc.).",
+            "validation": []
+          },
+          "TIPO_VIALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Tipo de Vialidad' de la constancia mexicana, por ejemplo CALLE, AVENIDA o CARRETERA. En una constancia extranjera dejar null: el tipo de vía se conserva dentro de NOMBRE_VIALIDAD.",
+            "validation": []
+          },
+          "NOMBRE_VIALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Nombre de la calle o vialidad. MÉXICO: campo 'Nombre de Vialidad'. EXTRANJERA: el nombre de la calle tal como está escrito, con su tipo de vía (por ejemplo 'Main St.' o 'Kerkstraat'). NUNCA incluye el número de la calle, vaya antes ('120 Main St.') o después ('Kerkstraat 12'), ni la suite o unidad.",
+            "validation": []
+          },
+          "NUMERO_EXTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "Número exterior del domicilio, como string para conservar letras, guiones y ceros. MÉXICO: campo 'Número Exterior'. EXTRANJERA: el número de la calle: en Estados Unidos y Canadá va antes del nombre de la calle; en buena parte de Europa va después ('Kerkstraat 12' → 12). En el formato canadiense 'UNIDAD - NÚMERO CALLE' ('7 - 1200 MAIN ST') el número exterior es el segundo (1200) y el primero es la unidad.",
+            "validation": []
+          },
+          "NUMERO_INTERIOR": {
+            "type": "string",
+            "required": false,
+            "hint": "Número interior. MÉXICO: campo 'Número Interior'. EXTRANJERA: suite, apartamento, piso, unidad o puerta, con su etiqueta si la trae (por ejemplo 'Suite 200', 'Level 3'); en el formato canadiense 'UNIDAD - NÚMERO CALLE' ('7 - 1200 MAIN ST'), la unidad (7). Dejar null cuando no esté informado; no copiar el número exterior.",
+            "validation": []
+          },
+          "NOMBRE_COLONIA": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre de la Colonia' de la constancia mexicana. En una constancia extranjera solo si el domicilio declara un barrio, urbanización o distrito; si no, null.",
+            "validation": []
+          },
+          "NOMBRE_LOCALIDAD": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Nombre de la Localidad' de la constancia mexicana. En una constancia extranjera dejar null: la ciudad va en MUNICIPIO_O_DEMARCACION_TERRITORIAL.",
+            "validation": []
+          },
+          "MUNICIPIO_O_DEMARCACION_TERRITORIAL": {
+            "type": "string",
+            "required": false,
+            "hint": "MÉXICO: campo 'Nombre del Municipio o Demarcación Territorial'; no confundir con localidad o entidad federativa. EXTRANJERA: la ciudad o municipio del domicilio (en un W-9, la ciudad de la línea 6).",
+            "validation": []
+          },
+          "ENTIDAD_FEDERATIVA": {
+            "type": "string",
+            "required": false,
+            "hint": "MÉXICO: campo 'Nombre de la Entidad Federativa'. EXTRANJERA: el estado, provincia o región del domicilio tal como está escrito (por ejemplo 'CA' en un W-9, 'Ontario', 'Madrid').",
+            "validation": []
+          },
+          "ENTRE_CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Entre Calle' de la constancia mexicana. En una constancia extranjera dejar null.",
+            "validation": []
+          },
+          "Y_CALLE": {
+            "type": "string",
+            "required": false,
+            "hint": "Campo 'Y Calle' de la constancia mexicana. En una constancia extranjera dejar null.",
+            "validation": []
+          }
+        }
+      },
+      "ACTIVIDADES_ECONOMICAS": {
+        "type": "array",
+        "required": false,
+        "hint": "Actividades económicas del contribuyente. MÉXICO: tabla 'Actividades Económicas'; extraer una fila por cada actividad y conservar el orden impreso, continuando la misma tabla si abarca más de una página. EXTRANJERA: solo si el documento lista actividades (por ejemplo los epígrafes del IAE en un certificado censal español, o 'Activities' con su código SBI en un extracto holandés, sin repetir la misma actividad), una fila por actividad; un formulario como el W-9 no las trae y la lista queda vacía. No resumir varias actividades en una sola cadena ni inventar una a partir del giro o del nombre.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La constancia mexicana debe contener al menos una actividad económica",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "ACTIVIDAD_ECONOMICA": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal de la actividad (en México, la columna 'Actividad Económica').",
+            "validation": []
+          },
+          "PORCENTAJE": {
+            "type": "number",
+            "required": false,
+            "hint": "Valor de la columna 'Porcentaje', sin el símbolo %. Conservar los decimales impresos. Null si el documento no lo indica.",
+            "validation": []
+          },
+          "FECHA_INICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de inicio de esta actividad económica. Normalizar a YYYY-MM-DD.",
+            "validation": []
+          },
+          "FECHA_FIN": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de fin de esta actividad cuando esté informada. Normalizar a YYYY-MM-DD; dejar null si la celda está vacía.",
+            "validation": []
+          }
+        }
+      },
+      "REGIMENES_FISCALES": {
+        "type": "array",
+        "required": false,
+        "hint": "Regímenes o clasificaciones fiscales del contribuyente. MÉXICO: tabla 'Regímenes'; extraer una fila por cada régimen fiscal y conservar sus fechas en la misma fila; no confundir con 'Régimen Capital'. EXTRANJERA: el régimen o clasificación tributaria que el documento declare POR ESCRITO, una fila por cada uno (por ejemplo los regímenes de IVA o del impuesto sobre sociedades de un certificado español). Una casilla de verificación NO cuenta como dato escrito: el texto de un formulario lista todas sus opciones impresas sin decir cuál está marcada, así que en un W-9 las opciones de la línea 3a ('Individual/sole proprietor', 'C corporation', 'S corporation', 'Partnership', 'Trust/estate', 'LLC') NUNCA se extraen y la lista queda vacía, salvo que el texto traiga una marca explícita (X, ☒, 'checked') pegada a UNA sola opción. Ante la duda, lista vacía: no adivinar ni elegir la opción más probable. No devolver toda la tabla como una sola cadena.",
+        "validation": [
+          {
+            "rule_type": "minimum_items",
+            "value": 1,
+            "message": "La constancia mexicana debe contener al menos un régimen fiscal",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "REGIMEN_FISCAL": {
+            "type": "string",
+            "required": true,
+            "hint": "Descripción literal del régimen o clasificación fiscal (en México, la columna 'Régimen'). Conservar la clave cuando esté impresa junto con la descripción.",
+            "validation": []
+          },
+          "FECHA_INICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de inicio del régimen de esta fila. Normalizar a YYYY-MM-DD; null si el documento no la indica.",
+            "validation": []
+          },
+          "FECHA_FIN": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de fin del régimen de esta fila. Normalizar a YYYY-MM-DD; dejar null si sigue vigente y la celda está vacía.",
+            "validation": []
+          }
+        }
+      },
+      "OBLIGACIONES_FISCALES": {
+        "type": "array",
+        "required": false,
+        "hint": "Obligaciones fiscales del contribuyente, solo cuando el documento las lista. MÉXICO: tabla 'Obligaciones'; extraer una fila por obligación, vinculando descripción, vencimiento y fechas. EXTRANJERA: las obligaciones periódicas que el documento declare, si las hay; un formulario como el W-9 no las trae y la lista queda vacía. La descripción del vencimiento puede ser texto narrativo; no intentar convertirla en fecha ni resumir varias obligaciones.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN",
+            "VALOR_CRUDO"
+          ],
+          "DESCRIPCION_OBLIGACION": {
+            "type": "string",
+            "required": true,
+            "hint": "Texto literal de la obligación (en México, la columna 'Descripción de la Obligación').",
+            "validation": []
+          },
+          "DESCRIPCION_VENCIMIENTO": {
+            "type": "string",
+            "required": false,
+            "hint": "Texto literal de la columna 'Descripción Vencimiento', por ejemplo una regla mensual o anual. No convertirlo a una fecha inventada.",
+            "validation": []
+          },
+          "FECHA_INICIO": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de inicio de la obligación de esta fila. Normalizar a YYYY-MM-DD.",
+            "validation": []
+          },
+          "FECHA_FIN": {
+            "type": "date",
+            "required": false,
+            "hint": "Fecha de fin de la obligación de esta fila. Normalizar a YYYY-MM-DD; dejar null cuando no esté informada.",
+            "validation": []
+          }
+        }
+      }
+    },
+    "cross_field_validation": [],
+    "__COMENTARIO_qr__": "QR_CONSTANCIA solo publica el QR del SAT. La recuperación de QR entrega cualquier código que decodifique en la página cuando ninguno apunta al validador del SAT (medido: el código de barras de una tarjeta NIF española salía aquí como si fuera la URL de la constancia), así que el bloque `derived` de ese campo lo vacía cuando el texto no contiene siat.sat.gob.mx y lo deja intacto, con su origen QR_RECOVERY, cuando sí."
+  }
+}

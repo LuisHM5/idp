@@ -1,0 +1,273 @@
+{
+  "ACTA_CONSTITUTIVA_PORTAL": {
+    "catalog_status": "beta",
+    "schema_version": "1.1.0",
+    "display_name": "Acta constitutiva (portal)",
+    "aliases": [
+      "acta constitutiva portal",
+      "acta constitutiva",
+      "escritura constitutiva",
+      "escritura pública de la sociedad",
+      "protocolización de acta de asamblea",
+      "articles of incorporation"
+    ],
+    "description": "Instrumento con el que una empresa acredita su existencia legal y quién la representa, tal como lo sube al portal. Mexicano: el testimonio de una escritura pública otorgada ante notario o de una póliza ante corredor público, con encabezado de la notaría ('NOTARÍA PÚBLICA', nombre del notario), 'ESCRITURA NÚMERO', 'VOLUMEN' o 'LIBRO', la fecha escrita con letra, y como acto la 'CONSTITUCIÓN' de la sociedad (denominación, domicilio, duración, objeto social, capital social, accionistas, órgano de administración, 'ESTATUTOS', 'TRANSITORIOS') o la 'PROTOCOLIZACIÓN DE ACTA DE ASAMBLEA' que la modifica o nombra administradores y apoderados, con sus 'ANTECEDENTES', 'CLÁUSULAS', la certificación 'YO, EL NOTARIO, CERTIFICO Y DOY FE' y sellos de 'AUTORIZO DEFINITIVAMENTE'. Extranjero: el documento equivalente del país de la empresa ('Articles of Incorporation', 'Certificate of Formation', 'Articles of Organization', escritura de constitución española, 'Statuten'). No confundir con la boleta de inscripción del Registro Público de Comercio (un formato de la Secretaría de Economía, no de la notaría), con una constancia fiscal ni con un contrato entre dos empresas.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "__COMENTARIO_proposito__": "Mapeo para el portal: quién es la sociedad, en qué instrumento consta y quién la representa. Los proveedores no siempre suben la escritura constitutiva original: también llega la protocolización de un acta de asamblea posterior que cita la constitución en sus antecedentes. Por eso el tipo acepta las dos y lo dice en TIPO_INSTRUMENTO, y separa los datos del instrumento que se subió (NUMERO_ESCRITURA, FECHA_ESCRITURA, notario) de los de la constitución (NUMERO_ESCRITURA_CONSTITUTIVA, FECHA_CONSTITUCION). NOMBRE_O_RAZON_SOCIAL, REGIMEN_CAPITAL, RFC, ID_FISCAL, TIPO_ID_FISCAL y PAIS son los mismos nombres de CONSTANCIA_SITUACION_FISCAL_PORTAL (RFC es solo el RFC mexicano; ID_FISCAL identifica a la sociedad en cualquier país y en México se copia del RFC), y los datos del instrumento, de los socios y de los representantes son los mismos de REGISTRO_PUBLICO_COMERCIO_PORTAL: el portal compara los tres documentos campo contra campo. Si cambias un nombre aquí, cámbialo allá.",
+    "__COMENTARIO_reglas__": "PAIS decide qué reglas corren (param `when`): a un instrumento mexicano se le exige número de escritura y notario; a uno extranjero, lo que cualquier documento de constitución trae (denominación, fecha y país). TIPO_INSTRUMENTO NO reprueba a un instrumento que no sea la constitutiva: el portal decide qué hace con una protocolización o un poder. Las listas de socios y representantes son opcionales: una escritura larga puede no caber completa o no nombrarlos. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
+    "__COMENTARIO_paginas__": "Una escritura puede traer decenas de páginas y hoy se manda completa al modelo (hasta el tope MAX_PAGES). No declara `page_selection` porque con las muestras disponibles (una sola escritura) no hay con qué calibrar marcadores; antes de activarlo, medir con `pnpm paginas`. Las escrituras escaneadas a doble cara suelen traer las páginas pares de cabeza: el OCR las lee igual.",
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, como los demás tipos del portal: su salida está acoplada a ese sistema, que ya sabe qué documento está cargando. Se pide declarándolo: documentType=ACTA_CONSTITUTIVA_PORTAL.",
+    "fields": {
+      "PAIS": {
+        "type": "string",
+        "required": true,
+        "hint": "País bajo cuyas leyes está constituida la sociedad y donde se otorgó el instrumento, como clave ISO 3166-1 alfa-3 en MAYÚSCULAS: MEX para una escritura ante notario o corredor público mexicano; USA para 'Articles of Incorporation' o 'Certificate of Formation' de un estado de Estados Unidos; ESP, NLD, CAN y así para cualquier otro país. Deducirlo de la autoridad o fedatario que lo otorga, NUNCA de la nacionalidad de los socios. Devolver únicamente las 3 letras. Si no puede determinarse con certeza, dejar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}$",
+            "message": "El país debe ser una clave ISO 3166-1 de 3 letras (MEX, USA, ESP, NLD...)"
+          }
+        ]
+      },
+      "TIPO_INSTRUMENTO": {
+        "type": "string",
+        "required": true,
+        "hint": "Qué acto contiene el instrumento, con UNO de estos valores exactos, decidido por su encabezado o proemio: CONSTITUTIVA (el acto es la constitución de la sociedad: 'CONSTITUCIÓN DE SOCIEDAD', 'contrato de sociedad', 'Articles of Incorporation', 'Certificate of Formation'); PROTOCOLIZACION_ASAMBLEA ('PROTOCOLIZACIÓN DE ACTA DE ASAMBLEA' de accionistas o socios, ordinaria o extraordinaria: reformas de estatutos, cambios de accionistas o de administradores); PODER (el acto único es el otorgamiento o la revocación de poderes); OTRO (cualquier otro instrumento de la sociedad: fusión, transformación, compulsa de estatutos). Una protocolización que cita la constitución en sus ANTECEDENTES sigue siendo PROTOCOLIZACION_ASAMBLEA. Si el archivo no es un instrumento societario, dejar null.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(CONSTITUTIVA|PROTOCOLIZACION_ASAMBLEA|PODER|OTRO)$",
+            "message": "El tipo de instrumento debe ser CONSTITUTIVA, PROTOCOLIZACION_ASAMBLEA, PODER u OTRO"
+          }
+        ]
+      },
+      "NOMBRE_O_RAZON_SOCIAL": {
+        "type": "string",
+        "required": true,
+        "hint": "Denominación o razón social de la sociedad a la que se refiere el instrumento, en mayúsculas y SIN el régimen de capital: de 'la sociedad denominada \"EJEMPLO COMERCIAL\", SOCIEDAD ANÓNIMA DE CAPITAL VARIABLE' se entrega EJEMPLO COMERCIAL. Usar la denominación VIGENTE: si el instrumento es un cambio de denominación, la nueva. No tomar el nombre de una sociedad accionista, de la notaría ni de una denominación anterior citada en antecedentes. En un documento extranjero, el nombre legal completo con su sufijo societario si forma parte del nombre (Inc., LLC, B.V.).",
+        "validation": []
+      },
+      "REGIMEN_CAPITAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Tipo de sociedad que acompaña a la denominación, desarrollado y en mayúsculas: 'SOCIEDAD ANÓNIMA DE CAPITAL VARIABLE', 'SOCIEDAD DE RESPONSABILIDAD LIMITADA DE CAPITAL VARIABLE', 'SOCIEDAD POR ACCIONES SIMPLIFICADA', 'SOCIEDAD ANÓNIMA PROMOTORA DE INVERSIÓN DE CAPITAL VARIABLE'. Si el instrumento solo usa las siglas (S.A. DE C.V.), desarrollarlas. En un documento extranjero, la forma societaria declarada ('Limited Liability Company', 'Besloten Vennootschap'); null si no la declara.",
+        "validation": []
+      },
+      "RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "RFC de la SOCIEDAD, solo cuando el instrumento lo cita como suyo (12 caracteres, en mayúsculas, sin espacios ni guiones). Las escrituras suelen citar los RFC de los accionistas, de los comparecientes o del notario: ésos NO van aquí (los de los accionistas van en SOCIOS). Una escritura constitutiva normalmente no lo trae, porque la sociedad aún no lo tenía: dejar null. En un documento extranjero este campo queda null: su identificador va en ID_FISCAL, NUNCA aquí.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC de la sociedad no cumple el formato de 12 caracteres de persona moral"
+          }
+        ]
+      },
+      "ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Identificador fiscal de la SOCIEDAD, solo cuando el instrumento lo cita como suyo, tal como está impreso. MÉXICO: el mismo RFC de la sociedad. EXTRANJERO: el identificador fiscal o de registro de la sociedad si el documento lo imprime (EIN, número de entidad o de registro...). NUNCA el de un accionista, de un compareciente ni del notario. Null si no aparece.",
+        "derived": {
+          "from": "RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value_from": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "TIPO_ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Sigla del identificador que quedó en ID_FISCAL, en MAYÚSCULAS y sin puntos: RFC (México), EIN o SSN (Estados Unidos), NIF (España), BN (Business Number de Canadá, también cuando viene como cuenta GST/HST), ABN (Australia), RSIN (Países Bajos), o la que use el documento en cualquier otro país (VAT, TIN, CUIT, NIT...). Solo la sigla, sin el número. Null si ID_FISCAL quedó vacío o el documento no nombra el identificador.",
+        "derived": {
+          "from": "RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "NUMERO_ESCRITURA": {
+        "type": "string",
+        "required": false,
+        "hint": "Número del instrumento que se subió, el de su encabezado ('ESCRITURA NÚMERO 12,345', 'INSTRUMENTO NÚMERO', 'PÓLIZA NÚMERO'), solo los dígitos, sin comas ni puntos y sin el número escrito con letra: 12345. NUNCA el número de otra escritura citada en los antecedentes (ésa, si es la constitutiva, va en NUMERO_ESCRITURA_CONSTITUTIVA). En un documento extranjero, su número de expediente o de registro ('File number', 'Document number') si lo imprime.",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "Un instrumento notarial mexicano debe indicar su número de escritura",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ]
+      },
+      "VOLUMEN": {
+        "type": "string",
+        "required": false,
+        "hint": "Volumen, libro o tomo del protocolo donde consta el instrumento, tal como lo indica su encabezado ('VOLUMEN ORDINARIO 120' se entrega como 120; 'LIBRO 14' como 14). Solo el número, sin el texto con letra. Null si no se indica.",
+        "validation": []
+      },
+      "FECHA_ESCRITURA": {
+        "type": "date",
+        "required": true,
+        "hint": "Fecha en que se otorgó el instrumento que se subió, la del proemio ('en ..., a ocho de marzo del año dos mil veintidós' es 2022-03-08). Viene escrita con letra: convertirla. NUNCA la fecha de la asamblea que se protocoliza, la de la escritura constitutiva citada en antecedentes, la de inscripción en el registro ni la de expedición del testimonio. En un documento extranjero, su fecha de otorgamiento o de presentación ('Filed on', 'Date of incorporation'). Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "NOTARIO_NOMBRE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre completo del notario o corredor público ante quien se otorgó el instrumento que se subió, sin 'Licenciado' ni otros títulos: el del membrete de la notaría y del proemio ('ante mí, Licenciado ..., titular de la Notaría Pública número ...'). NUNCA el notario de una escritura anterior citada en antecedentes. Null en un documento extranjero sin fedatario.",
+        "validation": [
+          {
+            "rule_type": "presence",
+            "message": "Un instrumento notarial mexicano debe indicar el notario o corredor que lo otorga",
+            "when": {
+              "field": "PAIS",
+              "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
+            }
+          }
+        ]
+      },
+      "NOTARIA_NUMERO": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de la notaría o correduría pública del instrumento que se subió, solo los dígitos ('Notaría Pública número quince' o 'NOTARÍA 15' se entrega como 15). Null si no se indica.",
+        "validation": []
+      },
+      "NOTARIA_PLAZA": {
+        "type": "string",
+        "required": false,
+        "hint": "Municipio o ciudad y entidad federativa donde tiene su sede la notaría o correduría del instrumento que se subió, tal como lo dice el proemio ('con residencia en ..., Estado de México'): 'MUNICIPIO, ESTADO'. Null si no se indica.",
+        "validation": []
+      },
+      "NUMERO_ESCRITURA_CONSTITUTIVA": {
+        "type": "string",
+        "required": false,
+        "hint": "Número de la escritura o póliza en la que se CONSTITUYÓ la sociedad, solo los dígitos. Si el instrumento que se subió es la constitutiva, es el mismo que NUMERO_ESCRITURA. Si es una protocolización u otro acto posterior, es el que citan sus ANTECEDENTES ('Por escritura pública número 4,321 ... se constituyó la sociedad' se entrega como 4321). Null si el instrumento no lo menciona.",
+        "validation": []
+      },
+      "FECHA_CONSTITUCION": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha en que se constituyó la sociedad. Si el instrumento que se subió es la constitutiva, es la misma que FECHA_ESCRITURA. Si es un acto posterior, la fecha de la escritura constitutiva citada en sus ANTECEDENTES ('de fecha tres de enero de dos mil once' es 2011-01-03); no confundirla con la fecha de su inscripción en el Registro Público. Normalizar a YYYY-MM-DD. Null si no se menciona.",
+        "validation": []
+      },
+      "FOLIO_MERCANTIL": {
+        "type": "string",
+        "required": false,
+        "hint": "Folio mercantil con el que la sociedad está inscrita en el Registro Público de Comercio, cuando el instrumento lo cita ('inscrita bajo el Folio Mercantil Electrónico número 12345*10' se entrega como 12345*10; 'N-2019012345' tal cual). Conservar letras, guiones y asteriscos; sin el texto con letra. Una constitutiva recién otorgada aún no lo tiene: dejar null.",
+        "validation": []
+      },
+      "DOMICILIO_SOCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio social de la sociedad según sus estatutos, que normalmente es solo un municipio o ciudad y su entidad ('Saltillo, Coahuila', 'Guadalajara, Jalisco'). No tomar el domicilio particular de un socio o compareciente ni el de la notaría. Null si no se indica.",
+        "validation": []
+      },
+      "DURACION": {
+        "type": "string",
+        "required": false,
+        "hint": "Duración de la sociedad según sus estatutos, en una frase corta: '99 AÑOS', 'INDEFINIDA'. Null si no se indica.",
+        "validation": []
+      },
+      "OBJETO_SOCIAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Actividad principal de la sociedad, resumida del artículo o cláusula de objeto social en UNA sola frase de no más de 40 palabras, con las palabras del instrumento (por ejemplo: 'Compraventa, importación, exportación y distribución de artículos de regalo y para el hogar'). El objeto social suele ocupar páginas enteras con decenas de incisos: NO transcribirlo ni enumerar sus incisos; solo las actividades centrales del primero o de los dos primeros. Es un resumen: si pasa de 40 palabras, recortarlo. Null si el instrumento no lo contiene.",
+        "validation": []
+      },
+      "CAPITAL_SOCIAL": {
+        "type": "number",
+        "required": false,
+        "hint": "Capital social de la sociedad, como número sin símbolos ni separadores de miles: el capital mínimo fijo o el capital total suscrito que declara el instrumento ('la suma de $50,000.00 (cincuenta mil pesos 00/100 moneda nacional)' es 50000.00). Si es un acto posterior que cambia el capital, el capital resultante. No tomar el valor nominal de una acción ni la aportación de un solo socio. Null si no se indica.",
+        "validation": []
+      },
+      "SOCIOS": {
+        "type": "array",
+        "required": false,
+        "hint": "Socios o accionistas de la sociedad con su participación, una fila por cada uno. En una constitutiva, los fundadores con las acciones que suscriben. En un acto posterior que cambia la tenencia, la estructura RESULTANTE (el cuadro final de 'ACCIONISTAS / ACCIONES / VALOR'), no la anterior ni las dos. Un accionista puede ser una persona o una sociedad. No incluir las filas de TOTAL ni a comparecientes, delegados o escrutadores que no sean socios. Si el instrumento no lista a los socios, lista vacía.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN"
+          ],
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo de la persona o razón social de la sociedad accionista, tal como aparece en el cuadro de accionistas.",
+            "validation": []
+          },
+          "RFC": {
+            "type": "string",
+            "required": false,
+            "hint": "RFC de ese socio cuando el instrumento lo cita junto a su nombre ('R.F.C. ...'), en mayúsculas y sin espacios ni guiones. Null si no aparece.",
+            "validation": []
+          },
+          "ACCIONES": {
+            "type": "number",
+            "required": false,
+            "hint": "Número de acciones o partes sociales de ese socio. Null si el instrumento solo da su importe.",
+            "validation": []
+          },
+          "IMPORTE": {
+            "type": "number",
+            "required": false,
+            "hint": "Importe total de la participación de ese socio en el capital, como número sin símbolos ni separadores de miles (la columna 'VALOR' o 'TOTAL' de su fila, no el valor nominal de una sola acción).",
+            "validation": []
+          }
+        }
+      },
+      "REPRESENTANTES_LEGALES": {
+        "type": "array",
+        "required": false,
+        "hint": "Personas a las que el instrumento NOMBRA, RATIFICA o reconoce como administradores o apoderados de la sociedad, una fila por persona: administrador único, presidente y miembros del consejo de administración, gerente o director general, y apoderados con poder general. Cuenta también el administrador que los ANTECEDENTES citan como designado al constituirse la sociedad ('designan al señor ... como administrador único'), si el instrumento no lo sustituye. NO incluir al presidente ni al secretario de la ASAMBLEA por el solo hecho de haberla presidido, ni al delegado especial que solo acude a protocolizar el acta, a los comparecientes como tales, a los escrutadores, al comisario, al notario ni a los socios que no reciben cargo. Si el instrumento no nombra ni ratifica a nadie, lista vacía: no deducir un representante del hecho de que alguien firma.",
+        "validation": [],
+        "item_fields": {
+          "$common": [
+            "PAGINA",
+            "ORDEN"
+          ],
+          "NOMBRE": {
+            "type": "string",
+            "required": true,
+            "hint": "Nombre completo de la persona, en el orden natural (nombres y después apellidos) y sin títulos.",
+            "validation": []
+          },
+          "CARGO": {
+            "type": "string",
+            "required": false,
+            "hint": "Cargo de administración o representación con las palabras EXACTAS que el instrumento usa al designar a ESA persona, en mayúsculas. Si dice que la administración se confía 'a un administrador único y para tal efecto designan al señor X', el cargo de X es ADMINISTRADOR ÚNICO. Otros: DIRECTOR GENERAL, GERENTE GENERAL, APODERADO; y PRESIDENTE DEL CONSEJO DE ADMINISTRACIÓN únicamente cuando el instrumento nombra un consejo y le da ese puesto a esa persona. Haber presidido la asamblea ('presidió la Asamblea', 'el Presidente declaró instalada la Asamblea') NO es un cargo. Si el instrumento no deja claro el cargo, null.",
+            "validation": []
+          },
+          "FACULTADES": {
+            "type": "string",
+            "required": false,
+            "hint": "Poderes que se le otorgan, resumidos en una frase de no más de 30 palabras con los nombres de los poderes: 'Poder general para pleitos y cobranzas, actos de administración y de dominio, y para suscribir títulos de crédito'. Null si el instrumento no los detalla.",
+            "validation": []
+          }
+        }
+      }
+    },
+    "cross_field_validation": []
+  }
+}

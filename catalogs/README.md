@@ -18,7 +18,9 @@ catalogs/
 │   ├── recursos_humanos/ → alta y acreditación profesional
 │   └── seguros/
 ├── custom/
-│   └── erp/           → variantes acopladas, como PEDIMENTO_ERP
+│   ├── erp/           → variantes acopladas, como PEDIMENTO_ERP
+│   └── portal/        → contratos del portal (sufijo _PORTAL): constancia fiscal, identificación,
+│                        estado de cuenta, contrato, acta constitutiva, registro público
 └── save/              → archivo inactivo; nunca entra a build/sync
 ```
 
@@ -40,6 +42,35 @@ calibren con muestras representativas se usan enviando `documentType`.
 `IDENTIFICACION` sigue la misma regla: se invoca explícitamente para decidir si
 un archivo tiene la estructura mínima de una identificación y extraer sus datos
 fundamentales; no compite con tipos específicos ni afirma autenticidad.
+
+`CONSTANCIA_SITUACION_FISCAL_PORTAL` (`custom/portal/`, beta) entrega los mismos
+campos que `CONSTANCIA_SITUACION_FISCAL` más `PAIS`, y acepta tanto la
+constancia del SAT como la de un contribuyente extranjero (W-9 del IRS,
+certificado censal de la AEAT, Business Number de la CRA...). Las reglas
+propias del formato mexicano llevan `when` sobre `PAIS`, así que solo juzgan a
+una constancia mexicana — ver [`when`](#when-a-qué-documentos-aplica-la-regla).
+También declara `segmentation_candidate: false`: se usa enviando `documentType`.
+
+Los otros cinco tipos de `custom/portal/` (beta) cubren el resto del expediente
+de alta de un proveedor y siguen el mismo patrón: **un tipo por casilla de carga
+del portal**, que acepta la variante mexicana y la extranjera del documento, con
+`when` para que las reglas mexicanas no reprueben a un documento de otro país.
+
+| Tipo | Qué acepta | Lo que decide las reglas |
+|---|---|---|
+| `IDENTIFICACION_OFICIAL_PORTAL` | INE, pasaporte de cualquier país, licencia de conducir, cédula, tarjeta de residencia | `TIPO_IDENTIFICACION` (lista cerrada). `INE` fija `PAIS = MEX` (`derived`); la vigencia se exige y se compara contra hoy |
+| `ESTADO_CUENTA_PORTAL` | Carátula de estado de cuenta, carta del banco o instrucciones de transferencia | `PAIS` del banco. México exige CLABE de 18 dígitos (que además fija `PAIS = MEX`); fuera de México, número de cuenta o IBAN |
+| `CONTRATO_SERVICIO_PORTAL` | Contrato de prestación de servicios o de obra, u orden/presupuesto aceptado | Sin variantes: tipo de contrato, las dos partes y el objeto |
+| `ACTA_CONSTITUTIVA_PORTAL` | Escritura constitutiva, protocolización de asamblea o su equivalente extranjero | `PAIS`. México exige número de escritura y notario; `TIPO_INSTRUMENTO` informa, no reprueba |
+| `REGISTRO_PUBLICO_COMERCIO_PORTAL` | Boleta de inscripción del RPC (SIGER) con o sin forma precodificada, o extracto de un registro extranjero | `PAIS`. México exige folio mercantil y al menos un acto inscrito |
+
+Los nombres de campo se repiten **a propósito** entre ellos y con la constancia
+fiscal (`PAIS`, `RFC`, `NOMBRE_O_RAZON_SOCIAL`, `REGIMEN_CAPITAL`, `NOMBRES`,
+`PRIMER_APELLIDO`, `SEGUNDO_APELLIDO`; y entre acta y registro, los datos del
+instrumento, `SOCIOS` y `REPRESENTANTES_LEGALES`): el portal compara los
+documentos de un proveedor campo contra campo. `tests/unit/test_portal_onboarding_types.py`
+lo fija; si renombras uno, renómbralo en todos. Los cinco declaran
+`segmentation_candidate: false`.
 
 ## Los 2 únicos comandos
 
@@ -1348,6 +1379,8 @@ explícito). **Solo estos `rule_type` tienen implementación real** —
 
 Params opcionales comunes a casi cualquier regla numérica: `"tolerance"`
 (default 0.01) y `"allow_empty": true` (no falla si el campo viene vacío).
+Y dos que valen para **cualquier** regla: `on_fail` (qué le pasa al documento
+si falla) y `when` (a qué documentos aplica), en las dos secciones siguientes.
 
 #### `on_fail`: qué le pasa al documento cuando la regla falla
 
@@ -1379,6 +1412,55 @@ Un valor que no sea uno de los tres se ignora (no se adivina), y una regla
 `presence` automático de `required: true` (no es una regla declarada); si
 necesitas graduar una presencia, declara `required: false` y una regla
 `presence` explícita con su `on_fail`.
+
+#### `when`: a qué documentos aplica la regla
+
+Param opcional de **cualquier** `rule_type`. Sin él, la regla aplica a todo
+documento del tipo — y un tipo que acepta variantes del mismo documento (la
+constancia fiscal de un contribuyente mexicano **o** la de uno extranjero) solo
+tendría dos salidas: aflojar la regla para todos, o reprobar siempre a la
+variante que no la cumple. Con `when` la regla se queda con su variante:
+
+```jsonc
+"RFC": {
+  "type": "string", "required": true, "hint": "...",
+  "validation": [
+    {"rule_type": "regex", "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+     "message": "El RFC no cumple el formato de 12 o 13 caracteres",
+     "when": {"field": "PAIS", "eq": "MEX"}}
+  ]
+}
+```
+
+- Una condición nombra el **`field`** que lee (path con puntos, igual que
+  `source` en `equals_field`) y uno o más operadores, combinados con AND. Son
+  **los mismos operadores cerrados de `derived`**: `eq`/`ne`, `in` (lista),
+  `matches` (regex, sin distinguir mayúsculas), `gt`/`gte`/`lt`/`lte`,
+  `empty`/`not_empty`. Una **lista** de condiciones también es AND.
+- **Condición falsa = la regla no opina**: no falla y no deja check, igual que
+  una regex sobre un campo opcional vacío. Un campo de condición que no se
+  leyó cuenta como falso (un `PAIS` vacío no es `MEX`); si de ese campo
+  depende qué reglas corren, decláralo `required`.
+- **`required` no se puede condicionar** (el `presence` automático no es una
+  regla declarada). Para "obligatorio solo en esta variante": `required:
+  false` y una regla `presence` explícita con su `when`.
+- **Un `when` mal escrito no prende ni apaga la regla en silencio**: sin
+  `field`, sin operador o con un operador que no existe, el check sale
+  `skipped: true` con `invalid 'when' (...)` — la misma señal que un
+  `rule_type` desconocido, y por la misma razón.
+- Dentro de `item_fields` el `field` es una columna de **la misma fila** (la
+  regla ve la fila como su `entity_map`, ver arriba).
+- Para condicionar la regla de un subcampo de un **objeto**, declárala en el
+  objeto con `"subfield"` (como `CUADRO_LIQUIDACION`): una regla escrita
+  directamente dentro del subcampo anidado no se evalúa hoy, con o sin `when`.
+- Se combina con `on_fail`, que solo gradúa la regla cuando sí aplicó.
+
+Ejemplo real: `custom/portal/CONSTANCIA_SITUACION_FISCAL_PORTAL.json` — el
+patrón del RFC, el QR del SAT, el estatus en el padrón, el CP de 5 dígitos y
+el mínimo de actividades/regímenes aplican solo cuando `PAIS` es México. La
+condición usa `matches` con `MEX|MX|MÉXICO` a propósito: si el modelo se sale
+de la clave de 3 letras, la `regex` de `PAIS` lo marca y las reglas mexicanas
+siguen corriendo en vez de apagarse.
 
 **Gotcha importante:** un `rule_type` que NO está en esta tabla —
 `greater_than`, `in`, `less_than`, lo que sea que "suene lógico" — **no

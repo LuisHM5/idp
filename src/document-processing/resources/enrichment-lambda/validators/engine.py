@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import TypeRegistryEntry, ValidationRule
 from pipeline import confidence as conf_policy
+from pipeline.derived import OPERATORS as _WHEN_OPERATORS, _matches as _condition_matches
 from pipeline.normalize import (
     normalize_field,
     parse_amount,
@@ -588,14 +589,73 @@ def _apply_on_fail(rule: ValidationRule, check: Optional[RuleCheck]) -> Optional
     return check
 
 
+def _rule_applies(
+    rule: ValidationRule, entity_map: Dict[str, Any]
+) -> Tuple[bool, Optional[RuleCheck]]:
+    """Evaluate the rule's optional `when` param: does this rule apply to
+    THIS document at all?
+
+    `when` is how a CATALOG scopes a rule to the documents it makes sense for,
+    for any `rule_type` — one type that accepts a tax certificate from any
+    country can keep the Mexican RFC pattern for the Mexican ones only:
+
+        {"rule_type": "regex", "pattern": "...",
+         "when": {"field": "PAIS", "eq": "MEX"}}
+
+    A condition names the `field` it reads (a dotted path, resolved against
+    the same `entity_map` the rule itself sees — so inside `item_fields` it is
+    a column of the SAME row) plus one or more operators from the closed set
+    `pipeline.derived` already uses for `derived` cases, ANDed. A list of
+    conditions is ANDed too.
+
+    Returns `(applies, problem)`. A condition that is false means the rule has
+    no verdict for this document — the same "nothing to say" an empty optional
+    field gets — and leaves no check behind. A MALFORMED condition (no
+    `field`, no operator, a misspelled operator) is a different thing: it
+    comes back as a `skipped` check, like an unknown `rule_type`, because a
+    typo must neither turn a rule on for everyone nor silence it unnoticed.
+    """
+    when = rule.params.get("when")
+    if when is None:
+        return True, None
+    conditions = when if isinstance(when, list) else [when]
+    problem = None if conditions else "no conditions"
+    for condition in conditions:
+        if not isinstance(condition, dict) or not str(condition.get("field") or "").strip():
+            problem = "each condition needs a 'field'"
+        else:
+            unknown = sorted(set(condition) - _WHEN_OPERATORS - {"field"})
+            if len(condition) == 1:
+                problem = f"condition on '{condition['field']}' has no operator"
+            elif unknown:
+                problem = f"unknown operator(s) {unknown}"
+        if problem:
+            break
+    if problem:
+        return False, RuleCheck(
+            rule.field, rule.rule_type, True,
+            f"invalid 'when' ({problem}): rule skipped", severity="warning", skipped=True,
+        )
+    for condition in conditions:
+        path = str(condition["field"]).strip()
+        value = _get_field(entity_map, path) if "." in path else entity_map.get(path)
+        if not _condition_matches(value, {k: v for k, v in condition.items() if k != "field"}):
+            return False, None
+    return True, None
+
+
 def _dispatch_rule(
     rule: ValidationRule, value: Any, entity_map: Dict[str, Any], ctx: ValidationContext
 ) -> Optional[RuleCheck]:
     """Run one rule against its already-resolved `value` and return the
     outcome (or None when the rule type has no verdict for this value, e.g.
-    an empty optional field). Shared by `run_rules` and `resolve_field_tree`
-    so the field-centric DSL path evaluates rules identically instead of
-    duplicating this dispatch."""
+    an empty optional field, or a rule whose `when` does not hold for this
+    document). Shared by `run_rules` and `resolve_field_tree` so the
+    field-centric DSL path evaluates rules identically instead of duplicating
+    this dispatch."""
+    applies, problem = _rule_applies(rule, entity_map)
+    if not applies:
+        return problem
     return _apply_on_fail(rule, _evaluate_rule(rule, value, entity_map, ctx))
 
 

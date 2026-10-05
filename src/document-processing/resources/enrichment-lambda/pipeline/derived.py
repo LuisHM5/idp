@@ -37,7 +37,7 @@ concept array is still `LIQUIDACION_NORMALIZADA`'s job (`liquidacion.py`), and
 anything that needs the document actually read stays a normal field with a
 `hint` for the model.
 
-Three refinements, all optional and all inert for a block that uses none:
+Four refinements, all optional and all inert for a block that uses none:
 
 - **Context variables.** A `from` that starts with `$` reads something the
   pipeline knows about the UPLOAD rather than a field of the document. Today
@@ -56,6 +56,28 @@ Three refinements, all optional and all inert for a block that uses none:
   model-read (a normal `hint`, so NOT `computed`) when it does not. The kept
   value is not relabelled: it stays MODEL_EXTRACTION with the model's
   confidence, because that is what it is.
+
+- **`value_from`.** A case may name a field to COPY instead of a constant
+  `value`: "when the Mexican RFC is there, the tax id IS that RFC". The copy
+  is still not an expression — one path, read verbatim — and it inherits the
+  confidence of the field it copied, which is the one that produced the value
+  (not of the `from` the condition looked at, when they differ). A case whose
+  `value_from` turns out empty does not decide: there is nothing to copy, so
+  the next case (or `keep_extracted`, or the `default`) gets its turn.
+
+One more rule over already-established values lives here because it has to run
+once those values are final: **`exclude_rows`** on an ARRAY field drops the
+rows that merely repeat a value another field already carries —
+
+    "OTROS_IDENTIFICADORES": {
+      "type": "array", "item_fields": {...},
+      "exclude_rows": {"column": "NUMERO", "equal_to": ["ID_FISCAL", "CURP"]}
+    }
+
+A list is extracted in its own model call, which cannot know what the scalar
+fields ended up holding (still less a value copied or recovered afterwards), so
+"everything except the main one" is not something a hint can guarantee.
+Comparison ignores case, spaces and punctuation; an empty cell never matches.
 
 Blocks may read other derived fields (`TIPO` from `SIGLAS`): evaluation is
 ordered by dependency, NOT by declaration order, because a catalog synced to
@@ -117,6 +139,12 @@ _NUMERIC_OPS = {
     "lt": lambda a, b: a < b,
     "lte": lambda a, b: a <= b,
 }
+
+
+# The closed operator set `_matches` understands, for a caller that has to
+# tell a condition that is FALSE from one that is misspelled before it
+# evaluates it (`validators.engine`'s rule-level `when`).
+OPERATORS = frozenset(_NUMERIC_OPS) | {"eq", "ne", "in", "matches", "empty", "not_empty"}
 
 
 def _text(value: Any) -> str:
@@ -183,11 +211,46 @@ def _read(path: str, entity_map: Dict[str, Any], context: Dict[str, Any]) -> Any
     return _resolve_path(entity_map, path)
 
 
+def _comparable(value: Any) -> str:
+    """A value reduced to what identifies it: letters and digits, uppercased —
+    so `12345 6789 RT0001` and `123456789rt0001` are the same number."""
+    return re.sub(r"[\W_]+", "", str(value if value is not None else "")).upper()
+
+
+def _exclude_rows(field_tree: Dict[str, Any], entity_map: Dict[str, Any]) -> None:
+    """Apply every array field's `exclude_rows` (see the module docstring).
+
+    Runs after the derived blocks so `equal_to` sees final values. A malformed
+    block, or one naming a field with no value, removes nothing.
+    """
+    for name, spec in (field_tree or {}).items():
+        block = (getattr(spec, "params", {}) or {}).get("exclude_rows")
+        rows = entity_map.get(name)
+        if not isinstance(block, dict) or not isinstance(rows, list):
+            continue
+        column = block.get("column")
+        taken = {
+            _comparable(_resolve_path(entity_map, str(path)))
+            for path in block.get("equal_to") or []
+        } - {""}
+        if not column or not taken:
+            continue
+        kept = [
+            row for row in rows
+            if not (isinstance(row, dict) and _comparable(row.get(column)) in taken)
+        ]
+        if len(kept) != len(rows):
+            logger.info("derived: %s -> %d fila(s) repetida(s) excluida(s)", name, len(rows) - len(kept))
+            entity_map[name] = kept
+
+
 def _sources_of(spec: Dict[str, Any]) -> List[str]:
-    """Every `from` a block can read: its own plus each case's override."""
-    paths = [spec.get("from")] + [
-        case.get("from") for case in spec.get("cases") or [] if isinstance(case, dict)
-    ]
+    """Every path a block can read: its own `from`, each case's override, and
+    each case's `value_from`."""
+    paths = [spec.get("from")]
+    for case in spec.get("cases") or []:
+        if isinstance(case, dict):
+            paths += [case.get("from"), case.get("value_from")]
     return [str(p) for p in paths if p]
 
 
@@ -203,7 +266,8 @@ def _evaluate(
     decided would be inventing meaning.
 
     `source_path` is the field the deciding case READ (its own `from`, else
-    the block's), which the caller uses to inherit its confidence. It is
+    the block's — or its `value_from`, when the value was copied rather than
+    declared), which the caller uses to inherit its confidence. It is
     reported for the `default` too — the block's `from` then: nothing matched
     *that input*, so the fallback is exactly as trustworthy as the input it
     was chosen for. Only a malformed block (no `from`) has no source at all,
@@ -221,8 +285,14 @@ def _evaluate(
         if not from_path:
             continue
         value = _read(str(from_path), entity_map, context)
-        if _matches(value, case.get("when") or {}):
+        if not _matches(value, case.get("when") or {}):
+            continue
+        copy_path = case.get("value_from")
+        if not copy_path:
             return case.get("value"), case.get("label"), str(from_path), True
+        copied = _read(str(copy_path), entity_map, context)
+        if not _is_empty(copied):
+            return copied, case.get("label"), str(copy_path), True
     if not block_from:
         logger.warning("derived: block without 'from' fell through to its default")
         return spec.get("default"), None, None, False
@@ -335,4 +405,5 @@ def apply_derived_fields(
             resolve(*item)
         pending = [item for item in pending if item not in ready]
 
+    _exclude_rows(getattr(entry, "field_tree", None) or {}, entity_map)
     return DerivedFields(sources, labels)

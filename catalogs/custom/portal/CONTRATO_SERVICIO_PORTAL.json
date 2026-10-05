@@ -1,0 +1,187 @@
+{
+  "CONTRATO_SERVICIO_PORTAL": {
+    "catalog_status": "beta",
+    "schema_version": "1.1.0",
+    "display_name": "Contrato de servicio (portal)",
+    "aliases": [
+      "contrato de servicio portal",
+      "contrato de prestación de servicios",
+      "contrato de obra",
+      "contrato de proveedor",
+      "contrato"
+    ],
+    "description": "Contrato o acuerdo comercial entre la empresa que contrata y un proveedor de servicios, tal como se sube al portal. Formas habituales: 'CONTRATO DE PRESTACIÓN DE SERVICIOS' o 'CONTRATO DE OBRA A PRECIO DETERMINADO Y TIEMPO DETERMINADO', con el párrafo inicial que nombra a las partes ('que celebran por una parte ... a quien en lo sucesivo se le denominará EL CONTRATANTE, y por la otra parte ... EL CONTRATISTA / EL PRESTADOR'), las secciones 'DECLARACIONES' y 'CLÁUSULAS' (objeto, monto, plazo, forma de pago, jurisdicción), el lugar y la fecha de firma, las firmas de las partes y testigos, y a veces anexos con cotizaciones o catálogos de conceptos. También una orden de servicio, propuesta o presupuesto aceptado de un proveedor (por ejemplo una licencia de software con 'Productos y Servicios', vigencia, condiciones de pago y bloque de firma). No confundir con una factura, una cotización suelta sin condiciones contractuales, un acta constitutiva ni un poder notarial.",
+    "prompt_profile": "CLAUDE_HAIKU_JSON",
+    "pipeline": "single_document",
+    "segmentation_candidate": false,
+    "min_confidence": 0.8,
+    "__COMENTARIO_proposito__": "Mapeo para el portal: las partes, el objeto, el monto y las fechas del contrato de un proveedor, con nombres planos (CONTRATANTE_* y PROVEEDOR_*) para que el portal los lea sin recorrer objetos anidados. PROVEEDOR es quien presta el servicio o ejecuta la obra, lo llame el contrato como lo llame (EL CONTRATISTA, EL PRESTADOR, EL PROVEEDOR, el licenciante); CONTRATANTE es quien lo recibe y lo paga. Los anexos (cotizaciones, catálogos de conceptos, planos) NO se desglosan: del contrato sale un solo monto total.",
+    "__COMENTARIO_reglas__": "Solo se exige lo que todo contrato trae: de qué tipo es, quiénes son las dos partes y cuál es su objeto. Monto, vigencia y fecha de firma son opcionales porque una orden de servicio o un presupuesto aceptado no siempre los imprimen. PROVEEDOR_RFC es solo el RFC mexicano y lleva su regla de formato; el identificador de un proveedor de cualquier país se lee de PROVEEDOR_ID_FISCAL (en México se copia del RFC, `derived` con `value_from`), con su sigla en PROVEEDOR_TIPO_ID_FISCAL: la misma convención de ID_FISCAL en CONSTANCIA_SITUACION_FISCAL_PORTAL. CONTRATANTE_RFC no lleva regla de formato: el que manda es el de la constancia fiscal. Este tipo lee el TEXTO del contrato: no puede ver si las firmas autógrafas están puestas. Para eso está la etapa de autenticidad (preset CAPTURA_FISICA, ver catalogs/README.md -> 'Presets de campos'), que hoy este tipo no declara.",
+    "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, como los demás tipos del portal: su salida está acoplada a ese sistema, que ya sabe qué documento está cargando. Se pide declarándolo: documentType=CONTRATO_SERVICIO_PORTAL.",
+    "fields": {
+      "TIPO_CONTRATO": {
+        "type": "string",
+        "required": true,
+        "hint": "Título o denominación del contrato tal como lo declara su primer renglón, en mayúsculas y sin los nombres de las partes: 'CONTRATO DE PRESTACIÓN DE SERVICIOS', 'CONTRATO DE OBRA A PRECIO DETERMINADO Y TIEMPO DETERMINADO', 'CONTRATO DE ARRENDAMIENTO'. En una orden de servicio, propuesta o presupuesto aceptado, su título ('LICENCIA DE CATÁLOGOS INTERACTIVOS', 'ORDEN DE SERVICIO'). Si el archivo no es un contrato ni un acuerdo comercial, dejar null.",
+        "validation": []
+      },
+      "CONTRATANTE_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre o razón social completa de la parte que CONTRATA y paga el servicio o la obra: la que el contrato denomina 'EL CONTRATANTE', 'EL CLIENTE' o 'EL PRESTATARIO', con su régimen societario tal como está escrito (S.A. DE C.V.). En una orden o presupuesto es el cliente al que va dirigido. No tomar el nombre de su representante.",
+        "validation": []
+      },
+      "CONTRATANTE_RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "RFC del contratante cuando el contrato lo declara (suele estar en sus declaraciones: 'se encuentra dada de alta en el Registro Federal de Contribuyentes con la clave ...'). En mayúsculas, sin espacios ni guiones. Null si el contrato no lo menciona; no tomar el RFC del proveedor.",
+        "validation": []
+      },
+      "CONTRATANTE_REPRESENTANTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre completo de la persona que firma por el contratante ('representada en este acto por ...', 'su apoderado ...'), sin títulos como LIC. o ING. Null si el contratante es una persona física que firma por su propio derecho o si el documento no lo indica.",
+        "validation": []
+      },
+      "PROVEEDOR_NOMBRE": {
+        "type": "string",
+        "required": true,
+        "hint": "Nombre completo o razón social de la parte que PRESTA el servicio o ejecuta la obra: la que el contrato denomina 'EL CONTRATISTA', 'EL PRESTADOR', 'EL PROVEEDOR' o 'EL PRESTADOR DE SERVICIOS', con su régimen o sufijo societario tal como está escrito (S.A. DE C.V., B.V., Inc.). En una orden o presupuesto es la empresa que lo emite y ofrece el servicio. Si es una persona física que firma 'por sus propios derechos', su nombre completo. No tomar el nombre comercial de un membrete de anexo si difiere del nombre legal del contrato.",
+        "validation": []
+      },
+      "PROVEEDOR_RFC": {
+        "type": "string",
+        "required": false,
+        "hint": "RFC del proveedor cuando el contrato lo declara (suele estar en sus declaraciones: 'inscrito en el Registro Federal de Contribuyentes bajo la clave ...', 'su Registro Federal de Causantes ...'). En mayúsculas, sin espacios ni guiones. Si el proveedor es extranjero y el documento da otro identificador fiscal (VAT, EIN, NIF), este campo queda null: ese identificador va en PROVEEDOR_ID_FISCAL, NUNCA aquí. No confundirlo con el registro patronal del IMSS, con un folio de registro REPSE ni con el RFC del contratante. Null si no aparece.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
+            "message": "El RFC del proveedor no cumple el formato de 12 o 13 caracteres"
+          }
+        ]
+      },
+      "PROVEEDOR_ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Identificador fiscal del proveedor cuando el contrato lo declara, tal como está escrito. MÉXICO: el mismo RFC del proveedor. EXTRANJERO: el identificador equivalente (VAT, EIN, NIF, Tax ID...), conservando sus guiones. No confundirlo con el registro patronal del IMSS, con un folio de registro REPSE ni con el identificador del contratante. Null si no aparece.",
+        "derived": {
+          "from": "PROVEEDOR_RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value_from": "PROVEEDOR_RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "PROVEEDOR_TIPO_ID_FISCAL": {
+        "type": "string",
+        "required": false,
+        "hint": "Sigla del identificador que quedó en PROVEEDOR_ID_FISCAL, en MAYÚSCULAS y sin puntos: RFC (México), EIN o SSN (Estados Unidos), NIF (España), BN (Business Number de Canadá, también cuando viene como cuenta GST/HST), ABN (Australia), RSIN (Países Bajos), o la que use el documento en cualquier otro país (VAT, TIN, CUIT, NIT...). Solo la sigla, sin el número. Null si PROVEEDOR_ID_FISCAL quedó vacío o el documento no nombra el identificador.",
+        "derived": {
+          "from": "PROVEEDOR_RFC",
+          "keep_extracted": true,
+          "cases": [
+            {
+              "when": {
+                "matches": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$"
+              },
+              "value": "RFC"
+            }
+          ]
+        },
+        "validation": []
+      },
+      "PROVEEDOR_REPRESENTANTE": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre completo de la persona que firma por el proveedor cuando éste es una empresa ('representada por ...'), sin títulos. En una orden o presupuesto, quien la emite a nombre del proveedor. Null si el proveedor es una persona física que firma por su propio derecho.",
+        "validation": []
+      },
+      "PROVEEDOR_DOMICILIO": {
+        "type": "string",
+        "required": false,
+        "hint": "Domicilio que el proveedor señala en el contrato (en sus declaraciones o en la cláusula de domicilios para notificaciones), en una sola línea: calle y número, colonia, ciudad, estado, código postal y país si lo indica. No tomar el domicilio del contratante ni el del inmueble donde se presta el servicio. Null si no aparece.",
+        "validation": []
+      },
+      "OBJETO_CONTRATO": {
+        "type": "string",
+        "required": true,
+        "hint": "Qué servicio u obra se contrata, tomado de la cláusula de objeto (normalmente la PRIMERA) o, en una orden o presupuesto, de la descripción de los productos y servicios. Una sola frase de no más de 40 palabras, con las palabras del contrato: el servicio, y el lugar o establecimiento donde se presta si lo nombra (por ejemplo: 'Trabajos de tablaroca bajo la modalidad de obra a precio alzado en la sucursal X'). Es un resumen: no transcribir la cláusula completa, ni sus entregables uno por uno, ni listar anexos.",
+        "validation": []
+      },
+      "MONTO_TOTAL": {
+        "type": "number",
+        "required": false,
+        "hint": "Importe total pactado por el servicio u obra, como número sin símbolos ni separadores de miles: el de la cláusula de monto o precio ('la cantidad de $250,000.00 (doscientos cincuenta mil pesos 00/100 M.N.)' es 250000.00) o el 'Total' de una orden o presupuesto. Tomar el importe tal como lo fija el contrato, antes o después de IVA según lo diga (eso va en MONTO_INCLUYE_IVA); no sumarle ni restarle impuestos. Cuidar el formato del país del documento: en '$25.500,00' el punto separa miles y la coma decimales, es 25500.00. Si el importe es periódico (por mes, por año), tomar el del periodo que el documento totaliza. No tomar anticipos, parcialidades, penas convencionales ni importes de renglones de un anexo. Null si el contrato no fija un monto.",
+        "validation": []
+      },
+      "MONEDA": {
+        "type": "string",
+        "required": false,
+        "hint": "Null por omisión: este campo solo se llena cuando el texto del documento ESCRIBE la moneda de MONTO_TOTAL con palabras o con su clave. Entonces va la clave ISO 4217 de 3 letras en mayúsculas: MXN si dice 'pesos', 'M.N.' o 'moneda nacional'; USD si dice 'dólares' o 'USD'; EUR si dice 'euros' o 'EUR'. NO es evidencia y NO debe usarse para decidirla: el símbolo '$', el país o el domicilio de las partes, el idioma, ni el formato de los números. Un presupuesto que solo muestra importes como '$1.500,00 /año', sin ninguna de esas palabras o claves, se entrega con MONEDA null aunque el cliente sea mexicano.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^[A-Z]{3}$",
+            "message": "La moneda debe ser una clave ISO 4217 de 3 letras (MXN, USD, EUR)"
+          }
+        ]
+      },
+      "MONTO_INCLUYE_IVA": {
+        "type": "boolean",
+        "required": false,
+        "hint": "true si el contrato dice que el monto ya incluye el IVA ('IVA incluido'); false si dice que no lo incluye ('más el Impuesto al Valor Agregado', 'sin incluir el IVA', 'más IVA'); null si el documento no lo aclara.",
+        "validation": []
+      },
+      "FECHA_FIRMA": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha en que se firma el contrato, la del cierre que antecede a las firmas ('lo firman de conformidad ... a los 10 días del mes de junio de 2026' es 2026-06-10). Convertir las fechas escritas con letra. En una orden o presupuesto sin fecha de firma, dejar null: no usar la fecha de creación del presupuesto ni la de su caducidad. Normalizar a YYYY-MM-DD.",
+        "validation": []
+      },
+      "LUGAR_FIRMA": {
+        "type": "string",
+        "required": false,
+        "hint": "Ciudad y estado donde se firma el contrato, del mismo cierre que la fecha de firma ('en Chihuahua, Chihuahua'). Null si no se indica.",
+        "validation": []
+      },
+      "FECHA_INICIO": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha en que inicia la prestación del servicio, los trabajos o la vigencia, cuando el contrato la fija expresamente ('se obliga a iniciar ... el día 22 de junio de 2026', 'este acuerdo es efectivo a partir de 1 de enero de 2026'). Normalizar a YYYY-MM-DD. Null si el contrato no da una fecha concreta; no usar la fecha de firma en su lugar.",
+        "validation": []
+      },
+      "FECHA_FIN": {
+        "type": "date",
+        "required": false,
+        "hint": "Fecha en que termina la prestación del servicio, los trabajos o la vigencia, solo cuando el contrato la fija con una fecha expresa ('a terminar a más tardar el día 31 de agosto de 2026'). Normalizar a YYYY-MM-DD. Si el contrato solo da una duración ('12 meses'), dejar null: la duración va en VIGENCIA y la fecha no se calcula.",
+        "validation": []
+      },
+      "VIGENCIA": {
+        "type": "string",
+        "required": false,
+        "hint": "Plazo o duración del contrato tal como lo expresa, en una frase corta: '12 meses con renovación automática por 12 meses adicionales', 'del 22 de junio al 31 de agosto de 2026', 'tiempo indeterminado'. Null si el contrato no habla de plazo.",
+        "validation": []
+      },
+      "FORMA_PAGO": {
+        "type": "string",
+        "required": false,
+        "hint": "Cómo y cuándo se paga, resumido de la cláusula de forma o condiciones de pago en una frase de no más de 30 palabras, sin números de cuenta ni CLABE: '50% de anticipo y el resto por estimaciones semanales conforme al avance', 'pago dentro de los 30 días siguientes a la recepción de la factura'. Null si no se pacta.",
+        "validation": []
+      },
+      "JURISDICCION": {
+        "type": "string",
+        "required": false,
+        "hint": "Tribunales o ley a los que las partes se someten, de la cláusula de jurisdicción: 'Tribunales del Estado de Chihuahua'. Si el documento remite a términos y condiciones externos sin fijar jurisdicción, dejar null.",
+        "validation": []
+      }
+    },
+    "cross_field_validation": []
+  }
+}

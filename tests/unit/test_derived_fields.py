@@ -414,3 +414,87 @@ def test_una_dependencia_circular_no_cuelga_ni_truena():
     b = {"type": "string", "computed": True, "derived": {"from": "A", "cases": [], "default": "b"}}
     entities, _, _ = derivar({"A": a, "B": b}, {})
     assert entities == {"A": "a", "B": "b"}
+
+
+# --- `value_from`: copiar el valor de otro campo -----------------------------
+
+RFC_PATRON = r"^[A-Z]{3,4}\d{6}[A-Z0-9]{3}$"
+COPIA = {
+    "RFC": {"type": "string", "hint": "h"},
+    "ID_FISCAL": {
+        "type": "string",
+        "hint": "lo lee el modelo cuando no hay RFC",
+        "derived": {
+            "from": "RFC",
+            "keep_extracted": True,
+            "cases": [{"when": {"matches": RFC_PATRON}, "value_from": "RFC"}],
+        },
+    },
+}
+
+
+def test_value_from_copia_el_campo_y_hereda_su_confianza():
+    entities, confidences, derived = derivar(
+        COPIA, {"RFC": "XAXX010101AB1", "ID_FISCAL": "otra lectura"}, {"RFC": 0.99, "ID_FISCAL": 0.6}
+    )
+    assert entities["ID_FISCAL"] == "XAXX010101AB1"
+    assert confidences["ID_FISCAL"] == 0.99
+    assert derived.sources["ID_FISCAL"] == SOURCE_DERIVED
+
+
+def test_value_from_no_decide_cuando_la_condicion_no_se_cumple():
+    """Sin RFC (o con algo que no lo es) manda lo que leyó el modelo."""
+    for rfc in (None, "12-3456789"):
+        entities, confidences, derived = derivar(
+            COPIA, {"RFC": rfc, "ID_FISCAL": "12-3456789"}, {"ID_FISCAL": 0.9}
+        )
+        assert entities["ID_FISCAL"] == "12-3456789"
+        assert confidences["ID_FISCAL"] == 0.9
+        assert "ID_FISCAL" not in derived.sources
+
+
+def test_value_from_vacio_no_decide_y_sigue_el_siguiente_case():
+    campos = {
+        "PAIS": {"type": "string", "hint": "h"},
+        "RFC": {"type": "string", "hint": "h"},
+        "ID": {
+            "type": "string", "computed": True,
+            "derived": {
+                "from": "PAIS",
+                "cases": [
+                    {"when": {"eq": "MEX"}, "value_from": "RFC"},
+                    {"when": {"eq": "MEX"}, "value": "SIN RFC"},
+                ],
+            },
+        },
+    }
+    entities, _, _ = derivar(campos, {"PAIS": "MEX"})
+    assert entities["ID"] == "SIN RFC"
+    entities, confidences, _ = derivar(campos, {"PAIS": "MEX", "RFC": "XAXX010101AB1"}, {"PAIS": 0.7, "RFC": 0.95})
+    assert entities["ID"] == "XAXX010101AB1"
+    assert confidences["ID"] == 0.95  # la del campo copiado, no la del que se consultó
+
+
+def test_value_from_espera_a_que_su_origen_se_derive():
+    """El orden es por dependencia aunque el origen se declare después."""
+    campos = {
+        "COPIA": {
+            "type": "string", "computed": True,
+            "derived": {"from": "TOTAL", "cases": [{"when": {"not_empty": True}, "value_from": "TIPO"}]},
+        },
+        **UMBRAL,
+    }
+    entities, _, _ = derivar(campos, {"TOTAL": 500})
+    assert entities["COPIA"] == "ARRIBA"
+
+
+def test_value_from_lee_un_path_anidado():
+    campos = {
+        "DOMICILIO": {"type": "object", "fields": {"CP": {"type": "string", "hint": "h"}}},
+        "CP_PLANO": {
+            "type": "string", "computed": True,
+            "derived": {"from": "DOMICILIO.CP", "cases": [{"when": {"not_empty": True}, "value_from": "DOMICILIO.CP"}]},
+        },
+    }
+    entities, _, _ = derivar(campos, {"DOMICILIO": {"CP": "25280"}})
+    assert entities["CP_PLANO"] == "25280"
