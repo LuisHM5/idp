@@ -8,6 +8,33 @@
 import { DOCUMENT_CATALOG, DocumentTypeEntry } from "./document-catalog";
 
 /**
+ * Budget for ONE prompt, in bytes. Lambda caps a function's environment
+ * variables at 4KB in total (keys + values) and the classification/processing
+ * functions carry ~400 bytes of other variables next to `PROMPT`. Past that,
+ * CloudFormation fails the UpdateFunctionConfiguration call ("Request must be
+ * smaller than 5120 bytes") minutes into a deploy and rolls the whole stack
+ * back — which is how a catalog that grew from 24 to 30 types broke a deploy
+ * that changed nothing about the prompt itself.
+ */
+export const MAX_PROMPT_ENV_BYTES = 3600;
+
+/**
+ * Fail at synth time, in seconds and with the reason, instead of at deploy
+ * time with a rollback. Call it on every prompt that goes into a Lambda env var.
+ */
+export function assertPromptFitsLambdaEnv(name: string, prompt: string): void {
+  const bytes = Buffer.byteLength(prompt, "utf-8");
+  if (bytes > MAX_PROMPT_ENV_BYTES) {
+    throw new Error(
+      `El prompt de ${name} mide ${bytes} bytes y el limite es ${MAX_PROMPT_ENV_BYTES}: ` +
+        "viaja en una variable de entorno de Lambda (4KB en total). Cada tipo que participa en la " +
+        "clasificacion automatica suma ~140 bytes: saca de ella los tipos que solo se usan declarando " +
+        'documentType (`"segmentation_candidate": false` en su catalogo) o acorta descripciones.'
+    );
+  }
+}
+
+/**
  * Generate the classification prompt listing all known document types.
  *
  * SIZE CONSTRAINT: This prompt ends up in a Lambda env var; total env vars
@@ -22,7 +49,9 @@ export function generateClassificationPrompt(
   // truncated at a sentence boundary when possible.
   const MAX_DESC = 300;
   const typesList = catalog
-    .filter((t) => t.typeId !== "OTRO")
+    // A type that opted out of automatic classification is never offered to
+    // the classifier: it is only ever requested by declaring it.
+    .filter((t) => t.typeId !== "OTRO" && t.segmentationCandidate !== false)
     .map((t) => {
       let desc = t.description || "";
       if (desc.length > MAX_DESC) {

@@ -43,10 +43,21 @@ export interface DocumentTypeEntry {
    * routing this mirrors.
    */
   isCustoms?: boolean;
+  /**
+   * False only when the catalog opted the type out of automatic
+   * classification (`"segmentation_candidate": false`): a rendering of a
+   * document that already has a canonical type (`PEDIMENTO_ERP`, the
+   * `*_PORTAL` family) is requested by declaring it, never chosen by a
+   * classifier. Such a type is left out of the classification prompt —
+   * offering it there contradicts the flag, and every listed type costs
+   * ~140 bytes of a prompt that must fit a Lambda env var.
+   */
+  segmentationCandidate?: boolean;
 }
 
 interface RawTypeConfig {
   description?: string;
+  segmentation_candidate?: boolean;
   occurrence_mode?: "single" | "multiple";
   extraction_fields?: string[];
   required_fields?: string[];
@@ -109,6 +120,7 @@ export function loadCatalog(): DocumentTypeEntry[] {
         validationRules: [],
         validatorModule: null,
         isCustoms: true,
+        segmentationCandidate: config.segmentation_candidate !== false,
       });
     } else {
       entries.push({
@@ -125,6 +137,7 @@ export function loadCatalog(): DocumentTypeEntry[] {
         })),
         validatorModule: config.validator_module || null,
         customValidator: config.custom_validator || null,
+        segmentationCandidate: config.segmentation_candidate !== false,
       });
     }
   }

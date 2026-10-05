@@ -18,6 +18,7 @@ import { EventbridgeBroker } from "@cdklabs/cdk-appmod-catalog-blueprints";
 import { Construct } from "constructs";
 import { MultiModelDocumentProcessing } from "./document-processing/multi-model-document-processing";
 import {
+  assertPromptFitsLambdaEnv,
   generateClassificationPrompt,
   generateProcessingPrompt,
 } from "./prompt-generator";
@@ -202,6 +203,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // Generate prompts dynamically from the JSON config catalog
     const classificationPrompt = generateClassificationPrompt();
     const processingPrompt = generateProcessingPrompt();
+    assertPromptFitsLambdaEnv("clasificacion", classificationPrompt);
+    assertPromptFitsLambdaEnv("extraccion", processingPrompt);
 
     // Optional: DynamoDB catalog table for runtime hot-reload
     // Uses existing table if it already exists (RETAIN policy = never deleted on stack destroy)
