@@ -70,7 +70,7 @@ pnpm run diff       # opcional: revisar qué se va a crear
 pnpm run deploy     # prepara y despliega DocumentValidationStack-Dev
 ```
 
-**Tablas DynamoDB pendientes:** `deploy`/`deploy:dev`/`deploy:prod` corren `scripts/check-pending-tables.mjs` después de la preparación idempotente y antes de desplegar el stack de aplicación — lista cualquier tabla DynamoDB que el diff vaya a crear/actualizar/borrar (así una tabla nueva del código, como `CostTable`, no queda commiteada sin desplegar sin que nadie lo note) y pide confirmación `(S/n)` si hay una terminal interactiva; en CI o con `--yes` no bloquea. Ejecútalo solo para inspeccionar: `node scripts/check-pending-tables.mjs -- --env dev`.
+**Tablas DynamoDB pendientes:** `deploy`/`deploy:dev`/`deploy:prod` sintetizan una sola vez (`synth:dev`/`synth:prod`), corren `scripts/check-pending-tables.mjs` y despliegan ese mismo assembly (`cdk deploy --app cdk.out`), así el bundling de assets no se repite. El check compara las tablas DynamoDB del template recién sintetizado contra el template desplegado (una llamada `cloudformation get-template`, sin `cdk diff`) y lista las que el deploy va a crear/actualizar/reemplazar/quitar (así una tabla nueva del código, como `CostTable`, no queda commiteada sin desplegar sin que nadie lo note). **En dev solo informa y el deploy sigue; en prod pide confirmación `(S/n)`** si hay una terminal interactiva (en CI o con `--yes` no bloquea). Las tablas no requieren paso aparte: el mismo `cdk deploy` las crea o actualiza. Para solo inspeccionar en dev: `pnpm run deploy:table` (synth + check).
 
 Al terminar, la salida muestra:
 

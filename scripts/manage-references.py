@@ -453,6 +453,13 @@ def main() -> int:
     # pnpm entrega el `--` separador tal cual (`pnpm x -- --flag`); argparse lo
     # leería como "fin de opciones" y rechazaría todo lo que sigue.
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
+    # pnpm corre el script desde la raíz del repo, no desde donde lo invocaste:
+    # las rutas relativas se resuelven contra TU carpeta (INIT_CWD la trae pnpm).
+    origen = __import__("os").environ.get("INIT_CWD")
+    for nombre in ("dir", "root", "file"):
+        valor = getattr(args, nombre)
+        if valor and origen and not Path(valor).is_absolute() and not Path(valor).exists():
+            setattr(args, nombre, str(Path(origen) / valor))
     if args.command == "register" and args.root:
         if args.key or args.dir or args.file:
             parser.error("--root no se combina con --key/--dir/--file")
