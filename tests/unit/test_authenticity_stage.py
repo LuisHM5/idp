@@ -990,3 +990,16 @@ def test_carta_nom35_resuelve_los_mismos_elementos_y_senales_que_cuando_los_decl
         "VEREDICTO_AUTENTICIDAD": "verdict", "MOTIVOS_AUTENTICIDAD": "reasons",
     }
     assert authenticity.reference_scopes([entry]) == {"PROVEEDOR": spec["elements"]}
+
+
+def test_el_nombre_separado_del_empleado_no_cambia_la_identidad_de_la_carta(entry):
+    """`NOMBRES_/APELLIDO_PATERNO_/APELLIDO_MATERNO_EMPLEADO` son la separación
+    que pidió el negocio. Son opcionales (la carta escribe el nombre de corrido
+    y a veces no se puede partir), y lo que hace que dos cargas sean "la misma
+    carta" sigue siendo el nombre COMPLETO: cambiarlo dejaría sin historial a
+    todas las cartas ya recibidas."""
+    arbol = entry.field_tree
+    for campo in ("NOMBRES_EMPLEADO", "APELLIDO_PATERNO_EMPLEADO", "APELLIDO_MATERNO_EMPLEADO"):
+        assert arbol[campo].required is False and not arbol[campo].computed
+    assert arbol["NOMBRE_EMPLEADO"].required is True
+    assert entry.authenticity["memory"]["identity_fields"] == ["NOMBRE_EMPLEADO", "FECHA_CARTA"]

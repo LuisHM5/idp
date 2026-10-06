@@ -989,6 +989,96 @@ evidencia de nada: `matches_reference` queda vacío. Si confirma, se llena
 `references.suggested_key`. La memoria entre documentos (`memory.*`) no cambia de
 partición por una clave sugerida.
 
+#### Recetas: un tipo nuevo que necesita que alguien MIRE la hoja
+
+Las dos son solo catálogo. Versión larga, con el alta de referencias, cómo leer
+cada resultado y los costos:
+[`documentacion/NUEVO_TIPO_CON_FIRMAS_O_VISION.md`](../documentacion/NUEVO_TIPO_CON_FIRMAS_O_VISION.md).
+
+| | **A — comparar contra lo registrado** | **B — solo visión** |
+|---|---|---|
+| Responde | ¿La firma / sello / logo / imagen es **la de esta entidad**? | ¿Están, y se ven genuinos? |
+| Bloque `references` | sí (`scope` + `key_from`) | no |
+| Referencias que registrar y mantener | sí, por entidad (`pnpm refs:*` o `/references`) | ninguna |
+| Llamadas de visión | 2 | 2 (1 si es digital; +1 con `page_review`) |
+| Embeddings | solo con más de 3 referencias de un elemento, o en la búsqueda sin clave | nunca |
+
+**A — comparar firmas, logos u otra imagen contra referencias.** Elementos
+compartidos por nombre, uno propio descrito en el tipo, y de quién son las
+referencias:
+
+```jsonc
+"authenticity": {
+  "expected_capture": "ANY",               // FISICO (+ preset CAPTURA_FISICA) si debe ser papel escaneado
+  "elements": {
+    "FIRMA": {}, "LOGO": {},               // definiciones de _shared.json → _authenticity_elements
+    "HOLOGRAMA": {                         // una imagen que no existe ahí: se describe aquí
+      "description": "Holograma de seguridad circular, plateado, en la esquina inferior derecha.",
+      "fingerprint": false,                // no es un trazo de tinta: sin huella
+      "embedded_image_is_insertion": false // en un PDF digital, ser una imagen incrustada no es sospechoso
+    }
+  },
+  "vision": { "inspect_when_digital": "with_references" },   // compara también en PDFs digitales
+  "references": {
+    "scope": "PROVEEDOR",                  // mismo scope = las mismas referencias que ya usa CARTA_NOM35
+    "key_from": "fields.RFC_PROVEEDOR"     // o "metadata.proveedor" (lo afirma quien sube)
+  }
+},
+"fields": {
+  "$presets": ["FIRMA_CONTRA_REFERENCIA", "LOGO_CONTRA_REFERENCIA"],
+  "RFC_PROVEEDOR": { "type": "string", "required": true, "hint": "…", "validation": [] },
+  // El elemento propio no tiene preset: sus campos van a mano.
+  "HOLOGRAMA_PRESENTE": {
+    "type": "boolean", "required": false, "computed": true,
+    "authenticity_source": "element.HOLOGRAMA.present", "hint": "Se ve el holograma.",
+    "validation": [{ "rule_type": "boolean_true", "allow_empty": true, "on_fail": "review", "message": "…" }]
+  },
+  "HOLOGRAMA_COINCIDE_REFERENCIA": {
+    "type": "boolean", "required": false, "computed": true,
+    "authenticity_source": "element.HOLOGRAMA.matches_reference", "hint": "Corresponde al registrado.",
+    "validation": [{ "rule_type": "boolean_true", "allow_empty": true, "on_fail": "review", "message": "…" }]
+  }
+}
+```
+
+Después: `pnpm sync:one -- --type <TIPO>` y registrar las referencias de cada
+entidad — `pnpm refs:register -- --scope PROVEEDOR --key <clave> --dir <carpeta>`
+(o `--root <carpeta>` con una subcarpeta por entidad, o la API
+`POST /references/PROVEEDOR/<clave>`). El elemento propio se puede registrar en
+cuanto el tipo está en `catalogs/`: los `kind` válidos de un scope son la unión
+de los que declaran sus tipos. Una entidad sin referencias no se rechaza: el
+campo `*_COINCIDE_REFERENCIA` queda vacío.
+
+**B — solo visión.** Sin `references`, sin nada que registrar:
+
+```jsonc
+"authenticity": {
+  "elements": ["FIRMA", "SELLO"],
+  "vision": { "page_review": true }        // opcional: una llamada más buscando indicios de edición
+},
+"fields": {
+  "$presets": ["CAPTURA_FISICA"],          // gratis: ¿papel escaneado o un Word con imágenes pegadas?
+  "FIRMA_PRESENTE":      { /* computed · authenticity_source: "element.FIRMA.present"    · review */ },
+  "FIRMA_SIN_INSERCION": { /* computed · authenticity_source: "element.FIRMA.not_pasted" · review */ },
+  "SELLO_PRESENTE":      { /* computed · authenticity_source: "element.SELLO.present"    · review */ },
+  "SIN_INDICIOS_DE_EDICION": { /* computed · authenticity_source: "vision.no_edit_signs" · review */ }
+}
+```
+
+Atajo para B: los presets `FIRMA_CONTRA_REFERENCIA` / `SELLO_CONTRA_REFERENCIA`
+sirven tal cual — sin bloque `references` su campo `*_COINCIDE_REFERENCIA`
+nunca se llena y, con `allow_empty`, no cuenta. Variantes: `"SELLO":
+{"issuer_field": "<CAMPO>"}` + un campo con `element.SELLO.issuer_consistent`
+(la leyenda debe nombrar al emisor), y `"vision": {"trigger": "on_suspicion"}`
+(un archivo limpio no paga la visión).
+
+Los dos ejemplos resuelven a las capas `structure + pixels + vision`
+(comprobado con `authenticity.spec_for`). En ambas: todo lo que sale de la
+visión va en `review`; mide antes con `pnpm autenticidad -- --type <TIPO> --dir
+<carpeta>`; la visión examina solo la **primera** página con contenido; y la
+primera vez en un ambiente hace falta el deploy antes del `sync:one` (los
+elementos y presets compartidos viajan en el bundle).
+
 #### Cómo recibe un campo su valor: `authenticity_source`
 
 Los resultados caen en campos `computed` normales. Cada uno dice qué señal quiere

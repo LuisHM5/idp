@@ -1,7 +1,7 @@
 {
   "CARTA_NOM35": {
     "catalog_status": "beta",
-    "schema_version": "5.1.0",
+    "schema_version": "5.2.0",
     "display_name": "Carta NOM-035 de promotor",
     "aliases": [
       "carta NOM-035",
@@ -85,6 +85,24 @@
         "type": "string",
         "required": true,
         "hint": "Nombre completo de la persona de quien se hace constar que es empleado(a) ('hacemos constar que ... es empleado(a) de'). No es el firmante.",
+        "validation": []
+      },
+      "NOMBRES_EMPLEADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Nombre(s) de pila del empleado, sin apellidos: la parte de NOMBRE_EMPLEADO que no es apellido. Todos los nombres de pila, en el orden en que están escritos (JUAN CARLOS, MARIA DE LOS ANGELES). La carta escribe el nombre completo de corrido; lo habitual es nombre(s) y después apellido paterno y materno. Si la carta lo escribe empezando por los apellidos (PEREZ LOPEZ JUAN CARLOS, o 'PEREZ LOPEZ, JUAN CARLOS'), los nombres son lo que va al final. Null si no se puede distinguir con seguridad qué palabras son nombres y cuáles apellidos.",
+        "validation": []
+      },
+      "APELLIDO_PATERNO_EMPLEADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Primer apellido (paterno) del empleado. En el orden habitual 'nombre(s) paterno materno' es el penúltimo apellido. Un apellido compuesto va completo con sus partículas: DE LA CRUZ, DEL RIO, DE LEON, SAN MARTIN. Si la persona aparece con un solo apellido, ese apellido va aquí. Null si no se puede distinguir con seguridad.",
+        "validation": []
+      },
+      "APELLIDO_MATERNO_EMPLEADO": {
+        "type": "string",
+        "required": false,
+        "hint": "Segundo apellido (materno) del empleado: el último apellido en el orden habitual. Completo con sus partículas si es compuesto. Null si la carta trae un solo apellido o no se puede distinguir con seguridad; no inventarlo ni repetir el paterno.",
         "validation": []
       },
       "EMPRESA_EMISORA": {

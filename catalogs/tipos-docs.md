@@ -17,6 +17,7 @@ de negocio, no tipos disponibles para procesar de fábrica.
 | Acta constitutiva o escritura de la sociedad, para el portal | `ACTA_CONSTITUTIVA_PORTAL` | Escritura constitutiva o protocolización de asamblea ante notario (lo dice en `TIPO_INSTRUMENTO`), o su equivalente extranjero. Denominación, datos del instrumento y del notario, datos de la constitución citados en antecedentes, folio mercantil, capital, `SOCIOS` y `REPRESENTANTES_LEGALES`. Se pide declarándolo. |
 | Boleta de inscripción del Registro Público de Comercio, para el portal | `REGISTRO_PUBLICO_COMERCIO_PORTAL` | Boleta de SIGER (FME, NCI, Número Único de Documento, actos inscritos) y, si viene, la forma precodificada (M4, M47...) con el instrumento, el capital, los socios y los administradores, con los mismos nombres de campo que `ACTA_CONSTITUTIVA_PORTAL`. Acepta el extracto de un registro mercantil extranjero. Se pide declarándolo. |
 | Credencial para votar / INE | `INE` | Identificación mexicana. |
+| Carta NOM-035 de promotor | `CARTA_NOM35` | Carta membretada del proveedor que hace constar que su empleado visita tiendas y conoce la NOM-035. Además de leerla, **mira la hoja**: debe ser papel firmado, sellado y escaneado, y su firma, sello y logotipo se comparan contra los registrados del proveedor (`metadata.proveedor` en la carga). La misma firma en la carta de otro empleado rechaza. Ver «Documentos con firma, sello o logotipo» abajo. |
 | Certificado, carátula o constancia de seguro | `CERTIFICADO_POLIZA` | Documento de póliza o cobertura. |
 | Factura de honorarios / honorarios de agencia aduanal | `FACTURA_HONORARIOS` o `FACTURA_HONORARIOS_XML` | El primero procesa PDF/impreso; el segundo procesa el CFDI XML nativo sin Bedrock. |
 | Honorarios extranjeros | No hay un tipo activo específico | No usar `FACTURA_HONORARIOS_XML`: HE corresponde a un proveedor extranjero y normalmente no es CFDI mexicano. |
@@ -25,6 +26,41 @@ de negocio, no tipos disponibles para procesar de fábrica.
 | Pago de derechos sanitarios | `CFDI_PAGO_DERECHOS_SANITARIOS_XML` | CFDI XML que acredita el cobro de un derecho o servicio de SENASICA, COFEPRIS u otra autoridad. No es el permiso/certificado emitido. |
 | Factura de flete extranjero / Freight Invoice / Pago Flete Americano | `FACTURA_FLETE_EXTRANJERO` | Factura extranjera no-CFDI. El tipo cubre mercancía, transporte y servicios extranjeros; conserva el nombre por compatibilidad. |
 | PDF completo con varios anexos | No hay un tipo activo específico | El antiguo `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO` está estacionado en `save/`; el pipeline puede procesar varios tipos declarados sin reactivarlo. |
+
+## Documentos con firma, sello o logotipo
+
+Cuando el negocio pide «que venga firmado», «que el sello sea el del proveedor»
+o «que el logo sea el suyo», hay dos cosas distintas detrás, y se piden distinto
+en el catálogo. Ninguna requiere código.
+
+| Lo que pide el negocio | Qué se declara en el tipo | Qué hay que mantener |
+|---|---|---|
+| «Que esté firmado y sellado» / «que no sea una firma pegada» | **Solo visión**: `"elements": ["FIRMA", "SELLO"]`, sin `references` | Nada |
+| «Que la firma / el sello / el logo sea **el del proveedor**» | **Comparación**: los mismos elementos + `references` (`scope` + de dónde sale la clave) + presets `*_CONTRA_REFERENCIA` | Las referencias de cada proveedor (`pnpm refs:register` o la API `/references`) |
+| «Que traiga el holograma / la fotografía / el código de barras de X» | **Comparación** con un elemento propio, descrito en el tipo | Ídem |
+| «Que el sello diga el nombre de la empresa que emite» | `"SELLO": {"issuer_field": "<CAMPO>"}` — se compara la leyenda contra un campo extraído | Nada |
+| «Que el archivo no haya sido editado» | `"$presets": ["INTEGRIDAD_PDF"]` (sin visión, costo $0) | Nada |
+| «Que sea el original escaneado, no un Word» | `"$presets": ["CAPTURA_FISICA"]` (sin visión, costo $0) | Nada |
+| «Que la firma de este documento sea la misma que la de aquel otro» | **No existe todavía**: sería una regla cross-documento, con código | — |
+
+Cosas que conviene saber antes de prometerlo:
+
+- **Las referencias son del proveedor, no del documento.** El logotipo de un
+  proveedor se registra una vez (`scope` `PROVEEDOR` + su número) y lo usa todo
+  tipo que declare ese `scope`: hoy `CARTA_NOM35`, mañana un contrato.
+- **Un proveedor sin referencias no se rechaza.** Se le exige que los elementos
+  estén y no sean imágenes insertadas; el campo de coincidencia queda vacío.
+- **La visión manda a revisión, no rechaza.** Es un juicio y puede equivocarse.
+  Lo que sí rechaza es lo determinista: el archivo digital con la firma pegada
+  (cuando el tipo lo sube a `reject`) y la misma firma en dos documentos de
+  personas distintas.
+- **Solo se mira la primera página** con contenido.
+- **El proveedor lo dice quien sube** (`metadata.proveedor`) o lo trae el propio
+  documento (un RFC extraído). Sin ese dato no hay contra quién comparar.
+
+Recetas con el JSON completo: `catalogs/README.md` → «Recetas: un tipo nuevo que
+necesita que alguien MIRE la hoja». Paso a paso (alta de referencias, cómo leer
+el resultado, costos): `documentacion/NUEVO_TIPO_CON_FIRMAS_O_VISION.md`.
 
 ## Correspondencia de los XML de gastos aduanales
 

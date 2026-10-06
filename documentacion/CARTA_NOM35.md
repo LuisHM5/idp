@@ -172,6 +172,7 @@ Campos **leídos de la carta** (Textract + modelo de texto):
 |---|---|---|
 | `DESTINATARIO` | sí | Debe ser Operadora Futurama |
 | `NOMBRE_EMPLEADO` | sí | — |
+| `NOMBRES_EMPLEADO` · `APELLIDO_PATERNO_EMPLEADO` · `APELLIDO_MATERNO_EMPLEADO` | no | El mismo nombre, separado. La carta lo escribe de corrido, así que la separación la hace el modelo: quedan vacíos cuando no se distingue con seguridad qué es nombre y qué apellido (un solo apellido → va en el paterno). `NOMBRE_EMPLEADO` sigue siendo el dato completo y el que identifica la carta |
 | `EMPRESA_EMISORA` | sí | El sello debe nombrarla (`SELLO_CORRESPONDE_EMISOR`) |
 | `FECHA_CARTA` | sí | Más de 1 año → revisión |
 | `NOMBRE_FIRMANTE` | sí | — |
