@@ -681,6 +681,11 @@ def process_pdf(
     authenticity_model = next(
         (d["authenticityMeta"].get("modelId") for d in documents if d.get("authenticityMeta")), None
     )
+    # Image embeddings of the reference retrieval: billed per image.
+    embedding_images = sum(int(d.get("embeddingMeta", {}).get("images") or 0) for d in documents)
+    embedding_model = next(
+        (d["embeddingMeta"].get("modelId") for d in documents if d.get("embeddingMeta")), None
+    )
     usage_summary = {
         "segmentation": segmentation_usage or None,
         "extraction": {"modelId": used_models().get("extractor"), "usage": extraction_usage},
@@ -688,6 +693,8 @@ def process_pdf(
         **({"pageLocator": {"modelId": locator_model, "usage": locator_usage}} if locator_usage else {}),
         **({"authenticity": {"modelId": authenticity_model, "usage": authenticity_usage}}
            if authenticity_usage else {}),
+        **({"embeddings": {"modelId": embedding_model, "images": embedding_images}}
+           if embedding_images else {}),
     }
     return {
         "processingId": processing_id,

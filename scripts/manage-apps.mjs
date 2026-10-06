@@ -79,6 +79,14 @@
  *   --disallow-metadata-write (register/reconfigure) permite/quita
  *                             PATCH /documents/{id}/metadata (default false).
  *   --metadata-write          (grant/deny) otorga/quita ese mismo permiso.
+ *   --allow-reference-write /
+ *   --disallow-reference-write (register/reconfigure) permite/quita usar la API
+ *                             de referencias de autenticidad (`/references/...`:
+ *                             registrar, listar y dar de baja firmas, sellos y
+ *                             logos válidos). Apagado por defecto: quien puede
+ *                             registrar una referencia decide qué sello es
+ *                             "válido". AllowReferenceWrite en AppsTable.
+ *   --reference-write         (grant/deny) otorga/quita ese mismo permiso.
  *
  * Opciones comunes:
  *   --env dev|prod     Ambiente (default: dev, igual que el deploy)
@@ -242,6 +250,8 @@ function parsePermissionFlags(args) {
   if (args["disallow-field-search"]) setAttrs.AllowFieldSearch = { BOOL: false };
   if (args["allow-metadata-write"]) setAttrs.AllowMetadataWrite = { BOOL: true };
   if (args["disallow-metadata-write"]) setAttrs.AllowMetadataWrite = { BOOL: false };
+  if (args["allow-reference-write"]) setAttrs.AllowReferenceWrite = { BOOL: true };
+  if (args["disallow-reference-write"]) setAttrs.AllowReferenceWrite = { BOOL: false };
   return { setAttrs, removeAttrs };
 }
 
@@ -564,6 +574,7 @@ async function cmdRegister(args) {
       AccessScope: perms.setAttrs.AccessScope || { S: "own" },
       AllowFieldSearch: perms.setAttrs.AllowFieldSearch || { BOOL: false },
       AllowMetadataWrite: perms.setAttrs.AllowMetadataWrite || { BOOL: false },
+      AllowReferenceWrite: perms.setAttrs.AllowReferenceWrite || { BOOL: false },
       ...(perms.setAttrs.AllowedDocTypes ? { AllowedDocTypes: perms.setAttrs.AllowedDocTypes } : {}),
     },
     region
@@ -574,6 +585,7 @@ async function cmdRegister(args) {
   const scope = perms.setAttrs.AccessScope?.S || "own";
   console.log(`   Permisos: accessScope=${scope}, allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? false}, ` +
     `allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? false}` +
+    ` allowReferenceWrite=${perms.setAttrs.AllowReferenceWrite?.BOOL ?? false}` +
     (perms.setAttrs.AllowedDocTypes ? `, allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : ""));
 }
 
@@ -653,6 +665,7 @@ async function cmdRotate(args) {
       AccessScope: { S: old.AccessScope || "own" },
       AllowFieldSearch: { BOOL: old.AllowFieldSearch ?? false },
       AllowMetadataWrite: { BOOL: old.AllowMetadataWrite ?? false },
+      AllowReferenceWrite: { BOOL: old.AllowReferenceWrite ?? false },
       ...(old.AllowedDocTypes ? { AllowedDocTypes: { SS: old.AllowedDocTypes } } : {}),
     },
     region
@@ -789,7 +802,7 @@ async function cmdReconfigure(args) {
     fail(
       "Falta al menos uno de --rate-limit/--burst-limit/--read-rate-limit/--read-burst-limit/" +
         "--docs-per-day/--quota-per-day/--access-scope/--allowed-doctypes/--allow-field-search/" +
-        "--allow-metadata-write (esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
+        "--allow-metadata-write, --allow-reference-write (esto solo cambia configuración, no crea ni revoca nada — usa 'rotate' para eso)."
     );
   }
 
@@ -874,6 +887,7 @@ async function cmdReconfigure(args) {
       `   accessScope=${perms.setAttrs.AccessScope?.S ?? app.AccessScope ?? "own"} ` +
         `allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? app.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? app.AllowMetadataWrite ?? false}` +
+        ` allowReferenceWrite=${perms.setAttrs.AllowReferenceWrite?.BOOL ?? app.AllowReferenceWrite ?? false}` +
         (perms.setAttrs.AllowedDocTypes ? ` allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : "") +
         (perms.removeAttrs.includes("AllowedDocTypes") ? " allowedDocTypes=(quitado, ve todos los tipos permitidos por su scope)" : "")
     );
@@ -924,6 +938,7 @@ async function promptGrantDeny(args, verb) {
       `\nPermisos actuales de '${args.name}': accessScope=${app.AccessScope ?? "own"} ` +
         `allowFieldSearch=${app.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${app.AllowMetadataWrite ?? false}` +
+        ` allowReferenceWrite=${app.AllowReferenceWrite ?? false}` +
         (app.AllowedDocTypes ? ` allowedDocTypes=${app.AllowedDocTypes.join(",")}` : "")
     );
     return { args, app };
@@ -947,7 +962,7 @@ async function confirmGrantDeny(args, verb, notes) {
 async function cmdGrant(args) {
   const prompted = await promptGrantDeny(args, "grant");
   args = prompted.args;
-  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:grant -- --name <appName> [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write]");
+  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:grant -- --name <appName> [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write] [--reference-write]");
 
   const region = args.region || process.env.AWS_REGION || "us-east-1";
   const table = resolveAppsTable(args);
@@ -976,8 +991,12 @@ async function cmdGrant(args) {
     updates.AllowMetadataWrite = { BOOL: true };
     notes.push("allowMetadataWrite=true");
   }
+  if (args["reference-write"]) {
+    updates.AllowReferenceWrite = { BOOL: true };
+    notes.push("allowReferenceWrite=true");
+  }
   if (!notes.length) {
-    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, --field-search y/o --metadata-write.");
+    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, --field-search, --metadata-write y/o --reference-write.");
   }
 
   await confirmGrantDeny(args, "grant", notes);
@@ -988,7 +1007,7 @@ async function cmdGrant(args) {
 async function cmdDeny(args) {
   const prompted = await promptGrantDeny(args, "deny");
   args = prompted.args;
-  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:deny -- --name <appName> [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write]");
+  if (!args.name) fail("Falta --name <appName>. Uso: pnpm apps:deny -- --name <appName> [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write] [--reference-write]");
 
   const region = args.region || process.env.AWS_REGION || "us-east-1";
   const table = resolveAppsTable(args);
@@ -1021,8 +1040,12 @@ async function cmdDeny(args) {
     updates.AllowMetadataWrite = { BOOL: false };
     notes.push("allowMetadataWrite=false");
   }
+  if (args["reference-write"]) {
+    updates.AllowReferenceWrite = { BOOL: false };
+    notes.push("allowReferenceWrite=false");
+  }
   if (!notes.length) {
-    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, --field-search y/o --metadata-write.");
+    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, --field-search, --metadata-write y/o --reference-write.");
   }
 
   await confirmGrantDeny(args, "deny", notes);
@@ -1054,6 +1077,7 @@ function cmdList(args) {
     console.log(
       `     accessScope=${it.AccessScope ?? "own"} allowFieldSearch=${it.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${it.AllowMetadataWrite ?? false}` +
+        ` allowReferenceWrite=${it.AllowReferenceWrite ?? false}` +
         (it.AllowedDocTypes ? ` allowedDocTypes=${it.AllowedDocTypes.join(",")}` : "")
     );
     // RevokedAt no se borra al hacer `enable` (queda como historial de
@@ -1292,6 +1316,7 @@ async function cmdAdopt(args) {
       AccessScope: { S: "own" },
       AllowFieldSearch: { BOOL: false },
       AllowMetadataWrite: { BOOL: false },
+      AllowReferenceWrite: { BOOL: false },
     },
     region
   );
@@ -1411,15 +1436,16 @@ Uso: pnpm apps:<comando> -- [opciones]
 Comandos (todos interactivos en una terminal real si falta algo — siempre
 piden confirmación S/n antes de tocar AWS, salvo --yes o sin TTY):
   register     --name X [LÍMITES] [--force]
-               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search] [--allow-metadata-write]
+               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search] [--allow-metadata-write] [--allow-reference-write]
   rotate       --name X [LÍMITES]                (sin flags conserva los límites de la key vieja)
   reconfigure  --name X [LÍMITES]
                [--access-scope own|all] [--allowed-doctypes A,B|none]
                [--allow-field-search] [--disallow-field-search]
                [--allow-metadata-write] [--disallow-metadata-write]
-  grant        --name X [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write]
+               [--allow-reference-write] [--disallow-reference-write]
+  grant        --name X [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write] [--reference-write]
                (agrega/otorga SIN pisar lo que ya tenía — ver reconfigure para reemplazar todo)
-  deny         --name X [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write]
+  deny         --name X [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write] [--reference-write]
                (quita SOLO lo pedido — inverso de grant)
   disable      --name X                          (deshabilita la key, no la borra)
   enable       --name X                          (reactiva una app deshabilitada)

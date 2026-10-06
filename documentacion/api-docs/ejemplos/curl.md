@@ -232,6 +232,80 @@ curl -sS -o original.pdf "$DL"     # la descarga va a S3: sin x-api-key
 
 ---
 
+## 5. (Aparte) Registrar una referencia de autenticidad
+
+No es parte de subir un documento: se hace **antes**, una vez por firma, sello o
+logo válido de un proveedor. Los tipos con verificación de autenticidad (hoy
+`CARTA_NOM35`) comparan contra estas referencias los documentos que lleguen
+después con `metadata.proveedor` igual a la clave registrada. Detalle completo:
+[`API_USO.md`](../API_USO.md) §8.
+
+Tu app necesita el permiso `AllowReferenceWrite` — **también para los `GET`**.
+Sin él todo responde `403 FORBIDDEN`. Lo concede quien administra la API:
+
+```bash
+pnpm apps:grant -- --name <app> --env dev --reference-write
+```
+
+Son tres peticiones, con la misma mecánica que un documento:
+
+```
+1. POST $API/references/PROVEEDOR/$PROV         → refId + uploadUrl + confirmUrl
+2. PUT  $REF_UPLOAD_URL                         → el recorte, directo a S3
+3. POST $API$CONFIRM_URL                        → lo revisa y lo activa, en el momento
+```
+
+```bash
+PROV="10040"                 # el mismo valor que mandarás en metadata.proveedor
+CROP="./firma-julio.png"     # SOLO la firma recortada, no la hoja completa
+
+# 1. Reservar. `kind` = FIRMA | SELLO | LOGO; `label` = quién firma o qué sucursal.
+RESP=$(curl -sS -X POST "$API/references/PROVEEDOR/$PROV" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $KEY" \
+  -d "{\"kind\":\"FIRMA\",\"label\":\"Lic. Julio Lemus\",\"fileName\":\"$(basename "$CROP")\"}")
+echo "$RESP" | jq .
+
+REF_UPLOAD_URL=$(echo "$RESP" | jq -r .uploadUrl)
+CONFIRM_URL=$(echo "$RESP"    | jq -r .confirmUrl)   # /references/PROVEEDOR/10040/FIRMA/lic-julio-lemus/confirm
+REF_ID=$(echo "$RESP"         | jq -r .refId)
+
+# 2. Subir el recorte. Sin x-api-key y sin NINGUNA cabecera, igual que el paso 2
+#    de un documento. La URL caduca a los 15 minutos.
+curl -sS --fail -X PUT --upload-file "$CROP" "$REF_UPLOAD_URL"
+
+# 3. Confirmar. 200 = quedó activa ("status": "ACTIVE").
+curl -sS -X POST "$API$CONFIRM_URL" -H "x-api-key: $KEY" | jq .
+```
+
+Si el paso 3 responde `409 SIMILAR_REFERENCE` (la misma firma ya estaba
+registrada con otra imagen) y aun así la quieres:
+
+```bash
+curl -sS -X POST "$API$CONFIRM_URL" \
+  -H "Content-Type: application/json" -H "x-api-key: $KEY" \
+  -d '{"force": true}' | jq .
+```
+
+Consultar y dar de baja:
+
+```bash
+# Lista (solo activas; agrega includeInactive=1 para ver las dadas de baja)
+curl -sS "$API/references/PROVEEDOR/$PROV" -H "x-api-key: $KEY" | jq .
+
+# Una, con URL temporal (5 min) para ver la imagen
+curl -sS "$API/references/PROVEEDOR/$PROV/FIRMA/$REF_ID" -H "x-api-key: $KEY" | jq .
+
+# Baja: solo la DESACTIVA (deja de compararse; el registro se conserva)
+curl -sS -X DELETE "$API/references/PROVEEDOR/$PROV/FIRMA/$REF_ID" -H "x-api-key: $KEY" | jq .
+```
+
+Qué debe cumplir el recorte: PNG o JPEG, hasta 3.5 MB, lado menor de al menos
+120 px (80 px en un logo) y no mayor a 2200 px, máximo 12 megapíxeles. Registrar
+referencias **no gasta** documentos del día.
+
+---
+
 ## Errores y qué significan de verdad
 
 Los mensajes de API Gateway engañan. Esta tabla los traduce:
@@ -247,6 +321,16 @@ Los mensajes de API Gateway engañan. Esta tabla los traduce:
 | `400 INVALID_DOCUMENT_TYPE` | Un tipo no es UPPER_SNAKE_CASE, la lista pasa de 8 tipos / 200 chars, o mandaste varios en un `.xml`/`.xlsx`/`.csv` | Revisa la lista; en fuentes estructuradas sólo se acepta uno |
 | `202` en el paso 3 | Todavía procesando | Respeta `Retry-After`; usa backoff con jitter |
 | `404` en el paso 3 | No existe o no es visible | No lo reintentes como estado pendiente |
+| `{"message":"Missing Authentication Token"}` en `/references/...` con la URL bien escrita | El stage de API Gateway todavía no publica esas rutas (despliegue incompleto del servicio) | No es tu key ni tu código: avisa a quien administra la API |
+| `403 FORBIDDEN` en `/references/...` | Tu app no tiene `AllowReferenceWrite` (lo piden todas esas rutas, también los `GET`) | Pide el permiso: `pnpm apps:grant -- --name <app> --reference-write` |
+| `400 INVALID_REFERENCE_KEY` | La clave trae espacios, acentos u otros caracteres fuera de letras, dígitos, `.`, `-`, `_` | Usa la que viene en `suggested` — y manda esa misma en `metadata.proveedor` |
+| `400 INVALID_SCOPE` / `INVALID_KIND` | Ese ámbito o elemento no lo declara ningún tipo de documento | Usa uno de `valid` (hoy: `PROVEEDOR`; `FIRMA`, `SELLO`, `LOGO`) |
+| `409 UPLOAD_NOT_FOUND` | Confirmaste sin haber hecho el `PUT`, o la `uploadUrl` expiró | Sube el recorte y confirma; si expiró, repite la reserva |
+| `422 REFERENCE_REJECTED` | El recorte no pasó la revisión: mira `errors[].code` (`NOT_AN_IMAGE`, `TOO_LARGE_BYTES`, `TOO_SMALL`, `TOO_LARGE_DIMENSIONS`, `NO_INK`) | Corrige el recorte, súbelo de nuevo y confirma |
+| `409 DUPLICATE_REFERENCE` | Ese mismo archivo ya está registrado (`existing` dice cuál) | Nada que hacer: ya existe |
+| `409 SIMILAR_REFERENCE` | Misma tinta que una ya registrada (`existing` dice cuál) | Una muestra basta; si la quieres igual, confirma con `{"force": true}` |
+| `409 REFERENCE_LIMIT_REACHED` | Ya hay 20 referencias activas de ese elemento para esa entidad | Da de baja alguna con `DELETE` |
+| `409 NOT_PENDING` | Confirmaste una referencia dada de baja | Regístrala de nuevo desde la reserva |
 
 **El `/prod` de más es el error más común.** Con el dominio propio la ruta es
 `https://idp.alsuper.com/documents`; el `/prod` solo va en la URL cruda

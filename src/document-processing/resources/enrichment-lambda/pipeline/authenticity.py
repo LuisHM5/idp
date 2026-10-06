@@ -54,6 +54,8 @@ Signals a field can ask for (`authenticity_source`):
   element.<KIND>.ink_colour          NEGRA | AZUL | OTRO_COLOR | NO_DETERMINABLE
   element.<KIND>.issuer_consistent   bool / empty
   element.<KIND>.matches_reference   bool / EMPTY when the supplier has none registered
+  references.suggested_key           the key whose registered references this document
+                                     matched when the upload declared none (`references.search`)
   vision.no_edit_signs               `vision.page_review`: the model sees no edit signs on the page
   memory.elements_unique             False = same ink as ANOTHER letter (reject-level)
   memory.elements_not_similar        False = suspiciously alike (review-level or worse)
@@ -115,8 +117,14 @@ ALL_LAYERS = ("integrity", "structure", "pixels", "vision", "memory")
 INFORMATIONAL_CODES = {
     "SIN_REFERENCIAS_REGISTRADAS", "SIN_CLAVE_DE_REFERENCIAS", "PAGINAS_SIN_ANALIZAR",
     "CARTA_YA_RECIBIDA", "VISION_OMITIDA_SIN_SOSPECHA", pdf_forensics.REASON_OFFICE_ORIGIN,
+    "PROVEEDOR_SUGERIDO_POR_REFERENCIAS", "REFERENCIAS_DE_VARIOS_PROVEEDORES",
     *(code for code, severity in pdf_integrity.SEVERITY.items() if severity == "info"),
 }
+
+# The comparison against registered references could not be made for a reason
+# that is OURS (the table or the bucket did not answer). Never a "does not
+# match": the field stays empty and the document goes to a person.
+REASON_REFERENCES_UNAVAILABLE = "REFERENCIAS_NO_DISPONIBLES"
 
 EXPECTED_CAPTURE_VALUES = ("FISICO", "DIGITAL", "ANY")
 
@@ -217,10 +225,7 @@ def spec_for(entry: Any) -> Optional[Dict[str, Any]]:
     if not outputs:
         return None
     block = _plain(block)
-    elements = {
-        str(kind): dict(spec or {})
-        for kind, spec in (block.get("elements") or {}).items()
-    }
+    elements = _resolve_elements(block.get("elements"))
     wanted = set(outputs.values())
     # A type that reads `structure.physical_capture` is, by that very fact,
     # expecting the capture of a paper; every other type expects nothing
@@ -235,6 +240,32 @@ def spec_for(entry: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def _resolve_elements(declared: Any) -> Dict[str, Dict[str, Any]]:
+    """The type's elements over the shared definitions (`_shared.json` →
+    `_authenticity_elements`): a signature, a stamp or a logo is described ONCE
+    and any type asks for it by name — `["FIRMA", "LOGO"]`, or a dict whose
+    values override the shared definition key by key. A name that is neither
+    shared nor described by the type is ignored with a warning, like an unknown
+    preset."""
+    try:
+        from document_catalog import shared_authenticity_elements
+
+        shared = shared_authenticity_elements()
+    except Exception:  # the stage must work without the catalog module (tests, tools)
+        shared = {}
+    if isinstance(declared, (list, tuple)):
+        declared = {str(name): {} for name in declared}
+    elements: Dict[str, Dict[str, Any]] = {}
+    for kind, own in (declared or {}).items() if isinstance(declared, dict) else []:
+        kind = str(kind)
+        base = _plain(shared.get(kind)) if isinstance(shared.get(kind), dict) else None
+        if base is None and not own:
+            logger.warning("authenticity: unknown element '%s' (see _shared.json → _authenticity_elements); ignored", kind)
+            continue
+        elements[kind] = {**(base or {}), **(own if isinstance(own, dict) else {})}
+    return elements
+
+
 def _layers_needed(wanted: Set[str], elements: Dict[str, Any], block: Optional[Dict[str, Any]] = None) -> Set[str]:
     """Which layers the requested signals need. Pure. The rule that keeps the
     stage cheap: nothing runs because it is configured, only because a field
@@ -245,7 +276,7 @@ def _layers_needed(wanted: Set[str], elements: Dict[str, Any], block: Optional[D
       pixels.natural_background   -> structure + pixels (a raster)
       pixels.error_level_uniform  -> structure + pixels (the file's JPEG bytes, no raster)
       element.* | capture_kind |
-      vision.*                    -> vision + structure + pixels (candidates come from
+      vision.* | references.*     -> vision + structure + pixels (candidates come from
                                      the page report and the ink regions of the raster)
       memory.*                    -> memory (+ vision when there are elements to fingerprint)
       evaluated|verdict|reasons   -> nothing on their own
@@ -260,7 +291,7 @@ def _layers_needed(wanted: Set[str], elements: Dict[str, Any], block: Optional[D
             needed.add("structure")
         elif head == "pixels":
             needed.update({"structure", "pixels"})
-        elif head in ("element", "vision") or signal == "capture_kind":
+        elif head in ("element", "vision", "references") or signal == "capture_kind":
             needed.update({"vision", "structure", "pixels"})
         elif head == "memory":
             needed.add("memory")
@@ -305,7 +336,10 @@ def run(doc: Dict[str, Any], entry: Any, source: PageSource, context: Optional[D
     if spec is None:
         return
     started = time.time()
-    context = context or {}
+    # `fields`: what was extracted from THIS document, so a reference key can
+    # come from the document itself (`key_from: "fields.RFC"`), not only from
+    # what the uploader declared.
+    context = {**(context or {}), "fields": doc.get("_entities") or {}}
     audit: Dict[str, Any] = {"layers": {}, "reasons": []}
     signals: Dict[str, Any] = {}
     confidences: Dict[str, float] = {}
@@ -386,7 +420,7 @@ def _evaluate(
             _page_report(structure, page_index), audit,
         )
 
-        references = _load_references(spec, context, element_state, audit)
+        references = _load_references(spec, context, element_state, audit, doc)
         _run_vision_inspect(spec, entry, elements, element_state, references, digital, structure, audit, doc)
         _element_signals(elements, element_state, references, doc, audit, signals, confidences)
         _run_vision_page_review(spec, entry, rasters, page_index, structure, audit, signals, doc)
@@ -397,7 +431,7 @@ def _evaluate(
 
     signals["evaluated"] = all(
         layers.get(name) in (LAYER_OK, LAYER_FAIL, LAYER_NA, LAYER_OFF) for name in needed
-    )
+    ) and not (audit.get("references") or {}).get("unavailable")
     if needs_raster and len(content_pages) > len(analysed):
         _reason(audit, "PAGINAS_SIN_ANALIZAR", "pages", False,
                 f"Se analizaron {len(analysed)} de {len(content_pages)} páginas con contenido "
@@ -874,45 +908,187 @@ def _boxes_overlap(a, b, min_iou: float = 0.1) -> bool:
     return union > 0 and inter / union >= min_iou
 
 
-def _reference_key(spec, context) -> Optional[str]:
-    """`references.key_from` is a dotted path into the stage context — e.g.
-    `metadata.proveedor`, the supplier number the uploader sent as upload
-    metadata. The CALLER asserts it; nothing here can verify it."""
-    path = str((spec.get("references") or {}).get("key_from") or "")
+def _reference_config(spec, kind: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Where an element's references live: the type's `references` block,
+    overridden key by key by the element's own (`elements.<KIND>.references`)
+    — a signature belongs to a person, a logo to a company, and one document
+    can carry both. None = no comparison for this element."""
+    base = spec.get("references")
+    base = base if isinstance(base, dict) else None
+    own = ((spec.get("elements") or {}).get(kind) or {}).get("references") if kind else None
+    if own is False:
+        return None
+    config = {**(base or {}), **own} if isinstance(own, dict) else base
+    if not isinstance(config, dict) or config.get("enabled") is False:
+        return None
+    return config
+
+
+def reference_scopes(entries: Any) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """`{scope: {KIND: element spec}}` over a collection of type entries: every
+    scope some type compares references in, and the elements it may hold.
+    References belong to the ENTITY (scope + key), not to a document type —
+    a supplier's logo is registered once and every type declaring that scope
+    uses it — so this, not a TYPE_ID, is what registration validates against."""
+    scopes: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for entry in entries:
+        block = getattr(entry, "authenticity", None)
+        if not isinstance(block, dict) or block.get("enabled") is False:
+            continue
+        block = _plain(block)
+        spec = {**block, "elements": _resolve_elements(block.get("elements"))}
+        for kind, element in spec["elements"].items():
+            config = _reference_config(spec, kind)
+            if config is not None:
+                scopes.setdefault(str(config.get("scope") or "DEFAULT"), {}).setdefault(kind, element)
+    return scopes
+
+
+def _reference_key(spec, context, kind: Optional[str] = None) -> Optional[str]:
+    """`references.key_from` is a dotted path into the stage context:
+    `metadata.proveedor` (what the uploader sent — the CALLER asserts it,
+    nothing here can verify it) or `fields.<CAMPO>` (what was read off the
+    document itself). Normalized by the one function every writer uses."""
+    path = str((_reference_config(spec, kind) or {}).get("key_from") or "")
     node: Any = context
     for part in filter(None, path.split(".")):
         node = node.get(part) if isinstance(node, dict) else None
-    value = str(node).strip() if node not in (None, "") else ""
-    return re.sub(r"[^A-Za-z0-9._-]", "", value) or None
+    return fingerprint_store.normalize_key(node) if path else None
 
 
-def _load_references(spec, context, element_state, audit) -> Dict[str, List[Dict[str, Any]]]:
-    config = spec.get("references")
-    audit["references"] = {"found": False}
-    if not isinstance(config, dict) or config.get("enabled") is False:
-        return {}
-    scope = str(config.get("scope") or "DEFAULT")
-    key = _reference_key(spec, context)
-    audit["references"].update({"scope": scope, "key": key})
-    if not key:
-        _reason(audit, "SIN_CLAVE_DE_REFERENCIAS", "references", False,
-                f"La carga no trae `{config.get('key_from')}`: no se puede comparar contra referencias registradas")
-        return {}
-    listed = fingerprint_store.list_references(scope, key)
-    if not listed:
-        if listed is not None:
-            _reason(audit, "SIN_REFERENCIAS_REGISTRADAS", "references", False,
-                    f"{scope} {key} no tiene firmas/sellos/logos registrados: solo se verificó presencia y no-inserción")
-        return {}
-    limit = int((spec.get("vision") or {}).get("max_references_per_kind", 3)) if isinstance(spec.get("vision"), dict) else 3
+def _references_unavailable(audit, detail: str) -> None:
+    audit.setdefault("references", {})["unavailable"] = True
+    _reason(audit, REASON_REFERENCES_UNAVAILABLE, "references", False,
+            f"No se pudieron consultar las referencias registradas ({detail}): la comparación no se hizo")
+
+
+def _bill_embedding(doc: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    """An embedding call on its own line (`BedrockEmbeddings`): priced per
+    image, never folded into the vision tokens."""
+    if not meta or not meta.get("images"):
+        return
+    current = doc.setdefault("embeddingMeta", {"modelId": meta.get("modelId"), "images": 0, "calls": 0})
+    current["images"] = int(current.get("images") or 0) + int(meta.get("images") or 0)
+    current["calls"] = int(current.get("calls") or 0) + 1
+    current["modelId"] = meta.get("modelId") or current.get("modelId")
+
+
+def _crop_vector(state: Dict[str, Any], provider: Any, doc: Dict[str, Any]) -> Any:
+    """The embedding of an element's crop, computed at most once per element."""
+    if "vector" not in state:
+        from . import reference_embeddings
+
+        vector, meta = (None, None)
+        if provider is not None and state.get("crop") is not None:
+            vector, meta = reference_embeddings.embed(state["crop"], provider)
+        _bill_embedding(doc, meta)
+        state["vector"] = vector
+    return state["vector"]
+
+
+def _load_references(spec, context, element_state, audit, doc=None) -> Dict[str, List[Dict[str, Any]]]:
+    """RETRIEVAL: which registered references each element will be shown next
+    to. With a declared key, that key's references — all of them when they fit
+    in a call, otherwise the most similar by embedding (or by ink fingerprint
+    when there is none). Without a key and with `references.search` on, the
+    nearest references of ANY key in the scope, by embedding. Either way the
+    vision model, not a similarity number, decides whether one corresponds."""
+    doc = doc if doc is not None else {}
+    vision = spec.get("vision") if isinstance(spec.get("vision"), dict) else {}
+    limit = int(vision.get("max_references_per_kind", 3))
+    type_config = _reference_config(spec)
+    summary: Dict[str, Any] = {"found": False}
+    audit["references"] = summary
+    if type_config is not None:
+        summary.update({"scope": str(type_config.get("scope") or "DEFAULT"), "key": _reference_key(spec, context)})
+
     chosen: Dict[str, List[Dict[str, Any]]] = {}
-    for kind, refs in listed.items():
-        if kind not in element_state:
+    listings: Dict[Any, Optional[Dict[str, List[Dict[str, Any]]]]] = {}
+    ranking: Dict[str, Any] = {}
+    registered: Dict[str, int] = {}
+    for kind, state in element_state.items():
+        config = _reference_config(spec, kind)
+        if config is None:
             continue
-        ranked = fingerprint_store.rank_references(refs, element_state[kind].get("grid"), limit)
-        chosen[kind] = ranked
-    audit["references"].update({"found": True, "registered": {k: len(v) for k, v in listed.items()}})
+        scope = str(config.get("scope") or "DEFAULT")
+        key = _reference_key(spec, context, kind)
+        if not key:
+            _reason(audit, "SIN_CLAVE_DE_REFERENCIAS", "references", False,
+                    f"La carga no trae `{config.get('key_from')}`: no se puede comparar contra referencias registradas")
+            found = _search_references(config, scope, kind, state, limit, doc, audit)
+            if found:
+                chosen[kind] = found
+                ranking[kind] = {"mode": "BUSQUEDA", "chosen": [
+                    {"key": r.get("key"), "refId": r["refId"], "similarity": r.get("similarity")} for r in found]}
+            continue
+        if (scope, key) not in listings:
+            listed = fingerprint_store.list_references(scope, key)
+            listings[(scope, key)] = listed
+            if listed is None and fingerprint_store.configured():
+                # The table exists and did not answer. Staying silent here let a
+                # document be approved without ever having been compared.
+                _references_unavailable(audit, "tabla de referencias")
+            elif listed is not None and not listed:
+                _reason(audit, "SIN_REFERENCIAS_REGISTRADAS", "references", False,
+                        f"{scope} {key} no tiene firmas/sellos/logos registrados: solo se verificó presencia y no-inserción")
+        refs = (listings[(scope, key)] or {}).get(kind) or []
+        if not refs:
+            continue
+        registered[kind] = len(refs)
+        vector, model = None, None
+        if len(refs) > limit:
+            # Only now is choosing a real question — and only now is an
+            # embedding paid for. A supplier with three stamps costs nothing new.
+            from . import reference_embeddings
+
+            provider = reference_embeddings.provider_for(config)
+            if provider is not None and all(
+                r.get("embedding") and r.get("embeddingModel") == provider.model_id for r in refs
+            ):
+                vector, model = _crop_vector(state, provider, doc), provider.model_id
+        chosen[kind] = fingerprint_store.rank_references(refs, state.get("grid"), limit, vector=vector, model=model)
+        mode = "TODAS" if len(refs) <= limit else (chosen[kind][0].get("rankedBy") if chosen[kind] else "ORDEN")
+        ranking[kind] = {"mode": mode, "chosen": [
+            {"refId": r["refId"], "similarity": r.get("similarity")} for r in chosen[kind]]}
+    if registered:
+        summary.update({"found": True, "registered": registered})
+    if ranking:
+        summary["ranking"] = ranking
     return chosen
+
+
+def _search_references(config, scope, kind, state, limit, doc, audit) -> List[Dict[str, Any]]:
+    """No key was declared: look the element up among EVERY key's references
+    in this scope, by embedding. Candidates only — each one carries the `key`
+    it belongs to and `searched: True`, and means nothing until the vision
+    model says the crop corresponds to it. Any failure yields no candidates:
+    the document runs as it always did without a key."""
+    search = config.get("search")
+    if not isinstance(search, dict) or search.get("enabled") is not True or state.get("crop") is None:
+        return []
+    from . import reference_embeddings, reference_index
+
+    provider = reference_embeddings.provider_for(config)
+    index = reference_index.default_index(provider)
+    if provider is None or index is None:
+        return []
+    vector = _crop_vector(state, provider, doc)
+    if vector is None:
+        return []
+    top_k = max(int(search.get("top_k", limit)), 1)
+    hits = index.search(vector, scope=scope, kind=kind, top_k=top_k, model=provider.model_id)
+    if hits is None:
+        audit.setdefault("references", {})["searchError"] = True
+        return []
+    minimum = float(search.get("min_similarity", 0.0))
+    found: List[Dict[str, Any]] = []
+    for hit in hits:
+        if hit["similarity"] < minimum or len(found) >= limit:
+            continue
+        reference = fingerprint_store.get_reference(scope, hit["key"], kind, hit["refId"])
+        if reference is not None:  # the index is derived: the table has the last word
+            found.append({**reference, "key": hit["key"], "similarity": hit["similarity"], "searched": True})
+    return found
 
 
 def _run_vision_inspect(spec, entry, elements, element_state, references, digital, structure, audit, doc) -> None:
@@ -920,8 +1096,7 @@ def _run_vision_inspect(spec, entry, elements, element_state, references, digita
     if vision is None or audit["layers"].get("vision") != LAYER_OK:
         return
     when_digital = vision.get("inspect_when_digital", False)
-    has_references = any(references.values())
-    if digital and not (when_digital is True or (when_digital == "with_references" and has_references)):
+    if digital and when_digital is not True and not (when_digital == "with_references" and any(references.values())):
         # Already proven a digital composition: asking a model whether the
         # signature LOOKS pasted adds cost, not information. The exception is
         # `"with_references"`: when the supplier HAS registered references, "is
@@ -944,13 +1119,24 @@ def _run_vision_inspect(spec, entry, elements, element_state, references, digita
 
     with_bytes: Dict[str, List[Dict[str, Any]]] = {}
     for kind, refs in references.items():
+        if kind not in crops:
+            continue
         loaded = []
         for ref in refs:
             data = _normalized_reference(fingerprint_store.fetch_reference_bytes(ref))
             if data:
                 loaded.append({**ref, "bytes": data, "format": "jpeg"})
+        # What the model will actually SEE — not what is registered. A
+        # reference that could not be read was never compared against.
+        element_state[kind]["referencesLoaded"] = len(loaded)
         if loaded:
             with_bytes[kind] = loaded
+        elif refs and not all(r.get("searched") for r in refs):
+            _references_unavailable(audit, f"imágenes de {kind}")
+    if digital and when_digital is not True and not with_bytes:
+        # `with_references` and none could be loaded: nothing left to ask.
+        audit["visionInspect"] = "OMITIDA_DOCUMENTO_DIGITAL"
+        return
     try:
         inspected, meta = vision_inspector.inspect(
             crops, with_bytes, elements, entry, vision, monochrome=bool((structure or {}).get("bilevel")),
@@ -963,6 +1149,10 @@ def _run_vision_inspect(spec, entry, elements, element_state, references, digita
     _bill(doc, meta)
     for kind, result in inspected.items():
         element_state[kind]["inspected"] = result
+        matched = result.get("matchedReference")
+        if matched is not None:
+            element_state[kind]["matched"] = next(
+                (r for r in with_bytes.get(kind) or [] if str(r.get("refId")) == str(matched)), None)
 
 
 def _normalized_reference(data: Optional[bytes]) -> Optional[bytes]:
@@ -985,6 +1175,7 @@ def _element_signals(elements, element_state, references, doc, audit, signals, c
 
     entities = doc.get("_entities") or {}
     audit_elements: Dict[str, Any] = {}
+    suggested: Dict[str, List[str]] = {}
     for kind, spec in elements.items():
         state = element_state.get(kind) or {}
         if "present" not in state:
@@ -1030,15 +1221,34 @@ def _element_signals(elements, element_state, references, doc, audit, signals, c
                 if consistent is False:
                     _reason(audit, f"{kind}_NO_CORRESPONDE_AL_EMISOR", "vision", False,
                             f"{kind}: la leyenda no nombra a la empresa emisora")
-            if references.get(kind):
+            if state.get("referencesLoaded"):
                 matched = inspected.get("matchedReference") is not None
-                signals[f"{prefix}.matches_reference"] = matched
-                if not matched:
+                searched = all(r.get("searched") for r in references.get(kind) or [])
+                if matched:
+                    signals[f"{prefix}.matches_reference"] = True
+                    key = (state.get("matched") or {}).get("key")
+                    if searched and key:
+                        suggested.setdefault(str(key), []).append(kind)
+                elif not searched:
+                    # Only against a DECLARED key is "none of them" evidence.
+                    # Candidates found by search prove nothing by not matching.
+                    signals[f"{prefix}.matches_reference"] = False
                     _reason(audit, f"{kind}_NO_COINCIDE_CON_REFERENCIAS", "references", False,
                             f"{kind}: no corresponde a ninguna referencia registrada")
         audit_elements[kind] = summary
     if audit_elements:
         audit["elements"] = audit_elements
+    if len(suggested) == 1:
+        key = next(iter(suggested))
+        signals["references.suggested_key"] = key
+        audit.setdefault("references", {})["suggestedKey"] = key
+        _reason(audit, "PROVEEDOR_SUGERIDO_POR_REFERENCIAS", "references", False,
+                f"La carga no declaró a quién pertenece; {', '.join(suggested[key])} corresponden a las "
+                f"referencias registradas de {key}")
+    elif len(suggested) > 1:
+        _reason(audit, "REFERENCIAS_DE_VARIOS_PROVEEDORES", "references", False,
+                "Los elementos corresponden a referencias de claves distintas ("
+                + ", ".join(sorted(suggested)) + "): no se sugiere ninguna")
 
 
 def _run_memory(spec, entry, doc, source, context, elements, element_state, audit, signals) -> None:

@@ -315,6 +315,11 @@ def _usar_referencias_de(env: str) -> None:
     os.environ["FINGERPRINT_TABLE"] = valores["FingerprintTableName"]
     os.environ["DOCUMENT_BUCKET"] = valores["DocumentBucketName"]
     os.environ["FINGERPRINT_READONLY"] = "true"
+    # El índice vectorial (búsqueda de referencias sin proveedor) es opcional:
+    # un stack desplegado antes de que existiera simplemente no lo expone.
+    if valores.get("ReferenceVectorBucketName") and valores.get("ReferenceVectorIndexBase"):
+        os.environ["REFERENCE_VECTOR_BUCKET"] = valores["ReferenceVectorBucketName"]
+        os.environ["REFERENCE_VECTOR_INDEX"] = valores["ReferenceVectorIndexBase"]
     os.environ.setdefault("AWS_DEFAULT_REGION", region)
     print(f"Referencias de autenticidad: {valores['FingerprintTableName']} (solo lectura)")
 
@@ -495,7 +500,7 @@ def main() -> int:
 
         from pipeline.bedrock import prompt_log, reset_used_models
         from pipeline.expediente import process_pdf
-        from pipeline.pricing import PRICING_VERSION, bedrock_cost, textract_cost
+        from pipeline.pricing import PRICING_VERSION, bedrock_cost, embedding_cost, textract_cost
         from pipeline.tabular_document import process_tabular
         from pipeline.xml_document import process_xml
 
@@ -621,6 +626,15 @@ def main() -> int:
                                        ("authenticity", "Bedrock autenticidad (visión)"))
                     if usage.get(key)
                 )
+                # Embeddings de imagen (recuperación de referencias): se cobran por
+                # imagen. Misma forma de fila que una llamada Bedrock, sin tokens.
+                embeddings = usage.get("embeddings") or {}
+                if embeddings.get("images"):
+                    emb = embedding_cost(embeddings.get("images"), embeddings.get("modelId"))
+                    extra_costs += ((f"Bedrock embeddings ({emb['images']} img)", {
+                        "costUsd": emb["costUsd"], "modelId": emb["modelId"], "inputTokens": 0, "outputTokens": 0,
+                        "cacheReadTokens": 0, "cacheWriteTokens": 0, "inputRatePerMTokUsd": 0.0,
+                        "outputRatePerMTokUsd": 0.0, "approximatePricing": emb.get("approximatePricing", False)}),)
                 doc_cost = round(seg_cost["costUsd"] + ext_cost["costUsd"] + ocr_cost["costUsd"]
                                  + sum(c["costUsd"] for _, c in extra_costs), 6)
                 total_pages = pages.get("totalPages") or 0

@@ -35,6 +35,12 @@ class TablaFalsa:
             raise RuntimeError("DynamoDB caído")
         self.items[(Item["Pk"], Item["Sk"])] = dict(Item)
 
+    def get_item(self, Key):
+        if self.fallar:
+            raise RuntimeError("DynamoDB caído")
+        item = self.items.get((Key["Pk"], Key["Sk"]))
+        return {"Item": dict(item)} if item else {}
+
     def query(self, KeyConditionExpression, **_):
         if self.fallar:
             raise RuntimeError("DynamoDB caído")
@@ -214,3 +220,51 @@ def test_en_solo_lectura_se_compara_pero_no_se_deja_huella(monkeypatch):
     assert resultado["readOnly"] is True
     assert resultado["matches"][0]["level"] == "reject"  # sí compara contra lo real
     assert tabla.items == antes                           # y no escribió nada
+
+
+def test_una_referencia_pendiente_o_inactiva_no_se_compara_y_una_vieja_sin_status_si():
+    """Una fila reservada por la API y todavía sin imagen (`PENDING`) no es una
+    referencia; las registradas antes de que existiera `Status` siguen valiendo."""
+    tabla = TablaFalsa()
+    pk = store.reference_pk("PROVEEDOR", "10040")
+    tabla.put_item({"Pk": pk, "Sk": "SELLO#vieja", "S3Key": "k1"})
+    tabla.put_item({"Pk": pk, "Sk": "SELLO#activa", "S3Key": "k2", "Active": True, "Status": "ACTIVE"})
+    tabla.put_item({"Pk": pk, "Sk": "SELLO#pendiente", "Active": False, "Status": "PENDING"})
+    tabla.put_item({"Pk": pk, "Sk": "SELLO#baja", "S3Key": "k4", "Active": False, "Status": "INACTIVE"})
+
+    referencias = store.list_references("PROVEEDOR", "10040", table=tabla)
+
+    assert [r["refId"] for r in referencias["SELLO"]] == ["vieja", "activa"]
+    assert store.get_reference("PROVEEDOR", "10040", "SELLO", "activa", table=tabla)["s3Key"] == "k2"
+    assert store.get_reference("PROVEEDOR", "10040", "SELLO", "pendiente", table=tabla) is None
+    assert store.get_reference("PROVEEDOR", "10040", "SELLO", "no-existe", table=tabla) is None
+
+
+def test_una_sola_normalizacion_de_clave_para_quien_escribe_y_quien_lee():
+    assert store.normalize_key(" 10040 ") == "10040"
+    assert store.normalize_key("ACME S.A./2") == "ACMES.A.2"
+    assert store.normalize_key("") is None and store.normalize_key(None) is None and store.normalize_key("///") is None
+
+
+def test_con_embeddings_del_mismo_modelo_el_ranking_es_por_coseno():
+    """Un logo no tiene huella de tinta: sin embedding, con más referencias de
+    las que caben en la llamada se mandaban las primeras por orden alfabético."""
+    from pipeline import reference_embeddings as emb
+
+    def vector(*valores):
+        return emb.to_bytes(emb.normalize(valores))
+
+    referencias = [
+        {"refId": "a-otro", "inkGrid": None, "embedding": vector(1, 0, 0), "embeddingModel": "m1"},
+        {"refId": "b-otro", "inkGrid": None, "embedding": vector(0, 1, 0), "embeddingModel": "m1"},
+        {"refId": "z-el-bueno", "inkGrid": None, "embedding": vector(0, 0.1, 1), "embeddingModel": "m1"},
+    ]
+    consulta = emb.normalize([0, 0, 1])
+
+    elegidas = store.rank_references(referencias, None, limit=1, vector=consulta, model="m1")
+    assert [r["refId"] for r in elegidas] == ["z-el-bueno"] and elegidas[0]["rankedBy"] == "EMBEDDING"
+
+    # Vectores de OTRO modelo no son comparables: todo o nada, se cae al orden.
+    mezcladas = [dict(referencias[0]), {**referencias[2], "embeddingModel": "m2"}]
+    sin_embedding = store.rank_references(mezcladas, None, limit=1, vector=consulta, model="m1")
+    assert sin_embedding[0]["refId"] == "a-otro" and sin_embedding[0]["rankedBy"] == "ORDEN"

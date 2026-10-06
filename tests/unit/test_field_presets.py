@@ -27,9 +27,11 @@ COMPARTIDO = json.loads((REPO_ROOT / "catalogs/_shared.json").read_text(encoding
 @pytest.fixture(autouse=True)
 def presets_del_repo():
     dc._FIELD_PRESETS.clear()
-    dc._FIELD_PRESETS.update({k: v for k, v in COMPARTIDO["_field_presets"].items() if not k.startswith("__")})
+    dc._AUTHENTICITY_ELEMENTS.clear()
+    dc.load_shared({k: COMPARTIDO[k] for k in ("_field_presets", "_authenticity_elements")})
     yield
     dc._FIELD_PRESETS.clear()
+    dc._AUTHENTICITY_ELEMENTS.clear()
 
 
 def _tipo(fields, bloque=None):
@@ -95,9 +97,15 @@ def test_los_presets_del_repo_usan_senales_que_la_etapa_conoce():
         "evaluated", "verdict", "reasons", "capture_kind",
         "structure.physical_capture", "structure.origin", "structure.capture_as_expected",
         "pixels.natural_background", "pixels.error_level_uniform", "vision.no_edit_signs",
+        "references.suggested_key",
     }
+    elementos = {k for k in COMPARTIDO["_authenticity_elements"] if not k.startswith("__")}
+    for elemento in elementos:
+        conocidas |= {f"element.{elemento}.{s}" for s in
+                      ("present", "not_pasted", "text", "ink_colour", "issuer_consistent", "matches_reference")}
     presets = {k: v for k, v in COMPARTIDO["_field_presets"].items() if not k.startswith("__")}
-    assert set(presets) == {"INTEGRIDAD_PDF", "INTEGRIDAD_IMAGEN", "CAPTURA_FISICA"}
+    assert set(presets) == {"INTEGRIDAD_PDF", "INTEGRIDAD_IMAGEN", "CAPTURA_FISICA",
+                            *(f"{e}_CONTRA_REFERENCIA" for e in elementos)}
     for nombre, campos in presets.items():
         for campo, spec in campos.items():
             if campo.startswith("__"):

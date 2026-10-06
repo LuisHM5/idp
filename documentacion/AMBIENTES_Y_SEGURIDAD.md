@@ -189,7 +189,7 @@ Cada app registrada tiene **cuatro límites independientes**. Solo uno de ellos
 
 | Límite | Dónde vive | Qué cuenta | Al pasarse | Default de `register` |
 |---|---|---|---|---|
-| **Throttle de escritura** (req/s + burst) | override por método del usage plan | `POST /documents`, `POST /upload`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata` | 429 `{"message":"Too Many Requests"}` | 20 / 40 |
+| **Throttle de escritura** (req/s + burst) | override por método del usage plan | `POST /documents`, `POST /upload`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata`, y de la API de referencias: `POST /references/{scope}/{key}`, `POST …/{kind}/{refId}/confirm` y `DELETE …/{kind}/{refId}` | 429 `{"message":"Too Many Requests"}` | 20 / 40 |
 | **Throttle de lectura** (req/s + burst) | throttle del usage plan | **todos los GET**: polling de `/documents/{id}`, `/file`, búsquedas, `/document-types` | 429 `{"message":"Too Many Requests"}` | 4× escritura (80 / 160) |
 | **Documentos por día** (`MaxDocsPerDay`) | fila de la app en `document-validation-apps[-dev]`; el contador en `document-validation-app-usage[-dev]` | solo `POST /documents`, `POST /upload` y reprocess **que pasaron validación** — los GET nunca | 429 `{"error":"DAILY_DOCUMENT_LIMIT", ...}` con `Retry-After` hasta la medianoche UTC | sin tope |
 | **Techo de requests por día** | cuota del usage plan | **todo**, incluido el polling | 429 `{"message":"Limit Exceeded"}` hasta la medianoche UTC | 5000 |
@@ -216,6 +216,12 @@ Por qué está repartido así:
   nunca tumba subidas, y el techo de la cuota sigue de respaldo. Sin
   `MaxDocsPerDay`, sin key (dev abierto) o con una key no registrada no hay
   tope de documentos.
+- **Las referencias no son documentos.** Las rutas `/references` no tocan el
+  contador de `MaxDocsPerDay`: registrar una firma no dispara Textract ni un
+  modelo generativo (una confirmación cuesta un embedding de $0.00006). Sí
+  cuentan para el throttle de escritura (`POST`/`DELETE`, en `WRITE_METHODS`),
+  el de lectura (sus dos `GET`, también en `DEV_READ_METHOD_PATHS` del stack) y
+  el techo de requests.
 - **Día UTC** en los dos límites diarios (la cuota de API Gateway también se
   reinicia a las 00:00 UTC = 18:00 de Ciudad de México).
 - **Los throttles son aproximados; el tope de documentos es exacto.** AWS
@@ -424,12 +430,17 @@ pnpm apps:reconfigure -- --name Soporte --env prod --access-scope all --allow-fi
 
 # ERP puede mantener sus estados/marcas externos después del procesamiento
 pnpm apps:reconfigure -- --name ERP --env prod --allow-metadata-write
+
+# Portal de proveedores puede registrar/consultar firmas, sellos y logos válidos
+pnpm apps:reconfigure -- --name Portal --env prod --allow-reference-write
+pnpm apps:reconfigure -- --name Portal --env prod --disallow-reference-write   # quitarlo
 ```
-Cuatro controles, todos atributos en DynamoDB (no en API Gateway — no requieren
-redeploy ni tocan la key), aplicados por `query-lambda` en cada
+Cinco controles, todos atributos en DynamoDB (no en API Gateway — no requieren
+redeploy ni tocan la key). Los cuatro primeros los aplica `query-lambda` en cada
 `GET /documents/{id}`, `GET /documents/{id}/file`, `GET /documents?...` y
 `PATCH /documents/{id}/metadata`, además de
-`POST /documents/{id}/reprocess`:
+`POST /documents/{id}/reprocess`; el quinto lo aplica la References Lambda
+(`references_api.py`) en todas las rutas `/references`:
 
 | Flag | Default (app nueva) | Qué controla |
 |---|---|---|
@@ -437,6 +448,7 @@ redeploy ni tocan la key), aplicados por `query-lambda` en cada
 | `--allowed-doctypes A,B` | (ninguno = sin restricción) | Restringe incluso a una app `all` al consultar, descargar, reprocesar o editar metadata de esos tipos. No bloquea el upload. `none` en `reconfigure` quita la restricción. |
 | `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}` — y `system=`/`meta.<clave>=`, que **no** están detrás de este permiso: leen una sola clave conocida del envelope en vez de recorrerlo entero, y no amplían lo que la app ya puede ver (con `AccessScope: own`, `system=` solo puede acotar más). |
 | `--allow-metadata-write` | `false` | Si puede usar `PATCH /documents/{id}/metadata` para estados transitorios/marcas propios. No permite cambiar `validation.status`; sigue limitado por scope y tipos. |
+| `--allow-reference-write` / `--disallow-reference-write` | `false` | Si puede usar la API de referencias de autenticidad (`/references/...`): registrar, listar, ver y dar de baja las firmas, sellos y logos válidos de una entidad. Cubre **todas** las rutas, también los `GET` — listar referencias expone firmas de personas. Atributo `AllowReferenceWrite`. Es independiente de `AccessScope`/`AllowedDocTypes`: las referencias son de la entidad (`scope` + `key`), no de un documento ni de un tipo. `rotate` lo conserva. |
 
 **Por qué 404, no 403, en un documento fuera de alcance**: `GET /documents/{id}`
 y `.../file` —y la búsqueda del original para `.../reprocess`— devuelven `404 NOT_FOUND` cuando el documento existe pero la app
@@ -474,6 +486,10 @@ pnpm apps:deny  -- --name Soporte --env prod --field-search
 # Otorgar/quitar solo la edición de metadata:
 pnpm apps:grant -- --name ERP --env prod --metadata-write
 pnpm apps:deny  -- --name ERP --env prod --metadata-write
+
+# Otorgar/quitar solo la API de referencias de autenticidad (/references):
+pnpm apps:grant -- --name Portal --env dev --reference-write
+pnpm apps:deny  -- --name Portal --env dev --reference-write
 ```
 `reconfigure --allowed-doctypes A,B` **reemplaza** la lista completa — para
 agregar un tipo a una app que ya tenía otros, hay que retipearlos todos.
@@ -486,10 +502,10 @@ String Set vacío, y además un `AllowedDocTypes` vacío en el código de
 lo que se buscaba al quitar el último tipo permitido.
 
 Antes de aplicar, ambos comandos muestran los permisos **actuales** de la app
-(scope, field-search, metadata-write, tipos) y qué va a cambiar, con la misma confirmación
+(scope, field-search, metadata-write, reference-write, tipos) y qué va a cambiar, con la misma confirmación
 `(S/n)` que el resto de comandos. `--field-search` es un flag sin valor cuyo
 sentido lo fija el comando: en `grant` siempre habilita, en `deny` siempre
-deshabilita. `--metadata-write` funciona igual. `--access-scope own|all` sí toma un valor explícito en ambos
+deshabilita. `--metadata-write` y `--reference-write` funcionan igual. `--access-scope own|all` sí toma un valor explícito en ambos
 comandos (por si alguna vez necesitas "otorgar" `own` a propósito, ej. una
 app que tenía `all` y quieres acotarla sin usar `reconfigure`) — la
 diferencia real entre `grant`/`deny` para `--doctype` es la única que importa
@@ -599,6 +615,43 @@ fallo al leer AppsTable reciben `AllowMetadataWrite=false` y tampoco pueden
 iniciar reprocesos: una degradación de permisos nunca autoriza una mutación ni
 un nuevo gasto de procesamiento. En dev abierto (sin key) sí se permiten PATCH
 y reproceso para facilitar pruebas; en prod siempre hay key.
+
+**La API de referencias (`/references`) falla CERRADO, también al leer.** La
+References Lambda (`enrichment-lambda/references_api.py` → `resolve_caller`)
+resuelve el `ApiKeyId` con el mismo `GetItem` contra
+`document-validation-apps[-dev]` y solo deja pasar si la fila tiene
+`AllowReferenceWrite = true`. A diferencia de `query-lambda`, aquí no hay
+grandfather ni fail-open: una key válida pero no registrada (`idp-default` sin
+adoptar), una app sin el permiso y un fallo al leer AppsTable responden todos
+`403 FORBIDDEN` — en los `GET` igual que en las escrituras. Registrar una
+referencia es declarar "este sello es válido" y listarlas expone firmas, así que
+un hipo de la tabla no debe abrir ninguna de las dos cosas. El único caso
+abierto es una request **sin** `x-api-key` en un stack que no las exige (dev con
+`DEV_API_KEY_REQUIRED` apagado; el stack le pasa `API_KEY_REQUIRED=false` a la
+Lambda) — igual que el resto de ese stack. El nombre de la app queda en
+`createdBy` / `deactivatedBy` de cada referencia.
+
+**Orden de despliegue de las rutas `/references` (y de cualquier ruta de
+escritura nueva):**
+
+1. **Primero `deploy`, después `apps:register`/`apps:reconfigure`.** El throttle
+   de escritura es un override por método del usage plan
+   (`WRITE_METHODS`), y solo se puede fijar sobre rutas que el stage ya
+   publica. Los planes creados **antes** de que existieran las rutas no tienen
+   override para ellas: sus `POST`/`DELETE` de `/references` quedan con el
+   throttle de **lectura** (más holgado) hasta que corras un
+   `pnpm apps:reconfigure` sobre esa app con cualquier flag de throttle.
+2. **Si `/references/...` responde `{"message":"Missing Authentication
+   Token"}`** con la URL bien escrita, API Gateway no redesplegó el stage: las
+   rutas existen en el RestApi pero no en el deployment activo. Se arregla con
+   `aws apigateway create-deployment --rest-api-id <RestApiId> --stage-name prod`
+   (el stage se llama `prod` también en dev).
+3. **`check-pending-tables.mjs` mostrará un cambio en la tabla de huellas**
+   (`document-validation-fingerprints[-dev]`): es el TTL `ExpiresAt` que
+   limpia las reservas `PENDING` sin confirmar. Es esperado; una referencia
+   activa nunca lleva `ExpiresAt`.
+4. El permiso en sí no necesita deploy: `pnpm apps:grant -- --name <app> --env
+   dev --reference-write` surte efecto en la siguiente request.
 
 ### Permisos IAM para ejecutar `manage-apps.mjs` de forma segura
 

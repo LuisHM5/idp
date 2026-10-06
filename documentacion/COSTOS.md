@@ -936,6 +936,33 @@ real y opcional nunca se esconde dentro de `BedrockExtraction`. La Lambda pasó 
 los tipos en proporción a su duración: +50 % sobre una partida que es ~5-8 % del
 costo por documento).
 
+### `BedrockEmbeddings` — embeddings de referencias (2026-10-06)
+
+Línea propia en la auditoría, separada de `BedrockAuthenticity`: no son tokens
+de un modelo generativo sino una llamada `InvokeModel` a **Amazon Titan
+Multimodal Embeddings G1** (`amazon.titan-embed-image-v1`), que se cobra **por
+imagen**: **$0.00006** cada una (`pipeline/pricing.py`).
+
+Cuándo se paga:
+
+| Momento | Imágenes | Quién |
+|---|---|---|
+| Alta de una referencia (`POST /references/…/confirm` o `pnpm refs:register`) | 1 por referencia | References Lambda / CLI. **No** queda en la tabla de costos por documento: no hay documento |
+| Documento de un proveedor con **más** referencias de un elemento que `vision.max_references_per_kind` (default 3) | 1 por elemento en esa situación | Enrichment Lambda: embebe el recorte del documento para elegir las más parecidas. Con 3 sellos o menos se mandan todos y **no se paga nada** |
+| Documento **sin** `metadata.proveedor`, en un tipo con `authenticity.references.search.enabled` | 1 por elemento buscado | Enrichment Lambda: busca en el índice vectorial entre las referencias de todas las entidades del `scope` |
+| `pnpm refs:reindex` (solo lo que no tenga vector del modelo actual, o todo con recálculo) / `pnpm refs:search` / `pnpm refs:eval` | 1 por recorte | Operador |
+
+El embedding del recorte de un elemento se calcula **a lo más una vez por
+documento**, así que el peor caso de una `CARTA_NOM35` (firma + sello + logo)
+son 3 imágenes = **$0.00018** — dos órdenes de magnitud por debajo de la visión.
+
+**Medido (2026-10-06):** embeber los 136 recortes de `test-docs/nom35/samples`
+con `pnpm refs:eval` costó **~$0.008** (136 × $0.00006 = $0.0082).
+
+El índice vectorial (S3 Vectors, `document-validation-references[-dev]`) guarda
+un vector de 1024 dimensiones por referencia activa; su almacenamiento y sus
+consultas no tienen línea en la auditoría por documento y **no están medidos**.
+
 ## Tráfico de pruebas reales
 
 `pnpm test:real` genera costos auténticos y persiste documentos igual que una

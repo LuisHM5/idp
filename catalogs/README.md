@@ -296,9 +296,9 @@ como en el DSL viejo.
 
 Cada señal de la etapa de autenticidad e integridad es un campo `computed`
 completo (tipo, hint, `authenticity_source`, regla, mensaje, `on_fail`).
-`CARTA_NOM35` los declara a mano — 19 campos, ~250 líneas — porque es un caso
-especial. Para el resto, `_shared.json` → `_field_presets` define esos campos
-UNA vez y un tipo los pide dentro de `fields`, con el mismo mecanismo que
+`CARTA_NOM35` los declaraba todos a mano — 19 campos, ~250 líneas; hoy pide por
+preset los de firma, sello y logo contra referencia y solo escribe los suyos.
+`_shared.json` → `_field_presets` define esos campos UNA vez y un tipo los pide dentro de `fields`, con el mismo mecanismo que
 `$common`:
 
 ```jsonc
@@ -322,6 +322,21 @@ false`, `allow_empty: true` salvo `AUTENTICIDAD_EVALUADA`):
 | `INTEGRIDAD_PDF` | `AUTENTICIDAD_EVALUADA` → `evaluated` · `ARCHIVO_SIN_REGUARDADO` → `integrity.single_generation` · `FIRMA_DIGITAL_INTACTA` → `integrity.signature_intact` · `FECHAS_METADATOS_CONSISTENTES` → `integrity.dates_consistent` · `SIN_EDITOR_EN_METADATOS` → `integrity.producer_consistent` · `SIN_ANOTACIONES` → `integrity.no_annotations` · `SIN_CAMPOS_FORMULARIO` → `integrity.no_form_fields` · `SIN_TEXTO_SOBRE_ESCANEO` → `integrity.no_text_overlay` · `SIN_IMAGEN_SOBRE_TEXTO` → `integrity.no_image_over_text` · `SIN_CONTENIDO_ACTIVO` → `integrity.no_active_content` · `EDITOR_DETECTADO` → `integrity.editor` (string) · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` (los strings no llevan regla) |
 | `INTEGRIDAD_IMAGEN` | `AUTENTICIDAD_EVALUADA` · `SIN_EDITOR_EN_METADATOS` → `integrity.producer_consistent` · `FECHAS_METADATOS_CONSISTENTES` → `integrity.dates_consistent` · `METADATOS_DE_CAMARA` → `integrity.camera_metadata` · `NIVEL_DE_ERROR_UNIFORME` → `pixels.error_level_uniform` · `EDITOR_DETECTADO` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review`, salvo `METADATOS_DE_CAMARA` y `NIVEL_DE_ERROR_UNIFORME` en `info` (la mensajería quita el EXIF; el ELA no está calibrado con imágenes reales) |
 | `CAPTURA_FISICA` | `AUTENTICIDAD_EVALUADA` · `CAPTURA_FISICA` → `structure.physical_capture` · `ORIGEN_DOCUMENTO` → `structure.origin` · `FONDO_NATURAL` → `pixels.natural_background` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` |
+| `FIRMA_CONTRA_REFERENCIA` | `AUTENTICIDAD_EVALUADA` · `FIRMA_PRESENTE` → `element.FIRMA.present` · `FIRMA_SIN_INSERCION` → `element.FIRMA.not_pasted` · `FIRMA_COINCIDE_REFERENCIA` → `element.FIRMA.matches_reference` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` |
+| `SELLO_CONTRA_REFERENCIA` | `AUTENTICIDAD_EVALUADA` · `SELLO_PRESENTE` · `SELLO_SIN_INSERCION` · `TEXTO_SELLO` → `element.SELLO.text` · `SELLO_CORRESPONDE_EMISOR` → `element.SELLO.issuer_consistent` (vacío si el tipo no declara `issuer_field`) · `SELLO_COINCIDE_REFERENCIA` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` |
+| `LOGO_CONTRA_REFERENCIA` | `AUTENTICIDAD_EVALUADA` · `LOGO_PRESENTE` · `LOGO_COINCIDE_REFERENCIA` · `VEREDICTO_AUTENTICIDAD` · `MOTIVOS_AUTENTICIDAD` | `review` |
+
+Los tres `*_CONTRA_REFERENCIA` son la comparación de un elemento contra las
+referencias **registradas** de una entidad. Piden señales de la capa de visión
+(de pago) y necesitan que el tipo nombre el elemento en `authenticity.elements`
+y declare `authenticity.references` — ver «Elementos compartidos» y
+«Referencias» abajo. Un tipo nuevo que solo quiere «¿el logo es el del
+proveedor?» son tres líneas:
+
+```jsonc
+"authenticity": { "elements": ["LOGO"], "references": { "scope": "PROVEEDOR", "key_from": "metadata.proveedor" } },
+"fields": { "$presets": ["LOGO_CONTRA_REFERENCIA"], /* …los campos del tipo… */ }
+```
 
 Lo que importa del mecanismo:
 
@@ -870,7 +885,10 @@ pasa por la etapa (una búsqueda de diccionario).
     "fallback_models": []               //   [] = nunca cambia de modelo (la lista compartida es de solo texto)
   },
 
-  "elements": {                         // QUÉ se busca. Los nombres son tuyos.
+  "elements": {                         // QUÉ se busca. Una lista de nombres compartidos (["FIRMA", "LOGO"]) o un
+                                        //   objeto: lo que declares aquí sobreescribe, llave por llave, la definición
+                                        //   de `_shared.json` → `_authenticity_elements` (ver «Elementos compartidos»).
+                                        //   Un nombre que no está ahí se define completo aquí: los nombres son tuyos.
     "FIRMA": {
       "description": "Firma autógrafa trazada con tinta sobre la línea de firma…",  // va al prompt
       "required": true,
@@ -889,13 +907,23 @@ pasa por la etapa (una búsqueda de diccionario).
     "LOGO": {
       "description": "Logotipo o membrete…",
       "fingerprint": false,             // no se le guarda huella: un logo SÍ se repite legítimamente
-      "embedded_image_is_insertion": false
+      "embedded_image_is_insertion": false,
+      "references": { "scope": "MARCA" } // opcional: ESTE elemento se compara en otro scope/clave que el resto
+                                        //   (se fusiona sobre el bloque `references` del tipo; `false` = no se compara)
     }
   },
 
-  "references": {                       // referencias registradas por proveedor (`pnpm refs:*`)
-    "key_from": "metadata.proveedor",   //   de dónde sale la clave: metadata de la carga
-    "scope": "PROVEEDOR"
+  "references": {                       // referencias registradas de una ENTIDAD (`pnpm refs:*` o la API /references)
+    "scope": "PROVEEDOR",               //   a qué clase de entidad pertenecen. Las referencias son del scope + clave,
+                                        //   no del tipo: todo tipo que declare este scope usa las mismas
+    "key_from": "metadata.proveedor",   //   de dónde sale la clave: `metadata.<clave>` (lo que mandó quien subió) o
+                                        //   `fields.<CAMPO>` (lo que se leyó del propio documento, p. ej. el RFC)
+    "search": {                         //   SIN clave: buscar el elemento entre las referencias de TODO el scope
+      "enabled": false,                 //     por embedding (índice vectorial). Apagado por defecto: mide primero
+      "min_similarity": 0.7,            //     con `pnpm refs:eval`. Similitud coseno mínima de un candidato
+      "top_k": 3                        //     candidatos que se le muestran al modelo de visión, que es quien decide
+    },
+    "embedding": { "provider": "titan-multimodal" }   // opcional; default. Ver `pipeline/reference_embeddings.py`
   },
 
   "memory": {                           // CAPA 4 — memoria entre documentos (tabla de huellas)
@@ -915,6 +943,51 @@ revisión.
 
 `vision` se activa cuando hay `elements` **o** `page_review: true`; con
 `page_review` y sin `elements` corre solo esa llamada.
+
+#### Elementos compartidos (`_authenticity_elements`)
+
+Qué **es** una firma, un sello o un logotipo — la descripción que recibe el
+modelo de visión, con qué tinta se separa de un vecino, a partir de qué parecido
+dos de ellos son «el mismo» — está definido una vez en `catalogs/_shared.json` →
+`_authenticity_elements` (`FIRMA`, `SELLO`, `LOGO`). Un tipo los pide por nombre
+y solo escribe lo que cambia:
+
+```jsonc
+"elements": ["FIRMA", "LOGO"]                                   // tal cual
+"elements": { "FIRMA": {}, "SELLO": { "issuer_field": "EMPRESA_EMISORA" } }   // con un ajuste
+"elements": { "HOLOGRAMA": { "description": "Holograma de seguridad…", "fingerprint": false } }  // uno propio
+```
+
+Mismo mecanismo y mismo gotcha que los presets: la definición compartida viaja
+en el **bundle** (`pnpm build` + deploy); el ajuste del tipo es hot-reloadable
+con `pnpm sync:one`. Un tipo que usa un elemento o un preset compartido
+**nuevo** sincronizado sobre una Lambda desplegada antes de que existiera pierde
+ese elemento (nombre desconocido → se ignora con un warning): despliega primero.
+
+#### Referencias: de quién son y cómo se eligen
+
+Una referencia es de una **entidad** — `scope` + clave (`PROVEEDOR` + `10040`) —
+y nunca de un tipo de documento. El logotipo de un proveedor se registra una vez
+(`pnpm refs:register` o `POST /references/PROVEEDOR/10040`) y lo usa todo tipo
+que declare ese `scope`. Los `scope` y elementos válidos para registrar salen de
+aquí, por forma: la unión de lo que declaran los tipos activos
+(`authenticity.reference_scopes`).
+
+Qué referencias se le muestran al modelo junto a cada recorte (la
+**recuperación**; el modelo es quien decide si corresponde):
+
+| Situación | Qué se manda | `references.ranking.<KIND>.mode` |
+|---|---|---|
+| La entidad tiene ≤ `max_references_per_kind` de ese elemento | todas | `TODAS` — no se calcula ningún embedding |
+| Tiene más, y todas llevan embedding del modelo actual | las más parecidas por coseno | `EMBEDDING` |
+| Tiene más, sin embeddings (registradas antes, u otro modelo) | las más parecidas por huella de tinta | `HUELLA` |
+| Tiene más, sin embedding ni huella (un logo viejo) | las primeras por orden | `ORDEN` — corre `pnpm refs:reindex` |
+| La carga no trae la clave y `search.enabled` | las más cercanas de **cualquier** clave del scope con similitud ≥ `min_similarity` | `BUSQUEDA` |
+
+En la búsqueda sin clave, que el modelo **no** confirme ninguna candidata no es
+evidencia de nada: `matches_reference` queda vacío. Si confirma, se llena
+`references.suggested_key`. La memoria entre documentos (`memory.*`) no cambia de
+partición por una clave sugerida.
 
 #### Cómo recibe un campo su valor: `authenticity_source`
 
@@ -958,7 +1031,8 @@ Los resultados caen en campos `computed` normales. Cada uno dice qué señal qui
 | `element.<KIND>.not_pasted` | `false` si hay una imagen incrustada justo ahí (determinista) o el modelo ve indicios |
 | `element.<KIND>.text` · `.ink_colour` | leyenda transcrita (con `read_text`) · color de tinta |
 | `element.<KIND>.issuer_consistent` | la leyenda nombra al `issuer_field`. Se compara **en Python**, no opina el modelo |
-| `element.<KIND>.matches_reference` | corresponde a una referencia registrada · ***vacío* si no hay referencias** |
+| `element.<KIND>.matches_reference` | corresponde a una referencia registrada · ***vacío* si no hay referencias**, si no se pudieron leer (motivo `REFERENCIAS_NO_DISPONIBLES`, y `evaluated` pasa a `false`) o si las candidatas salieron de la búsqueda sin clave y el modelo no confirmó ninguna |
+| `references.suggested_key` | la clave (p. ej. el número de proveedor) a la que corresponden los elementos según las referencias registradas, cuando la carga **no** la declaró y `references.search` está activo. *Vacío* si se declaró la clave, si nada se confirmó, o si los elementos apuntan a claves distintas. Informativo: una sugerencia para quien revisa |
 | `vision.no_edit_signs` | con `vision.page_review`: `false` = el modelo ve indicios de edición en la página (`TEXTO_SUPERPUESTO`, `PARCHE_DE_FONDO`, `FUENTE_INCONSISTENTE`, `ALINEACION_ROTA`, `BORDE_DE_RECORTE`, `RESOLUCION_DISTINTA`) · *vacío* si no corrió |
 | `memory.elements_unique` | `false` = la misma tinta/imagen en **otra** carta (nivel rechazo) |
 | `memory.elements_not_similar` | `false` = demasiado parecida (nivel revisión o peor) |

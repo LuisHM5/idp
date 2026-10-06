@@ -47,6 +47,7 @@ SERVICE_LABEL_ES = {
     "BedrockExtraction": "Bedrock · Extracción",
     "BedrockPageLocator": "Bedrock · Localizador de páginas",
     "BedrockAuthenticity": "Bedrock · Autenticidad (visión)",
+    "BedrockEmbeddings": "Bedrock · Embeddings de referencias",
     "TextractOcr": "Textract · OCR",
     "LambdaCompute": "Lambda · Cómputo (aprox.)",
 }

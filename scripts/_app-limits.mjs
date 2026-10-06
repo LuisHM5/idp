@@ -34,6 +34,10 @@ export const WRITE_METHODS = Object.freeze([
   "/upload/POST",
   "/documents/{id}/reprocess/POST",
   "/documents/{id}/metadata/PATCH",
+  // Al final a propósito: `effectiveLimits` sondea WRITE_METHODS[0].
+  "/references/{scope}/{key}/POST",
+  "/references/{scope}/{key}/{kind}/{refId}/DELETE",
+  "/references/{scope}/{key}/{kind}/{refId}/confirm/POST",
 ]);
 
 /** Recomendación de lectura vs escritura: los GET son baratos (Lambda + DynamoDB). */

@@ -47,8 +47,7 @@ def _entry(type_id: str, vision: bool):
     compartido = REPO / "catalogs" / "_shared.json"
     if compartido.is_file():
         datos = json.loads(compartido.read_text(encoding="utf-8"))
-        document_catalog._FIELD_PRESETS.update(
-            {k: v for k, v in (datos.get("_field_presets") or {}).items() if not k.startswith("__")})
+        document_catalog.load_shared(datos)
     rutas = [p for p in (REPO / "catalogs").rglob(f"{type_id}.json")
              if "save" not in p.relative_to(REPO / "catalogs").parts]
     crudo = copy.deepcopy(json.loads(rutas[0].read_text(encoding="utf-8"))[type_id])
@@ -65,7 +64,11 @@ def _entry(type_id: str, vision: bool):
             campos["_CAL_" + señal.upper().replace(".", "_")] = {
                 "type": "string", "required": False, "computed": True,
                 "authenticity_source": señal, "hint": "calibración", "validation": []}
-    return _parse_entry(type_id, crudo), bloque.get("elements") or {}
+    entry = _parse_entry(type_id, crudo)
+    from pipeline import authenticity
+
+    # Los elementos RESUELTOS (el tipo puede pedirlos por nombre a `_shared.json`).
+    return entry, (authenticity.spec_for(entry) or {}).get("elements") or {}
 
 
 def main() -> int:

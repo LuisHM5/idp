@@ -68,6 +68,8 @@ validar es justo lo que está desplegado ahí.
 | Quiero saber si un tipo procesa bien documentos reales | paso 5 ([sección 5.1](#51-modo-dataset-análisis-de-confianza)) |
 | Quiero ir probando muchos tipos poco a poco | `pnpm test:e2e:init`, llenar carpetas, paso 6 ([sección 5.2](#52-suite-multi-tipo-por-carpetas)) |
 | Toqué la etapa de autenticidad e integridad (`pdf_integrity`, `pdf_forensics`, `pixel_forensics`, `authenticity`…), los presets de `_shared.json` o los umbrales del bloque `authenticity` de un catálogo | `pnpm test:unit` y luego `pnpm test:autenticidad` (gratis los dos); si tocaste `vision_inspector` o los prompts, `pnpm test:autenticidad -- --vision` (~$0.08) |
+| Toqué el registro de referencias o su API (`reference_registry`, `references_api`, `reference_embeddings`, `reference_index`) o el permiso `AllowReferenceWrite` de `manage-apps.mjs` | `pnpm test:unit` (gratis: `test_reference_registry.py`, `test_reference_embeddings.py`, `node/app-permissions.test.mjs`, `node/app-limits.test.mjs`) |
+| Quiero saber si el embedding recupera la referencia correcta antes de activar `references.search` en un tipo | `pnpm refs:eval` (~$0.01; `-- --cache <archivo>` para no volver a pagar) |
 | Quiero saber cuántos documentos reales caerían por captura física o por cada señal de integridad (guardado incremental, anotaciones, texto sobre el escaneo…) | `pnpm autenticidad -- --dir <carpeta> [--type TIPO]` (gratis, sin AWS; la integridad corre aunque el tipo no la declare, `--sin-integridad` la quita) |
 | Un documento concreto salió mal y quiero ver por qué | `pnpm comparar -- archivo.pdf` ([sección 2](#2-comparar-expected-vs-real-de-un-documento-con-costo-script-simple)) |
 
@@ -289,6 +291,7 @@ funcionando.
 | `pnpm test:autenticidad`                  | Etapa de autenticidad e integridad contra `tests/integration/expected_autenticidad.json` sobre `test-docs/nom35`: veredicto de estructura, `physical_capture`, motivos duros, que ninguna captura genuina se acuse de fondo artificial, los motivos de integridad que el ground truth fije (`integrity_reasons_include` / `integrity_reasons_exclude`, opcionales) y el invariante de que una captura genuina revisada a ojo nunca levanta un motivo DURO de integridad. Solo capas deterministas; memoria y referencias apagadas | No | $0 |
 | `pnpm test:autenticidad -- --vision`      | Lo mismo + la capa de visión REAL sobre las carpetas ancla revisadas a ojo: exige que el modelo encuentre los elementos `required` en las capturas genuinas y lista lo que opinó de cada recorte | Sí (Bedrock) | ~$0.08, confirma antes |
 | `pnpm autenticidad -- --dir <carpeta>`    | No es un test: corre las capas gratuitas — integridad incluida, aunque el tipo no la declare (`--sin-integridad` la quita) — sobre cualquier carpeta y dice cuántos documentos caerían por captura física y **por cada código de integridad**; `--detalle` imprime la cadena de guardados, fechas, software, firmas, anotaciones y texto sobre imagen. Para calibrar antes de activar un preset o endurecer un `on_fail` | No | $0 |
+| `pnpm refs:eval [-- --dir <carpeta> --cache <archivo.json>]` | No es un test con aprobado/reprobado: mide si el embedding **recupera la referencia correcta**. Embebe cada recorte de `test-docs/nom35/samples` (una subcarpeta por proveedor, `firma*`/`sello*`/`logo*`), lo usa como consulta contra todos los demás y reporta, por elemento, recall@1/recall@3, el coseno contra la misma entidad vs. contra otra, y un `min_similarity` sugerido. Mismo código que la Lambda (`pipeline/reference_embeddings.py`). `--cache` guarda los vectores para repetir el análisis sin volver a pagar. Solo lectura: no escribe en AWS | Sí (Bedrock, Titan Multimodal Embeddings) | ~$0.01 (136 recortes = ~$0.008, 2026-10-06); $0 con `--cache` ya lleno |
 | `pnpm test-local --type INE`              | Motor de validación con entidades simuladas                                    | No                      | $0           |
 | `pnpm test-e2e -- doc.pdf TIPO_DOCUMENTO` | Contrato público desplegado completo: `POST /documents` → `PUT` S3 → polling de `GET /documents/{id}` hasta `FINISHED`; imprime el JSON final | Sí (stack desplegado) | centavos     |
 | `pnpm test:e2e:pedimento -- --file normal_pend.pdf` | **E2E real de verdad**: sube por el stack desplegado (S3→SQS→SFN→Lambdas→DynamoDB/S3) Y compara contra el ground truth — ver [5](#5-e2e-real-contra-el-stack-desplegado) | Sí (stack desplegado) | ~$0.05–0.10 + minutos |
@@ -318,6 +321,36 @@ override por campo, presets del repo con señales que la etapa conoce) y
 `integrity.*` jamás rasteriza ni llama a un modelo, `expected_capture`,
 `trigger: on_suspicion`, `page_review`, bytes originales tras el truncado).
 Guía: [AUTENTICIDAD_Y_REFERENCIAS.md](AUTENTICIDAD_Y_REFERENCIAS.md).
+
+El **registro de referencias y su API REST** (`/references`) también se prueban
+enteros sin AWS, dentro de `pnpm test:unit`:
+
+- `tests/unit/test_reference_registry.py` — la revisión del recorte (cada
+  código de rechazo, la cabecera que declara una imagen enorme, el formato real
+  leído de los bytes), la clave que se rechaza con su forma sugerida, los
+  `scope`/`kind` que salen del catálogo, y la API completa contra una tabla, un
+  S3 y un índice simulados: permiso `AllowReferenceWrite` en todas las rutas y
+  falla cerrado, alta en dos pasos, reserva sin confirmar, `409
+  UPLOAD_NOT_FOUND`, `422` que no deja nada, idempotencia de `confirm`,
+  duplicado / misma tinta con `force`, validaciones de entrada, tope por
+  elemento, detalle con `imageUrl`, baja, `404` de lo vencido, reintento del
+  índice, y que el alta directa del CLI escribe lo mismo que la API. Es además
+  el mejor catálogo de ejemplos de cada respuesta.
+- `tests/unit/test_reference_embeddings.py` — preprocesado del recorte, el
+  embedding normalizado y lo que factura, que un fallo del modelo es «sin
+  vector» y nunca una excepción, el request/response de Titan, que todo
+  proveedor registrado tiene tarifa, y el índice vectorial (metadatos
+  filtrables, búsqueda por `scope`/elemento/modelo, similitud en vez de
+  distancia, errores que no truenan).
+- `tests/unit/node/app-permissions.test.mjs` — `AllowReferenceWrite` aparece en
+  `manage-apps.mjs` en los mismos sitios que `AllowMetadataWrite`, los flags
+  existen en `register`/`reconfigure` y en `grant`/`deny`, y rotar una key
+  conserva el permiso. `tests/unit/node/app-limits.test.mjs` sigue exigiendo
+  que toda ruta no-GET del stack esté en `WRITE_METHODS` y toda ruta GET en
+  `DEV_READ_METHOD_PATHS` — las de `/references` incluidas.
+
+Lo único de pago es `pnpm refs:eval` (tabla de arriba), que no es parte de
+ninguna suite.
 
 La verdad de terreno de los tests de pedimentos vive en
 `tests/integration/expected_pedimentos.json` — al agregar documentos de

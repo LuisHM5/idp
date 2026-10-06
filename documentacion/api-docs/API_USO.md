@@ -2,7 +2,9 @@
   MANTENIMIENTO: Este documento es la referencia de uso del API REST.
   Debe mantenerse sincronizado con las rutas definidas en
   `src/document-validation-stack.ts` (RestApi "DocumentUploadApi") y con los
-  handlers en `src/document-processing/resources/{upload,query}-lambda/`.
+  handlers en `src/document-processing/resources/{upload,query}-lambda/` y
+  `src/document-processing/resources/enrichment-lambda/references_api.py`
+  (rutas `/references`).
   Si agregas, quitas o cambias un endpoint (ruta, método, params, body o
   respuesta), ACTUALIZA este archivo Y `openapi.yaml` (mismo directorio) en
   el mismo cambio. Ver AGENTS.md.
@@ -51,7 +53,7 @@ Referencia de todos los endpoints del API de la app de validación documental.
   - **No la mandes en el `PUT` a S3** (paso 2 de la subida): ese va firmado en la
     URL y no pasa por API Gateway.
 
-- **Autorización por app:** además de autenticar, la `x-api-key` decide qué documentos puede leer, reprocesar o editar esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 6 y `AMBIENTES_Y_SEGURIDAD.md`.
+- **Autorización por app:** además de autenticar, la `x-api-key` decide qué documentos puede leer, reprocesar o editar esa app (por default, solo los que ella subió) — ver "Seguridad — acceso por app" en la sección 6 y `AMBIENTES_Y_SEGURIDAD.md`. Las rutas `/references` (§8) son aparte: **todas**, también los `GET`, exigen el permiso `AllowReferenceWrite`, apagado por default.
 - **Formato:** JSON. Errores devuelven `{ "error": "CODIGO", "message": "..." }`.
   Programa contra `error` (código estable), no contra `message`.
 
@@ -67,7 +69,7 @@ escrituras y **no gastan** tu presupuesto de documentos:
 
 | Límite | Qué cuenta | Respuesta al pasarse | Qué hacer |
 | ------ | ---------- | -------------------- | --------- |
-| Throttle de escritura (req/s) | `POST /documents`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata` | `429` `{"message":"Too Many Requests"}` | Reintentar con backoff (1 s, 2 s, 4 s…) |
+| Throttle de escritura (req/s) | `POST /documents`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata`, y de `/references` (§8) el `POST` de reserva, el `POST …/confirm` y el `DELETE` | `429` `{"message":"Too Many Requests"}` | Reintentar con backoff (1 s, 2 s, 4 s…) |
 | Throttle de lectura (req/s) | Todos los `GET` | `429` `{"message":"Too Many Requests"}` | Reintentar con backoff; en el polling, esperar como un `202` |
 | Documentos por día | Solo `POST /documents` y reprocess que pasaron validación | `429` `{"error":"DAILY_DOCUMENT_LIMIT","limit":N,"resetsAt":"…","retryAfterSeconds":N}` + `Retry-After` | No reintentar antes de `resetsAt` (medianoche UTC). Los `GET` siguen funcionando |
 | Techo de requests por día | **Todo**, incluido el polling | `429` `{"message":"Limit Exceeded"}` | No se arregla reintentando: se reinicia a medianoche UTC. Si pasa seguido, pide que se suba el techo |
@@ -81,6 +83,10 @@ escrituras y **no gastan** tu presupuesto de documentos:
   baja el ritmo antes de sospechar de la key.
 - Ninguna request rechazada con `429`/`403` llega a la Lambda ni cuenta como
   documento.
+- **Registrar referencias (`/references`, §8) no gasta documentos del día:** el
+  tope de documentos por día no aplica a esas rutas. Sí aplican el throttle de
+  escritura (reserva, confirmación y baja), el de lectura (sus dos `GET`) y el
+  techo de requests por día.
 - Tus valores concretos los da quien administra la API (`pnpm apps:usage`, ver
   `AMBIENTES_Y_SEGURIDAD.md` → "Límites por app").
 
@@ -98,6 +104,11 @@ escrituras y **no gastan** tu presupuesto de documentos:
 | `GET`   | `/documents?field=...&value=...`         | Buscar documentos por cualquier campo extraído                                            |
 | `GET`   | `/document-types`                        | Catálogo de tipos soportados, paginado (5 por página)                                     |
 | `GET`   | `/document-types/{type}`                 | Un tipo de documento por su TYPE_ID exacto, con su schema opcional                         |
+| `POST`  | `/references/{scope}/{key}`              | **Paso 1 de 3:** reservar una referencia (firma, sello o logo válido de una entidad) y obtener la URL de carga |
+| `POST`  | `/references/{scope}/{key}/{kind}/{refId}/confirm` | **Paso 3 de 3:** revisar el recorte subido y activar la referencia              |
+| `GET`   | `/references/{scope}/{key}`              | Listar las referencias de una entidad                                                     |
+| `GET`   | `/references/{scope}/{key}/{kind}/{refId}` | Una referencia, con URL temporal de su imagen                                           |
+| `DELETE`| `/references/{scope}/{key}/{kind}/{refId}` | Dar de baja (desactivar) una referencia                                                 |
 
 ---
 
@@ -790,7 +801,7 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 ### Notas del upload
 
-- **`metadata.proveedor` en tipos con verificación de autenticidad** (hoy `CARTA_NOM35`). Esos tipos comparan la firma, el sello y el logotipo del documento contra los que el emisor tiene **registrados con anticipación**, y saben de qué emisor se trata por esta llave: `"metadata": {"proveedor": "10040"}`. Es opcional y nunca rechaza por sí sola: sin ella — o si ese proveedor aún no tiene referencias — el documento se procesa igual, verificando que firma, sello y logo **estén** y **no sean imágenes insertadas**, y `authenticity.referencesFound` sale `false`. El resultado llega en `documents[i].authenticity` (§2).
+- **`metadata.proveedor` en tipos con verificación de autenticidad** (hoy `CARTA_NOM35`). Esos tipos comparan la firma, el sello y el logotipo del documento contra los que el emisor tiene **registrados con anticipación**, y saben de qué emisor se trata por esta llave: `"metadata": {"proveedor": "10040"}`. Es opcional y nunca rechaza por sí sola: sin ella — o si ese proveedor aún no tiene referencias — el documento se procesa igual, verificando que firma, sello y logo **estén** y **no sean imágenes insertadas**, y `authenticity.referencesFound` sale `false`. El resultado llega en `documents[i].authenticity` (§2). Las referencias se registran por API en `/references/PROVEEDOR/{key}` (§8), y la `key` de ahí es exactamente el valor que mandas aquí.
 
 - **`documentType` decide entre tres modos**, según cuántos tipos mandes. Es **un solo campo**: varios tipos van separados por coma, igual que en `GET /documents?docType=A,B`.
 
@@ -1246,6 +1257,11 @@ Cómo leerlo:
 - Lo que sí rechaza por sí solo: que la **misma** firma o sello aparezca en el
   documento de **otra** persona (`*_REUTILIZADO_EN_OTRA_CARTA`). Una firma autógrafa
   nunca se repite exacta.
+
+Para que `referencesFound` salga `true` y existan los campos `*_COINCIDE_REFERENCIA`,
+el proveedor de `metadata.proveedor` debe tener sus firmas, sellos y logos
+registrados **antes** de subir el documento: ver
+[§8 — `/references`](#8-references--registrar-las-firmas-sellos-y-logos-válidos-de-una-entidad).
 
 Catálogo completo de códigos y guía de operación:
 `documentacion/AUTENTICIDAD_Y_REFERENCIAS.md` (repo interno).
@@ -2123,6 +2139,291 @@ mismo principio que `GET /documents/{id}` con un id fuera de alcance (§2).
 Sin `AllowedDocTypes` configurado en tu app ves el catálogo completo; con él,
 tanto la lista como la búsqueda por key se acotan a esos tipos — igual que
 `GET /documents` sin `docType` (§6).
+
+---
+
+## 8. `/references` — Registrar las firmas, sellos y logos válidos de una entidad
+
+Los tipos con verificación de autenticidad (hoy `CARTA_NOM35`) comparan la firma,
+el sello y el logotipo de cada documento contra los que el emisor tiene
+**registrados con anticipación**. Estas rutas son ese registro: dar de alta,
+consultar y dar de baja las **referencias** de una entidad.
+
+| Petición | Para qué |
+| --- | --- |
+| `POST /references/{scope}/{key}` | Paso 1: reservar la referencia y obtener la URL de carga. |
+| `PUT {uploadUrl}` | Paso 2: subir el recorte a S3 (no pasa por el API). |
+| `POST /references/{scope}/{key}/{kind}/{refId}/confirm` | Paso 3: revisar el recorte y activarlo. Responde en el momento. |
+| `GET /references/{scope}/{key}` | Listar las referencias de la entidad. |
+| `GET /references/{scope}/{key}/{kind}/{refId}` | Una referencia, con URL temporal de su imagen. |
+| `DELETE /references/{scope}/{key}/{kind}/{refId}` | Darla de baja (desactivar). |
+
+Qué es cada parte de la ruta:
+
+- **Una referencia es de la ENTIDAD, no de un tipo de documento.** La entidad es
+  `scope` + `key` — p. ej. `PROVEEDOR` + el número de proveedor (`10040`). El
+  logo de un proveedor se registra una vez y lo usa todo tipo de documento que
+  declare ese `scope`.
+- **`scope`** — un ámbito declarado por algún tipo activo del catálogo (en su
+  `authenticity.references.scope`). Hoy solo existe **`PROVEEDOR`**
+  (`CARTA_NOM35`). Otro valor → `400 INVALID_SCOPE`, con la lista `valid`.
+- **`key`** — el identificador de la entidad dentro del `scope`. Solo letras,
+  dígitos, `.`, `-` y `_`. **Una clave que cambiaría al normalizarse se
+  rechaza**, no se reescribe en silencio: `400 INVALID_REFERENCE_KEY` trae en
+  `suggested` la forma que sí funcionaría. Es el mismo valor que después mandas
+  en `metadata.proveedor` al subir el documento (§1).
+- **`kind`** — el elemento: `FIRMA`, `SELLO` o `LOGO` (los que declaran los
+  tipos de ese `scope`). Otro valor → `400 INVALID_KIND`, con la lista `valid`.
+- **`refId`** — lo genera la reserva a partir de `label` (`"Lic. Julio Lemus"` →
+  `lic-julio-lemus`). Si ya existe una referencia con ese id, sale con sufijo
+  (`-2`, `-3`…).
+
+### Permiso: `AllowReferenceWrite`
+
+Registrar una referencia es declarar "este sello es válido", y listarlas expone
+firmas de personas. Por eso **todas** las rutas `/references` — también los dos
+`GET` — exigen que la app tenga el permiso `AllowReferenceWrite`:
+
+- **Apagado por default.** Sin él, cualquier ruta responde `403 FORBIDDEN`.
+- **Falla cerrado:** una key válida pero no registrada como app, o un fallo al
+  consultar los permisos, también es `403` — nunca pasa "por si acaso".
+- En **dev sin API keys obligatorias** (`DEV_API_KEY_REQUIRED` apagado) queda
+  abierto, como el resto de ese stack.
+- Lo concede quien administra la API:
+  `pnpm apps:grant -- --name <app> --env dev --reference-write` (ver
+  `AMBIENTES_Y_SEGURIDAD.md` → "Acceso por app").
+
+```jsonc
+// 403 — la app no tiene AllowReferenceWrite
+{
+  "error": "FORBIDDEN",
+  "message": "This app is not allowed to manage authenticity references. Ask for --reference-write if it's needed."
+}
+```
+
+### Alta en tres pasos
+
+Igual que `POST /documents`: la imagen va directo a S3 con una URL prefirmada,
+nunca por el API.
+
+```bash
+API="https://xxxx.execute-api.us-east-1.amazonaws.com/prod"
+KEY="tu-api-key"
+
+# --- Paso 1: reservar. `kind` y `label` son obligatorios; `fileName` es
+#     opcional (solo queda anotado como procedencia).
+RESP=$(curl -sS -X POST "$API/references/PROVEEDOR/10040" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $KEY" \
+  -d '{"kind":"FIRMA","label":"Lic. Julio Lemus","fileName":"firma-julio.png"}')
+
+UPLOAD_URL=$(echo "$RESP"  | jq -r .uploadUrl)
+CONFIRM_URL=$(echo "$RESP" | jq -r .confirmUrl)   # ruta relativa, empieza con /references/
+
+# --- Paso 2: subir el recorte. SIN x-api-key y SIN ninguna cabecera extra,
+#     igual que el PUT de un documento.
+curl -sS --fail -X PUT --upload-file firma-julio.png "$UPLOAD_URL"
+
+# --- Paso 3: confirmar. Revisa el recorte y responde en el momento.
+curl -sS -X POST "$API$CONFIRM_URL" -H "x-api-key: $KEY" | jq .
+```
+
+Respuesta del **paso 1** (`200`):
+
+```jsonc
+{
+  "scope": "PROVEEDOR",
+  "key": "10040",
+  "kind": "FIRMA",
+  "refId": "lic-julio-lemus",
+  "label": "Lic. Julio Lemus",
+  "status": "PENDING",
+  "uploadUrl": "https://...s3.us-east-1.amazonaws.com/references-pending/PROVEEDOR/10040/FIRMA/lic-julio-lemus?X-Amz-Algorithm=...&X-Amz-Signature=...",
+  "uploadMethod": "PUT",
+  "uploadExpiresInSeconds": 900,
+  "uploadExpiresAt": "2026-10-06T18:15:00.000000+00:00",
+  "confirmUrl": "/references/PROVEEDOR/10040/FIRMA/lic-julio-lemus/confirm"
+}
+```
+
+Respuesta del **paso 3** (`200`) — la **ficha** de la referencia, ya activa, más
+`warnings`:
+
+```jsonc
+{
+  "scope": "PROVEEDOR",
+  "key": "10040",
+  "kind": "FIRMA",
+  "refId": "lic-julio-lemus",
+  "label": "Lic. Julio Lemus",
+  "status": "ACTIVE",                // ACTIVE | INACTIVE | PENDING
+  "format": "png",                   // png | jpeg — sale de los bytes, no de la extensión
+  "width": 300,
+  "height": 150,
+  "sha256": "9f2c…",
+  "hasInkFingerprint": true,         // false en elementos sin huella de tinta (p. ej. un logo)
+  "indexed": true,                   // ya está en el índice de búsqueda por similitud
+  "createdAt": "2026-10-06T18:00:00.000000+00:00",
+  "createdBy": "ERP",                // la app que la reservó
+  "activatedAt": "2026-10-06T18:00:07.000000+00:00",
+  "warnings": []                     // [{code, message}] — avisos que no impiden el alta
+}
+```
+
+Notas del alta:
+
+- **La ficha nunca trae la huella de tinta ni el embedding** — son justo lo que
+  permite detectar la reutilización de una firma.
+- **Desde cuándo cuenta:** una vez confirmada, la referencia se usa en los
+  documentos que se procesen **después** con `metadata.proveedor = key`. Los ya
+  procesados no cambian (para eso, `POST /documents/{id}/reprocess`, §3).
+- **La reserva vence en 24 h** y la `uploadUrl` en 15 min (`900` s). Una reserva
+  sin confirmar no aparece en el listado ni se usa para comparar. Repetir el
+  paso 1 con el mismo `kind` y `label` mientras sigue pendiente **reutiliza** el
+  mismo `refId` y entrega una URL nueva: reintentar no deja basura.
+- **Confirmar es idempotente:** confirmar una referencia ya activa responde
+  `200` con la misma ficha.
+- **`indexed: false` no es un error:** la referencia quedó activa pero su
+  entrada en el índice de similitud no se pudo escribir; volver a llamar a
+  `confirm` lo reintenta.
+- **Tope:** 20 referencias activas por entidad y elemento
+  (`409 REFERENCE_LIMIT_REACHED` en el paso 1; da de baja alguna antes).
+
+### Qué debe cumplir el recorte
+
+Sube **solo el elemento** (la firma, el sello o el logo), recortado — no la hoja
+completa. `confirm` lo revisa con el mismo código que usa el pipeline:
+
+| Regla | Límite | Código en `errors[]` |
+| --- | --- | --- |
+| Formato | PNG o JPEG legible (por contenido, no por extensión) | `NOT_AN_IMAGE` |
+| Peso | hasta 3.5 MB | `TOO_LARGE_BYTES` |
+| Tamaño mínimo | lado menor ≥ 120 px (≥ 80 px en elementos sin huella de tinta, como un logo) | `TOO_SMALL` |
+| Tamaño máximo | lado menor ≤ 2200 px y no más de 12 megapíxeles | `TOO_LARGE_DIMENSIONS` |
+| Tinta | debe distinguirse tinta sobre el fondo (solo elementos con huella) | `NO_INK` |
+
+Avisos (`warnings[]`, no impiden el alta): `TOO_MUCH_INK` — más del 45 % de la
+imagen es "tinta"; probablemente el recorte trae texto o fondo de más.
+
+Si no pasa, `confirm` responde `422` y **descarta la imagen subida**. La reserva
+sigue pendiente: sube un recorte corregido (a la misma `uploadUrl` si no ha
+expirado, o repite el paso 1 para obtener otra) y confirma de nuevo.
+
+```jsonc
+// 422 — el recorte no pasó la revisión
+{
+  "error": "REFERENCE_REJECTED",
+  "message": "El recorte no pasó la revisión de calidad.",
+  "errors": [
+    { "code": "TOO_SMALL", "message": "muy chica (90x60); escanea a 200-300 dpi" }
+  ],
+  "warnings": []
+}
+```
+
+### Duplicados
+
+```jsonc
+// 409 — exactamente el mismo archivo ya está registrado para esta entidad.
+// `force` NO lo salta.
+{
+  "error": "DUPLICATE_REFERENCE",
+  "message": "Ese mismo archivo ya está registrado como FIRMA#julio.",
+  "existing": { "kind": "FIRMA", "refId": "julio" }
+}
+```
+
+```jsonc
+// 409 — otra imagen del mismo trazo (p. ej. la misma firma re-codificada a JPG).
+{
+  "error": "SIMILAR_REFERENCE",
+  "message": "Misma tinta (0.99) que FIRMA#julio: una muestra basta. Reenvía con `force: true` para registrarla igual.",
+  "existing": { "kind": "FIRMA", "refId": "julio" }
+}
+```
+
+Para registrarla de todos modos, confirma con `force`:
+
+```bash
+curl -sS -X POST "$API$CONFIRM_URL" \
+  -H "Content-Type: application/json" -H "x-api-key: $KEY" \
+  -d '{"force": true}'
+```
+
+### Consultar
+
+```bash
+# Las referencias activas del proveedor 10040.
+curl -sS "$API/references/PROVEEDOR/10040" -H "x-api-key: $KEY" | jq .
+
+# Solo sellos, incluyendo los dados de baja.
+curl -sS -G "$API/references/PROVEEDOR/10040" -H "x-api-key: $KEY" \
+  --data-urlencode "kind=SELLO" --data-urlencode "includeInactive=1" | jq .
+
+# Una sola, con URL temporal de la imagen.
+curl -sS "$API/references/PROVEEDOR/10040/FIRMA/lic-julio-lemus" -H "x-api-key: $KEY" | jq .
+```
+
+```jsonc
+// GET /references/PROVEEDOR/10040
+{
+  "scope": "PROVEEDOR",
+  "key": "10040",
+  "count": 1,
+  "references": [ { /* ficha, igual que la del paso 3 pero sin `warnings` */ } ]
+}
+```
+
+- **Listado:** `kind` filtra por elemento; `includeInactive=1` (`1`/`true`/`yes`)
+  agrega las dadas de baja. Las reservas pendientes **nunca** se listan. Una
+  entidad sin referencias responde `200` con `count: 0`, no `404`.
+- **Detalle:** la ficha más `imageUrl` (URL prefirmada de S3, se descarga sin
+  `x-api-key`) e `imageUrlExpiresInSeconds` (`300`). `imageUrl` **solo viene en
+  referencias activas**; una dada de baja o pendiente devuelve la ficha sin ella.
+  `404 NOT_FOUND` si no existe o era una reserva ya vencida.
+
+### Dar de baja
+
+```bash
+curl -sS -X DELETE "$API/references/PROVEEDOR/10040/FIRMA/lic-julio-lemus" \
+  -H "x-api-key: $KEY" | jq .
+# → la ficha con "status": "INACTIVE", "deactivatedAt" y "deactivatedBy"
+```
+
+`DELETE` **solo desactiva**: la referencia deja de compararse y sale del índice
+de similitud, pero su registro y su imagen se conservan para auditoría (siguen
+visibles con `includeInactive=1`). El borrado definitivo no está en el API: es
+una operación de operador (`pnpm refs:remove --delete`). Una referencia dada de
+baja no se reactiva; se registra de nuevo (`confirm` sobre ella →
+`409 NOT_PENDING`).
+
+### Errores
+
+Mismo formato que el resto del API: `{ "error": "CODIGO", "message": "…" }`, con
+campos extra según el código.
+
+| HTTP | `error` | Cuándo | Extra |
+| --- | --- | --- | --- |
+| `400` | `INVALID_REFERENCE_KEY` | `key` vacía o con caracteres fuera de letras, dígitos, `.`, `-`, `_` | `suggested` (la forma válida, cuando existe) |
+| `400` | `INVALID_SCOPE` | `scope` no declarado por ningún tipo activo | `valid[]` |
+| `400` | `INVALID_KIND` | `kind` no es un elemento de ese `scope` | `valid[]` |
+| `400` | `MISSING_FIELD` | Falta `kind` o `label` en la reserva | |
+| `400` | `INVALID_JSON` | El body no es un objeto JSON válido | |
+| `403` | `FORBIDDEN` | La app no tiene `AllowReferenceWrite` | |
+| `404` | `NOT_FOUND` | La referencia no existe, o su reserva expiró | |
+| `409` | `REFERENCE_LIMIT_REACHED` | Ya hay 20 activas de ese elemento para la entidad | |
+| `409` | `REFERENCE_ID_EXHAUSTED` | Demasiadas referencias con la misma etiqueta; usa otro `label` | |
+| `409` | `UPLOAD_NOT_FOUND` | `confirm` antes de subir la imagen (o la `uploadUrl` expiró) | |
+| `409` | `DUPLICATE_REFERENCE` | El mismo archivo ya está registrado | `existing{kind,refId}` |
+| `409` | `SIMILAR_REFERENCE` | Misma tinta que una ya registrada; se acepta con `force: true` | `existing{kind,refId}` |
+| `409` | `NOT_PENDING` | `confirm` sobre una referencia dada de baja | |
+| `422` | `REFERENCE_REJECTED` | El recorte no pasó la revisión | `errors[]`, `warnings[]` |
+| `500` | `INTERNAL_ERROR` | Fallo interno | |
+
+> **`{"message":"Missing Authentication Token"}` en `/references/...`** no es un
+> problema de tu key: es la respuesta de API Gateway a una ruta que el stage aún
+> no publica (despliegue incompleto del lado del servicio). Repórtalo a quien
+> administra la API.
 
 ---
 

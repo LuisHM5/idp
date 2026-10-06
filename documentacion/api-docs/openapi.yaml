@@ -2,7 +2,8 @@
 # (mismo directorio) es la referencia narrativa con los ejemplos curl/Node/
 # Python/C# completos por paso. Si agregas, quitas o cambias un endpoint
 # (ruta, método, params, body o respuesta) en `src/document-validation-stack.ts`
-# o en los handlers de `upload-lambda`/`query-lambda`, actualiza AMBOS archivos
+# o en los handlers de `upload-lambda`/`query-lambda`/`enrichment-lambda/
+# references_api.py` (rutas `/references`), actualiza AMBOS archivos
 # en el mismo cambio. Ver AGENTS.md → "API Documentation".
 #
 # NO agregues `x-codeSamples` por operación: vivieron aquí hasta que una
@@ -15,7 +16,7 @@
 openapi: 3.1.0
 info:
   title: Documents Validator API
-  version: "1.1.0"
+  version: "1.2.0"
   license:
     name: ISC
     identifier: ISC
@@ -189,6 +190,32 @@ tags:
       llena para cada uno. Útil para armar un selector de tipo o generar un
       cliente sin tener que leer los JSON activos de `catalogs/base/` y
       `catalogs/custom/` del repo.
+  - name: Referencias de autenticidad
+    description: >
+      Registro de las firmas, sellos y logos **válidos** de una entidad (p. ej.
+      un proveedor), contra los que los tipos con verificación de autenticidad
+      (hoy `CARTA_NOM35`) comparan cada documento. Una referencia pertenece a
+      la ENTIDAD (`scope` + `key`), no a un tipo de documento.
+
+
+      **El alta son tres peticiones**, igual que una subida: `POST
+      /references/{scope}/{key}` reserva y devuelve `uploadUrl`; un `PUT` lleva
+      el recorte a S3 (**sin** `x-api-key` y **sin** cabeceras extra, mismo
+      contrato que `PUT /{uploadUrl}`); y `POST .../confirm` lo revisa y lo
+      activa, respondiendo en el momento. Una vez activa se usa en los
+      documentos que se procesen **después** con `metadata.proveedor` igual a
+      `key`.
+
+
+      **Permiso:** todas estas rutas, **también los `GET`**, exigen que la app
+      tenga `AllowReferenceWrite` (apagado por default; se concede con `pnpm
+      apps:grant -- --name APP --reference-write`). Sin él, `403 FORBIDDEN`.
+      Falla cerrado: una key no registrada como app también es `403`.
+
+
+      **Límites:** no cuentan contra el tope de documentos por día. `POST` y
+      `DELETE` usan el throttle de escritura; los `GET`, el de lectura.
+      Ejemplos completos en `API_USO.md` §8.
 paths:
   /{uploadUrl}:
     put:
@@ -1006,6 +1033,242 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
 
+  /references/{scope}/{key}:
+    parameters:
+      - $ref: "#/components/parameters/ReferenceScopePath"
+      - $ref: "#/components/parameters/ReferenceKeyPath"
+    post:
+      operationId: reserveReference
+      tags: [Referencias de autenticidad]
+      summary: "Paso 1 de 3: reservar una referencia y obtener la URL de carga"
+      description: >
+        Crea la referencia en estado `PENDING` y devuelve una `uploadUrl`
+        prefirmada de S3 (15 min). **No lleva la imagen.** `refId` sale de
+        `label` (`"Lic. Julio Lemus"` → `lic-julio-lemus`); si ya existe una
+        referencia activa o dada de baja con ese id se agrega un sufijo (`-2`,
+        `-3`…), y si lo que existe es una reserva pendiente **se reutiliza**
+        (un reintento no deja nada atrás).
+
+
+        Después: `PUT` del recorte a `uploadUrl` —a S3, sin `x-api-key` y sin
+        ninguna cabecera extra— y `POST` a `confirmUrl`. Una reserva que no se
+        confirma vence en 24 h; mientras tanto no se lista ni se usa para
+        comparar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReferenceReserveRequest" }
+            example:
+              kind: FIRMA
+              label: Lic. Julio Lemus
+              fileName: firma-julio.png
+      responses:
+        "200":
+          description: Reserva creada; sube el recorte a `uploadUrl` y confirma.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceReservation" }
+        "400":
+          description: >
+            `INVALID_REFERENCE_KEY` (con `suggested`), `INVALID_SCOPE` o
+            `INVALID_KIND` (con `valid`), `MISSING_FIELD` (falta `kind` o
+            `label`), `INVALID_JSON`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceInputError" }
+        "403": { $ref: "#/components/responses/ReferenceForbidden" }
+        "409":
+          description: >
+            `REFERENCE_LIMIT_REACHED` — la entidad ya tiene 20 referencias
+            activas de ese elemento; da de baja alguna. `REFERENCE_ID_EXHAUSTED`
+            — demasiadas referencias con la misma etiqueta; usa otro `label`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    get:
+      operationId: listReferences
+      tags: [Referencias de autenticidad]
+      summary: Listar las referencias de una entidad
+      description: >
+        Las referencias **activas** de la entidad, ordenadas por `kind` y
+        `refId`. Las reservas pendientes nunca aparecen. Una entidad sin
+        referencias responde `200` con `count: 0`.
+      parameters:
+        - name: kind
+          in: query
+          description: Solo las de este elemento (`FIRMA`, `SELLO`, `LOGO`).
+          schema: { type: string }
+        - name: includeInactive
+          in: query
+          description: "`1`/`true`/`yes` incluye también las dadas de baja."
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Referencias de la entidad.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceList" }
+        "400":
+          description: "`INVALID_REFERENCE_KEY`, `INVALID_SCOPE` o `INVALID_KIND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceInputError" }
+        "403": { $ref: "#/components/responses/ReferenceForbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /references/{scope}/{key}/{kind}/{refId}:
+    parameters:
+      - $ref: "#/components/parameters/ReferenceScopePath"
+      - $ref: "#/components/parameters/ReferenceKeyPath"
+      - $ref: "#/components/parameters/ReferenceKindPath"
+      - $ref: "#/components/parameters/ReferenceIdPath"
+    get:
+      operationId: getReference
+      tags: [Referencias de autenticidad]
+      summary: Una referencia, con URL temporal de su imagen
+      description: >
+        La ficha de la referencia. Si está **activa** trae además `imageUrl`
+        (URL prefirmada de S3, 5 min; se descarga sin `x-api-key`) e
+        `imageUrlExpiresInSeconds`; una dada de baja o pendiente devuelve la
+        ficha sin ellas. Nunca devuelve la huella de tinta ni el embedding.
+      responses:
+        "200":
+          description: La referencia.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceDetail" }
+        "400":
+          description: "`INVALID_REFERENCE_KEY`, `INVALID_SCOPE` o `INVALID_KIND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceInputError" }
+        "403": { $ref: "#/components/responses/ReferenceForbidden" }
+        "404":
+          description: "`NOT_FOUND` — no existe, o era una reserva ya vencida."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    delete:
+      operationId: deactivateReference
+      tags: [Referencias de autenticidad]
+      summary: Dar de baja (desactivar) una referencia
+      description: >
+        **Solo desactiva.** La referencia deja de compararse y sale del índice
+        de similitud, pero su registro y su imagen se conservan para auditoría
+        (visibles con `includeInactive=1`). El borrado definitivo no está en
+        el API: es una operación de operador (`pnpm refs:remove --delete`).
+        Devuelve la ficha con `status: INACTIVE`, `deactivatedAt` y
+        `deactivatedBy`.
+      responses:
+        "200":
+          description: La referencia, ya inactiva.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reference" }
+        "400":
+          description: "`INVALID_REFERENCE_KEY`, `INVALID_SCOPE` o `INVALID_KIND`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceInputError" }
+        "403": { $ref: "#/components/responses/ReferenceForbidden" }
+        "404":
+          description: "`NOT_FOUND` — no existe, o todavía es una reserva pendiente."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /references/{scope}/{key}/{kind}/{refId}/confirm:
+    parameters:
+      - $ref: "#/components/parameters/ReferenceScopePath"
+      - $ref: "#/components/parameters/ReferenceKeyPath"
+      - $ref: "#/components/parameters/ReferenceKindPath"
+      - $ref: "#/components/parameters/ReferenceIdPath"
+    post:
+      operationId: confirmReference
+      tags: [Referencias de autenticidad]
+      summary: "Paso 3 de 3: revisar el recorte subido y activar la referencia"
+      description: |
+        Lee el recorte que subiste a `uploadUrl`, lo revisa con el mismo código
+        que usa el pipeline y, si pasa, activa la referencia. Responde en el
+        momento (no hay polling). Es idempotente: confirmar una referencia ya
+        activa devuelve `200` con la misma ficha.
+
+        Qué debe cumplir el recorte (solo el elemento, no la hoja completa):
+
+        - PNG o JPEG legible, por contenido y no por extensión (`NOT_AN_IMAGE`).
+        - Hasta 3.5 MB (`TOO_LARGE_BYTES`).
+        - Lado menor ≥ 120 px; ≥ 80 px en elementos sin huella de tinta, como
+          un logo (`TOO_SMALL`).
+        - Lado menor ≤ 2200 px y no más de 12 megapíxeles
+          (`TOO_LARGE_DIMENSIONS`).
+        - Tinta distinguible sobre el fondo, en elementos con huella (`NO_INK`).
+
+        Si no pasa, responde `422` y descarta la imagen subida; la reserva
+        sigue pendiente, así que puedes subir otro recorte y confirmar de
+        nuevo. `warnings` (p. ej. `TOO_MUCH_INK`) no impiden el alta.
+
+        `force: true` registra una referencia aunque su tinta sea prácticamente
+        la de otra ya registrada (`SIMILAR_REFERENCE`). No salta
+        `DUPLICATE_REFERENCE` (exactamente el mismo archivo).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReferenceConfirmRequest" }
+            example:
+              force: true
+      responses:
+        "200":
+          description: Referencia activa.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceConfirmed" }
+        "400":
+          description: >
+            `INVALID_REFERENCE_KEY`, `INVALID_SCOPE`, `INVALID_KIND` o
+            `INVALID_JSON`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceInputError" }
+        "403": { $ref: "#/components/responses/ReferenceForbidden" }
+        "404":
+          description: "`NOT_FOUND` — la referencia no existe o su reserva expiró."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: >
+            `UPLOAD_NOT_FOUND` — todavía no se subió la imagen (o la `uploadUrl`
+            expiró). `DUPLICATE_REFERENCE` — ese mismo archivo ya está
+            registrado. `SIMILAR_REFERENCE` — misma tinta que otra ya
+            registrada; reenvía con `force: true`. `NOT_PENDING` — la
+            referencia está dada de baja; regístrala de nuevo. Los dos de
+            duplicado traen `existing`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceConflict" }
+              example:
+                error: SIMILAR_REFERENCE
+                message: "Misma tinta (0.99) que FIRMA#julio: una muestra basta. Reenvía con `force: true` para registrarla igual."
+                existing: { kind: FIRMA, refId: julio }
+        "422":
+          description: "`REFERENCE_REJECTED` — el recorte no pasó la revisión de calidad."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceRejected" }
+              example:
+                error: REFERENCE_REJECTED
+                message: El recorte no pasó la revisión de calidad.
+                errors:
+                  - code: TOO_SMALL
+                    message: "muy chica (90x60); escanea a 200-300 dpi"
+                warnings: []
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1066,6 +1329,14 @@ components:
             anyOf:
               - $ref: "#/components/schemas/DailyDocumentLimitResponse"
               - $ref: "#/components/schemas/ApiGatewayMessage"
+    ReferenceForbidden:
+      description: >
+        `FORBIDDEN` — la app no tiene el permiso `AllowReferenceWrite` (lo
+        exigen todas las rutas `/references`, también los `GET`), o su key no
+        está registrada como app.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   parameters:
     DocumentIdPath:
@@ -1074,6 +1345,41 @@ components:
       required: true
       description: Id completo del documento o un prefijo (gana el primer match).
       schema: { type: string }
+    ReferenceScopePath:
+      name: scope
+      in: path
+      required: true
+      description: >
+        Ámbito de la entidad: uno de los declarados por un tipo de documento
+        activo en `authenticity.references.scope`. Hoy solo `PROVEEDOR`.
+      schema: { type: string }
+      example: PROVEEDOR
+    ReferenceKeyPath:
+      name: key
+      in: path
+      required: true
+      description: >
+        Identificador de la entidad dentro del `scope` (p. ej. el número de
+        proveedor) — el mismo valor que se manda en `metadata.proveedor` al
+        subir un documento. Solo letras, dígitos, `.`, `-` y `_`; una clave
+        que cambiaría al normalizarse se rechaza con `INVALID_REFERENCE_KEY`
+        y la forma válida en `suggested`.
+      schema: { type: string, pattern: "^[A-Za-z0-9._-]+$" }
+      example: "10040"
+    ReferenceKindPath:
+      name: kind
+      in: path
+      required: true
+      description: Elemento — uno de los que declaran los tipos de ese `scope`.
+      schema: { type: string }
+      example: FIRMA
+    ReferenceIdPath:
+      name: refId
+      in: path
+      required: true
+      description: Id de la referencia, tal como lo devolvió la reserva.
+      schema: { type: string }
+      example: lic-julio-lemus
   schemas:
     ApiGatewayMessage:
       type: object
@@ -1116,7 +1422,12 @@ components:
             FORBIDDEN, FORBIDDEN_DOCUMENT_TYPE, EMPTY_PATCH,
             METADATA_CONFLICT, SOURCE_NOT_READY, FILE_NOT_FOUND,
             REPROCESS_COPY_FAILED. Tipos de documento:
-            DOCUMENT_TYPE_NOT_FOUND.
+            DOCUMENT_TYPE_NOT_FOUND. Referencias: INVALID_REFERENCE_KEY,
+            INVALID_SCOPE, INVALID_KIND, MISSING_FIELD, INVALID_JSON,
+            FORBIDDEN, NOT_FOUND, REFERENCE_LIMIT_REACHED,
+            REFERENCE_ID_EXHAUSTED, UPLOAD_NOT_FOUND, DUPLICATE_REFERENCE,
+            SIMILAR_REFERENCE, NOT_PENDING, REFERENCE_REJECTED,
+            INTERNAL_ERROR.
         message: { type: string }
     UploadRequest:
       type: object
@@ -1752,3 +2063,162 @@ components:
         types:
           type: array
           items: { $ref: "#/components/schemas/DocumentTypeEntry" }
+    ReferenceReserveRequest:
+      type: object
+      required: [kind, label]
+      properties:
+        kind:
+          type: string
+          description: Elemento que se registra (`FIRMA`, `SELLO`, `LOGO`).
+          example: FIRMA
+        label:
+          type: string
+          description: >
+            Quién firma o qué sucursal/planta es el sello. De aquí sale el
+            `refId`.
+          example: Lic. Julio Lemus
+        fileName:
+          type: string
+          description: Opcional — nombre del archivo de origen; solo se anota como procedencia.
+    ReferenceReservation:
+      type: object
+      required: [scope, key, kind, refId, label, status, uploadUrl, uploadMethod, uploadExpiresInSeconds, uploadExpiresAt, confirmUrl]
+      properties:
+        scope: { type: string, example: PROVEEDOR }
+        key: { type: string, example: "10040" }
+        kind: { type: string, example: FIRMA }
+        refId: { type: string, example: lic-julio-lemus }
+        label: { type: string, example: Lic. Julio Lemus }
+        status: { type: string, enum: [PENDING] }
+        uploadUrl:
+          type: string
+          description: >
+            URL prefirmada de S3 para subir el recorte con `PUT`. Sin
+            `x-api-key` y sin cabeceras extra.
+        uploadMethod: { type: string, enum: [PUT] }
+        uploadExpiresInSeconds: { type: integer, example: 900 }
+        uploadExpiresAt: { type: string, format: date-time }
+        confirmUrl:
+          type: string
+          description: Ruta relativa del paso 3 (se concatena a la base del API).
+          example: /references/PROVEEDOR/10040/FIRMA/lic-julio-lemus/confirm
+    ReferenceConfirmRequest:
+      type: object
+      properties:
+        force:
+          type: boolean
+          default: false
+          description: >
+            `true` registra la referencia aunque su tinta coincida con la de
+            otra ya registrada (`SIMILAR_REFERENCE`).
+    Reference:
+      type: object
+      description: >
+        Ficha de una referencia: solo metadatos. Nunca incluye la huella de
+        tinta ni el embedding. Los campos sin valor se omiten (una reserva
+        pendiente no trae `format`, `width`, `height` ni `sha256`).
+      required: [scope, key, kind, refId, label, status, hasInkFingerprint, indexed]
+      properties:
+        scope: { type: string, example: PROVEEDOR }
+        key: { type: string, example: "10040" }
+        kind: { type: string, example: FIRMA }
+        refId: { type: string, example: lic-julio-lemus }
+        label: { type: string, example: Lic. Julio Lemus }
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE, PENDING]
+          description: >
+            `PENDING` reservada, esperando imagen y confirmación; `ACTIVE` en
+            uso; `INACTIVE` dada de baja.
+        format: { type: string, enum: [png, jpeg], description: Formato real, leído de los bytes. }
+        width: { type: integer, description: Ancho en px. }
+        height: { type: integer, description: Alto en px. }
+        sha256: { type: string, description: SHA-256 del archivo registrado. }
+        hasInkFingerprint:
+          type: boolean
+          description: "`false` en elementos que no usan huella de tinta (p. ej. un logo)."
+        indexed:
+          type: boolean
+          description: >
+            `true` si ya está en el índice de búsqueda por similitud. `false`
+            no impide la comparación directa; volver a confirmar lo reintenta.
+        createdAt: { type: string, format: date-time }
+        createdBy: { type: string, description: Nombre de la app (u operador) que la registró. }
+        activatedAt: { type: string, format: date-time }
+        deactivatedAt: { type: string, format: date-time }
+        deactivatedBy: { type: string }
+    ReferenceIssue:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            En `errors`: NOT_AN_IMAGE, TOO_LARGE_BYTES, TOO_SMALL,
+            TOO_LARGE_DIMENSIONS, NO_INK. En `warnings`: TOO_MUCH_INK.
+        message: { type: string }
+    ReferenceConfirmed:
+      allOf:
+        - $ref: "#/components/schemas/Reference"
+        - type: object
+          required: [warnings]
+          properties:
+            warnings:
+              type: array
+              description: Avisos de la revisión que no impidieron el alta.
+              items: { $ref: "#/components/schemas/ReferenceIssue" }
+    ReferenceDetail:
+      allOf:
+        - $ref: "#/components/schemas/Reference"
+        - type: object
+          properties:
+            imageUrl:
+              type: string
+              description: Solo en referencias activas. URL prefirmada de S3 para ver la imagen.
+            imageUrlExpiresInSeconds: { type: integer, example: 300 }
+    ReferenceList:
+      type: object
+      required: [scope, key, count, references]
+      properties:
+        scope: { type: string }
+        key: { type: string }
+        count: { type: integer }
+        references:
+          type: array
+          items: { $ref: "#/components/schemas/Reference" }
+    ReferenceInputError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          properties:
+            suggested:
+              type: string
+              description: Solo en `INVALID_REFERENCE_KEY` — la clave ya normalizada, que sí se aceptaría.
+            valid:
+              type: array
+              items: { type: string }
+              description: Solo en `INVALID_SCOPE` / `INVALID_KIND` — los valores aceptados.
+    ReferenceConflict:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          properties:
+            existing:
+              type: object
+              description: Solo en `DUPLICATE_REFERENCE` / `SIMILAR_REFERENCE` — la referencia con la que choca.
+              required: [kind, refId]
+              properties:
+                kind: { type: string }
+                refId: { type: string }
+    ReferenceRejected:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          required: [errors, warnings]
+          properties:
+            errors:
+              type: array
+              items: { $ref: "#/components/schemas/ReferenceIssue" }
+            warnings:
+              type: array
+              items: { $ref: "#/components/schemas/ReferenceIssue" }

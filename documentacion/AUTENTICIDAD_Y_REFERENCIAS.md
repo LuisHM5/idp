@@ -155,6 +155,12 @@ el hash** (no hay `cryptography` en el bundle).
 Un sello, firma o logo es **válido** cuando corresponde a uno de los que ese
 proveedor tiene **registrados con anticipación**. Reglas del juego:
 
+- Una referencia es de la **entidad** — `scope` + clave (`PROVEEDOR` + `10040`) —
+  y **no** de un tipo de documento: el logotipo de un proveedor se registra una
+  vez y lo usa todo tipo que declare ese `scope` (hoy, `CARTA_NOM35`; mañana un
+  contrato que solo pida `"elements": ["LOGO"]`, sin código — ver
+  `catalogs/README.md` → «Elementos compartidos»).
+
 - Un proveedor puede tener **N firmas, N sellos y N logos**: dos sucursales = dos
   sellos; tres personas autorizadas = tres firmas; membrete viejo y nuevo = dos
   logos. Todas las activas valen: a la carta le basta corresponder a **una**.
@@ -165,6 +171,11 @@ proveedor tiene **registrados con anticipación**. Reglas del juego:
   `SIN_REFERENCIAS_REGISTRADAS`.
 - Si hay sellos registrados pero no firmas, se compara solo el sello. Cada
   elemento es independiente.
+- **Si las referencias existen pero no se pudieron consultar** (la tabla o el
+  bucket no respondieron), eso **no** es un «no coincide»: el campo queda vacío,
+  el resultado lleva `REFERENCIAS_NO_DISPONIBLES` y `AUTENTICIDAD_EVALUADA` sale
+  en falso → revisión. Nunca se acusa a una carta por un fallo nuestro, y nunca
+  se aprueba una que no se comparó.
 - «Corresponder» **no** es «ser idéntico». Al revés: una firma *idéntica* a otra
   es la señal de fraude. Corresponder es *mismo firmante / mismo sello / mismo
   logotipo*.
@@ -242,6 +253,13 @@ clasificar se reporta y **no se sube**.
 
 ### 3.4 Alta, consulta y baja
 
+Dos puertas, **el mismo código** (`pipeline/reference_registry.py`: misma
+revisión de calidad, mismas reglas de duplicado, mismo embedding):
+
+- **CLI de operador** (`pnpm refs:*`, abajo) — con tus credenciales de AWS.
+- **API REST** (`/references/{scope}/{key}`, §3.4.1) — para que un sistema (el
+  portal de proveedores, el ERP) registre sin que nadie abra una terminal.
+
 ```bash
 # 1. Ensayo: revisa y clasifica sin escribir nada (funciona hasta sin AWS)
 pnpm refs:register -- --key 10040 --dir referencias/10040 --dry-run
@@ -262,7 +280,22 @@ pnpm refs:list                       # todos los que tienen referencias
 # Baja: desactiva (reversible) o borra (fila + imagen)
 pnpm refs:remove -- --key 10040 --kind SELLO --ref ppl-sur
 pnpm refs:remove -- --key 10040 --kind SELLO --ref ppl-sur --delete
+
+# Embeddings e índice vectorial al día con la tabla (referencias registradas
+# antes de que existieran, o tras cambiar de modelo). --dry-run para ver cuántas.
+pnpm refs:reindex
+pnpm refs:reindex -- --key 10040 --force
+
+# ¿De quién es este recorte? (lo que hace la búsqueda sin proveedor)
+pnpm refs:search -- --file sello.png --kind SELLO
 ```
+
+`--key` solo admite letras, dígitos, `.`, `-` y `_`, y es **exactamente** lo que
+el upload debe mandar en `metadata.proveedor`. Una clave que cambiaría al
+normalizarse (`ACME S.A.`) se rechaza con la forma sugerida: antes se registraba
+tal cual y el pipeline, que sí la normalizaba, nunca la encontraba. Si
+registraste referencias con una clave así, `pnpm refs:list` las muestra: dales
+de baja y regístralas con la clave limpia.
 
 Salida típica del alta:
 
@@ -289,13 +322,138 @@ Se registrarán: 2 FIRMA, 1 SELLO, 1 LOGO
 
 Dónde queda cada cosa: la imagen en
 `s3://<bucket>/references/PROVEEDOR/<proveedor>/<FIRMA|SELLO|LOGO>/<refId>.png`
-(mismo bucket de documentos; solo `raw/` dispara el flujo, así que ahí es inerte)
-y el índice en la tabla `document-validation-fingerprints[-dev]`, bajo
-`Pk = R#PROVEEDOR#<proveedor>`. **dev y prod son tablas y buckets distintos**: lo
+(mismo bucket de documentos; solo `raw/` dispara el flujo, así que ahí es inerte),
+la ficha en la tabla `document-validation-fingerprints[-dev]`, bajo
+`Pk = R#PROVEEDOR#<proveedor>` (con su huella de tinta y su embedding), y una
+copia del vector en el índice `references-titan-multimodal-1024` del bucket
+vectorial `document-validation-references[-dev]`. **dev y prod son tablas y buckets distintos**: lo
 que registras en dev no existe en prod.
 
 Una baja o un alta aplican a los documentos que se procesen **después**; los ya
 procesados no cambian.
+
+#### 3.4.1 Por API
+
+Tres llamadas, igual que subir un documento (la imagen va directo a S3, nunca
+por la API):
+
+```bash
+# 1. Reservar: devuelve refId + uploadUrl (vence en 15 min)
+curl -X POST "$API/references/PROVEEDOR/10040" -H "x-api-key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "SELLO", "label": "Planta envasadora", "fileName": "sello.png"}'
+
+# 2. Subir el recorte — PUT sin ningún header extra
+curl -X PUT --data-binary @sello.png "$UPLOAD_URL"
+
+# 3. Confirmar: aquí se revisa el recorte y se contesta en el momento
+curl -X POST "$API/references/PROVEEDOR/10040/SELLO/planta-envasadora/confirm" -H "x-api-key: $KEY"
+
+curl "$API/references/PROVEEDOR/10040" -H "x-api-key: $KEY"                                   # listar
+curl -X DELETE "$API/references/PROVEEDOR/10040/SELLO/planta-envasadora" -H "x-api-key: $KEY"  # desactivar
+```
+
+| `confirm` responde | Significa |
+|---|---|
+| `200` + la ficha (`status: "ACTIVE"`) | Registrada; `indexed: false` = quedó activa pero sin entrar al índice vectorial (reconfirma o `pnpm refs:reindex`) |
+| `422 REFERENCE_REJECTED` + `errors[]` | El recorte no pasa: `TOO_SMALL`, `TOO_LARGE_DIMENSIONS`, `TOO_LARGE_BYTES`, `NO_INK`, `NOT_AN_IMAGE`. Corrige y vuelve a subir |
+| `409 DUPLICATE_REFERENCE` | Ese mismo archivo ya está registrado (dice cuál) |
+| `409 SIMILAR_REFERENCE` | Misma tinta (≥ 0.97) que una registrada: una muestra basta. `{"force": true}` para registrarla igual |
+| `409 UPLOAD_NOT_FOUND` | Falta el paso 2 |
+
+Lo que hay que saber:
+
+- **Permiso por app.** Todo `/references` — también los `GET`, son firmas de
+  personas — exige `AllowReferenceWrite`, apagado por defecto:
+  `pnpm apps:grant -- --name <app> --env dev --reference-write`. Sin él, `403`.
+  Quien puede registrar una referencia decide qué sello es «válido»: dáselo solo
+  al sistema que de verdad recibe los originales. Queda auditoría en la ficha
+  (`createdBy`, `deactivatedBy` = nombre de la app).
+- **La API desactiva, no borra.** El borrado definitivo (fila + imagen + vector)
+  sigue siendo `pnpm refs:remove --delete`: quitar referencias debilita la
+  validación (sin ellas la carta corre en modo «solo presencia»).
+- **Una reserva sin confirmar no existe** para el pipeline ni para el listado, y
+  se borra sola en 24 h (fila por TTL, imagen por regla de ciclo de vida).
+- Tope: 20 referencias activas por proveedor y elemento.
+
+Contrato completo, con cada respuesta: `api-docs/API_USO.md` y
+`api-docs/openapi.yaml`.
+
+### 3.4.2 Cómo se elige contra qué comparar (recuperación)
+
+Al modelo de visión se le muestran, junto a cada recorte, como mucho
+`vision.max_references_per_kind` (3) referencias de ese elemento. Cuáles:
+
+| El proveedor tiene… | Se mandan | Costo extra |
+|---|---|---|
+| 3 o menos de ese elemento (lo normal) | todas | ninguno |
+| más de 3, registradas con embedding | las 3 más parecidas al recorte por **embedding** (coseno) | 1 imagen ≈ $0.00006 |
+| más de 3, sin embedding (registradas antes) | las 3 más parecidas por huella de tinta; un logo, que no tiene huella, por orden | ninguno — corre `pnpm refs:reindex` |
+
+Antes de esto un proveedor con más de 3 **logos** siempre comparaba contra los 3
+primeros por orden alfabético: el logo no tiene huella de tinta y no había con
+qué ordenarlos.
+
+El embedding **solo elige candidatas**. No hay ningún umbral de similitud que
+apruebe o rechace: decide el modelo de visión, y lo que eso le hace al documento
+lo dice el `on_fail` del catálogo, igual que antes. El resultado completo
+(`results/<id>.json`) dice qué se mandó y cómo se eligió:
+`authenticity.references.ranking.<ELEMENTO>` = `{mode, chosen[]}`.
+
+**El modelo** es Amazon Titan Multimodal Embeddings G1
+(`amazon.titan-embed-image-v1`, 1024 dimensiones), detrás de una abstracción
+(`pipeline/reference_embeddings.py` → `EmbeddingProvider`). Cambiarlo es: una
+clase con `name`/`model_id`/`dimension`/`embed_image`, una entrada en
+`PROVIDERS`, su tarifa en `pricing._EMBEDDING_PRICING`, la constante
+`REFERENCE_EMBEDDING` del stack (crea un índice nuevo junto al viejo) y
+`pnpm refs:reindex`. Cada vector guarda qué modelo lo hizo y solo se compara
+con vectores del mismo modelo. Interruptor: `REFERENCE_EMBEDDINGS_ENABLED=false`
+(todo vuelve a la huella de tinta).
+
+El recorte se prepara **igual** al registrar y al procesar (recortado a su
+tinta, con un margen fijo del tono de su propio papel): la misma firma con más
+o menos hoja alrededor da la misma imagen.
+
+### 3.4.3 Si la carga no dice de qué proveedor es (búsqueda)
+
+Con `references.search.enabled: true` en el catálogo, una carta **sin**
+`metadata.proveedor` ya no corre a ciegas: cada elemento recortado se busca por
+embedding entre las referencias de **todos** los proveedores (índice vectorial,
+Amazon S3 Vectors), las candidatas con similitud ≥ `min_similarity` se le
+muestran al modelo de visión, y si confirma una:
+
+- `*_COINCIDE_REFERENCIA` sale en verdadero;
+- `PROVEEDOR_SUGERIDO` trae la clave (motivo informativo
+  `PROVEEDOR_SUGERIDO_POR_REFERENCIAS`);
+- si firma, sello y logo apuntan a proveedores **distintos** no se sugiere
+  ninguno (`REFERENCIAS_DE_VARIOS_PROVEEDORES`).
+
+Si no confirma ninguna, el campo queda **vacío**: sin proveedor declarado, «no se
+parece a las candidatas» no es evidencia contra la carta. Una sugerencia tampoco
+mueve el veredicto ni el estatus, ni cambia contra qué historial se revisa la
+reutilización de firmas. El índice es **derivado**: la tabla es la fuente de
+verdad (un vector huérfano se descarta al no encontrar su fila) y
+`pnpm refs:reindex` lo reconstruye.
+
+> **Está apagada en `CARTA_NOM35`, a propósito.** Medido el 2026-10-06 con Titan
+> sobre los 136 recortes de `test-docs/nom35/samples` (16 proveedores,
+> `pnpm refs:eval`, ~$0.008): cada recorte se buscó entre todos los demás.
+>
+> | Elemento | recall@1 | recall@3 | mismo proveedor (p10 / p50) | otro proveedor (p50 / p90) |
+> |---|---|---|---|---|
+> | `FIRMA` | 0.80 | 0.80 | 0.63 / 0.97 | 0.78 / 0.84 |
+> | `SELLO` | 0.90 | 0.93 | 0.72 / 0.96 | 0.66 / 0.77 |
+> | `LOGO` | 0.96 | 0.96 | 0.63 / 0.98 | 0.56 / 0.63 |
+>
+> Lectura: para **sellos y logos** la referencia del proveedor correcto queda
+> entre las 3 primeras en 93–96 % de los casos; para **firmas** en 80 % (dos
+> firmantes del mismo proveedor no se parecen, y firmas de proveedores distintos
+> sí). Ningún `min_similarity` separa limpio «mismo» de «otro» — las colas se
+> cruzan —, así que el umbral solo sirve para no pagar candidatas absurdas, no
+> para decidir. Caveat del dataset: cerca de la mitad de las carpetas son
+> cartas de Word con la misma imagen pegada, lo que infla el p50 de «mismo».
+> Para activarla donde sí rinde, sin tocar código: `"search": {"enabled": true}`
+> dentro de `elements.SELLO.references` y `elements.LOGO.references`, y
+> `pnpm sync:one`. Vuelve a medir con tus recortes antes.
 
 ### 3.5 Cómo sabe el sistema de qué proveedor es la carta
 
@@ -309,7 +467,8 @@ curl -X POST "$API/documents" -H "x-api-key: $KEY" -H "Content-Type: application
 }'
 ```
 
-El catálogo declara de dónde leerlo (`references.key_from: "metadata.proveedor"`).
+El catálogo declara de dónde leerlo (`references.key_from: "metadata.proveedor"`;
+otro tipo puede leerla del propio documento con `fields.<CAMPO>`, p. ej. el RFC).
 Sin esa llave la carta **no se rechaza**: corre en modo «sin referencias» y el
 resultado lleva el motivo `SIN_CLAVE_DE_REFERENCIAS`. La clave la *afirma* quien
 sube; el sistema no puede verificarla — por eso la comparación contra referencias
@@ -331,7 +490,8 @@ Campos `computed` de `CARTA_NOM35` (en `documents[i].fields`, como cualquier otr
 | `FIRMA_PRESENTE` · `SELLO_PRESENTE` · `LOGO_PRESENTE` | No se ve el elemento | revisión |
 | `FIRMA_SIN_INSERCION` · `SELLO_SIN_INSERCION` | Hay una imagen incrustada justo ahí, o el modelo ve indicios de inserción/impresión | revisión |
 | `SELLO_CORRESPONDE_EMISOR` | La leyenda del sello nombra a otra empresa | revisión |
-| `FIRMA_` · `SELLO_` · `LOGO_COINCIDE_REFERENCIA` | No corresponde a ninguna registrada. **Vacío** si el proveedor no tiene | revisión |
+| `FIRMA_` · `SELLO_` · `LOGO_COINCIDE_REFERENCIA` | No corresponde a ninguna registrada. **Vacío** si el proveedor no tiene, o si no se pudieron consultar | revisión |
+| `PROVEEDOR_SUGERIDO` | (texto) proveedor al que corresponden los elementos cuando la carga no lo declaró y la búsqueda está activa (§3.4.3) | — |
 | `FIRMA_SELLO_NO_REUTILIZADOS` | La misma firma/sello está en la carta de **otro** empleado | **rechazo** |
 | `FIRMA_SELLO_NO_PARECIDOS` | Se parecen demasiado a los de otra carta | revisión |
 | `CARTA_NO_DUPLICADA` | Esta misma carta (empleado + fecha) ya se recibió | aviso |
@@ -405,6 +565,8 @@ por página, hashes de imagen, huellas) queda en `results/<documentId>.json`.
 | `<ELEMENTO>_NO_CORRESPONDE_AL_EMISOR` | visión | no |
 | `<ELEMENTO>_NO_COINCIDE_CON_REFERENCIAS` | referencias | no |
 | `SIN_REFERENCIAS_REGISTRADAS` · `SIN_CLAVE_DE_REFERENCIAS` | referencias | no (informativo) |
+| `REFERENCIAS_NO_DISPONIBLES` | referencias | no — pero deja `AUTENTICIDAD_EVALUADA` en falso (revisión) |
+| `PROVEEDOR_SUGERIDO_POR_REFERENCIAS` · `REFERENCIAS_DE_VARIOS_PROVEEDORES` | referencias (búsqueda) | no (informativo) |
 | `<ELEMENTO>_REUTILIZADO_EN_OTRA_CARTA` | memoria | sí |
 | `<ELEMENTO>_MUY_SIMILAR_EN_OTRA_CARTA` | memoria | no |
 | `CARTA_YA_RECIBIDA` | memoria | no (informativo) |
@@ -461,7 +623,9 @@ debe imprimirse, firmarse con tinta, sellarse y escanearse»*.
 | Regresión tras tocar umbrales o código | `pnpm test:autenticidad` | $0 |
 | Probar también la capa de visión (carpetas ancla) | `pnpm test:autenticidad -- --vision` | ~$0.08 |
 | Procesar una carta completa en local | `pnpm procesar carta.pdf CARTA_NOM35 --meta proveedor=10040` | ~$0.015 |
-| Alta / consulta / baja de referencias | `pnpm refs:register` · `refs:list` · `refs:remove` | centavos de S3/DynamoDB |
+| Alta / consulta / baja de referencias | `pnpm refs:register` · `refs:list` · `refs:remove`, o la API `/references` | centavos de S3/DynamoDB + $0.00006 del embedding |
+| Poner al día embeddings e índice vectorial | `pnpm refs:reindex` | $0.00006 por referencia |
+| Medir si el embedding recupera la referencia correcta | `pnpm refs:eval [-- --dir <carpeta> --cache <json>]` | ~$0.01 (136 recortes) |
 | Apagar la etapa de emergencia | `AUTHENTICITY_ENABLED=false` + deploy | — (todo va a revisión) |
 
 **Costo por carta.** Medido (2026-09-21, Haiku 4.5): la visión cuesta ~$0.009
@@ -554,7 +718,12 @@ incrustada) lo hace. Todos estos umbrales viven en el catálogo del tipo.
 | Todas las cartas salen `REQUIERE_REVISION` con `AUTENTICIDAD_EVALUADA` en falso | La capa de visión está fallando. Revisa `authenticity.visionError` en `results/<id>.json`: casi siempre es «Model access» sin habilitar para el modelo de visión en esa cuenta/región, o `AUTHENTICITY_ENABLED=false` |
 | Una captura genuina sale `INDETERMINADO` | Es un escaneo pegado dentro de Word u otra suite. No se acusa; deciden visión y memoria. Pide al proveedor el PDF directo del escáner |
 | `FONDO_NATURAL` falso en un escaneo real | Escáner con limpieza de fondo agresiva en **toda** la hoja. Es señal suave (revisión). Si es sistemático en un proveedor, sube `pixels.noise_std_min` |
-| El proveedor tiene referencias pero `referencesFound` sale falso | La carga no mandó `metadata.proveedor` (motivo `SIN_CLAVE_DE_REFERENCIAS`), o las referencias se registraron en el otro ambiente |
+| El proveedor tiene referencias pero `referencesFound` sale falso | La carga no mandó `metadata.proveedor` (motivo `SIN_CLAVE_DE_REFERENCIAS`), las referencias se registraron en el otro ambiente, o se registraron con una clave que no es exactamente la que manda la carga (`pnpm refs:list`) |
+| Motivo `REFERENCIAS_NO_DISPONIBLES` y la carta en revisión | La tabla de huellas o las imágenes de `references/` no se pudieron leer al procesar. No es un hallazgo sobre la carta: reprocésala (`POST /documents/{id}/reprocess`). Si se repite, revisa permisos de la Lambda sobre el bucket y que las imágenes sigan en S3 |
+| `/references/...` responde `403 FORBIDDEN` | A la app le falta el permiso: `pnpm apps:grant -- --name <app> --env <env> --reference-write` |
+| `/references/...` responde `403 Missing Authentication Token` | API Gateway no redesplegó el stage tras agregar las rutas: `aws apigateway create-deployment --rest-api-id <id> --stage-name prod` |
+| Una referencia sale con `indexed: false` (o `idx?` en `refs:list`) | Se registró pero la escritura al índice vectorial falló. Sigue sirviendo para comparar por proveedor; `pnpm refs:reindex` la mete a la búsqueda |
+| Un proveedor con muchas firmas sale `FIRMA_NO_COINCIDE` con la firma correcta | Sus referencias no tienen embedding (se registraron antes) y la correcta no entró en las 3 que se mandan: `pnpm refs:reindex -- --key <proveedor>`. `ranking.FIRMA.mode` en el resultado dice cómo se eligieron |
 | `FIRMA_COINCIDE_REFERENCIA` falso con la firma correcta | Falta ese firmante en las referencias, o la muestra registrada es mala. Registra 2–3 muestras por firmante |
 | `refs:register` rechaza todo por «muy chica» | Recortes de captura de pantalla. Escanea a 200–300 dpi |
 | Un reenvío legítimo sale como duplicado | Es un aviso (`info`), no cambia el estatus. La misma carta = mismo empleado + misma fecha |
@@ -577,11 +746,16 @@ incrustada) lo hace. Todos estos umbrales viven en el catálogo del tipo.
 | `…/pipeline/pixel_forensics.py` | Capa 2 (ruido de fondo y ELA, `error_level_stats`) y huellas de tinta (solo numpy) |
 | `enrichment-lambda/document_catalog.py` · `scripts/catalog-files.mjs` (`expandPresets`, usado por `sync-catalogs.mjs`) | `$presets`: inyección de los campos de `_shared.json` → `_field_presets` en el loader y en el índice de tipos del query Lambda |
 | `…/pipeline/vision_inspector.py` | Capa 3: prompts, esquemas y llamadas de visión |
-| `…/pipeline/fingerprint_store.py` | Capa 4: tabla de huellas y lectura de referencias |
+| `…/pipeline/fingerprint_store.py` | Capa 4: tabla de huellas y LECTURA de referencias (`list_references`, `rank_references`, `normalize_key` — el único normalizador de la clave) |
+| `…/pipeline/reference_registry.py` | ESCRITURA de referencias, compartida por el CLI y la API: revisión del recorte, duplicados, ciclo `PENDING → ACTIVE → INACTIVE`, embedding e índice |
+| `…/pipeline/reference_embeddings.py` | Embeddings de imagen detrás de `EmbeddingProvider` (hoy Titan Multimodal); el preprocesado común a alta y consulta |
+| `…/pipeline/reference_index.py` | Índice vectorial detrás de `VectorIndex` (hoy Amazon S3 Vectors); convierte distancia a similitud en un solo lugar |
+| `enrichment-lambda/references_api.py` | Handler de la API `/references` (Lambda `ReferencesLambda`, mismo asset que la de enriquecimiento) |
 | `…/pipeline/page_raster.py` | Página/imagen → arreglo → JPEG (pypdfium2 + Pillow) |
 | `…/pipeline/bedrock.py` | Bloques de imagen en Converse y la etapa `vision` |
 | `…/validators/engine.py` | `on_fail` (reject/review/info) y `allow_empty` en `boolean_true` |
 | `catalogs/base/recursos_humanos/CARTA_NOM35.json` | El tipo: bloque `authenticity` + campos |
-| `scripts/analizar-autenticidad.py` · `test-autenticidad.py` · `manage-references.py` | `pnpm autenticidad` (integridad siempre encendida; `--sin-integridad` la quita) · `test:autenticidad` (`integrity_reasons_include/exclude` opcionales en el ground truth) · `refs:*` |
+| `scripts/analizar-autenticidad.py` · `test-autenticidad.py` · `manage-references.py` · `evaluar-referencias.py` | `pnpm autenticidad` (integridad siempre encendida; `--sin-integridad` la quita) · `test:autenticidad` (`integrity_reasons_include/exclude` opcionales en el ground truth) · `refs:register/list/remove/reindex/search` · `refs:eval` |
+| `tests/unit/test_reference_registry.py` · `test_reference_embeddings.py` | Registro y API con tabla/S3/índice falsos; proveedor de embeddings e índice |
 | `tests/unit/test_{pdf_forensics,pixel_forensics,fingerprint_store,authenticity_stage,bedrock_vision_stage,rule_on_fail}.py` | Pruebas, todas gratis |
 | `tests/unit/test_pdf_integrity.py` · `test_pdf_forensics_overlay.py` · `test_pixel_forensics_ela.py` · `test_field_presets.py` · `test_authenticity_integrity.py` | Capa 0 (cada manipulación reproducida con pypdf/Pillow), orden de pintado, ELA, `$presets`, y el contrato de la etapa con capas bajo demanda (un tipo solo-integridad jamás rasteriza ni llama a un modelo) |

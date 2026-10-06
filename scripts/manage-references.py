@@ -11,17 +11,28 @@ las activas son válidas: al documento le basta corresponder a UNA.
 
     pnpm refs:register -- --key 10040 --dir referencias/10040            (dev)
     pnpm refs:register -- --key 10040 --dir referencias/10040 --env prod
+    pnpm refs:register -- --root referencias/ --dry-run     (en lote: una subcarpeta por proveedor)
     pnpm refs:register -- --key 10021 --file firma.png --kind FIRMA --label "Pablo Ontiveros"
     pnpm refs:list     -- --key 10040
     pnpm refs:list                                   (todos los proveedores con referencias)
     pnpm refs:remove   -- --key 10040 --kind SELLO --ref planta-envasadora
     pnpm refs:remove   -- --key 10040 --kind SELLO --ref planta-envasadora --delete
+    pnpm refs:reindex                                (embeddings + índice vectorial desde la tabla)
+    pnpm refs:search   -- --file recorte.png --kind SELLO   (¿de quién es este sello?)
+
+Las referencias son de la ENTIDAD (`scope` + clave: PROVEEDOR 10040), no de un
+tipo de documento: un logotipo se registra una vez y lo usa todo tipo que
+declare ese scope. `--type` solo sirve para tomar su scope por defecto.
+
+Este script y la API REST (`/references/...`, `references_api.py`) llaman el
+MISMO código (`pipeline/reference_registry.py`): misma revisión de calidad,
+mismas reglas de duplicados, mismo embedding.
 
 Cómo se clasifica cada archivo de `--dir` (en este orden):
   1. por SUBCARPETA:   <dir>/firma/*.png   <dir>/sello/*.png   <dir>/logo/*.png
   2. por PREFIJO:      <dir>/firma-julio-lemus.png   <dir>/sello_planta.png   <dir>/logo1.png
-El nombre del elemento sale del CATÁLOGO del tipo (`--type`, sus
-`authenticity.elements`), no de este script: FIRMA -> "firma", SELLO -> "sello".
+El nombre del elemento sale del CATÁLOGO (los `authenticity.elements` de los
+tipos que declaran ese scope), no de este script: FIRMA -> "firma", SELLO -> "sello".
 Lo que sigue al prefijo es la ETIQUETA legible (quién firma, qué sucursal).
 Un archivo que no se puede clasificar se reporta y NO se sube.
 
@@ -29,7 +40,7 @@ Dónde queda cada cosa:
   imagen   s3://<bucket>/references/<scope>/<key>/<KIND>/<refId>.<ext>
   índice   tabla document-validation-fingerprints[-dev], Pk = R#<scope>#<key>
 
-Baja: `refs:remove` DESACTIVA (Active=false, reversible volviendo a registrar);
+Baja: `refs:remove` DESACTIVA (queda INACTIVE; volver a registrar el recorte crea una fila nueva);
 con `--delete` borra la fila y la imagen. Un documento ya procesado no cambia.
 
 Toda operación que escribe muestra el plan y pide confirmación (S/n), salvo
@@ -40,11 +51,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import hashlib
-import re
+import json
 import sys
-import unicodedata
-from datetime import datetime, timezone
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -53,34 +62,54 @@ sys.path.insert(0, str(REPO / "src" / "document-processing" / "resources" / "enr
 sys.path.insert(0, str(REPO / "scripts"))
 
 EXTENSIONES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg"}
-MAX_BYTES = 3_500_000          # tope de Bedrock por imagen, con margen
-MIN_LADO_PX = 120              # por debajo, no hay trazo que comparar
-MIN_LADO_SIN_HUELLA_PX = 80    # un logo (sin huella de tinta) suele ser ancho y bajito
-MAX_LADO_PX = 2200             # por encima, casi seguro es la hoja entera
-PARECIDO_DUPLICADO = 0.97
 
 
 # ------------------------------------------------------------------ catálogo
 
 
-def elementos_del_tipo(type_id: str) -> Tuple[Dict[str, Dict[str, Any]], str]:
-    """(elementos declarados, scope) del bloque `authenticity` del tipo."""
-    import json
+def scopes_del_catalogo() -> Tuple[Dict[str, Dict[str, Dict[str, Any]]], Dict[str, str]]:
+    """({scope: {KIND: elemento}}, {TYPE_ID: scope}) leyendo `catalogs/` del
+    repo — la misma forma que la Lambda saca del bundle."""
+    import document_catalog
+    from pipeline import authenticity
 
-    candidatos = [p for p in (REPO / "catalogs").rglob(f"{type_id}.json")
-                  if "save" not in p.relative_to(REPO / "catalogs").parts]
-    if len(candidatos) != 1:
-        raise SystemExit(f"No hay exactamente un catálogo activo para {type_id}: {candidatos}")
-    bloque = json.loads(candidatos[0].read_text(encoding="utf-8"))[type_id].get("authenticity") or {}
-    elementos = bloque.get("elements") or {}
-    if not elementos:
-        raise SystemExit(f"{type_id} no declara `authenticity.elements`.")
-    return elementos, str((bloque.get("references") or {}).get("scope") or "DEFAULT")
+    compartido = REPO / "catalogs" / "_shared.json"
+    if compartido.is_file():
+        document_catalog.load_shared(json.loads(compartido.read_text(encoding="utf-8")))
+    entradas, por_tipo = [], {}
+    for ruta in sorted((REPO / "catalogs").rglob("*.json")):
+        if ruta.name.startswith("_") or "save" in ruta.relative_to(REPO / "catalogs").parts:
+            continue
+        for type_id, crudo in json.loads(ruta.read_text(encoding="utf-8")).items():
+            if not isinstance(crudo, dict) or not isinstance(crudo.get("authenticity"), dict):
+                continue
+            entrada = types.SimpleNamespace(authenticity=crudo["authenticity"])
+            entradas.append(entrada)
+            propios = authenticity.reference_scopes([entrada])
+            if propios:
+                por_tipo[type_id] = next(iter(propios))
+    return authenticity.reference_scopes(entradas), por_tipo
 
 
-def slug(texto: str) -> str:
-    plano = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"[^a-z0-9]+", "-", plano.lower()).strip("-")
+def resolver_scope(args) -> Tuple[str, Dict[str, Dict[str, Any]]]:
+    """(scope, sus elementos). `--scope` manda; si no, el del `--type`."""
+    scopes, por_tipo = scopes_del_catalogo()
+    scope = args.scope or por_tipo.get(args.type)
+    if not scope:
+        raise SystemExit(f"{args.type} no declara `authenticity.references`; usa --scope "
+                         f"({', '.join(sorted(scopes)) or 'ningún tipo declara referencias'}).")
+    if scope not in scopes:
+        raise SystemExit(f"Ningún tipo declara el scope '{scope}'. Válidos: {', '.join(sorted(scopes))}.")
+    return scope, scopes[scope]
+
+
+def clave_valida(args) -> str:
+    from pipeline import reference_registry
+
+    try:
+        return reference_registry.validate_key(args.key)
+    except reference_registry.RegistryError as e:
+        raise SystemExit(f"--key: {e.message}")
 
 
 def clasificar(path: Path, raiz: Path, elementos: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -97,80 +126,44 @@ def clasificar(path: Path, raiz: Path, elementos: Dict[str, Any]) -> Optional[Tu
     return None
 
 
-# ------------------------------------------------------------------ revisión
-
-
-def revisar(path: Path, kind: str, spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Abre el recorte, calcula su huella con el MISMO código de la Lambda y
-    junta los problemas de calidad. `errores` impiden el alta; `avisos` no."""
-    from pipeline import page_raster, pixel_forensics
-
-    datos = path.read_bytes()
-    # El formato REAL, por los primeros bytes: la extensión miente seguido (JPEG
-    # guardados como .png), y un Content-Type equivocado confunde a quien lo lea.
-    real = "png" if datos[:8] == b"\x89PNG\r\n\x1a\n" else "jpeg" if datos[:3] == b"\xff\xd8\xff" else None
-    ficha: Dict[str, Any] = {"path": path, "kind": kind, "datos": datos, "errores": [], "avisos": [],
-                             "sha256": hashlib.sha256(datos).hexdigest(),
-                             "formato": real or EXTENSIONES[path.suffix.lower()], "grid": None}
-    if real and real != EXTENSIONES[path.suffix.lower()]:
-        ficha["avisos"].append(f"el archivo es {real.upper()} aunque se llame {path.suffix}: se registra como {real.upper()}")
-    if len(datos) > MAX_BYTES:
-        ficha["errores"].append(f"pesa {len(datos) / 1e6:.1f} MB (máx {MAX_BYTES / 1e6:.1f}); recorta o comprime")
-    imagen = page_raster.decode_image(datos)
-    if imagen is None:
-        ficha["errores"].append("no se pudo abrir como imagen")
-        return ficha
-    alto, ancho = imagen.shape[:2]
-    ficha["ancho"], ficha["alto"] = ancho, alto
-    minimo = MIN_LADO_PX if spec.get("fingerprint", True) is not False else MIN_LADO_SIN_HUELLA_PX
-    if min(alto, ancho) < minimo:
-        ficha["errores"].append(f"muy chica ({ancho}x{alto}); escanea a 200-300 dpi")
-    if min(alto, ancho) > MAX_LADO_PX:
-        ficha["errores"].append(f"muy grande ({ancho}x{alto}): parece la hoja completa; recorta SOLO el elemento")
-    if spec.get("fingerprint", True) is not False:
-        ficha["grid"] = pixel_forensics.fingerprint(imagen)
-        if ficha["grid"] is None:
-            ficha["errores"].append("no se distingue tinta sobre el fondo (¿imagen en blanco o fondo oscuro?)")
-        else:
-            tinta = float(pixel_forensics.ink_mask(imagen).mean())
-            if tinta > 0.45:
-                ficha["avisos"].append(f"{tinta:.0%} de la imagen es 'tinta': ¿trae texto o fondo de más alrededor?")
-    return ficha
-
-
 # ------------------------------------------------------------------ AWS
 
 
-def _recursos(args) -> Tuple[Any, Any, str, str]:
+def _recursos(args, con_bucket: bool = True):
+    """El registro del ambiente (`pipeline.reference_registry.Registry`) y el
+    nombre de su tabla. El bucket y el índice vectorial salen de los outputs
+    del stack; un stack desplegado antes del índice simplemente no lo tiene."""
+    import os
+
     import boto3
     from _report_lib import stack_id
 
+    from pipeline import reference_embeddings, reference_registry
+
     region = args.region
     tabla = args.table or ("document-validation-fingerprints" + ("" if args.env == "prod" else "-dev"))
-    bucket = args.bucket
-    if not bucket and args.command != "list":
-        stack = args.stack or stack_id(args.env)
-        salidas = boto3.client("cloudformation", region_name=region).describe_stacks(StackName=stack)
-        bucket = next((o["OutputValue"] for o in salidas["Stacks"][0].get("Outputs", [])
-                       if o["OutputKey"] == "DocumentBucketName"), None)
-        if not bucket:
-            raise SystemExit(f"El stack {stack} no expone `DocumentBucketName` (¿falta desplegar?). Usa --bucket.")
-    return (boto3.resource("dynamodb", region_name=region).Table(tabla),
-            boto3.client("s3", region_name=region), bucket or "", tabla)
-
-
-def _existentes(tabla, scope: str, key: str) -> List[Dict[str, Any]]:
-    from boto3.dynamodb.conditions import Key
-
-    from pipeline import fingerprint_store
-
-    items, kwargs = [], {"KeyConditionExpression": Key("Pk").eq(fingerprint_store.reference_pk(scope, key))}
-    while True:
-        pagina = tabla.query(**kwargs)
-        items.extend(pagina.get("Items") or [])
-        if not pagina.get("LastEvaluatedKey"):
-            return items
-        kwargs["ExclusiveStartKey"] = pagina["LastEvaluatedKey"]
+    salidas: Dict[str, str] = {}
+    if con_bucket or not args.bucket:
+        try:
+            stack = args.stack or stack_id(args.env)
+            respuesta = boto3.client("cloudformation", region_name=region).describe_stacks(StackName=stack)
+            salidas = {o["OutputKey"]: o["OutputValue"] for o in respuesta["Stacks"][0].get("Outputs", [])}
+        except Exception:
+            if con_bucket and not args.bucket:
+                raise
+    bucket = args.bucket or salidas.get("DocumentBucketName") or ""
+    if con_bucket and not bucket:
+        raise SystemExit("El stack no expone `DocumentBucketName` (¿falta desplegar?). Usa --bucket.")
+    if salidas.get("ReferenceVectorBucketName") and salidas.get("ReferenceVectorIndexBase"):
+        os.environ.setdefault("REFERENCE_VECTOR_BUCKET", salidas["ReferenceVectorBucketName"])
+        os.environ.setdefault("REFERENCE_VECTOR_INDEX", salidas["ReferenceVectorIndexBase"])
+    os.environ.setdefault("AWS_DEFAULT_REGION", region)
+    proveedor = None if getattr(args, "sin_embeddings", False) else reference_embeddings.provider_for(None)
+    registro = reference_registry.Registry(
+        table=boto3.resource("dynamodb", region_name=region).Table(tabla),
+        s3=boto3.client("s3", region_name=region), bucket=bucket, provider=proveedor,
+    )
+    return registro, tabla
 
 
 def confirmar(args, pregunta: str) -> bool:
@@ -186,15 +179,15 @@ def confirmar(args, pregunta: str) -> bool:
 
 
 def cmd_register(args) -> int:
-    from pipeline import fingerprint_store, pixel_forensics
+    from pipeline import reference_registry
 
-    elementos, scope_catalogo = elementos_del_tipo(args.type)
-    scope = args.scope or scope_catalogo
+    scope, elementos = resolver_scope(args)
+    key = clave_valida(args)
     if args.file:
         if not args.kind:
             raise SystemExit("--file necesita --kind (uno de: " + ", ".join(elementos) + ")")
         if args.kind not in elementos:
-            raise SystemExit(f"--kind {args.kind} no es un elemento de {args.type}: {', '.join(elementos)}")
+            raise SystemExit(f"--kind {args.kind} no es un elemento de {scope}: {', '.join(elementos)}")
         candidatos = [(Path(args.file), args.kind, args.label or Path(args.file).stem)]
         ignorados: List[Path] = []
     else:
@@ -210,8 +203,8 @@ def cmd_register(args) -> int:
                 ignorados.append(path)
 
     try:
-        tabla, s3, bucket, nombre_tabla = _recursos(args)
-        ya = _existentes(tabla, scope, args.key)
+        registro, nombre_tabla = _recursos(args)
+        ya = registro.items(scope, key)
     except Exception as e:
         if not args.dry_run:
             raise
@@ -219,42 +212,41 @@ def cmd_register(args) -> int:
         # primer deploy): revisa y clasifica los recortes, que es lo que más
         # falla, y solo se pierde la comparación contra lo ya registrado.
         print(f"(sin acceso a AWS — {type(e).__name__}: no se comparó contra lo ya registrado)")
-        tabla = s3 = None
-        bucket, nombre_tabla, ya = "", "sin conexión", []
-    por_sha = {i.get("Sha256"): i for i in ya if i.get("Active") is not False}
+        registro, nombre_tabla, ya = None, "sin conexión", []
 
     plan, vistos = [], {}
-    print(f"\nProveedor {scope} {args.key} — tipo {args.type} — ambiente {args.env} ({nombre_tabla})\n")
+    print(f"\n{scope} {key} — ambiente {args.env} ({nombre_tabla})\n")
     for path, kind, etiqueta in candidatos:
-        ficha = revisar(path, kind, elementos[kind])
-        ficha["etiqueta"] = etiqueta
+        datos = path.read_bytes()
+        ficha = reference_registry.review(datos, elementos[kind], EXTENSIONES.get(path.suffix.lower()))
+        ficha.update({"path": path, "kind": kind, "datos": datos, "etiqueta": etiqueta})
+        avisos = [a["message"] for a in ficha["warnings"]]
         if etiqueta.strip().isdigit():
-            ficha["avisos"].append(
+            avisos.append(
                 f"etiqueta '{etiqueta}' no dice nada: nombra el archivo con quién firma o qué sucursal "
                 f"(p. ej. {kind.lower()}-<quien-o-sucursal>.png) para que la revisión sea legible")
-        ficha["refId"] = slug(etiqueta) or ficha["sha256"][:10]
+        ficha["refId"] = reference_registry.slug(etiqueta) or ficha["sha256"][:10]
         estado = "ALTA"
-        if ficha["sha256"] in por_sha:
-            estado = f"YA REGISTRADA como {por_sha[ficha['sha256']]['Sk']}"
+        duplicada = reference_registry.find_duplicate(ficha, kind, ya)
+        if duplicada and duplicada["reason"] == "SAME_FILE":
+            estado = f"YA REGISTRADA como {duplicada['item']['Sk']}"
         elif ficha["sha256"] in vistos:
             estado = f"REPETIDA (mismo archivo que {vistos[ficha['sha256']].name})"
+        elif duplicada and not args.force:
+            estado = f"MISMA TINTA que {duplicada['item']['Sk']} (usa --force para subirla igual)"
         elif ficha["grid"] and not args.force:
-            parecida = next(
-                (i for i in ya if i.get("Active") is not False and str(i.get("Sk", "")).startswith(kind + "#")
-                 and pixel_forensics.grid_similarity(ficha["grid"], fingerprint_store._binary(i.get("InkGrid")))
-                 >= PARECIDO_DUPLICADO), None)
-            previa = next((p for p in plan if p["kind"] == kind and p["grid"] and
-                           pixel_forensics.grid_similarity(ficha["grid"], p["grid"]) >= PARECIDO_DUPLICADO), None)
-            if parecida is not None:
-                estado = f"MISMA TINTA que {parecida['Sk']} (usa --force para subirla igual)"
-            elif previa is not None:
+            from pipeline import pixel_forensics
+
+            previa = next((p for p in plan if p["kind"] == kind and p["grid"] and pixel_forensics.grid_similarity(
+                ficha["grid"], p["grid"]) >= reference_registry.DUPLICATE_SIMILARITY), None)
+            if previa is not None:
                 estado = f"MISMA TINTA que {previa['path'].name} (una sola basta)"
-        if ficha["errores"]:
-            estado = "RECHAZADA: " + "; ".join(ficha["errores"])
+        if ficha["errors"]:
+            estado = "RECHAZADA: " + "; ".join(e["message"] for e in ficha["errors"])
         vistos.setdefault(ficha["sha256"], path)
         print(f"  {kind:6s} {ficha['refId'][:28]:28s} {path.name[:30]:30s} "
-              f"{ficha.get('ancho', '?')}x{ficha.get('alto', '?'):<6} {estado}")
-        for aviso in ficha["avisos"]:
+              f"{ficha.get('width') or '?'}x{str(ficha.get('height') or '?'):<6} {estado}")
+        for aviso in avisos:
             print(f"         aviso: {aviso}")
         if estado == "ALTA":
             plan.append(ficha)
@@ -276,38 +268,63 @@ def cmd_register(args) -> int:
         while f"{ficha['kind']}#{ref_id}" in usados:  # otra imagen con la misma etiqueta
             ref_id, n = f"{ficha['refId']}-{n}", n + 1
         usados.add(f"{ficha['kind']}#{ref_id}")
-        extension = "png" if ficha["formato"] == "png" else "jpg"
-        s3_key = f"references/{scope}/{args.key}/{ficha['kind']}/{ref_id}.{extension}"
-        s3.put_object(Bucket=bucket, Key=s3_key, Body=ficha["datos"],
-                      ContentType=f"image/{ficha['formato']}")
-        tabla.put_item(Item={
-            "Pk": fingerprint_store.reference_pk(scope, args.key), "Sk": f"{ficha['kind']}#{ref_id}",
-            "Label": ficha["etiqueta"], "S3Key": s3_key, "Format": ficha["formato"],
-            "Sha256": ficha["sha256"], "Width": ficha["ancho"], "Height": ficha["alto"],
-            **({"InkGrid": ficha["grid"]} if ficha["grid"] else {}),
-            "Active": True, "CreatedAt": datetime.now(timezone.utc).isoformat(),
-            "CreatedBy": getpass.getuser(), "SourceFile": ficha["path"].name, "ForType": args.type,
-        })
-        print(f"  ok  {ficha['kind']}#{ref_id}  ->  s3://{bucket}/{s3_key}")
-    print(f"\nListo. Desde ahora los documentos con metadata `proveedor={args.key}` se comparan contra ellas.")
+        item = registro.register(scope, key, ficha["kind"], ref_id, ficha["etiqueta"], ficha["datos"], ficha,
+                                 actor=getpass.getuser(), source_file=ficha["path"].name, for_type=args.type)
+        indice = {"INDEXED": "indexada", "PENDING": "SIN INDEXAR (corre refs:reindex)", "NONE": "sin índice vectorial"}
+        print(f"  ok  {item['Sk']}  ->  s3://{registro.bucket}/{item['S3Key']}  [{indice.get(item.get('IndexStatus'), '')}]")
+    print(f"\nListo. Desde ahora los documentos de {scope} {key} se comparan contra ellas.")
     return 0
 
 
-def cmd_list(args) -> int:
-    tabla, _, _, nombre_tabla = _recursos(args)
-    if args.key:
-        _, scope_catalogo = elementos_del_tipo(args.type)
-        items = _existentes(tabla, args.scope or scope_catalogo, args.key)
-    else:
-        from boto3.dynamodb.conditions import Attr
+def cmd_register_root(args) -> int:
+    """Alta en lote: `--root <carpeta>` con UNA subcarpeta por entidad (su
+    nombre es la clave). Cada una pasa por el mismo `cmd_register` — misma
+    revisión, mismo plan, misma confirmación (o `--yes`) —, así que repetir la
+    corrida es seguro: lo ya registrado sale como YA REGISTRADA y se omite.
+    Una carpeta con clave inválida o que falla se reporta y NO detiene al resto."""
+    raiz = Path(args.root)
+    if not raiz.is_dir():
+        raise SystemExit(f"No existe la carpeta: {raiz}")
+    carpetas = sorted(c for c in raiz.iterdir() if c.is_dir() and not c.name.startswith("."))
+    if not carpetas:
+        raise SystemExit(f"{raiz} no tiene subcarpetas (una por entidad).")
+    fallidas = []
+    for carpeta in carpetas:
+        args.key, args.dir = carpeta.name, str(carpeta)
+        try:
+            cmd_register(args)
+        except SystemExit as e:
+            fallidas.append((carpeta.name, str(e)))
+            print(f"\n  !! {carpeta.name}: {e}")
+        except Exception as e:
+            fallidas.append((carpeta.name, f"{type(e).__name__}: {e}"))
+            print(f"\n  !! {carpeta.name}: {type(e).__name__}: {e}")
+    print(f"\n{len(carpetas) - len(fallidas)} de {len(carpetas)} entidades procesadas"
+          + (f"; con problemas: {', '.join(n for n, _ in fallidas)}" if fallidas else "."))
+    return 1 if fallidas else 0
 
-        items, kwargs = [], {"FilterExpression": Attr("Pk").begins_with("R#")}
-        while True:
-            pagina = tabla.scan(**kwargs)
-            items.extend(pagina.get("Items") or [])
-            if not pagina.get("LastEvaluatedKey"):
-                break
-            kwargs["ExclusiveStartKey"] = pagina["LastEvaluatedKey"]
+
+def _todas(registro) -> List[Dict[str, Any]]:
+    from boto3.dynamodb.conditions import Attr
+
+    items, kwargs = [], {"FilterExpression": Attr("Pk").begins_with("R#")}
+    while True:
+        pagina = registro.table.scan(**kwargs)
+        items.extend(pagina.get("Items") or [])
+        if not pagina.get("LastEvaluatedKey"):
+            return items
+        kwargs["ExclusiveStartKey"] = pagina["LastEvaluatedKey"]
+
+
+def cmd_list(args) -> int:
+    from pipeline import reference_registry
+
+    registro, nombre_tabla = _recursos(args, con_bucket=False)
+    if args.key:
+        scope, _ = resolver_scope(args)
+        items = registro.items(scope, clave_valida(args))
+    else:
+        items = _todas(registro)
     if not items:
         print(f"Sin referencias registradas ({nombre_tabla}).")
         return 0
@@ -317,52 +334,115 @@ def cmd_list(args) -> int:
             actual = item["Pk"]
             _, scope, key = actual.split("#", 2)
             print(f"\n{scope} {key}")
-        estado = "activa" if item.get("Active") is not False else "INACTIVA"
-        print(f"  {item['Sk']:40s} {estado:9s} {item.get('Width', '?')}x{item.get('Height', '?'):<6} "
+        estado = {"ACTIVE": "activa", "INACTIVE": "INACTIVA", "PENDING": "pendiente"}[reference_registry.status_of(item)]
+        indice = {"INDEXED": "idx", "PENDING": "idx?"}.get(item.get("IndexStatus"), "")
+        print(f"  {item['Sk']:40s} {estado:9s} {indice:4s} {item.get('Width', '?')}x{str(item.get('Height', '?')):<6} "
               f"{str(item.get('CreatedAt', ''))[:10]}  {item.get('Label', '')}")
     return 0
 
 
 def cmd_remove(args) -> int:
-    from pipeline import fingerprint_store
+    from pipeline import reference_registry
 
     if not (args.key and args.kind and args.ref):
         raise SystemExit("refs:remove necesita --key, --kind y --ref (ver `pnpm refs:list -- --key ...`)")
-    _, scope_catalogo = elementos_del_tipo(args.type)
-    scope = args.scope or scope_catalogo
-    tabla, s3, bucket, _ = _recursos(args)
-    llave = {"Pk": fingerprint_store.reference_pk(scope, args.key), "Sk": f"{args.kind}#{args.ref}"}
-    item = tabla.get_item(Key=llave).get("Item")
-    if not item:
-        raise SystemExit(f"No existe {llave['Sk']} para {scope} {args.key}.")
-    accion = "BORRAR (fila + imagen, irreversible)" if args.delete else "DESACTIVAR"
-    print(f"{accion}: {scope} {args.key} {llave['Sk']} — {item.get('Label', '')}")
+    scope, elementos = resolver_scope(args)
+    if args.kind not in elementos:
+        raise SystemExit(f"--kind {args.kind} no es un elemento de {scope}: {', '.join(elementos)}")
+    key = clave_valida(args)
+    registro, _ = _recursos(args)
+    accion = "BORRAR (fila + imagen + vector, irreversible)" if args.delete else "DESACTIVAR"
+    print(f"{accion}: {scope} {key} {args.kind}#{args.ref}")
     if not confirmar(args, "¿Continuar?"):
         return 0
-    if args.delete:
-        if item.get("S3Key"):
-            s3.delete_object(Bucket=bucket, Key=item["S3Key"])
-        tabla.delete_item(Key=llave)
-    else:
-        tabla.update_item(Key=llave, UpdateExpression="SET Active = :f, DeactivatedAt = :t",
-                          ExpressionAttributeValues={":f": False, ":t": datetime.now(timezone.utc).isoformat()})
+    try:
+        if args.delete:
+            registro.delete(scope, key, args.kind, args.ref)
+        else:
+            registro.deactivate(scope, key, args.kind, args.ref, actor=getpass.getuser())
+    except reference_registry.RegistryError as e:
+        raise SystemExit(e.message)
     print("Hecho.")
+    return 0
+
+
+def cmd_reindex(args) -> int:
+    """Embeddings e índice vectorial al día con lo que dice la tabla (la fuente
+    de verdad): rellena las referencias registradas antes de que existieran y
+    reconstruye el índice tras cambiar de modelo. `--force` recalcula todo."""
+    from pipeline import reference_registry
+
+    registro, nombre_tabla = _recursos(args)
+    if registro.provider is None:
+        raise SystemExit("Los embeddings están desactivados (REFERENCE_EMBEDDINGS_ENABLED / proveedor desconocido).")
+    if args.key:
+        scope, _ = resolver_scope(args)
+        items = registro.items(scope, clave_valida(args))
+    else:
+        items = _todas(registro)
+    activas = [i for i in items if reference_registry.status_of(i) == "ACTIVE"]
+    al_dia = [i for i in activas if i.get("IndexStatus") == "INDEXED"
+              and i.get("EmbeddingModel") == registro.provider.model_id]
+    pendientes = activas if args.force else [i for i in activas if i not in al_dia]
+    print(f"{nombre_tabla}: {len(activas)} activas, {len(al_dia)} al día con {registro.provider.model_id}; "
+          f"se procesarán {len(pendientes)} (~${len(pendientes) * 0.00006:.4f} en embeddings).")
+    if not pendientes or not confirmar(args, f"¿Reindexar {len(pendientes)} referencia(s) en {args.env}?"):
+        return 0
+    cuenta: Dict[str, int] = {}
+    for item in pendientes:
+        resultado = registro.reindex(item, recompute=args.force)
+        cuenta[resultado] = cuenta.get(resultado, 0) + 1
+        if resultado == "FAILED":
+            print(f"  FALLÓ  {item['Pk']} {item['Sk']}")
+    print("Hecho: " + ", ".join(f"{n} {k}" for k, n in sorted(cuenta.items())))
+    return 1 if cuenta.get("FAILED") else 0
+
+
+def cmd_search(args) -> int:
+    """¿De quién es este recorte? Lo mismo que hace la etapa cuando la carga no
+    declara la clave: embedding + índice vectorial, sin modelo de visión."""
+    from pipeline import reference_embeddings, reference_index
+
+    if not (args.file and args.kind):
+        raise SystemExit("refs:search necesita --file y --kind")
+    scope, elementos = resolver_scope(args)
+    if args.kind not in elementos:
+        raise SystemExit(f"--kind {args.kind} no es un elemento de {scope}: {', '.join(elementos)}")
+    registro, _ = _recursos(args, con_bucket=False)
+    indice = reference_index.default_index(registro.provider)
+    if registro.provider is None or indice is None:
+        raise SystemExit("Este ambiente no tiene índice vectorial (¿falta desplegar?).")
+    vector, _ = reference_embeddings.embed(Path(args.file).read_bytes(), registro.provider)
+    if vector is None:
+        raise SystemExit("No se pudo calcular el embedding (¿acceso al modelo en Bedrock?).")
+    hallazgos = indice.search(vector, scope=scope, kind=args.kind, top_k=args.top, model=registro.provider.model_id)
+    if hallazgos is None:
+        raise SystemExit("La búsqueda falló (ver el log).")
+    if not hallazgos:
+        print("Sin resultados.")
+    for h in hallazgos:
+        print(f"  {h['similarity']:.3f}  {scope} {h['key']}  {args.kind}#{h['refId']}")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["register", "list", "remove"])
-    parser.add_argument("--key", help="Identificador del proveedor (lo que el upload manda en metadata `proveedor`).")
+    parser.add_argument("command", choices=["register", "list", "remove", "reindex", "search"])
+    parser.add_argument("--key", help="Clave de la entidad (p. ej. el número de proveedor que el upload manda en metadata).")
     parser.add_argument("--dir", help="Carpeta con los recortes clasificados (register).")
-    parser.add_argument("--file", help="Un solo recorte (register); requiere --kind.")
-    parser.add_argument("--kind", help="Elemento: FIRMA, SELLO, LOGO... (los del catálogo del tipo).")
+    parser.add_argument("--root", help="register en lote: carpeta con una subcarpeta por entidad (nombre = clave).")
+    parser.add_argument("--file", help="Un solo recorte (register/search); requiere --kind.")
+    parser.add_argument("--kind", help="Elemento: FIRMA, SELLO, LOGO... (los del catálogo).")
     parser.add_argument("--label", help="Etiqueta legible con --file (quién firma, qué sucursal).")
     parser.add_argument("--ref", help="refId a dar de baja (remove).")
     parser.add_argument("--delete", action="store_true", help="remove: borra en vez de desactivar.")
-    parser.add_argument("--force", action="store_true", help="register: sube aunque ya haya una con la misma tinta.")
-    parser.add_argument("--type", default="CARTA_NOM35", help="Tipo cuyo catálogo define elementos y scope.")
-    parser.add_argument("--scope", help="Scope explícito (por defecto el `references.scope` del catálogo).")
+    parser.add_argument("--force", action="store_true",
+                        help="register: sube aunque ya haya una con la misma tinta. reindex: recalcula todo.")
+    parser.add_argument("--top", type=int, default=5, help="search: cuántos resultados.")
+    parser.add_argument("--type", default="CARTA_NOM35", help="Tipo del que se toma el scope por defecto.")
+    parser.add_argument("--scope", help="Scope explícito (p. ej. PROVEEDOR); gana sobre --type.")
+    parser.add_argument("--sin-embeddings", action="store_true", dest="sin_embeddings",
+                        help="No calcular embeddings ni tocar el índice vectorial.")
     parser.add_argument("--env", choices=["dev", "prod"], default="dev")
     parser.add_argument("--stack", help="Stack explícito (gana sobre --env).")
     parser.add_argument("--table", help="Tabla de huellas explícita.")
@@ -373,11 +453,16 @@ def main() -> int:
     # pnpm entrega el `--` separador tal cual (`pnpm x -- --flag`); argparse lo
     # leería como "fin de opciones" y rechazaría todo lo que sigue.
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
+    if args.command == "register" and args.root:
+        if args.key or args.dir or args.file:
+            parser.error("--root no se combina con --key/--dir/--file")
+        return cmd_register_root(args)
     if args.command == "register" and not args.key:
-        parser.error("register necesita --key")
+        parser.error("register necesita --key (o --root para varias entidades)")
     if args.command == "register" and not (args.dir or args.file):
         parser.error("register necesita --dir o --file")
-    return {"register": cmd_register, "list": cmd_list, "remove": cmd_remove}[args.command](args)
+    return {"register": cmd_register, "list": cmd_list, "remove": cmd_remove,
+            "reindex": cmd_reindex, "search": cmd_search}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -57,9 +57,11 @@ def entorno(monkeypatch):
     monkeypatch.delenv("FINGERPRINT_TABLE", raising=False)
     monkeypatch.delenv("AUTHENTICITY_ENABLED", raising=False)
     dc._FIELD_PRESETS.clear()
-    dc._FIELD_PRESETS.update({k: v for k, v in COMPARTIDO["_field_presets"].items() if not k.startswith("__")})
+    dc._AUTHENTICITY_ELEMENTS.clear()
+    dc.load_shared({k: COMPARTIDO[k] for k in ("_field_presets", "_authenticity_elements")})
     yield
     dc._FIELD_PRESETS.clear()
+    dc._AUTHENTICITY_ELEMENTS.clear()
 
 
 def tipo(fields, bloque=None, type_id="FACTURA_PRUEBA"):

@@ -567,6 +567,29 @@ _COMMON_ITEM_FIELDS: Dict[str, Any] = {}
 # change to a preset needs `pnpm build` + deploy, while a type's own override
 # of a preset field is hot-reloadable like any other field.
 _FIELD_PRESETS: Dict[str, Any] = {}
+# `_authenticity_elements`: what a signature, a stamp or a logo IS (how the
+# vision model is told to recognize it, how alike two of them may be), defined
+# once so any type asks for one by name in its `authenticity.elements`. Bundled
+# like the presets; a type's own override of an element is hot-reloadable.
+_AUTHENTICITY_ELEMENTS: Dict[str, Any] = {}
+
+
+def shared_authenticity_elements() -> Dict[str, Any]:
+    """The shared element definitions, as loaded with the bundled catalog.
+    Deliberately does NOT trigger a load: whoever holds a type entry got it
+    from a loaded catalog, and a tool that parses a type by hand loads
+    `_shared.json` itself (`load_shared`)."""
+    return _AUTHENTICITY_ELEMENTS
+
+
+def load_shared(data: Dict[str, Any]) -> None:
+    """Register the shared blocks of a `_shared.json`-shaped dict (presets,
+    common item fields, authenticity elements). For tools and tests that parse
+    catalog files straight from `catalogs/` instead of the bundle."""
+    for target, key in ((_COMMON_ITEM_FIELDS, "_common_item_fields"), (_FIELD_PRESETS, "_field_presets"),
+                        (_AUTHENTICITY_ELEMENTS, "_authenticity_elements")):
+        target.update({k: v for k, v in (data.get(key) or {}).items()
+                       if not k.startswith("__") and isinstance(v, dict)})
 
 
 def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
@@ -597,6 +620,12 @@ def _load_config_file(path: Path) -> Dict[str, TypeRegistryEntry]:
     if field_presets:
         _FIELD_PRESETS.update(
             {k: v for k, v in field_presets.items() if not k.startswith("__") and isinstance(v, dict)}
+        )
+
+    shared_elements = data.get("_authenticity_elements", {}) or {}
+    if shared_elements:
+        _AUTHENTICITY_ELEMENTS.update(
+            {k: v for k, v in shared_elements.items() if not k.startswith("__") and isinstance(v, dict)}
         )
 
     catalog: Dict[str, TypeRegistryEntry] = {}
@@ -706,6 +735,7 @@ def reload_catalog() -> None:
     _SCHEMA_VERSIONS.clear()
     _COMMON_ITEM_FIELDS.clear()
     _FIELD_PRESETS.clear()
+    _AUTHENTICITY_ELEMENTS.clear()
 
 
 def get_schema_info() -> Dict[str, Any]:

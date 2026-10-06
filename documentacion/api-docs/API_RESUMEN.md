@@ -27,14 +27,18 @@ UPLOAD_URL="<UPLOAD_URL_DEVUELTA_POR_EL_POST>"
 7. GET  /documents?...       → buscar/listar      (opcional)
 ```
 
+Aparte del flujo de documentos: `/references/...` registra las firmas, sellos
+y logos válidos de un proveedor (§9; requiere `AllowReferenceWrite`).
+
 **Límites (por API key):** los `GET` tienen un throttle más holgado que las
 escrituras y no cuentan como documentos. `429` en cualquier ruta:
 `{"message":"Too Many Requests"}` = throttle, reintenta con backoff (en el
 polling, espera como un `202`) · `{"message":"Limit Exceeded"}` = techo diario
 de requests agotado · `{"error":"DAILY_DOCUMENT_LIMIT"}` = tope de documentos
 del día (solo `POST /documents` y reprocess), con `Retry-After` hasta la
-medianoche UTC. En prod el WAF por IP responde `403`. Detalle: `API_USO.md` →
-"Límites y `429`".
+medianoche UTC. En prod el WAF por IP responde `403`. `/references` no cuenta
+como documentos; su `POST`/`DELETE` usan el throttle de escritura. Detalle:
+`API_USO.md` → "Límites y `429`".
 
 ---
 
@@ -425,6 +429,85 @@ curl -sS -G "$API/document-types/PEDIMENTO_ERP" -H "x-api-key: $KEY" \
 | `page` · `pageSize` · `total` · `totalPages` · `types[]` | solo en la lista |
 
 Sin `AllowedDocTypes` en la app: catálogo completo. Con él: acotado a esos tipos, en ambos endpoints.
+
+---
+
+## 9. `/references/{scope}/{key}` — firmas, sellos y logos válidos de una entidad
+
+Auth: `x-api-key` · Requiere `AllowReferenceWrite=true` en **todas** las rutas,
+también los `GET` (`403` `FORBIDDEN` sin él) · No cuenta como documentos del día
+
+```
+1. POST   /references/{scope}/{key}                         → refId, uploadUrl, confirmUrl
+2. PUT    {uploadUrl}                                       → (S3, sin x-api-key ni cabeceras)
+3. POST   /references/{scope}/{key}/{kind}/{refId}/confirm  → ficha ACTIVE (revisa en el momento)
+   GET    /references/{scope}/{key}                         → lista
+   GET    /references/{scope}/{key}/{kind}/{refId}          → ficha + imageUrl
+   DELETE /references/{scope}/{key}/{kind}/{refId}          → desactiva
+```
+
+| Ruta | | |
+|---|---|---|
+| `scope` | **requerido** | ámbito declarado por un tipo activo (`authenticity.references.scope`). Hoy solo `PROVEEDOR` |
+| `key` | **requerido** | id de la entidad (número de proveedor) = el valor de `metadata.proveedor` del `POST /documents`. Solo letras, dígitos, `.` `-` `_`; si cambiaría al normalizarse se rechaza con `suggested` |
+| `kind` | **requerido** | `FIRMA` `SELLO` `LOGO` |
+| `refId` | **requerido** | lo devuelve el paso 1 (slug de `label`; `-2`, `-3`… si ya existe) |
+
+| Body paso 1 | | |
+|---|---|---|
+| `kind` | **requerido** | `FIRMA` `SELLO` `LOGO` |
+| `label` | **requerido** | quién firma / qué sucursal es el sello |
+| `fileName` | opcional | solo procedencia |
+
+| Body paso 3 | | |
+|---|---|---|
+| `force` | opcional | `true` acepta una referencia con la misma tinta que otra (`SIMILAR_REFERENCE`). No salta `DUPLICATE_REFERENCE` |
+
+| Query `GET` lista | Default | |
+|---|---|---|
+| `kind` | | filtra por elemento |
+| `includeInactive` | `false` | `1` incluye las dadas de baja. Las `PENDING` nunca se listan |
+
+```bash
+RESP=$(curl -sS -X POST "$API/references/PROVEEDOR/10040" \
+  -H "x-api-key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind":"FIRMA","label":"Lic. Julio Lemus"}')
+curl -sS --fail -X PUT --upload-file firma.png "$(echo "$RESP" | jq -r .uploadUrl)"
+curl -sS -X POST "$API$(echo "$RESP" | jq -r .confirmUrl)" -H "x-api-key: $KEY"
+
+curl -sS "$API/references/PROVEEDOR/10040?kind=FIRMA&includeInactive=1" -H "x-api-key: $KEY"
+curl -sS "$API/references/PROVEEDOR/10040/FIRMA/lic-julio-lemus" -H "x-api-key: $KEY"
+curl -sS -X DELETE "$API/references/PROVEEDOR/10040/FIRMA/lic-julio-lemus" -H "x-api-key: $KEY"
+```
+
+| `200` paso 1 | |
+|---|---|
+| `scope` · `key` · `kind` · `refId` · `label` | identidad |
+| `status` | `PENDING` |
+| `uploadUrl` · `uploadMethod` | destino del paso 2 · `PUT` |
+| `uploadExpiresInSeconds` · `uploadExpiresAt` | 900 s. La reserva vence en 24 h |
+| `confirmUrl` | ruta relativa del paso 3 |
+
+| `200` ficha (confirm, detalle, `references[]`, `DELETE`) | |
+|---|---|
+| `scope` · `key` · `kind` · `refId` · `label` | identidad |
+| `status` | `ACTIVE` `INACTIVE` `PENDING` |
+| `format` · `width` · `height` · `sha256` | `png`/`jpeg`, px, hash del archivo |
+| `hasInkFingerprint` · `indexed` | tiene huella de tinta · está en el índice de similitud |
+| `createdAt` · `createdBy` | alta y app que la hizo |
+| `activatedAt` · `deactivatedAt` · `deactivatedBy` | solo cuando aplican |
+| `warnings[]` | solo en confirm: `{code, message}` (`TOO_MUCH_INK`) |
+| `imageUrl` · `imageUrlExpiresInSeconds` | solo en detalle de una referencia `ACTIVE`; 300 s |
+| `count` · `references[]` | solo en la lista |
+
+Nunca devuelve la huella de tinta ni el embedding. `DELETE` solo desactiva (la
+ficha vuelve con `status: INACTIVE`). Una referencia confirmada aplica a los
+documentos procesados **después**.
+
+Recorte: PNG/JPEG · ≤ 3.5 MB · lado menor ≥ 120 px (≥ 80 px sin huella, p. ej.
+logo) y ≤ 2200 px · ≤ 12 MP · máx. 20 activas por entidad y elemento.
+
+`400` `INVALID_REFERENCE_KEY` (+`suggested`) `INVALID_SCOPE` `INVALID_KIND` (+`valid[]`) `MISSING_FIELD` `INVALID_JSON` · `403` `FORBIDDEN` · `404` `NOT_FOUND` · `409` `REFERENCE_LIMIT_REACHED` `REFERENCE_ID_EXHAUSTED` `UPLOAD_NOT_FOUND` `DUPLICATE_REFERENCE` `SIMILAR_REFERENCE` (+`existing{kind,refId}`) `NOT_PENDING` · `422` `REFERENCE_REJECTED` (+`errors[]` `warnings[]`; códigos `NOT_AN_IMAGE` `TOO_LARGE_BYTES` `TOO_SMALL` `TOO_LARGE_DIMENSIONS` `NO_INK`) · `500` `INTERNAL_ERROR`
 
 ---
 

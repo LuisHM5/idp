@@ -125,6 +125,7 @@ function main() {
     _field_sets: shared._field_sets || {},
     _common_item_fields: shared._common_item_fields || {},
     _field_presets: shared._field_presets || {},
+    _authenticity_elements: shared._authenticity_elements || {},
     document_types: documentTypes,
     cross_document_validation_rules: shared.cross_document_validation_rules || [],
   };

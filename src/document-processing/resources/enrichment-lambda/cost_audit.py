@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional
 
 from indexing import display_name_for
 from pipeline.envelope import index_type_of
-from pipeline.pricing import PRICING_VERSION, bedrock_cost, lambda_cost, textract_cost
+from pipeline.pricing import PRICING_VERSION, bedrock_cost, embedding_cost, lambda_cost, textract_cost
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,7 @@ def build_cost_breakdown(
     extraction = usage.get("extraction") or {}
     locator = usage.get("pageLocator") or {}
     authenticity = usage.get("authenticity") or {}
+    embeddings = usage.get("embeddings") or {}
     pages = _page_counts(result)
     ocr_pages = pages["Ocr"] if pages else 0
 
@@ -132,6 +133,11 @@ def build_cost_breakdown(
         # y también cuando la capa de estructura ya probó que el documento es
         # digital y se omite el examen de recortes.
         "BedrockAuthenticity": bedrock_cost(authenticity.get("usage"), authenticity.get("modelId")),
+        # Embeddings de imagen de la recuperación de referencias: se cobran por
+        # IMAGEN, no por token, y solo se piden cuando hay que ELEGIR (más
+        # referencias registradas de las que caben en la llamada de visión) o
+        # BUSCAR (la carga no dijo de quién es el documento). $0 en lo normal.
+        "BedrockEmbeddings": embedding_cost(embeddings.get("images"), embeddings.get("modelId")),
         "TextractOcr": textract_cost(ocr_pages),
         "LambdaCompute": lambda_cost(
             duration_ms, os.environ.get("AWS_LAMBDA_FUNCTION_MEMORY_SIZE")

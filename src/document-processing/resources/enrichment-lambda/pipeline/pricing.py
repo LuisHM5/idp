@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 # un registro viejo. Súbela cuando cambie cualquier número de las tablas de
 # abajo — incluido agregar un modelo, porque eso cambia el costo reportado de
 # los documentos que ya corrieron con él.
-PRICING_VERSION = "2026-09-04"
+PRICING_VERSION = "2026-10-06"
 
 # $ per MILLION tokens, Bedrock Converse, on-demand STANDARD tier, us-east-1.
 # An unrecognized model falls back to the Haiku 4.5 rates with
@@ -154,6 +154,36 @@ def bedrock_cost(usage: Optional[Dict[str, Any]], model_id: Optional[str]) -> Di
         "cacheWriteRatePerMTokUsd": rates["cacheWrite"],
         "pricingVersion": PRICING_VERSION,
         "costUsd": round(cost, 6),
+        **({"approximatePricing": True} if approximate else {}),
+    }
+
+
+# $ per IMAGE embedded, Bedrock InvokeModel, on-demand, us-east-1. Embedding
+# models bill per input image (and per text token, which this pipeline never
+# sends), not per Converse token — hence their own table and their own cost
+# line (`BedrockEmbeddings`). Every provider in
+# `pipeline.reference_embeddings.PROVIDERS` must be listed here
+# (tests/unit/test_pricing_coverage.py pins it): a model missing from the
+# table is priced at the default's rate with `approximatePricing`.
+_EMBEDDING_PRICING: Dict[str, float] = {
+    # Amazon Titan Multimodal Embeddings G1: $0.00006 per input image.
+    "amazon.titan-embed-image-v1": 0.00006,
+}
+_DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-image-v1"
+
+
+def embedding_cost(images: int, model_id: Optional[str]) -> Dict[str, Any]:
+    """$ breakdown for `images` image-embedding calls. Same contract as
+    `bedrock_cost`: zeroed numbers, never None, so it can be summed blindly."""
+    images = max(0, int(images or 0))
+    rate = _EMBEDDING_PRICING.get(model_id or "", _EMBEDDING_PRICING[_DEFAULT_EMBEDDING_MODEL])
+    approximate = bool(images) and (model_id or "") not in _EMBEDDING_PRICING
+    return {
+        "modelId": model_id,
+        "images": images,
+        "ratePerImageUsd": rate,
+        "pricingVersion": PRICING_VERSION,
+        "costUsd": round(images * rate, 6),
         **({"approximatePricing": True} if approximate else {}),
     }
 

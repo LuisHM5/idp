@@ -31,6 +31,7 @@ sys.path.insert(0, str(LAMBDA_DIR))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from catalog_paths import active_catalog_path  # noqa: E402
+import document_catalog as dc  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import authenticity, fingerprint_store, vision_inspector  # noqa: E402
 from validators.engine import (  # noqa: E402
@@ -60,6 +61,21 @@ EXTRAIDO = {
     "NOMBRE_FIRMANTE": "Pablo Ontiveros",
     "REFERENCIA_NOM035": "NOM-035",
 }
+
+
+COMPARTIDO = json.loads((REPO_ROOT / "catalogs/_shared.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def compartido_del_repo():
+    """`CARTA_NOM35` pide sus elementos y sus campos de referencia por nombre
+    (`_authenticity_elements`, `$presets`): se cargan del repo, como en el bundle."""
+    dc._FIELD_PRESETS.clear()
+    dc._AUTHENTICITY_ELEMENTS.clear()
+    dc.load_shared({k: COMPARTIDO[k] for k in ("_field_presets", "_authenticity_elements")})
+    yield
+    dc._FIELD_PRESETS.clear()
+    dc._AUTHENTICITY_ELEMENTS.clear()
 
 
 @pytest.fixture
@@ -628,3 +644,349 @@ def test_con_varias_imagenes_del_mismo_elemento_gana_la_que_senalo_el_modelo(ent
     caja = doc["authenticity"]["elements"]["LOGO"]["bbox"]
     assert doc["authenticity"]["elements"]["LOGO"]["bboxSource"] == "PDF"
     assert caja[1] < 0.2  # arriba de la página, no la banda del pie
+
+
+# ---------------------------------------------------------------- referencias: lo que no se pudo comparar
+
+
+def _referencias(tabla, proveedor, **por_sk):
+    pk = fingerprint_store.reference_pk("PROVEEDOR", proveedor)
+    for sk, extra in por_sk.items():
+        tabla.put_item({"Pk": pk, "Sk": sk.replace("__", "#"), "Label": sk, "S3Key": f"references/{sk}.png", **extra})
+
+
+def test_si_las_imagenes_de_referencia_no_se_pueden_leer_no_es_un_no_coincide(entry, monkeypatch):
+    """El bug: un fallo de S3 dejaba al modelo sin referencias y aun así se
+    reportaba `FIRMA_NO_COINCIDE_CON_REFERENCIAS` — una acusación por un error
+    nuestro. Ahora el campo queda vacío y el documento va a una persona."""
+    tabla = TablaFalsa()
+    _referencias(tabla, "10021", FIRMA__pablo={}, SELLO__saltillo={})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: None)
+    llamadas = vision_simulada(monkeypatch)
+    reader, _ = escaneo()
+
+    doc = correr(entry, reader)
+    estado, checks = estatus(entry, doc)
+
+    assert llamadas["referencias"] == {}                       # el modelo no vio ninguna
+    for campo in ("FIRMA_COINCIDE_REFERENCIA", "SELLO_COINCIDE_REFERENCIA"):
+        assert campo not in doc["_entities"]
+    motivos = doc["_entities"]["MOTIVOS_AUTENTICIDAD"]
+    assert "REFERENCIAS_NO_DISPONIBLES" in motivos and "NO_COINCIDE" not in motivos
+    assert doc["_entities"]["AUTENTICIDAD_EVALUADA"] is False
+    assert doc["_entities"]["VEREDICTO_AUTENTICIDAD"] == authenticity.VERDICT_NOT_EVALUATED
+    assert estado == DOC_REVIEW
+    assert [c.field for c in checks if not c.valid] == ["AUTENTICIDAD_EVALUADA"]
+
+
+def test_si_la_tabla_de_referencias_no_responde_el_documento_no_se_aprueba_callado(entry, monkeypatch):
+    """Antes: `list_references` devolvía None, no quedaba ningún motivo y la
+    carta podía aprobarse sin haberse comparado contra nada."""
+    con_tabla(monkeypatch, TablaFalsa())
+    monkeypatch.setattr(fingerprint_store, "list_references", lambda scope, key, table=None: None)
+    vision_simulada(monkeypatch)
+    reader, _ = escaneo()
+
+    doc = correr(entry, reader)
+
+    assert "REFERENCIAS_NO_DISPONIBLES" in doc["_entities"]["MOTIVOS_AUTENTICIDAD"]
+    assert doc["authenticity"]["references"]["unavailable"] is True
+    assert doc["_entities"]["AUTENTICIDAD_EVALUADA"] is False
+    assert estatus(entry, doc)[0] == DOC_REVIEW
+
+
+def test_sin_tabla_configurada_la_corrida_local_sigue_callada(entry, monkeypatch):
+    vision_simulada(monkeypatch)
+    reader, _ = escaneo()
+
+    doc = correr(entry, reader)
+
+    assert "REFERENCIAS_NO_DISPONIBLES" not in (doc["_entities"].get("MOTIVOS_AUTENTICIDAD") or "")
+    assert doc["_entities"]["AUTENTICIDAD_EVALUADA"] is True
+
+
+# ---------------------------------------------------------------- referencias: recuperación
+
+
+class ProveedorFalso:
+    name, model_id, dimension = "falso", "modelo-falso", 3
+
+
+def _con_embeddings(monkeypatch, vector_del_recorte):
+    from pipeline import reference_embeddings
+
+    calculados = {"n": 0}
+
+    def embed(imagen, proveedor):
+        calculados["n"] += 1
+        return (reference_embeddings.normalize(vector_del_recorte),
+                {"provider": "falso", "modelId": "modelo-falso", "dimension": 3, "images": 1})
+
+    monkeypatch.setattr(reference_embeddings, "provider_for", lambda config=None: ProveedorFalso())
+    monkeypatch.setattr(reference_embeddings, "embed", embed)
+    return calculados
+
+
+def _vector(*valores):
+    from pipeline import reference_embeddings
+
+    return reference_embeddings.to_bytes(reference_embeddings.normalize(valores))
+
+
+def test_con_mas_referencias_de_las_que_caben_se_mandan_las_mas_parecidas_por_embedding(entry, monkeypatch):
+    """`max_references_per_kind: 3` y cinco firmantes registrados: la correcta
+    es la ÚLTIMA por orden alfabético y aun así llega al modelo."""
+    tabla = TablaFalsa()
+    modelo = {"EmbeddingModel": "modelo-falso"}
+    _referencias(tabla, "10021",
+                 FIRMA__a={**modelo, "Embedding": _vector(1, 0, 0)}, FIRMA__b={**modelo, "Embedding": _vector(1, 0.1, 0)},
+                 FIRMA__c={**modelo, "Embedding": _vector(1, 0, 0.1)}, FIRMA__d={**modelo, "Embedding": _vector(0, 1, 0)},
+                 FIRMA__z_la_buena={**modelo, "Embedding": _vector(0, 0, 1)})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    calculados = _con_embeddings(monkeypatch, (0, 0.05, 1))
+    llamadas = vision_simulada(monkeypatch, referencia={"FIRMA": "z_la_buena"})
+    reader, _ = escaneo()
+
+    doc = correr(entry, reader)
+
+    assert llamadas["referencias"]["FIRMA"][0] == "z_la_buena" and len(llamadas["referencias"]["FIRMA"]) == 3
+    assert doc["_entities"]["FIRMA_COINCIDE_REFERENCIA"] is True
+    ranking = doc["authenticity"]["references"]["ranking"]["FIRMA"]
+    assert ranking["mode"] == "EMBEDDING" and ranking["chosen"][0]["refId"] == "z_la_buena"
+    assert calculados["n"] == 1
+    assert doc["embeddingMeta"] == {"modelId": "modelo-falso", "images": 1, "calls": 1}
+    json.dumps(doc["authenticity"])  # ni vectores ni bytes en el resultado
+
+
+def test_con_pocas_referencias_no_se_paga_ningun_embedding(entry, monkeypatch):
+    tabla = TablaFalsa()
+    _referencias(tabla, "10021", FIRMA__pablo={"EmbeddingModel": "modelo-falso", "Embedding": _vector(0, 0, 1)})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    calculados = _con_embeddings(monkeypatch, (0, 0, 1))
+    vision_simulada(monkeypatch, referencia={"FIRMA": "pablo"})
+    reader, _ = escaneo()
+
+    doc = correr(entry, reader)
+
+    assert calculados["n"] == 0 and "embeddingMeta" not in doc
+    assert doc["authenticity"]["references"]["ranking"]["FIRMA"]["mode"] == "TODAS"
+
+
+def test_referencias_sin_embedding_del_modelo_actual_se_ordenan_por_huella(entry, monkeypatch):
+    """Registradas antes de los embeddings (o con otro modelo): no se comparan
+    vectores incomparables; decide la huella de tinta, como siempre."""
+    tabla = TablaFalsa()
+    _referencias(tabla, "10021", FIRMA__a={}, FIRMA__b={}, FIRMA__c={},
+                 FIRMA__d={"EmbeddingModel": "otro-modelo", "Embedding": _vector(0, 0, 1)})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    calculados = _con_embeddings(monkeypatch, (0, 0, 1))
+    vision_simulada(monkeypatch)
+    reader, _ = escaneo()
+
+    doc = correr(entry, reader)
+
+    assert calculados["n"] == 0
+    assert doc["authenticity"]["references"]["ranking"]["FIRMA"]["mode"] in ("HUELLA", "ORDEN")
+
+
+# ---------------------------------------------------------------- referencias: búsqueda sin proveedor
+
+
+@pytest.fixture
+def entry_con_busqueda():
+    crudo = json.loads(active_catalog_path(REPO_ROOT, TIPO).read_text(encoding="utf-8"))[TIPO]
+    crudo["authenticity"]["references"]["search"] = {"enabled": True, "min_similarity": 0.8, "top_k": 3}
+    return _parse_entry(TIPO, crudo)
+
+
+class IndiceFalso:
+    def __init__(self, hallazgos):
+        self.hallazgos, self.consultas = hallazgos, []
+
+    def search(self, vector, *, scope, kind, top_k, model):
+        self.consultas.append((scope, kind, top_k, model))
+        return self.hallazgos if self.hallazgos is None else self.hallazgos.get(kind, [])
+
+
+def _con_indice(monkeypatch, hallazgos):
+    from pipeline import reference_index
+
+    indice = IndiceFalso(hallazgos)
+    monkeypatch.setattr(reference_index, "default_index", lambda proveedor=None: indice)
+    return indice
+
+
+SIN_PROVEEDOR = {"documentId": "doc-1", "metadata": {}}
+
+
+def test_sin_proveedor_declarado_la_busqueda_sugiere_de_quien_es_la_carta(entry_con_busqueda, monkeypatch):
+    tabla = TablaFalsa()
+    _referencias(tabla, "10040", FIRMA__julio={}, SELLO__planta={})
+    _referencias(tabla, "10021", FIRMA__pablo={})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    _con_embeddings(monkeypatch, (0, 0, 1))
+    indice = _con_indice(monkeypatch, {
+        "FIRMA": [{"key": "10040", "refId": "julio", "similarity": 0.93},
+                  {"key": "10021", "refId": "pablo", "similarity": 0.85},
+                  {"key": "99999", "refId": "lejana", "similarity": 0.40}],     # bajo el umbral
+        "SELLO": [{"key": "10040", "refId": "planta", "similarity": 0.9},
+                  {"key": "10040", "refId": "ya-borrada", "similarity": 0.9}],  # está en el índice, no en la tabla
+    })
+    llamadas = vision_simulada(monkeypatch, referencia={"FIRMA": "julio", "SELLO": "planta"})
+    reader, _ = escaneo()
+
+    doc = correr(entry_con_busqueda, reader, contexto=SIN_PROVEEDOR)
+    estado, _ = estatus(entry_con_busqueda, doc)
+
+    assert llamadas["referencias"] == {"FIRMA": ["julio", "pablo"], "SELLO": ["planta"]}
+    assert ("PROVEEDOR", "FIRMA", 3, "modelo-falso") in indice.consultas
+    campos = doc["_entities"]
+    assert campos["FIRMA_COINCIDE_REFERENCIA"] is True and campos["SELLO_COINCIDE_REFERENCIA"] is True
+    assert campos["PROVEEDOR_SUGERIDO"] == "10040"
+    assert "PROVEEDOR_SUGERIDO_POR_REFERENCIAS" in campos["MOTIVOS_AUTENTICIDAD"]
+    assert "SIN_CLAVE_DE_REFERENCIAS" in campos["MOTIVOS_AUTENTICIDAD"]
+    # Una sugerencia no es un hallazgo: el veredicto y el estatus no se mueven.
+    assert campos["VEREDICTO_AUTENTICIDAD"] == authenticity.VERDICT_AUTHENTIC and estado == DOC_APPROVED
+    assert doc["embeddingMeta"]["images"] == 2      # un embedding por elemento buscado
+    json.dumps(doc["authenticity"])
+
+
+def test_que_la_busqueda_no_confirme_nada_no_es_evidencia_contra_la_carta(entry_con_busqueda, monkeypatch):
+    """Sin proveedor declarado, "no se parece a ninguna de las candidatas" no
+    dice nada: el campo queda vacío, igual que si no hubiera búsqueda."""
+    tabla = TablaFalsa()
+    _referencias(tabla, "10040", FIRMA__julio={})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    _con_embeddings(monkeypatch, (0, 0, 1))
+    _con_indice(monkeypatch, {"FIRMA": [{"key": "10040", "refId": "julio", "similarity": 0.9}]})
+    vision_simulada(monkeypatch)                    # el modelo no reconoce ninguna
+    reader, _ = escaneo()
+
+    doc = correr(entry_con_busqueda, reader, contexto=SIN_PROVEEDOR)
+
+    assert "FIRMA_COINCIDE_REFERENCIA" not in doc["_entities"] and "PROVEEDOR_SUGERIDO" not in doc["_entities"]
+    assert "NO_COINCIDE" not in doc["_entities"]["MOTIVOS_AUTENTICIDAD"]
+    assert estatus(entry_con_busqueda, doc)[0] == DOC_APPROVED
+
+
+def test_elementos_de_proveedores_distintos_no_sugieren_a_ninguno(entry_con_busqueda, monkeypatch):
+    tabla = TablaFalsa()
+    _referencias(tabla, "10040", FIRMA__julio={})
+    _referencias(tabla, "10021", SELLO__saltillo={})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    _con_embeddings(monkeypatch, (0, 0, 1))
+    _con_indice(monkeypatch, {"FIRMA": [{"key": "10040", "refId": "julio", "similarity": 0.9}],
+                              "SELLO": [{"key": "10021", "refId": "saltillo", "similarity": 0.9}]})
+    vision_simulada(monkeypatch, referencia={"FIRMA": "julio", "SELLO": "saltillo"})
+    reader, _ = escaneo()
+
+    doc = correr(entry_con_busqueda, reader, contexto=SIN_PROVEEDOR)
+
+    assert "PROVEEDOR_SUGERIDO" not in doc["_entities"]
+    assert "REFERENCIAS_DE_VARIOS_PROVEEDORES" in doc["_entities"]["MOTIVOS_AUTENTICIDAD"]
+
+
+def test_si_el_indice_o_el_embedding_fallan_la_carta_corre_como_sin_busqueda(entry_con_busqueda, monkeypatch):
+    con_tabla(monkeypatch, TablaFalsa())
+    _con_embeddings(monkeypatch, (0, 0, 1))
+    _con_indice(monkeypatch, None)                  # la búsqueda falló
+    llamadas = vision_simulada(monkeypatch)
+    reader, _ = escaneo()
+
+    doc = correr(entry_con_busqueda, reader, contexto=SIN_PROVEEDOR)
+
+    assert llamadas["referencias"] == {} and doc["authenticity"]["references"]["searchError"] is True
+    assert doc["_entities"]["AUTENTICIDAD_EVALUADA"] is True
+    assert estatus(entry_con_busqueda, doc)[0] == DOC_APPROVED
+
+
+def test_con_la_busqueda_apagada_en_el_catalogo_no_se_consulta_nada(entry, monkeypatch):
+    """`CARTA_NOM35` la trae apagada hasta que `pnpm refs:eval` diga que separa."""
+    con_tabla(monkeypatch, TablaFalsa())
+    calculados = _con_embeddings(monkeypatch, (0, 0, 1))
+    indice = _con_indice(monkeypatch, {})
+    vision_simulada(monkeypatch)
+    reader, _ = escaneo()
+
+    correr(entry, reader, contexto=SIN_PROVEEDOR)
+
+    assert calculados["n"] == 0 and indice.consultas == []
+
+
+# ---------------------------------------------------------------- generalidad: otro tipo, solo catálogo
+
+
+def test_un_tipo_nuevo_compara_su_logo_solo_con_catalogo_y_la_clave_sale_del_documento(monkeypatch):
+    """Lo que costaría la próxima "comparación de logos": un JSON. Elemento por
+    nombre (`_authenticity_elements`), campos por preset, y la clave leída del
+    propio documento (`fields.RFC`) en un scope distinto del de la NOM-035."""
+    tipo = _parse_entry("CONTRATO_PRUEBA", {
+        "description": "x",
+        "authenticity": {"elements": ["LOGO"], "memory": {"enabled": False},
+                         "vision": {"inspect_when_digital": "with_references", "fallback_models": []},
+                         "references": {"scope": "EMISOR", "key_from": "fields.RFC"}},
+        "fields": {"$presets": ["LOGO_CONTRA_REFERENCIA"],
+                   "RFC": {"type": "string", "required": False, "hint": "h", "validation": []}},
+    })
+    spec = authenticity.spec_for(tipo)
+    assert list(spec["elements"]) == ["LOGO"] and spec["elements"]["LOGO"]["fingerprint"] is False
+    assert authenticity.reference_scopes([tipo]) == {"EMISOR": {"LOGO": spec["elements"]["LOGO"]}}
+
+    tabla = TablaFalsa()
+    tabla.put_item({"Pk": fingerprint_store.reference_pk("EMISOR", "ABC010203XY1"), "Sk": "LOGO#membrete",
+                    "S3Key": "references/logo.png"})
+    con_tabla(monkeypatch, tabla)
+    monkeypatch.setattr(fingerprint_store, "fetch_reference_bytes", lambda ref, s3=None: _jpeg_de_hoja())
+    # El logo como imagen incrustada en un PDF digital: recorte exacto.
+    con_logo = pdf(
+        [{"contenido": texto(TEXTO_CARTA) + pintar("Logo", 10, 710, 200, 60),
+          "imagenes": {"Logo": {"datos": b"logo" * 50}}}],
+        metadata={"/Producer": "Microsoft® Word 2019"},
+    )
+    llamadas = vision_simulada(monkeypatch, presentes=("LOGO",), incrustadas={0: ["LOGO"]},
+                               referencia={"LOGO": "membrete"})
+    doc = {"documentType": "CONTRATO_PRUEBA", "pageStart": 1, "pageEnd": 1,
+           "_entities": {"RFC": "ABC010203XY1"}, "_confidences": {}}
+
+    authenticity.run(doc, tipo, authenticity.PageSource(reader=con_logo, file_sha256="x" * 64), {"documentId": "d"})
+
+    assert llamadas["referencias"] == {"LOGO": ["membrete"]}
+    assert doc["_entities"]["LOGO_PRESENTE"] is True and doc["_entities"]["LOGO_COINCIDE_REFERENCIA"] is True
+    assert doc["authenticity"]["references"]["key"] == "ABC010203XY1"
+
+
+def test_carta_nom35_resuelve_los_mismos_elementos_y_senales_que_cuando_los_declaraba_a_mano(entry):
+    """`CARTA_NOM35` pasó a pedir sus elementos y campos de referencia por
+    nombre. Esto fija que lo que la etapa ve no cambió."""
+    spec = authenticity.spec_for(entry)
+
+    assert spec["elements"]["FIRMA"]["similarity_reject"] == 0.97
+    assert spec["elements"]["SELLO"] == {
+        "description": spec["elements"]["SELLO"]["description"], "required": True, "read_text": True,
+        "issuer_field": "EMPRESA_EMISORA", "ink_when_overlapping": "colour",
+        "similarity_reject": None, "similarity_review": 0.95}
+    assert spec["elements"]["LOGO"]["fingerprint"] is False
+    assert spec["elements"]["LOGO"]["embedded_image_is_insertion"] is False
+    assert spec["outputs"] == {
+        "AUTENTICIDAD_EVALUADA": "evaluated", "CAPTURA_FISICA": "structure.physical_capture",
+        "ORIGEN_DOCUMENTO": "structure.origin", "FONDO_NATURAL": "pixels.natural_background",
+        "FIRMA_PRESENTE": "element.FIRMA.present", "SELLO_PRESENTE": "element.SELLO.present",
+        "LOGO_PRESENTE": "element.LOGO.present", "FIRMA_SIN_INSERCION": "element.FIRMA.not_pasted",
+        "SELLO_SIN_INSERCION": "element.SELLO.not_pasted", "TEXTO_SELLO": "element.SELLO.text",
+        "SELLO_CORRESPONDE_EMISOR": "element.SELLO.issuer_consistent",
+        "FIRMA_COINCIDE_REFERENCIA": "element.FIRMA.matches_reference",
+        "SELLO_COINCIDE_REFERENCIA": "element.SELLO.matches_reference",
+        "LOGO_COINCIDE_REFERENCIA": "element.LOGO.matches_reference",
+        "FIRMA_SELLO_NO_REUTILIZADOS": "memory.elements_unique",
+        "FIRMA_SELLO_NO_PARECIDOS": "memory.elements_not_similar", "CARTA_NO_DUPLICADA": "memory.not_duplicate",
+        "PROVEEDOR_SUGERIDO": "references.suggested_key",
+        "VEREDICTO_AUTENTICIDAD": "verdict", "MOTIVOS_AUTENTICIDAD": "reasons",
+    }
+    assert authenticity.reference_scopes([entry]) == {"PROVEEDOR": spec["elements"]}

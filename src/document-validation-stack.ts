@@ -10,6 +10,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
@@ -42,7 +43,21 @@ export const DEV_READ_METHOD_PATHS = [
   "/documents/{id}/file/GET",
   "/document-types/GET",
   "/document-types/{type}/GET",
+  "/references/{scope}/{key}/GET",
+  "/references/{scope}/{key}/{kind}/{refId}/GET",
 ];
+
+/**
+ * The embedding model whose vectors the reference index holds. An S3 Vectors
+ * index is created for ONE dimension, so its name carries provider + dimension
+ * (`references-titan-multimodal-1024`) — the same name
+ * `pipeline/reference_index.py::index_name_for` builds from the provider the
+ * Lambda resolves. Changing model = a new entry here (a second index next to
+ * the old one), a new provider class in `pipeline/reference_embeddings.py`,
+ * and `pnpm refs:reindex`.
+ */
+const REFERENCE_INDEX_BASE = "references";
+const REFERENCE_EMBEDDING = { provider: "titan-multimodal", dimension: 1024 };
 
 export interface DocumentValidationStackProps extends cdk.StackProps {
   /**
@@ -250,62 +265,66 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       __dirname,
       "document-processing/resources/enrichment-lambda"
     );
+    // One asset, two functions: the references API (below) needs the same
+    // numpy/Pillow wheels and the pipeline's own fingerprint code, and sharing
+    // the `Code` object means it is bundled and uploaded once.
+    const enrichmentCode = lambda.Code.fromAsset(enrichmentDir, {
+      exclude: ["__pycache__", "**/__pycache__", "*.pyc"],
+      // CDK's default AssetHashType.SOURCE hashes only enrichmentDir's own
+      // files, not the bundling command/environment that turns
+      // requirements.txt into installed packages. That silently bit us: a
+      // fix to the bundling command below (forcing manylinux cp312 wheels)
+      // changed no file inside enrichmentDir, so the asset hash stayed
+      // identical to the previous (broken cp313-numpy) build, and `cdk
+      // deploy` kept reusing that already-published S3 object no matter
+      // how many times it ran or how thoroughly cdk.out was cleared.
+      // OUTPUT hashes the bundled result instead, so any change to how
+      // dependencies get resolved always produces a new asset.
+      assetHashType: cdk.AssetHashType.OUTPUT,
+      bundling: {
+        image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+        command: [
+          "bash",
+          "-c",
+          "pip install -r requirements.txt -t /asset-output --no-cache-dir --quiet && cp -au . /asset-output",
+        ],
+        local: {
+          tryBundle(outputDir: string): boolean {
+            const { execSync } = require("child_process");
+            try {
+              // --platform/--python-version/--implementation/--abi force pip
+              // to fetch manylinux cp312 wheels regardless of which Python
+              // this machine's own `pip3` happens to be (a real bug we hit:
+              // opencv-python-headless pulls in numpy, and a dev machine on
+              // Python 3.13 silently resolved a cp313 numpy wheel that
+              // loaded fine locally but failed at runtime on the actual
+              // Python 3.12 Lambda — "Importing the numpy C-extensions
+              // failed ... incompatible with python 'cpython-312'").
+              // --only-binary=:all: is required alongside --platform (pip
+              // refuses to build an sdist for a platform that isn't the
+              // host). pypdf/pypdfium2/opencv-python-headless all ship
+              // manylinux2014 cp312 wheels, so this never falls back to
+              // building from source.
+              execSync(
+                `pip3 install -r "${enrichmentDir}/requirements.txt" -t "${outputDir}"` +
+                  ` --no-cache-dir --quiet --only-binary=:all:` +
+                  ` --platform manylinux2014_x86_64 --python-version 3.12 --implementation cp --abi cp312` +
+                  ` && cp -r "${enrichmentDir}/." "${outputDir}/"` +
+                  ` && find "${outputDir}" -name __pycache__ -type d -exec rm -rf {} +`,
+                { stdio: "pipe", shell: "/bin/bash" }
+              );
+              return true;
+            } catch {
+              return false; // fall back to Docker bundling
+            }
+          },
+        },
+      },
+    });
     const enrichmentFn = new lambda.Function(this, "EnrichmentLambda", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "handler.handler",
-      code: lambda.Code.fromAsset(enrichmentDir, {
-        exclude: ["__pycache__", "**/__pycache__", "*.pyc"],
-        // CDK's default AssetHashType.SOURCE hashes only enrichmentDir's own
-        // files, not the bundling command/environment that turns
-        // requirements.txt into installed packages. That silently bit us: a
-        // fix to the bundling command below (forcing manylinux cp312 wheels)
-        // changed no file inside enrichmentDir, so the asset hash stayed
-        // identical to the previous (broken cp313-numpy) build, and `cdk
-        // deploy` kept reusing that already-published S3 object no matter
-        // how many times it ran or how thoroughly cdk.out was cleared.
-        // OUTPUT hashes the bundled result instead, so any change to how
-        // dependencies get resolved always produces a new asset.
-        assetHashType: cdk.AssetHashType.OUTPUT,
-        bundling: {
-          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
-          command: [
-            "bash",
-            "-c",
-            "pip install -r requirements.txt -t /asset-output --no-cache-dir --quiet && cp -au . /asset-output",
-          ],
-          local: {
-            tryBundle(outputDir: string): boolean {
-              const { execSync } = require("child_process");
-              try {
-                // --platform/--python-version/--implementation/--abi force pip
-                // to fetch manylinux cp312 wheels regardless of which Python
-                // this machine's own `pip3` happens to be (a real bug we hit:
-                // opencv-python-headless pulls in numpy, and a dev machine on
-                // Python 3.13 silently resolved a cp313 numpy wheel that
-                // loaded fine locally but failed at runtime on the actual
-                // Python 3.12 Lambda — "Importing the numpy C-extensions
-                // failed ... incompatible with python 'cpython-312'").
-                // --only-binary=:all: is required alongside --platform (pip
-                // refuses to build an sdist for a platform that isn't the
-                // host). pypdf/pypdfium2/opencv-python-headless all ship
-                // manylinux2014 cp312 wheels, so this never falls back to
-                // building from source.
-                execSync(
-                  `pip3 install -r "${enrichmentDir}/requirements.txt" -t "${outputDir}"` +
-                    ` --no-cache-dir --quiet --only-binary=:all:` +
-                    ` --platform manylinux2014_x86_64 --python-version 3.12 --implementation cp --abi cp312` +
-                    ` && cp -r "${enrichmentDir}/." "${outputDir}/"` +
-                    ` && find "${outputDir}" -name __pycache__ -type d -exec rm -rf {} +`,
-                  { stdio: "pipe", shell: "/bin/bash" }
-                );
-                return true;
-              } catch {
-                return false; // fall back to Docker bundling
-              }
-            },
-          },
-        },
-      }),
+      code: enrichmentCode,
       // The expediente pipeline OCRs scanned pages via Textract and runs
       // several Bedrock extraction calls: an 86-page expediente takes ~6 min.
       timeout: cdk.Duration.minutes(15),
@@ -600,10 +619,14 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     //                 embedded under them, the letter's identity. It is what
     //                 lets a signature reused across the letters of different
     //                 employees be caught — evidence no single document carries.
-    //   R#            each supplier's REGISTERED valid signatures/stamps/logos
-    //                 (written by `pnpm refs:*`, scripts/manage-references.mjs;
-    //                 the image bytes themselves go to the document bucket
-    //                 under `references/`).
+    //   R#            each entity's REGISTERED valid signatures/stamps/logos
+    //                 (written by `pnpm refs:*`, scripts/manage-references.py,
+    //                 and by the references API below — both through
+    //                 `pipeline/reference_registry.py`; the image bytes
+    //                 themselves go to the document bucket under `references/`).
+    // TTL (`ExpiresAt`) exists for ONE kind of row: a registration reserved
+    // through the API and still waiting for its upload. Activating it removes
+    // the attribute; no other row ever carries it.
     // RETAIN, like costTable and unlike uniqueKeyTable: this is history and
     // hand-curated registrations, not an index that a backfill can rebuild in
     // full — a `pnpm run destroy` during dev iteration must not erase it.
@@ -618,10 +641,45 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
             encryptionKey,
           }
         : { encryption: dynamodb.TableEncryption.DEFAULT }),
+      timeToLiveAttribute: "ExpiresAt",
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
     enrichmentFn.addEnvironment("FINGERPRINT_TABLE", fingerprintTable.tableName);
     fingerprintTable.grantReadWriteData(enrichmentFn);
+
+    // Vector index of the registered references — what answers "whose stamp is
+    // this?" when an upload does not say (`authenticity.references.search`).
+    // DERIVED data: every reference row keeps its own vector and `pnpm
+    // refs:reindex` rebuilds the index from the table, so nothing here is
+    // precious. Default encryption (SSE-S3) in both environments: the index
+    // holds embeddings, not images, and it keeps the shared CMK's key policy
+    // out of a service it was never written for.
+    const referenceVectorBucketName = `document-validation-references${envSuffix}`;
+    const referenceVectorBucket = new s3vectors.CfnVectorBucket(this, "ReferenceVectorBucket", {
+      vectorBucketName: referenceVectorBucketName,
+    });
+    const referenceVectorIndex = new s3vectors.CfnIndex(this, "ReferenceVectorIndex", {
+      vectorBucketName: referenceVectorBucketName,
+      indexName: `${REFERENCE_INDEX_BASE}-${REFERENCE_EMBEDDING.provider}-${REFERENCE_EMBEDDING.dimension}`,
+      dataType: "float32",
+      dimension: REFERENCE_EMBEDDING.dimension,
+      // `reference_index.similarity_from_distance` assumes cosine.
+      distanceMetric: "cosine",
+    });
+    referenceVectorIndex.addDependency(referenceVectorBucket);
+    const referenceVectorEnv = {
+      REFERENCE_VECTOR_BUCKET: referenceVectorBucketName,
+      REFERENCE_VECTOR_INDEX: REFERENCE_INDEX_BASE,
+    };
+    // The pipeline only ever READS the index (a query with a metadata filter
+    // needs GetVectors as well as QueryVectors).
+    Object.entries(referenceVectorEnv).forEach(([name, value]) => enrichmentFn.addEnvironment(name, value));
+    enrichmentFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
+        resources: [referenceVectorIndex.attrIndexArn],
+      })
+    );
 
     // Grant broad Bedrock invoke permissions to all Lambda roles in the pipeline
     // The construct creates its own roles but customModelId with cross-region prefix
@@ -784,6 +842,54 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(new cwActions.SnsAction(alertsTopic));
 
+    // References Lambda — REST API of the authenticity reference registry
+    // (`/references/...`: register, list, deactivate an entity's valid
+    // signatures/stamps/logos). Same code asset as the enrichment Lambda with
+    // another handler: reviewing a crop is the pipeline's own fingerprint code.
+    // Least privilege: it can touch reference rows, the two reference prefixes
+    // of the bucket and the vector index — never a document.
+    const referencesFn = new lambda.Function(this, "ReferencesLambda", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "references_api.handler",
+      code: enrichmentCode,
+      // API Gateway gives up at 29 s; a confirm is one S3 read, one image
+      // decode, one embedding call and three writes.
+      timeout: cdk.Duration.seconds(29),
+      memorySize: 1024,
+      description: "Authenticity reference registry via REST API",
+      environment: {
+        FINGERPRINT_TABLE: fingerprintTable.tableName,
+        DOCUMENT_BUCKET: documentBucket.bucketName,
+        APPS_TABLE: appsTable.tableName,
+        ...(catalogTable && { CATALOG_TABLE: catalogTable.tableName }),
+        CATALOG_FORCE_RELOAD: forceReload ? "true" : "false",
+        ...referenceVectorEnv,
+      },
+    });
+    fingerprintTable.grantReadWriteData(referencesFn);
+    appsTable.grantReadData(referencesFn);
+    if (catalogTable) {
+      catalogTable.grantReadData(referencesFn);
+    }
+    // grant* (not hand-written statements) so prod also gets the bucket CMK.
+    documentBucket.grantReadWrite(referencesFn, "references/*");
+    documentBucket.grantReadWrite(referencesFn, "references-pending/*");
+    documentBucket.grantDelete(referencesFn, "references-pending/*");
+    referencesFn.addToRolePolicy(bedrockPolicy);
+    referencesFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3vectors:PutVectors", "s3vectors:DeleteVectors", "s3vectors:QueryVectors", "s3vectors:GetVectors"],
+        resources: [referenceVectorIndex.attrIndexArn],
+      })
+    );
+    // An upload that is never confirmed: gone after a day, with or without the
+    // row's TTL having fired.
+    documentBucket.addLifecycleRule({
+      id: "expire-pending-references",
+      prefix: "references-pending/",
+      expiration: cdk.Duration.days(1),
+    });
+
     // Upload Lambda - Node.js document ingestion API
     // Bundling: @aws-sdk/s3-request-presigner (used for the large-file
     // presigned-upload path) is not reliably part of the Node.js 20.x
@@ -898,7 +1004,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         "REST API for uploading documents to the validation pipeline",
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
-        allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
+        allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
       },
       // Dev has no WAF (and keys are optional, see methodOptions below), so
       // without a stage-wide default it has no rate limit at all: a bug or
@@ -932,6 +1038,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // in both cases, never from the CDK-managed idp-default block below).
     const requireApiKey = isProd || (props?.devApiKeyRequired ?? false);
     const methodOptions: apigateway.MethodOptions = { apiKeyRequired: requireApiKey };
+    // Where API Gateway demands no key (open dev) the references API is open
+    // too; anywhere else it needs the app's AllowReferenceWrite flag.
+    referencesFn.addEnvironment("API_KEY_REQUIRED", requireApiKey ? "true" : "false");
 
     // POST /documents                            → create a document; returns the presigned upload URL
     // GET  /documents?field=<dot.path>&value=<v>  → search by any extracted field
@@ -968,6 +1077,27 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const documentTypesResource = api.root.addResource("document-types");
     documentTypesResource.addMethod("GET", queryIntegration, methodOptions);
     documentTypesResource.addResource("{type}").addMethod("GET", queryIntegration, methodOptions);
+
+    // POST   /references/{scope}/{key}                          → reserva + URL de carga
+    // GET    /references/{scope}/{key}                          → lista
+    // GET    /references/{scope}/{key}/{kind}/{refId}           → una, con URL de la imagen
+    // DELETE /references/{scope}/{key}/{kind}/{refId}           → desactiva
+    // POST   /references/{scope}/{key}/{kind}/{refId}/confirm   → revisa y activa
+    // Todas exigen el permiso `AllowReferenceWrite` de la app (lo aplica la
+    // Lambda): registrar una referencia es declarar "este sello es válido".
+    const referencesIntegration = new apigateway.LambdaIntegration(referencesFn);
+    const referencesResource = api.root.addResource("references");
+    const referenceScopeResource = referencesResource.addResource("{scope}");
+    const referenceKeyResource = referenceScopeResource.addResource("{key}");
+    writeMethods.push(referenceKeyResource.addMethod("POST", referencesIntegration, methodOptions));
+    referenceKeyResource.addMethod("GET", referencesIntegration, methodOptions);
+    const referenceKindResource = referenceKeyResource.addResource("{kind}");
+    const referenceByIdResource = referenceKindResource.addResource("{refId}");
+    referenceByIdResource.addMethod("GET", referencesIntegration, methodOptions);
+    writeMethods.push(referenceByIdResource.addMethod("DELETE", referencesIntegration, methodOptions));
+    writeMethods.push(
+      referenceByIdResource.addResource("confirm").addMethod("POST", referencesIntegration, methodOptions)
+    );
 
     // Alias NO DOCUMENTADO de `POST /documents`, a propósito: la documentación
     // (documentacion/api-docs/openapi.yaml, API_USO.md) describe únicamente `/documents`, y esta ruta
@@ -1125,6 +1255,15 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     new cdk.CfnOutput(this, "FingerprintTableName", {
       value: fingerprintTable.tableName,
       description: "Huellas de firma/sello y referencias registradas por proveedor",
+    });
+    // Read by `pnpm refs:reindex` / `refs:search` and `pnpm procesar --refs-env`.
+    new cdk.CfnOutput(this, "ReferenceVectorBucketName", {
+      value: referenceVectorBucketName,
+      description: "Bucket vectorial (S3 Vectors) del índice de referencias",
+    });
+    new cdk.CfnOutput(this, "ReferenceVectorIndexBase", {
+      value: REFERENCE_INDEX_BASE,
+      description: "Prefijo del índice de referencias (el nombre completo lleva proveedor y dimensión)",
     });
 
     new cdk.CfnOutput(this, "ApiEndpoint", {

@@ -74,10 +74,7 @@ def _cargar_presets() -> None:
     compartido = REPO / "catalogs" / "_shared.json"
     if compartido.is_file():
         datos = json.loads(compartido.read_text(encoding="utf-8"))
-        document_catalog._FIELD_PRESETS.update(
-            {k: v for k, v in (datos.get("_field_presets") or {}).items() if not k.startswith("__")})
-        document_catalog._COMMON_ITEM_FIELDS.update(
-            {k: v for k, v in (datos.get("_common_item_fields") or {}).items() if not k.startswith("__")})
+        document_catalog.load_shared(datos)
 
 
 def _entry_sin_capas_de_pago(type_id: str, con_integridad: bool = True):

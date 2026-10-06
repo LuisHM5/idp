@@ -691,8 +691,13 @@ SOBRE la carga — `{documentId, metadata, appOrigin}` —; de ahí sale, por ej
    (`pixel_forensics.fingerprint`, separando tinta negra/color si dos cajas se
    traslapan) y `pdf_forensics.images_overlapping` — una imagen incrustada bajo el
    elemento es prueba directa de inserción.
-7. **Referencias** — `fingerprint_store.list_references(scope, clave)`; se mandan
-   las `max_references_per_kind` más parecidas por huella.
+7. **Referencias** — `fingerprint_store.list_references(scope, clave)`; si caben
+   (≤ `max_references_per_kind`) se mandan todas, y si no, las más parecidas por
+   embedding (`reference_embeddings.embed`, cuando todas tienen vector del modelo
+   actual) o por huella de tinta. Sin clave y con `references.search` activo,
+   `reference_index.search` trae candidatas de cualquier entidad del `scope`. Solo
+   se leen referencias `ACTIVE`; el alta y la baja viven fuera del pipeline, en
+   `reference_registry.py` (CLI `pnpm refs:*` y API `/references`, §27.16b).
 8. **Visión (examinar)** — `vision_inspector.inspect(recortes, referencias)`; se
    omite si la capa 1 ya probó que el documento es digital.
 9. **Memoria** — `fingerprint_store.record_and_find`: escribe primero, consulta
@@ -1672,6 +1677,26 @@ Archivos: `pipeline/authenticity.py`, `pdf_forensics.py`, `pixel_forensics.py`,
 | `fingerprint_store.list_references()` / `rank_references()` / `fetch_reference_bytes()` | scope, clave | lee `R#`, ordena por huella, baja bytes | referencias para `inspect` | DynamoDB + S3 `DOCUMENT_BUCKET` |
 
 `render_page_array()` vive ahora en `page_raster.py`; `qr_recovery.py` la reimporta.
+
+**Registro de referencias (lado de escritura, fuera del pipeline).** Archivos:
+`pipeline/reference_registry.py`, `pipeline/reference_embeddings.py`,
+`pipeline/reference_index.py` y `references_api.py` (handler de la References
+Lambda, rutas `/references/...`). El CLI `scripts/manage-references.py` y la API
+usan el mismo `Registry`. Contrato HTTP: `api-docs/API_USO.md` §8.
+
+| Función | Entrada | Transformación | Salida/destino | Dependencias |
+| --- | --- | --- | --- | --- |
+| `references_api.handle()` | evento de API Gateway | resuelve la ruta, `resolve_caller` (exige `AllowReferenceWrite`, falla cerrado), valida `scope` y `key` | respuesta JSON; `RegistryError` → `{error, message, …extra}` | AppsTable, catálogo (`authenticity.reference_scopes`) |
+| `reference_registry.validate_key()` / `validate_scope_and_kind()` | clave, scope, kind | la clave que cambiaría al normalizarse se rechaza con `suggested`; scope/kind contra el catálogo | clave / spec del elemento, o `INVALID_*` | `fingerprint_store.normalize_key` |
+| `reference_registry.review()` | bytes del recorte, spec del elemento | cabecera sin decodificar (formato, megapíxeles), dimensiones, huella de tinta con el código del pipeline | ficha con `errors[]` / `warnings[]`, `grid`, `sha256` | Pillow, `page_raster`, `pixel_forensics` |
+| `reference_registry.find_duplicate()` | ficha, referencias usables | mismo `sha256` o huella ≥ 0.97 | `SAME_FILE` / `SAME_INK` / None | `pixel_forensics.grid_similarity` |
+| `Registry.reserve()` / `upload_url()` | scope, clave, kind, label | fila `PENDING` con `ExpiresAt` (24 h), `refId` = slug de la etiqueta; URL prefirmada de 15 min | fila + URL hacia `references-pending/` | DynamoDB `FINGERPRINT_TABLE`, S3 |
+| `Registry.confirm()` | scope, clave, kind, refId, `force` | lee la carga, `review`, duplicados, `_store`, activa quitando `ExpiresAt` en la misma escritura; idempotente | `{item, warnings}` o 404/409/422 | S3, DynamoDB, embeddings, índice |
+| `Registry.register()` | bytes + ficha (CLI) | alta directa en un paso | fila `ACTIVE` | ídem |
+| `Registry.deactivate()` / `delete()` | scope, clave, kind, refId | desactiva y saca del índice / borra fila, imagen y vector (solo CLI) | fila `INACTIVE` / nada | DynamoDB, S3, índice |
+| `Registry.reindex()` | fila activa | reutiliza o recalcula el vector y lo sube al índice | `INDEXED` / `EMBEDDED` / `SKIPPED` / `FAILED` | embeddings, índice |
+| `reference_embeddings.embed()` / `provider_for()` | recorte, config | preprocesa, llama al proveedor (Titan Multimodal G1, `InvokeModel`), normaliza; un fallo es «sin vector» | vector float32 + lo facturado (`BedrockEmbeddings`) | Bedrock |
+| `reference_index.default_index()` / `put()` / `delete()` / `search()` | vector, scope, kind, modelo | índice `references-<proveedor>-<dimensión>`; búsqueda filtrada por scope/elemento/modelo, distancia coseno → similitud | bool / candidatas, o None si no se pudo buscar | S3 Vectors (`REFERENCE_VECTOR_BUCKET`, `REFERENCE_VECTOR_INDEX`) |
 
 ### 27.17 Motor de reglas
 

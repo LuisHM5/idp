@@ -50,7 +50,7 @@ test("las rutas GET del stack son exactamente DEV_READ_METHOD_PATHS", () => {
   const block = STACK_SOURCE.match(/DEV_READ_METHOD_PATHS = \[([\s\S]*?)\];/);
   assert.ok(block, "no encontré DEV_READ_METHOD_PATHS en el stack");
   const declared = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.equal(gets.length, 5);
+  assert.equal(gets.length, 7);
   assert.deepEqual([...gets].sort(), [...declared].sort());
 });
 
@@ -149,7 +149,11 @@ test("usagePlanPatchOps: 'add' crea los overrides de un plan antiguo, 'replace' 
 
   const splitOps = usagePlanPatchOps(splitPlan, { write: { rateLimit: 2, burstLimit: 3 } });
   assert.equal(splitOps.length, WRITE_METHODS.length * 2);
-  assert.ok(splitOps.every((o) => o.op === "replace"));
+  // `splitPlan` es un plan creado ANTES de las rutas /references: sus cuatro
+  // overrides se reemplazan y los de las rutas nuevas se agregan.
+  const yaTenia = Object.keys(splitPlan.apiStages[0].throttle).length;
+  assert.equal(splitOps.filter((o) => o.op === "replace").length, yaTenia * 2);
+  assert.ok(splitOps.filter((o) => o.op === "add").every((o) => o.path.includes("/throttle/references")));
   assert.ok(splitOps.some((o) => o.path.endsWith("/throttle/documents/POST/burstLimit") && o.value === "3"));
 
   assert.deepEqual(usagePlanPatchOps(splitPlan, { quotaPerDay: 50 }), [

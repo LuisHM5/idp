@@ -109,6 +109,9 @@ en papel?» — y por eso las referencias deben salir de una carta en papel (§4
 
 ```bash
 # 1. Desplegar (una vez). Crea la tabla de huellas; te la muestra y pide confirmar.
+#    PRIMERO el deploy y DESPUÉS el sync: el tipo pide sus elementos y campos de
+#    referencia por nombre a `_shared.json`, que viaja en el bundle. Sincronizarlo
+#    sobre una Lambda vieja lo deja sin firma/sello/logo.
 pnpm run deploy:dev
 pnpm sync:one -- --type CARTA_NOM35
 
@@ -116,6 +119,8 @@ pnpm sync:one -- --type CARTA_NOM35
 pnpm refs:register -- --key 10021 --dir test-docs/nom35/samples/10021 --dry-run   # ensayo
 pnpm refs:register -- --key 10021 --dir test-docs/nom35/samples/10021             # de verdad
 pnpm refs:list -- --key 10021
+#    …o por API, desde otro sistema (necesita el permiso --reference-write):
+#    POST /references/PROVEEDOR/10021 → PUT a uploadUrl → POST …/confirm   (§4)
 
 # 3. Subir cartas con su proveedor
 pnpm enviar test-docs/nom35/samples/10021/doc3.pdf CARTA_NOM35 --meta proveedor=10021
@@ -149,7 +154,9 @@ firma+sello en cartas de tres empleados distintos.
 | **Todas** las cartas en revisión con `AUTENTICIDAD_EVALUADA: false` | La capa de visión no corre. Casi siempre: el modelo de visión (Claude Haiku 4.5) no tiene «Model access» en Bedrock en esa cuenta/región. El error exacto está en `authenticity.visionError` del `.json` |
 | `FIRMA_PRESENTE: true` pero `FIRMA_SIN_INSERCION` y `FIRMA_COINCIDE_REFERENCIA` vacíos (`bboxSource: "MODELO"` en el `.json`) | El modelo vio la firma en la hoja pero no la reconoció en ninguna de las regiones que el código propuso, así que no hay recorte confiable y no se examina ni se compara (recortar «a ojo» del modelo fabricaría un falso «no coincide»). Suele ser una firma muy tenue o pegada a un bloque de texto. Guarda el caso: se ajusta `pixel_forensics.propose_regions` |
 | El modelo no encuentra el sello, o dice que una firma genuina parece pegada | Ajuste de prompt (`pipeline/vision_inspector.py`). Guarda el `.json` y los `_prompt_*.json` de ese caso: son la evidencia para afinarlo. Mientras tanto no rechaza nada — lo que sale de la visión solo manda a revisión |
-| `referencesFound: false` aunque registraste referencias | Subiste sin `--meta proveedor=<n>`, o registraste en el otro ambiente (dev y prod no comparten) |
+| `referencesFound: false` aunque registraste referencias | Subiste sin `--meta proveedor=<n>`, registraste en el otro ambiente (dev y prod no comparten), o la clave registrada no es exactamente la que mandas |
+| Motivo `REFERENCIAS_NO_DISPONIBLES`, carta en revisión | Las referencias existen pero no se pudieron leer al procesar (tabla o bucket). No dice nada de la carta: reprocésala |
+| Tras un `sync:one`, firma/sello/logo dejan de evaluarse | Sincronizaste el catálogo sobre una Lambda desplegada antes de los elementos compartidos: `pnpm run deploy:dev` |
 | Una captura genuina sale `INDETERMINADO` | Es un escaneo pegado dentro de Word. No se acusa; deciden visión y memoria. Pide el PDF directo del escáner |
 | Aviso «etiqueta '1' no dice nada» al registrar | El archivo se llama `firma1.png`. No bloquea, pero renómbralo a quién firma o qué sucursal (§4) |
 
@@ -181,18 +188,24 @@ documento cuando sale en falso:
 | `FIRMA_PRESENTE` · `SELLO_PRESENTE` · `LOGO_PRESENTE` | No se ve el elemento | revisión |
 | `FIRMA_SIN_INSERCION` · `SELLO_SIN_INSERCION` | Es una imagen incrustada, o se ve pegada/impresa | revisión |
 | `SELLO_CORRESPONDE_EMISOR` | El sello nombra a otra empresa | revisión |
-| `FIRMA_` · `SELLO_` · `LOGO_COINCIDE_REFERENCIA` | No corresponde a lo registrado (**vacío** si no hay nada registrado) | revisión |
+| `FIRMA_` · `SELLO_` · `LOGO_COINCIDE_REFERENCIA` | No corresponde a lo registrado (**vacío** si no hay nada registrado o no se pudo consultar) | revisión |
 | `FIRMA_SELLO_NO_PARECIDOS` | Se parecen demasiado a los de otra carta | revisión |
 | `FONDO_NATURAL` | Fondo perfectamente uniforme | revisión |
 | `AUTENTICIDAD_EVALUADA` | La verificación no pudo correr | revisión (nunca aprueba callado) |
 | `CARTA_NO_DUPLICADA` | Esta misma carta ya se recibió | solo aviso |
 
 Informativos: `ORIGEN_DOCUMENTO`, `TEXTO_SELLO`, `VEREDICTO_AUTENTICIDAD`,
-`MOTIVOS_AUTENTICIDAD`.
+`MOTIVOS_AUTENTICIDAD` y `PROVEEDOR_SUGERIDO` (solo se llena si la carga no
+mandó `proveedor` y la búsqueda por referencias está activa — hoy apagada, ver
+`AUTENTICIDAD_Y_REFERENCIAS.md` §3.4.3).
 
-Catálogo: `catalogs/base/recursos_humanos/CARTA_NOM35.json`. Cambiar un mensaje,
-un umbral o un `on_fail` es editar ese JSON y `pnpm sync:one -- --type CARTA_NOM35`
-— sin deploy.
+Catálogo: `catalogs/base/recursos_humanos/CARTA_NOM35.json`. Los campos de
+firma, sello y logo contra referencia vienen de los presets
+`FIRMA_/SELLO_/LOGO_CONTRA_REFERENCIA` de `catalogs/_shared.json`, y las
+definiciones de los tres elementos de `_authenticity_elements`. Cambiar un
+umbral, un `on_fail` o un mensaje **del tipo** es editar su JSON (redeclarando
+el campo o el elemento) y `pnpm sync:one -- --type CARTA_NOM35`, sin deploy;
+cambiar el preset o el elemento **compartido** es `pnpm build` + deploy.
 
 ---
 
@@ -218,6 +231,18 @@ Resumen operativo; la versión larga (cómo recortar, qué evitar) está en
    Un proveedor puede tener varias de cada una: todas las activas son válidas.
 3. **Registra**: `pnpm refs:register -- --key 10040 --dir referencias/10040`
    (primero con `--dry-run`). Te dice cuáles entran y cuáles rechaza y por qué.
+   La clave solo admite letras, dígitos, `.`, `-` y `_`. Desde otro sistema, lo
+   mismo por API — una llamada por recorte:
+
+   ```bash
+   curl -X POST "$API/references/PROVEEDOR/10040" -H "x-api-key: $KEY" -H "Content-Type: application/json" \
+     -d '{"kind": "SELLO", "label": "Planta envasadora"}'          # → refId, uploadUrl
+   curl -X PUT --data-binary @sello.png "$UPLOAD_URL"              # sin headers extra
+   curl -X POST "$API/references/PROVEEDOR/10040/SELLO/planta-envasadora/confirm" -H "x-api-key: $KEY"
+   ```
+
+   La app necesita el permiso (`pnpm apps:grant -- --name <app> --env dev
+   --reference-write`); `confirm` contesta en el momento si lo aceptó o por qué no.
 4. **Quien sube la carta manda el proveedor**: `"metadata": {"proveedor": "10040"}`
    en `POST /documents` (o `--meta proveedor=10040` en `pnpm enviar` / `pnpm procesar`).
 

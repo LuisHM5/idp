@@ -1,7 +1,7 @@
 {
   "CARTA_NOM35": {
     "catalog_status": "beta",
-    "schema_version": "5.0.0",
+    "schema_version": "5.1.0",
     "display_name": "Carta NOM-035 de promotor",
     "aliases": [
       "carta NOM-035",
@@ -37,32 +37,20 @@
         "fallback_models": []
       },
       "elements": {
-        "FIRMA": {
-          "description": "Firma autógrafa trazada con tinta sobre la línea de firma, encima del nombre impreso del firmante. El nombre impreso o la línea vacía NO son la firma.",
-          "required": true,
-          "ink_when_overlapping": "dark",
-          "similarity_reject": 0.97,
-          "similarity_review": 0.85
-        },
+        "FIRMA": {},
         "SELLO": {
-          "description": "Sello de goma de la empresa emisora estampado con tinta (con o sin recuadro), normalmente junto a la firma o encima de ella, con razón social, sucursal, domicilio o teléfono.",
-          "required": true,
-          "read_text": true,
-          "issuer_field": "EMPRESA_EMISORA",
-          "ink_when_overlapping": "colour",
-          "similarity_reject": null,
-          "similarity_review": 0.95
+          "issuer_field": "EMPRESA_EMISORA"
         },
-        "LOGO": {
-          "description": "Logotipo o membrete de la empresa emisora, normalmente en el encabezado o en el pie de la hoja.",
-          "required": true,
-          "fingerprint": false,
-          "embedded_image_is_insertion": false
-        }
+        "LOGO": {}
       },
       "references": {
         "key_from": "metadata.proveedor",
-        "scope": "PROVEEDOR"
+        "scope": "PROVEEDOR",
+        "search": {
+          "enabled": false,
+          "min_similarity": 0.7,
+          "top_k": 3
+        }
       },
       "memory": {
         "enabled": true,
@@ -76,6 +64,11 @@
       }
     },
     "fields": {
+      "$presets": [
+        "FIRMA_CONTRA_REFERENCIA",
+        "SELLO_CONTRA_REFERENCIA",
+        "LOGO_CONTRA_REFERENCIA"
+      ],
       "DESTINATARIO": {
         "type": "string",
         "required": true,
@@ -149,20 +142,6 @@
           }
         ]
       },
-      "AUTENTICIDAD_EVALUADA": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "evaluated",
-        "hint": "Verdadero cuando todas las capas habilitadas de la verificación de autenticidad pudieron correr.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "on_fail": "review",
-            "message": "No se pudo completar la verificación de autenticidad; requiere revisión manual"
-          }
-        ]
-      },
       "CAPTURA_FISICA": {
         "type": "boolean",
         "required": false,
@@ -198,149 +177,6 @@
             "allow_empty": true,
             "on_fail": "review",
             "message": "El fondo es perfectamente uniforme: posible exportación digital o captura de pantalla"
-          }
-        ]
-      },
-      "FIRMA_PRESENTE": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.FIRMA.present",
-        "hint": "Se ve una firma autógrafa en la hoja.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "No se detectó firma autógrafa en la carta"
-          }
-        ]
-      },
-      "SELLO_PRESENTE": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.SELLO.present",
-        "hint": "Se ve un sello de la empresa en la hoja.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "No se detectó sello de la empresa en la carta"
-          }
-        ]
-      },
-      "LOGO_PRESENTE": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.LOGO.present",
-        "hint": "Se ve el logotipo o membrete de la empresa emisora.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "No se detectó logotipo o membrete de la empresa emisora"
-          }
-        ]
-      },
-      "FIRMA_SIN_INSERCION": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.FIRMA.not_pasted",
-        "hint": "Falso cuando la firma es una imagen insertada o muestra indicios de serlo.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "La firma es una imagen insertada o muestra indicios de inserción digital"
-          }
-        ]
-      },
-      "SELLO_SIN_INSERCION": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.SELLO.not_pasted",
-        "hint": "Falso cuando el sello es una imagen insertada, impresa, o muestra indicios de serlo.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "El sello es una imagen insertada o muestra indicios de inserción digital o de impresión"
-          }
-        ]
-      },
-      "TEXTO_SELLO": {
-        "type": "string",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.SELLO.text",
-        "hint": "Leyenda legible del sello.",
-        "validation": []
-      },
-      "SELLO_CORRESPONDE_EMISOR": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.SELLO.issuer_consistent",
-        "hint": "La leyenda del sello nombra a la misma empresa que emite la carta. Vacío si el sello es ilegible.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "El sello nombra a una empresa distinta de la que emite la carta"
-          }
-        ]
-      },
-      "FIRMA_COINCIDE_REFERENCIA": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.FIRMA.matches_reference",
-        "hint": "La firma corresponde a un firmante registrado del proveedor. Vacío si el proveedor no tiene firmas registradas.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "La firma no corresponde a ninguna de las firmas registradas del proveedor"
-          }
-        ]
-      },
-      "SELLO_COINCIDE_REFERENCIA": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.SELLO.matches_reference",
-        "hint": "El sello corresponde a un sello registrado del proveedor. Vacío si el proveedor no tiene sellos registrados.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "El sello no corresponde a ninguno de los sellos registrados del proveedor"
-          }
-        ]
-      },
-      "LOGO_COINCIDE_REFERENCIA": {
-        "type": "boolean",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "element.LOGO.matches_reference",
-        "hint": "El logotipo corresponde a uno registrado del proveedor. Vacío si el proveedor no tiene logotipos registrados.",
-        "validation": [
-          {
-            "rule_type": "boolean_true",
-            "allow_empty": true,
-            "on_fail": "review",
-            "message": "El logotipo no corresponde a ninguno de los registrados del proveedor"
           }
         ]
       },
@@ -389,20 +225,12 @@
           }
         ]
       },
-      "VEREDICTO_AUTENTICIDAD": {
+      "PROVEEDOR_SUGERIDO": {
         "type": "string",
         "required": false,
         "computed": true,
-        "authenticity_source": "verdict",
-        "hint": "AUTENTICO, SOSPECHOSO, NO_AUTENTICO o NO_EVALUADO.",
-        "validation": []
-      },
-      "MOTIVOS_AUTENTICIDAD": {
-        "type": "string",
-        "required": false,
-        "computed": true,
-        "authenticity_source": "reasons",
-        "hint": "Códigos de los hallazgos de autenticidad, separados por coma.",
+        "authenticity_source": "references.suggested_key",
+        "hint": "Número de proveedor al que corresponden la firma, el sello o el logotipo según las referencias registradas. Solo se llena cuando la carga no declaró `proveedor`. Informativo: es una sugerencia para quien revisa, no una identificación.",
         "validation": []
       }
     }

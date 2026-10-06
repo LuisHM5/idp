@@ -3,7 +3,8 @@
   internas (expuestas por este proyecto) y externas (servicios de AWS que
   este proyecto consume). Si agregas/quitas una ruta en
   `src/document-validation-stack.ts`, cambias el shape de una respuesta en
-  `upload-lambda`/`query-lambda`, o agregas una llamada nueva a un servicio
+  `upload-lambda`/`query-lambda`/`enrichment-lambda/references_api.py`, o
+  agregas una llamada nueva a un servicio
   de AWS (nuevo cliente boto3/@aws-sdk en `enrichment-lambda`, `upload-lambda`
   o `query-lambda`), actualiza este documento en el mismo cambio. El detalle
   técnico exhaustivo del API REST interno vive en `api-docs/API_USO.md` — este
@@ -38,6 +39,11 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 | 6 | `GET` | `/documents?docType=&system=&meta.<clave>=&field=&value=` | **Buscar/listar** documentos por tipo, sistema que los subió, metadata actual y/o cualquier campo extraído | `query-lambda/index.mjs` |
 | 7 | `GET` | `/document-types` | **Catálogo de tipos**: lista paginada (5/página) de los tipos soportados, con nombre y descripción | `query-lambda/index.mjs` |
 | 8 | `GET` | `/document-types/{type}` | Un tipo del catálogo por su TYPE_ID exacto, con su `schema` de campos opcional (`?includeSchema=1`) | `query-lambda/index.mjs` |
+| 9 | `POST` | `/references/{scope}/{key}` | **Reservar una referencia** (firma, sello o logo válido de una entidad, p. ej. un proveedor) y obtener la URL de carga | `enrichment-lambda/references_api.py` (References Lambda) |
+| 10 | `POST` | `/references/{scope}/{key}/{kind}/{refId}/confirm` | **Revisar y activar** el recorte subido; responde en el momento | `enrichment-lambda/references_api.py` |
+| 11 | `GET` | `/references/{scope}/{key}` | **Listar** las referencias de una entidad (`?kind=`, `?includeInactive=1`) | `enrichment-lambda/references_api.py` |
+| 12 | `GET` | `/references/{scope}/{key}/{kind}/{refId}` | Una referencia, con URL prefirmada de su imagen (5 min) | `enrichment-lambda/references_api.py` |
+| 13 | `DELETE` | `/references/{scope}/{key}/{kind}/{refId}` | **Dar de baja** (solo desactiva; el borrado definitivo es `pnpm refs:remove --delete`) | `enrichment-lambda/references_api.py` |
 
 **Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.8 y en `api-docs/API_USO.md` §5.
 
@@ -216,6 +222,44 @@ metadata ni iniciar reprocesos**. Una URL de descarga ya emitida sigue siendo un
 corta y debe tratarse como secreto. Ver `api-docs/API_USO.md` §3/§4/§5 y
 `AMBIENTES_Y_SEGURIDAD.md`.
 
+### 1.9 `/references` — Registro de referencias de autenticidad
+
+Las firmas, sellos y logos **válidos** de una entidad, contra los que la etapa de
+autenticidad compara cada documento. Una referencia pertenece a la **entidad**
+(`scope` + `key`, p. ej. `PROVEEDOR` + número de proveedor), no a un tipo de
+documento. `scope` y `kind` válidos salen del catálogo
+(`authenticity.reference_scopes`: los `authenticity.references.scope` y
+elementos de los tipos activos); hoy solo existe `PROVEEDOR` con `FIRMA`,
+`SELLO` y `LOGO` (`CARTA_NOM35`).
+
+| Paso | Qué | Cómo |
+|---|---|---|
+| 1 | `POST /references/{scope}/{key}` con `{kind, label, fileName?}` | `Registry.reserve`: fila `PENDING` en la tabla de huellas (con TTL de 24 h) y URL prefirmada de `PutObject` hacia `references-pending/…` (15 min). Devuelve `refId`, `uploadUrl`, `confirmUrl`. |
+| 2 | `PUT {uploadUrl}` con el recorte | Directo a S3, sin Lambda y **sin cabeceras extra** — mismo contrato que 1.2. |
+| 3 | `POST …/confirm` (body opcional `{force: true}`) | `Registry.confirm`: lee el recorte, lo revisa con el código del pipeline (formato, peso, dimensiones, tinta), busca duplicados, lo copia a `references/…`, calcula su embedding, lo indexa y activa la fila. Responde la ficha + `warnings`, o `422 REFERENCE_REJECTED` / `409`. |
+
+Es **la misma implementación** que usa el CLI de operador (`pnpm refs:*` →
+`pipeline/reference_registry.py`): un recorte que el CLI rechazaría no entra por
+la API. Corre en una Lambda propia (**References Lambda**: Python 3.12, mismo
+asset que la Enrichment Lambda con handler `references_api.handler`, 29 s,
+1024 MB) con permisos mínimos: filas de referencias, los prefijos
+`references/` y `references-pending/` del bucket y el índice vectorial — nunca
+un documento.
+
+- **Permiso:** todas las rutas, **también los `GET`**, exigen
+  `AllowReferenceWrite=true` en la fila de la app (`pnpm apps:grant -- --name
+  APP --reference-write`); apagado por default. **Falla cerrado**: key no
+  registrada o AppsTable inalcanzable → `403 FORBIDDEN`. En dev sin API keys
+  obligatorias queda abierto, como el resto de ese stack.
+- **Límites:** no cuenta contra documentos/día. `POST` y `DELETE` están en
+  `WRITE_METHODS` (throttle de escritura); los dos `GET`, en el de lectura.
+- **Efecto:** la referencia confirmada se usa en los documentos que se procesen
+  **después** con `metadata.proveedor = key`.
+- **La ficha nunca expone** la huella de tinta ni el embedding.
+
+Contrato completo, límites del recorte y códigos de error:
+[`api-docs/API_USO.md`](api-docs/API_USO.md) §8.
+
 ---
 
 ## 2. APIs externas consumidas (de terceros — AWS)
@@ -230,7 +274,9 @@ Son APIs que este proyecto **no controla**: dependencias de AWS. Cambios de disp
 | `Converse` | Código propio — `document-processing/resources/model-invoke-lambda/index.py` | Los pasos `ClassificationStep`/`ProcessingStep` de Step Functions (flujo estándar), con visión |
 | `Converse` **con bloques de imagen** | Código propio — `enrichment-lambda/pipeline/vision_inspector.py` (vía `pipeline/bedrock.py`) | Etapa de autenticidad física, solo en tipos que declaran `authenticity` (hoy `CARTA_NOM35`): 1–2 llamadas por documento — la página, y recortes de firma/sello/logo + referencias registradas. Salida forzada por herramienta. Ver [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md) |
 
-Toda llamada al modelo usa **Converse**, la API de Bedrock que es agnóstica del proveedor: el mismo request sirve para cualquier modelo que Bedrock aloje, así que cambiar de modelo es configuración, no código.
+| `InvokeModel` (`amazon.titan-embed-image-v1`, Amazon Titan Multimodal Embeddings G1, 1024 dimensiones) | Código propio — `enrichment-lambda/pipeline/reference_embeddings.py::TitanMultimodalProvider.embed_image` | Embedding de un recorte de firma/sello/logo. Lo llaman la References Lambda al confirmar una referencia (`reference_registry.Registry._store`, 1 imagen por alta), el pipeline (`authenticity._crop_vector`) solo cuando un proveedor tiene más referencias de un elemento que `max_references_per_kind` o en la búsqueda sin proveedor, y `pnpm refs:reindex`/`refs:search`/`refs:eval`. Se factura por imagen, en la línea `BedrockEmbeddings` |
+
+Toda llamada **generativa** al modelo usa **Converse**, la API de Bedrock que es agnóstica del proveedor: el mismo request sirve para cualquier modelo que Bedrock aloje, así que cambiar de modelo es configuración, no código.
 
 Modelo base: `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil de inferencia cross-region), vía `BEDROCK_MODEL_ID`. Cada paso puede apuntar a un modelo distinto — para bajar costo o subir precisión — con estos overrides, que caen al modelo base si no se definen:
 
@@ -268,7 +314,11 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 | `GetObject` (vía URL presignada, `getSignedUrl`) | `query-lambda/index.mjs` | `GET /documents/{id}/file`: firma la URL de descarga, el cliente hace el `GET`, no la Lambda — simétrico al `PutObject` presignado de la subida |
 | `HeadObject` + `CopyObject` | `query-lambda/index.mjs` | `POST /documents/{id}/reprocess`: recupera metadata y copia el original de `processed/`/`failed/` a una key nueva en `raw/`; no descarga bytes |
 | `GetObject` | `enrichment-lambda/pipeline/fingerprint_store.py` | Lee las imágenes de referencia registradas de un proveedor bajo `references/<scope>/<clave>/<ELEMENTO>/…` (mismo bucket; solo `raw/` dispara el flujo). Por eso la Lambda recibe `DOCUMENT_BUCKET` |
-| `PutObject` / `DeleteObject` | `scripts/manage-references.py` (`pnpm refs:*`, boto3) | Alta y baja de esas imágenes de referencia — herramienta de operación, no runtime |
+| `PutObject` / `DeleteObject` | `scripts/manage-references.py` (`pnpm refs:*`, boto3) | Alta y baja de esas imágenes de referencia — herramienta de operación, no runtime. Usa el mismo `pipeline/reference_registry.py` que la API |
+| `PutObject` (vía URL presignada, `generate_presigned_url`) | References Lambda — `enrichment-lambda/pipeline/reference_registry.py::Registry.upload_url` | `POST /references/{scope}/{key}`: firma la carga del recorte a `references-pending/<scope>/<clave>/<ELEMENTO>/<refId>` (15 min, sin cabeceras firmadas). Ese prefijo tiene lifecycle de 1 día: una carga sin confirmar desaparece sola |
+| `HeadObject` + `GetObject` + `DeleteObject` | References Lambda — `reference_registry.py::Registry._read_upload` / `_discard` | `confirm`: mide el objeto antes de bajarlo (rechaza > 3.5 MB sin descargar), lo lee y borra el staging |
+| `PutObject` | References Lambda — `reference_registry.py::Registry._store` | `confirm`: escribe el recorte aceptado en `references/<scope>/<clave>/<ELEMENTO>/<refId>.png\|jpg`, donde lo lee el pipeline |
+| `GetObject` (vía URL presignada) | References Lambda — `reference_registry.py::Registry.image_url` | `GET /references/…/{refId}`: URL de 5 min para ver la imagen de una referencia activa |
 | `DownloadFile` (transfer manager) | Código propio — `model-invoke-lambda/index.py` | Descarga el archivo para la llamada de visión del flujo estándar |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createSuccessChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Al terminar la ejecución SIN excepción (incluida una validación RECHAZADA — es un resultado de negocio, no una falla): mueve `raw/{TIPO?}/{uuid}/archivo` → `processed/{documentId}/{filename}`. Código propio no lo invoca directamente. |
 | `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createFailedChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Mismo movimiento pero a `failed/{documentId}/{filename}`, solo cuando la propia ejecución de Step Functions revienta (excepción no capturada, timeout) — no cuando el documento simplemente sale RECHAZADO. |
@@ -294,6 +344,9 @@ Varias tablas distintas, mismo servicio (tracking, catálogo, costos, y — abaj
 | `PutItem` | `enrichment-lambda/cost_audit.py` | costos (`document-validation-costs[-dev]`) | Un item por documento procesado: $ desglosado por servicio (Bedrock segmentación/extracción/upstream, Textract, Lambda). Best-effort, tabla `RETAIN` separada de tracking — ver `COSTOS.md` §7 |
 | `PutItem` + `Query` | `enrichment-lambda/pipeline/fingerprint_store.py` | huellas (`document-validation-fingerprints[-dev]`) | Etapa de autenticidad: escribe la huella de tinta de firma/sello, el hash de cualquier imagen incrustada bajo ellos y la identidad de la carta, y consulta la partición del proveedor para detectar la MISMA firma en la carta de otro empleado o un reenvío. También lee (`Query`) las referencias registradas (`Pk = R#…`). Best-effort: sin tabla o con error, los campos quedan vacíos. Tabla `RETAIN`, una por ambiente |
 | `PutItem` / `UpdateItem` / `DeleteItem` / `Query` / `Scan` | `scripts/manage-references.py` (`pnpm refs:*`, boto3) | huellas | Alta, consulta y baja de referencias por proveedor — herramienta de operación, no runtime |
+| `PutItem` condicional / `GetItem` / `Query` / `UpdateItem` | References Lambda — `enrichment-lambda/pipeline/reference_registry.py::Registry` | huellas | API `/references`: reserva la fila `R#<scope>#<clave>` / `<ELEMENTO>#<refId>` en `PENDING` con `ExpiresAt` (TTL de la tabla, 24 h), la activa quitando `ExpiresAt` en la misma escritura, la lista y la desactiva. El TTL solo aplica a filas `PENDING` |
+| `GetItem` | References Lambda — `enrichment-lambda/references_api.py::resolve_caller` | apps (`document-validation-apps[-dev]`) | Lee `AllowReferenceWrite` de la app que llama; sin fila o con error → `403` (falla cerrado) |
+| `Scan` | References Lambda — `enrichment-lambda/document_catalog.py` (vía `references_api._catalog_scopes`) | catálogo | Qué `scope`/`kind` declaran los tipos activos |
 | `Scan` / `GetItem` | `scripts/ver-costos.py` (boto3 directo, no `aws` CLI) | costos | `pnpm costos` / `pnpm costos -- --id <id>` — herramienta de auditoría, no runtime |
 
 ### 2.5 AWS Step Functions — orquestación
@@ -315,6 +368,20 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 
 `aws acm import-certificate` (CLI, `scripts/import-cert.mjs`) — importa/renueva el certificado TLS del dominio propio. No es parte del runtime del pipeline, es una tarea operativa manual.
 
+### 2.9 Amazon S3 Vectors — índice de similitud de las referencias
+
+Bucket vectorial `document-validation-references[-dev]`, índice
+`references-titan-multimodal-1024` (float32, 1024 dimensiones, distancia
+coseno). Es un dato **derivado**: cada fila de referencia guarda su propio
+vector en DynamoDB y `pnpm refs:reindex` reconstruye el índice desde la tabla.
+
+| Operación | Quién la llama | Nota |
+|---|---|---|
+| `PutVectors` | References Lambda — `enrichment-lambda/pipeline/reference_index.py::put` (desde `reference_registry.Registry._embedding_fields`) | Al confirmar una referencia. Si falla, la referencia queda activa con `indexed: false` y un nuevo `confirm` o `pnpm refs:reindex` lo reintenta |
+| `DeleteVectors` | References Lambda — `reference_index.py::delete` (desde `Registry._unindex`) | Al dar de baja o borrar una referencia |
+| `QueryVectors` (+ `GetVectors`, que el filtro por metadatos exige) | Enrichment Lambda — `reference_index.py::search` (desde `authenticity._search_references`) | Búsqueda sin proveedor: solo si el tipo declara `authenticity.references.search.enabled`. El pipeline **solo lee** el índice |
+| `PutVectors` / `DeleteVectors` / `QueryVectors` | `scripts/manage-references.py` (`pnpm refs:register`, `refs:remove`, `refs:reindex`, `refs:search`) | Herramienta de operación, no runtime |
+
 ---
 
 ## 3. Matriz resumen (para lectura rápida de negocio)
@@ -327,9 +394,11 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 | `PATCH /documents/{id}/metadata` | Interna | Entrante | — | `api-docs/API_USO.md` §4 |
 | `GET /documents/{id}/file` | Interna | Entrante | — | `api-docs/API_USO.md` §5 |
 | `GET /documents` | Interna | Entrante | — | `api-docs/API_USO.md` §6 |
+| `/references/{scope}/{key}…` (5 operaciones) | Interna | Entrante | — | `api-docs/API_USO.md` §8 |
 | Amazon Bedrock (Converse/InvokeModel) | Externa | Saliente (nosotros → AWS) | Alta — es el motor de IA del producto | `ARQUITECTURA.md`, `COSTOS.md` |
 | Amazon Textract | Externa | Saliente | Media — solo OCR de páginas escaneadas | `ARQUITECTURA.md` |
 | Amazon S3 | Externa | Saliente | Alta — almacenamiento de todo el pipeline | `ARQUITECTURA.md` |
+| Amazon S3 Vectors | Externa | Saliente | Baja — índice derivado, reconstruible con `pnpm refs:reindex`; solo lo usa la búsqueda de referencias por similitud | `AUTENTICIDAD_Y_REFERENCIAS.md` |
 | Amazon DynamoDB | Externa | Saliente | Alta — catálogo y tracking | `ARQUITECTURA.md`, `catalogs/README.md` |
 | AWS Step Functions | Externa | Saliente (vía blueprint) | Media — orquestación, reemplazable | `FLUJO_EJECUCION.md` |
 | Amazon EventBridge | Externa | Saliente (vía blueprint) | Media — notificación, un consumidor externo depende de esto | `api-docs/API_USO.md` §1 |
@@ -344,5 +413,6 @@ Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint
 - **Tamaño de archivo (subida)**: siempre se implementa el flujo de dos pasos (pedir `uploadUrl`, luego `PUT` directo a S3); el modo inline ya no existe.
 - **Consumo del resultado**: dos formas — *pull* (`GET /documents/{id}`: `202` + `Retry-After`, backoff con jitter, máximo recomendado 30 s) o *push* (suscribirse a EventBridge, requiere estar dentro de la cuenta/organización AWS o una regla de reenvío cross-account). Un `404` no se reintenta como pendiente.
 - **Metadata externa**: si la integración necesita estados transitorios/marcas, otorgar `AllowMetadataWrite` y usar `PATCH /documents/{id}/metadata`; no reutilizar `validation.status`.
+- **Referencias de autenticidad**: si la integración va a registrar las firmas/sellos/logos de sus proveedores, pedir `AllowReferenceWrite` (lo exigen todas las rutas `/references`, también los `GET`) y registrar **antes** de subir los documentos; la `key` debe ser exactamente el valor que después se manda en `metadata.proveedor`.
 - **Descarga del archivo original**: soportada vía `GET /documents/{id}/file` (URL prefirmada de S3, sin tope de tamaño real — ver 1.4). La API key aplica el alcance por app antes de emitirla; después, la URL misma es una credencial temporal y no debe compartirse.
 - **Dependencia de proveedor único**: todo el pipeline depende de AWS (Bedrock/Textract/S3/DynamoDB) — no hay abstracción multi-proveedor; cualquier cambio de proveedor de IA es un rediseño, no una config.

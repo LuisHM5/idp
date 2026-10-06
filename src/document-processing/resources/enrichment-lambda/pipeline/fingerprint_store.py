@@ -20,9 +20,9 @@ One DynamoDB table (`FINGERPRINT_TABLE`), four item families by `Pk` prefix:
   R#<scope>#<key>           the supplier's REGISTERED references (written by
                             `pnpm refs:*`, only read here); image bytes in S3.
 
-`Sk` is always `<letterKey>#<fileSha12>`, so re-processing the same file (a
-Step Functions retry, a re-upload) lands on the same rows instead of
-incriminating itself.
+For the memory families (E#, X#, L#) `Sk` is `<letterKey>#<fileSha12>`, so
+re-processing the same file (a Step Functions retry, a re-upload) lands on the
+same rows instead of incriminating itself. For R# it is `<KIND>#<refId>`.
 
 Write first, then read: of three forged letters uploaded at the same moment,
 whichever is processed second already finds the first. Everything here is
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -256,8 +257,47 @@ def _match(kind: str, similarity: float, exact: bool, level: str, other: Dict[st
 # ------------------------------------------------------------------ references
 
 
+STATUS_PENDING = "PENDING"
+STATUS_ACTIVE = "ACTIVE"
+STATUS_INACTIVE = "INACTIVE"
+
+_KEY_NOT_ALLOWED = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def normalize_key(value: Any) -> Optional[str]:
+    """The ONE normalizer of a reference key (a supplier number, an RFC…).
+    Whoever writes a reference and whoever looks it up must agree on it to the
+    character, so the pipeline, the CLI and the API all go through here: a key
+    registered raw and looked up sanitized is a reference nobody ever finds."""
+    text = str(value).strip() if value not in (None, "") else ""
+    return _KEY_NOT_ALLOWED.sub("", text) or None
+
+
 def reference_pk(scope: str, key: str) -> str:
     return f"R#{scope}#{key}"
+
+
+def _reference_view(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    kind, _, ref_id = str(item.get("Sk") or "").partition("#")
+    if not kind or not ref_id:
+        return None
+    return {
+        "kind": kind,
+        "refId": ref_id,
+        "label": item.get("Label") or "",
+        "s3Key": item.get("S3Key"),
+        "format": item.get("Format") or "png",
+        "inkGrid": _binary(item.get("InkGrid")),
+        "embedding": _binary(item.get("Embedding")),
+        "embeddingModel": item.get("EmbeddingModel"),
+    }
+
+
+def is_usable(item: Dict[str, Any]) -> bool:
+    """A reference a document may be compared against: not deactivated and not
+    a registration still waiting for its upload. Rows written before `Status`
+    existed carry none and count as active."""
+    return item.get("Active") is not False and item.get("Status") in (None, STATUS_ACTIVE)
 
 
 def list_references(scope: str, key: str, table: Any = None) -> Optional[Dict[str, List[Dict[str, Any]]]]:
@@ -279,31 +319,67 @@ def list_references(scope: str, key: str, table: Any = None) -> Optional[Dict[st
         return None
     out: Dict[str, List[Dict[str, Any]]] = {}
     for item in items:
-        if item.get("Active") is False:
+        if not is_usable(item):
             continue
-        kind, _, ref_id = str(item.get("Sk") or "").partition("#")
-        if not kind or not ref_id:
-            continue
-        out.setdefault(kind, []).append({
-            "refId": ref_id,
-            "label": item.get("Label") or "",
-            "s3Key": item.get("S3Key"),
-            "format": item.get("Format") or "png",
-            "inkGrid": _binary(item.get("InkGrid")),
-        })
+        view = _reference_view(item)
+        if view is not None:
+            out.setdefault(view.pop("kind"), []).append(view)
     return out
 
 
+def get_reference(scope: str, key: str, kind: str, ref_id: str, table: Any = None) -> Optional[Dict[str, Any]]:
+    """One usable reference by its address, or None (missing, inactive,
+    pending, no table, AWS error). Used when a vector search names it."""
+    if table is None:
+        if not configured():
+            return None
+        try:
+            table = _table()
+        except Exception as e:
+            logger.warning("fingerprint_store: no table: %s", e)
+            return None
+    try:
+        item = table.get_item(Key={"Pk": reference_pk(scope, key), "Sk": f"{kind}#{ref_id}"}).get("Item")
+    except Exception as e:
+        logger.warning("fingerprint_store: get_reference failed: %s", e)
+        return None
+    if not item or not is_usable(item):
+        return None
+    view = _reference_view(item)
+    if view is not None:
+        view.pop("kind")
+    return view
+
+
 def rank_references(
-    references: List[Dict[str, Any]], grid: Optional[bytes], limit: int
+    references: List[Dict[str, Any]], grid: Optional[bytes], limit: int,
+    vector: Any = None, model: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """The `limit` references most like this crop, by fingerprint — so a
-    supplier with ten registered signers still costs three reference images
-    per call, and the likeliest one is among them."""
-    scored = [
-        {**ref, "similarity": pixel_forensics.grid_similarity(grid, ref.get("inkGrid")) if grid else 0.0}
-        for ref in references
-    ]
+    """The `limit` references most like this crop — so a supplier with ten
+    registered signers still costs three reference images per call, and the
+    likeliest one is among them. Each result says how it was ranked
+    (`rankedBy`):
+
+      EMBEDDING  cosine against the crop's `vector`, when EVERY reference
+                 carries an embedding made by that same `model` (vectors of
+                 different models are not comparable, so it is all or nothing);
+      HUELLA     the ink fingerprint, for elements that have one;
+      ORDEN      nothing to rank by: the stored order, stable.
+    """
+    if vector is not None and model and references and all(
+        r.get("embedding") and r.get("embeddingModel") == model for r in references
+    ):
+        from . import reference_embeddings
+
+        scored = [{**ref, "similarity": reference_embeddings.cosine(vector, ref["embedding"]),
+                   "rankedBy": "EMBEDDING"} for ref in references]
+    else:
+        by = "HUELLA" if grid and any(r.get("inkGrid") for r in references) else "ORDEN"
+        scored = [
+            {**ref, "similarity": pixel_forensics.grid_similarity(grid, ref.get("inkGrid")) if grid else 0.0,
+             "rankedBy": by}
+            for ref in references
+        ]
     scored.sort(key=lambda r: r["similarity"], reverse=True)
     return scored[:max(limit, 0)]
 

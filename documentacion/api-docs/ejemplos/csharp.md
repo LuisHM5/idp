@@ -349,7 +349,109 @@ var newResult = await WaitForResult(
 Envía `{}` para heredar los tipos explícitos del trabajo anterior. Enviar
 `documentType = (string?)null` fuerza clasificación automática.
 
-## 4. Reglas importantes
+## 4. Registrar una referencia de autenticidad
+
+Las firmas, sellos y logos válidos de un proveedor se registran **antes** de
+subir sus documentos; los tipos con verificación de autenticidad (hoy
+`CARTA_NOM35`) comparan contra ellos cuando el documento llega con
+`metadata.proveedor` igual a la clave registrada. Son tres peticiones, con la
+misma mecánica que un documento: reservar, `PUT` a S3 y confirmar.
+
+La app necesita el permiso de referencias — también para consultar:
+
+~~~bash
+pnpm apps:grant -- --name ERP --env prod --reference-write
+~~~
+
+El fragmento reutiliza `apiClient`, `s3Client`, `ReadJson` y `EnsureSuccess`
+del programa de arriba:
+
+~~~csharp
+const string proveedor = "10040";      // el mismo valor de metadata.proveedor
+const string cropPath = "firma-julio.png";   // SOLO la firma recortada
+
+// -------------------------------------------------------------------------
+// 1. Reservar. kind = FIRMA | SELLO | LOGO; label = quién firma.
+// -------------------------------------------------------------------------
+using var reserveResponse = await apiClient.PostAsJsonAsync(
+    $"{api}/references/PROVEEDOR/{Uri.EscapeDataString(proveedor)}",
+    new
+    {
+        kind = "FIRMA",
+        label = "Lic. Julio Lemus",
+        fileName = Path.GetFileName(cropPath)
+    });
+await EnsureSuccess(reserveResponse);
+
+var reservation = await ReadJson(reserveResponse);
+var referenceUploadUrl = reservation.GetProperty("uploadUrl").GetString()
+    ?? throw new InvalidOperationException("La respuesta no contiene uploadUrl.");
+// confirmUrl es una ruta relativa: /references/PROVEEDOR/10040/FIRMA/<refId>/confirm
+var confirmUrl = api + reservation.GetProperty("confirmUrl").GetString();
+var refId = reservation.GetProperty("refId").GetString();
+
+// -------------------------------------------------------------------------
+// 2. Subir el recorte a S3. Sin x-api-key, sin Content-Type, sin x-amz-*.
+// -------------------------------------------------------------------------
+await using (var crop = File.OpenRead(cropPath))
+using (var cropContent = new StreamContent(crop))
+using (var cropUpload = await s3Client.PutAsync(referenceUploadUrl, cropContent))
+{
+    await EnsureSuccess(cropUpload);
+}
+
+// -------------------------------------------------------------------------
+// 3. Confirmar: revisa el recorte y responde en el momento (no hay polling).
+// 422 = el recorte no pasó; 409 SIMILAR_REFERENCE = misma tinta que otra.
+// -------------------------------------------------------------------------
+using var confirmResponse = await apiClient.PostAsync(confirmUrl, content: null);
+var confirmation = await ReadJson(confirmResponse);
+
+if (confirmResponse.StatusCode == HttpStatusCode.UnprocessableEntity)
+{
+    foreach (var issue in confirmation.GetProperty("errors").EnumerateArray())
+    {
+        Console.WriteLine(
+            $"{issue.GetProperty("code").GetString()}: " +
+            issue.GetProperty("message").GetString());
+    }
+    throw new InvalidOperationException("El recorte no pasó la revisión.");
+}
+
+if (confirmResponse.StatusCode == HttpStatusCode.Conflict
+    && confirmation.GetProperty("error").GetString() == "SIMILAR_REFERENCE")
+{
+    // Ya hay una muestra de esa misma firma. Para registrarla de todos modos:
+    using var forced = await apiClient.PostAsJsonAsync(
+        confirmUrl, new { force = true });
+    await EnsureSuccess(forced);
+    confirmation = await ReadJson(forced);
+}
+else
+{
+    await EnsureSuccess(confirmResponse);
+}
+
+Console.WriteLine(
+    $"Referencia {refId}: {confirmation.GetProperty("status").GetString()}");
+
+// -------------------------------------------------------------------------
+// Consultar y dar de baja.
+// -------------------------------------------------------------------------
+var entityUrl = $"{api}/references/PROVEEDOR/{Uri.EscapeDataString(proveedor)}";
+
+using var listResponse = await apiClient.GetAsync(
+    BuildUrl(entityUrl, ("kind", "FIRMA"), ("includeInactive", "1")));
+await EnsureSuccess(listResponse);
+Console.WriteLine(Pretty(await ReadJson(listResponse)));
+
+// DELETE solo desactiva: la ficha vuelve con status INACTIVE.
+using var deleteResponse = await apiClient.DeleteAsync(
+    $"{entityUrl}/FIRMA/{Uri.EscapeDataString(refId!)}");
+await EnsureSuccess(deleteResponse);
+~~~
+
+## 5. Reglas importantes
 
 - POST /documents manda JSON, no los bytes del archivo.
 - POST /documents/{id}/reprocess crea otro id y copia el original dentro de S3;
@@ -371,6 +473,11 @@ Envía `{}` para heredar los tipos explícitos del trabajo anterior. Enviar
   `Retry-After` y aumenta la espera gradualmente, hasta 30 segundos.
 - Un 404 significa que el documento no existe o queda fuera del alcance de la
   app. Ya no se usa para representar procesamiento pendiente.
+- Las rutas /references necesitan AllowReferenceWrite=true, también los GET.
+  La clave del proveedor solo admite letras, dígitos, punto, guion y guion
+  bajo; si mandas otra cosa, el 400 INVALID_REFERENCE_KEY trae la forma válida
+  en `suggested`. Una referencia confirmada aplica a los documentos que se
+  procesen después, y registrar referencias no gasta documentos del día.
 
 Referencia completa: [API_USO.md](../API_USO.md). Resumen:
 [API_RESUMEN.md](../API_RESUMEN.md). Contrato:

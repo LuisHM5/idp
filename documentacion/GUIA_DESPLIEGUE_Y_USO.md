@@ -555,6 +555,40 @@ pnpm refs:remove   -- --key 10040 --kind SELLO --ref planta-envasadora   # desac
 Las referencias deben salir de **una carta en papel verificada**, nunca de un PDF
 hecho en Word (§3.1 de la guía). dev y prod **no comparten** referencias.
 
+**También por API REST.** Una app con el permiso `AllowReferenceWrite` puede
+hacer lo mismo sin pasar por un operador: `POST /references/PROVEEDOR/{key}`
+(reserva + URL de carga) → `PUT` del recorte a S3 → `POST …/confirm`, más `GET`
+para listar/ver y `DELETE` para dar de baja (la API solo desactiva; `--delete`
+sigue siendo exclusivo de `pnpm refs:remove`). CLI y API corren el mismo código
+(`pipeline/reference_registry.py`), así que aplican la misma revisión y las
+mismas reglas de duplicados. Contrato: [`api-docs/API_USO.md`](api-docs/API_USO.md) §8.
+
+```bash
+pnpm apps:grant -- --name <app> --env dev --reference-write   # concede el permiso (apagado por default)
+pnpm refs:reindex -- --env dev                                # reconstruye el índice vectorial desde la tabla
+```
+
+Al desplegar esta API por primera vez (Lambda `ReferencesLambda`, bucket
+vectorial `document-validation-references[-dev]`, TTL en la tabla de huellas,
+lifecycle de 1 día en `references-pending/`):
+
+- `check-pending-tables` mostrará un **cambio** en
+  `document-validation-fingerprints[-dev]`: es el TTL `ExpiresAt` (solo afecta a
+  reservas `PENDING`). Es esperado; confirma con `S`.
+- Si después del deploy `/references/...` responde `{"message":"Missing
+  Authentication Token"}`, API Gateway no redesplegó el stage:
+  `aws apigateway create-deployment --rest-api-id <RestApiId> --stage-name prod`.
+- Despliega las rutas **antes** de correr `pnpm apps:register`/`apps:reconfigure`:
+  los usage plans que ya existían dejan las escrituras nuevas con el throttle de
+  lectura hasta un `apps:reconfigure`. Detalle en
+  [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md) → "Orden de despliegue
+  de las rutas `/references`".
+- Los embeddings usan **Amazon Titan Multimodal Embeddings G1**
+  (`amazon.titan-embed-image-v1`, `InvokeModel`): confirma que la cuenta/región
+  tenga acceso a ese modelo, igual que con el de visión. Sin él la referencia
+  queda activa pero sin vector (`indexed: false`), y se completa después con
+  `pnpm refs:reindex`.
+
 **3. Quien sube la carta manda el proveedor** en la metadata de carga:
 `"metadata": {"proveedor": "10040"}`. Sin ella corre en modo «sin referencias».
 
@@ -688,6 +722,9 @@ validators/engine.py                 ← motor de reglas (agregar rule_types nue
 pipeline/                            ← pipeline de expedientes (OCR, segmentación, extracción)
 pipeline/authenticity.py + pdf_forensics / pixel_forensics / vision_inspector / fingerprint_store
                                      ← etapa de autenticidad física (genérica; se activa desde el catálogo)
+pipeline/reference_registry.py + reference_embeddings / reference_index
+                                     ← registro de referencias (revisión, alta, baja), embeddings e índice vectorial
+references_api.py                    ← handler de la API REST `/references` (References Lambda)
 tests/integration/expected_pedimentos.json ← ground truth de los tests de pedimentos
 tests/integration/expected_autenticidad.json ← ground truth de la etapa de autenticidad
 referencias/<proveedor>/             ← NO COMMITEAR: recortes de firmas/sellos para `pnpm refs:register`
