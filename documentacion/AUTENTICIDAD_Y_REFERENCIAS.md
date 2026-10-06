@@ -380,6 +380,13 @@ Contrato completo, con cada respuesta: `api-docs/API_USO.md` y
 
 ### 3.4.2 Cómo se elige contra qué comparar (recuperación)
 
+![Flujo de la carta NOM-035: visión y embeddings](diagrams/nom35-vision-y-embeddings.png)
+
+_Verde = llamadas de visión (deciden). Morado = embeddings (solo eligen
+candidatas). Fuente editable:
+[`diagrams/nom35-vision-y-embeddings.mmd`](diagrams/nom35-vision-y-embeddings.mmd);
+se regenera con `npx @mermaid-js/mermaid-cli -i <mmd> -o <png> -b white -s 2`._
+
 Al modelo de visión se le muestran, junto a cada recorte, como mucho
 `vision.max_references_per_kind` (3) referencias de ese elemento. Cuáles:
 
