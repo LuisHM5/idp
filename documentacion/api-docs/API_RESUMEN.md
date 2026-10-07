@@ -1,6 +1,7 @@
 # API IDP — Resumen de integración
 
-**IDP Documents Validator** recibe documentos de sistemas externos, los almacena
+**IDP** (*Intelligent Document Processing*; en español, **Gestor Documental
+Inteligente, GDI**) recibe documentos de sistemas externos, los almacena
 de forma segura, extrae y valida sus datos y deja el resultado disponible para
 consulta. Además, cada app puede conservar metadata propia —por ejemplo lote,
 folio ERP o un estado transitorio—, actualizarla sin reprocesar el documento y
@@ -511,4 +512,4 @@ logo) y ≤ 2200 px · ≤ 12 MP · máx. 20 activas por entidad y elemento.
 
 ---
 
-Detalle completo: `API_USO.md` · C#/.NET: `ejemplos/csharp.md` · Runbook curl: `ejemplos/curl.md` · Contrato: `openapi.yaml`
+SDK Node.js/TypeScript: <https://code.alsuper.com/Infraestructura/idp-sdk-node> · Detalle completo: `API_USO.md` · C#/.NET: `ejemplos/csharp.md` · Runbook curl: `ejemplos/curl.md` · Contrato: `openapi.yaml`

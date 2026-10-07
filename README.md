@@ -1,4 +1,15 @@
-# Document Validator
+# IDP — Gestor Documental Inteligente (GDI)
+
+**IDP** son las siglas de *Intelligent Document Processing* (procesamiento inteligente de documentos). En español nos referimos al sistema como **Gestor Documental Inteligente (GDI)**: los dos nombres designan lo mismo. En el código, la infraestructura y los nombres de recursos aparece además como *Documents Validator* / `document-validation-*`, su nombre original.
+
+Recibe documentos de otros sistemas (ERP, portales, integraciones), los clasifica, extrae sus datos, los valida contra reglas de negocio y deja el resultado disponible por una API REST — `https://idp.alsuper.com` en producción.
+
+| Repositorio | Qué contiene |
+|---|---|
+| [`Infraestructura/idp`](https://code.alsuper.com/Infraestructura/idp) | Este repo: la infraestructura (AWS CDK), el pipeline, el catálogo de tipos y la documentación del API. |
+| [`Infraestructura/idp-sdk-node`](https://code.alsuper.com/Infraestructura/idp-sdk-node) | SDK oficial para Node.js/TypeScript: consume el API con una llamada por flujo, reintentos y errores tipados. |
+
+## Qué es por dentro
 
 Motor de validación y extracción inteligente de documentos usando Amazon Bedrock (Claude) + un motor de reglas determinístico configurable por JSON (sin tocar código, hot-reload vía DynamoDB).
 
@@ -16,6 +27,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | [`documentacion/api-docs/API_USO.md`](documentacion/api-docs/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
 | [`documentacion/api-docs/ejemplos/curl.md`](documentacion/api-docs/ejemplos/curl.md) | Runbook curl copiar-y-pegar (funciona sin importar el lenguaje del consumidor). |
 | [`documentacion/api-docs/ejemplos/csharp.md`](documentacion/api-docs/ejemplos/csharp.md) | Integración completa en C#/.NET: upload, consulta, metadata, búsqueda y descarga. |
+| [`idp-sdk-node`](https://code.alsuper.com/Infraestructura/idp-sdk-node) | 📦 SDK para Node.js/TypeScript (repo aparte). Se instala con pnpm directo desde el repo; ver ["Consumir el API desde Node.js"](#consumir-el-api-desde-nodejs). |
 | [`documentacion/api-docs/openapi.yaml`](documentacion/api-docs/openapi.yaml) | Contrato OpenAPI 3.1 del mismo API. Ver localmente con `pnpm docs:api` (Scalar en `/`, Swagger UI en `/swagger`). |
 | [`documentacion/APIS_INTEGRACION.md`](documentacion/APIS_INTEGRACION.md) | 🔌 Inventario de APIs para integrar con otros sistemas: internas (propias) vs. externas (servicios de AWS consumidos). |
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
@@ -69,7 +81,7 @@ Cada campo del catálogo trae un `hint` en español libre, junto a su tipo y sus
 ## Instalación y primer despliegue
 
 ```bash
-git clone <repo> && cd documents-validator
+git clone git@code.alsuper.com:Infraestructura/idp.git && cd idp
 pnpm install
 pnpm setup:python                     # crea .venv para tests locales
 cp .env.example .env.dev              # revisa/ajusta BEDROCK_MODEL_ID, etc.
@@ -80,6 +92,26 @@ pnpm run deploy                       # despliega a DEV (seguro, nunca toca prod
 ```
 
 Guía paso a paso completa (primer deploy, verificación, prod con dominio propio): [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md).
+
+## Consumir el API desde Node.js
+
+Para integrarse desde Node.js/TypeScript no hace falta armar las peticiones a mano: el SDK [`idp-sdk-node`](https://code.alsuper.com/Infraestructura/idp-sdk-node) cubre todos los endpoints.
+
+```bash
+pnpm add git+https://code.alsuper.com/Infraestructura/idp-sdk-node.git
+```
+
+```ts
+import { DocumentsValidator } from "documents-validator-sdk";
+
+const idp = new DocumentsValidator({ apiKey: process.env.IDP_API_KEY });
+const doc = await idp.documents.process({ file: "./pedimento.pdf", documentType: "PEDIMENTO_ERP" });
+console.log(doc.result.validation.status);
+```
+
+Guía completa (instalación, uso y manejo de errores) en el README de ese repo. Desde cualquier otro lenguaje: [`documentacion/api-docs/`](documentacion/api-docs/README.md).
+
+El SDK guarda una copia de `documentacion/api-docs/openapi.yaml`; cuando cambia la superficie del API hay que sincronizarlo (`npm run sync:spec && npm test` en su repo — ver [`AGENTS.md`](AGENTS.md#api-documentation-keep-in-sync-automatically)).
 
 ## Comandos principales
 
@@ -123,7 +155,7 @@ Guía completa del DSL (shape de cada campo, todas las `rule_type`, campos compu
 ## Estructura del proyecto
 
 ```
-documents-validator/
+idp/
 ├── bin/app.ts                              # entrypoint CDK (env dev|prod)
 ├── src/
 │   ├── document-validation-stack.ts        # stack CDK (infraestructura)

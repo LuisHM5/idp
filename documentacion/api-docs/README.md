@@ -1,5 +1,8 @@
 # API IDP — Documentación para integradores
 
+> **IDP** = *Intelligent Document Processing*. En español: **Gestor Documental
+> Inteligente (GDI)**. Es el mismo sistema con sus dos nombres.
+
 Esta carpeta es **todo lo que necesitas para integrarte con el API**, sin
 tener que conocer el resto del proyecto: qué hace, cómo autenticarte, cómo
 mandar un documento y leer el resultado, y ejemplos de código listos para
@@ -11,8 +14,19 @@ Recibe un documento (PDF, imagen, XML o XLSX), lo procesa de forma
 automática — extrae sus datos y los valida contra reglas de negocio — y te
 deja el resultado disponible para consultar por HTTP. Tú controlas todo el
 ciclo con **una API REST**: registrar el documento, subirlo, y leer/buscar el
-resultado cuando esté listo. No hay SDK que instalar: es HTTP + JSON, así que
-funciona desde cualquier lenguaje que pueda hacer un request.
+resultado cuando esté listo. Es HTTP + JSON, así que funciona desde cualquier
+lenguaje que pueda hacer un request.
+
+**¿Integras desde Node.js o TypeScript?** Hay un SDK que ya resuelve el flujo
+de dos pasos, la espera del resultado, los reintentos y los errores:
+[`idp-sdk-node`](https://code.alsuper.com/Infraestructura/idp-sdk-node). Se instala directo del repositorio:
+
+```bash
+pnpm add git+https://code.alsuper.com/Infraestructura/idp-sdk-node.git
+```
+
+Para cualquier otro lenguaje no hay nada que instalar: sigue con los archivos
+de esta carpeta.
 
 ## ¿Qué hay en esta carpeta?
 
