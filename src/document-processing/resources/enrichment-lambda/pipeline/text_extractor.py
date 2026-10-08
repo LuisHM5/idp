@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from document_catalog import FieldSpec, TypeRegistryEntry
 
+from . import type_check
 from .bedrock import converse_structured, resolve_model
 from .confidence import row_key
 from .pdf_pages import PageText
@@ -435,8 +436,15 @@ def _field_tree_tool_props(tree: Dict[str, FieldSpec], in_row: bool = False) -> 
     return props
 
 
-def _field_tree_tool_schema(field_tree: Dict[str, FieldSpec]) -> Dict[str, Any]:
-    return {"type": "object", "properties": _field_tree_tool_props(field_tree)}
+def _field_tree_tool_schema(field_tree: Dict[str, FieldSpec], scope: str = "all") -> Dict[str, Any]:
+    props = _field_tree_tool_props(field_tree)
+    # La verificación de tipo viaja en el MISMO tool call (pipeline/type_check):
+    # ~30 tokens de salida en vez de una llamada aparte. Solo la pide la
+    # llamada de escalares — la partición `arrays` ve el mismo texto y
+    # contestaría lo mismo, y un chunk debe responder una sola vez.
+    if scope != "arrays":
+        props = {type_check.SIGNAL_KEY: type_check.tool_property(), **props}
+    return {"type": "object", "properties": props}
 
 
 def _build_field_tree_prompts(
@@ -450,11 +458,15 @@ def _build_field_tree_prompts(
         "non_arrays": "Extrae UNICAMENTE los campos escalares y objetos no repetibles del schema.",
         "arrays": "Extrae UNICAMENTE los campos tipo lista del schema.",
     }.get(scope, "Extrae los campos del schema.")
+    # "DECLARADO", no "clasificado": en la ruta con tipo declarado nadie
+    # clasificó nada — quien subió el archivo dijo qué era, y la regla de
+    # abajo le pide al modelo confirmarlo en vez de darlo por hecho.
     cache_prefix = (
-        f"Documento clasificado como {type_entry.type_id}. {type_entry.description}\n\n"
+        f"Documento DECLARADO como {type_entry.type_id}. {type_entry.description}\n\n"
         f"{task}\n\n"
         f"{_field_tree_schema_block(selected_tree)}\n\n"
         "REGLAS ESTRICTAS:\n"
+        + (type_check.PROMPT_RULE if scope != "arrays" else "") +
         "- NUNCA inventes un valor. Si un dato no aparece en el texto, OMITE esa llave por completo; "
         "no emitas null ni objetos vacios como relleno.\n"
         "- Copia los valores tal cual aparecen impresos (montos con comas, fechas en su formato original).\n"
@@ -718,13 +730,18 @@ def _call_model_field_tree(
     cache: bool = False,
     field_tree: Optional[Dict[str, FieldSpec]] = None,
     scope: str = "all",
-) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int]]:
+) -> Tuple[
+    Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int], Optional[Dict[str, Any]]
+]:
     """Field-tree equivalent of `_call_model` — same overflow split-in-half
     retry on `max_tokens`, same caching rule, but a genuinely nested response
-    shape (objects/arrays nest for real, not via a flat dotted-key convention)."""
+    shape (objects/arrays nest for real, not via a flat dotted-key convention).
+
+    The fifth element is the type-check signal (`pipeline/type_check`) the
+    model answered in this same call, or None when it did not answer one."""
     selected_tree = type_entry.field_tree if field_tree is None else field_tree
     cache_prefix, user_text = _build_field_tree_prompts(type_entry, pages, selected_tree, scope)
-    schema = _field_tree_tool_schema(selected_tree)
+    schema = _field_tree_tool_schema(selected_tree, scope)
     parsed, meta = converse_structured(
         user_text,
         tool_schema=schema,
@@ -746,10 +763,10 @@ def _call_model_field_tree(
 
     if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
         mid = len(pages) // 2
-        left_e, left_c, left_r, left_u = _call_model_field_tree(
+        left_e, left_c, left_r, left_u, left_s = _call_model_field_tree(
             type_entry, pages[:mid], model_id, cache=True, field_tree=selected_tree, scope=scope
         )
-        right_e, right_c, right_r, right_u = _call_model_field_tree(
+        right_e, right_c, right_r, right_u, right_s = _call_model_field_tree(
             type_entry, pages[mid:], model_id, cache=True, field_tree=selected_tree, scope=scope
         )
         merged_entity = _merge_field_tree_entities(left_e, right_e, selected_tree)
@@ -758,13 +775,20 @@ def _call_model_field_tree(
         # with a plain dict update no matter how the rows themselves were
         # concatenated or deduped above.
         merged_rows = {**left_r, **right_r}
-        return merged_entity, merged_conf, merged_rows, _merge_usage(_merge_usage(usage, left_u), right_u)
+        return (
+            merged_entity, merged_conf, merged_rows,
+            _merge_usage(_merge_usage(usage, left_u), right_u),
+            type_check.merge_signals([left_s, right_s]),
+        )
 
     seg_conf = _segment_confidence(pages)
+    # Read BEFORE the tree parse, which walks only the catalog's keys and
+    # would drop this one on the floor.
+    signal = type_check.read_signal(parsed)
     entity, confidences, row_confidences = _parse_field_tree_response(
         parsed or {}, selected_tree, seg_conf
     )
-    return entity, confidences, row_confidences, usage
+    return entity, confidences, row_confidences, usage, signal
 
 
 def _extract_document_field_tree(
@@ -792,11 +816,13 @@ def _extract_document_field_tree(
     entity_map: Dict[str, Any] = {}
     confidences: Dict[str, float] = {}
     row_confidences: Dict[str, Dict[str, float]] = {}
-    for entity, conf, row_conf, chunk_usage in results:
+    signals: List[Optional[Dict[str, Any]]] = []
+    for entity, conf, row_conf, chunk_usage, signal in results:
         entity_map = _merge_field_tree_entities(entity_map, entity, type_entry.field_tree)
         confidences.update(conf)
         row_confidences.update(row_conf)
         usage = _merge_usage(usage, chunk_usage)
+        signals.append(signal)
 
     seg_conf = _segment_confidence(pages)
     return ExtractedDoc(
@@ -809,6 +835,9 @@ def _extract_document_field_tree(
             "pages": [p.number for p in pages],
             "usage": usage,
             "segmentConfidence": round(seg_conf, 4),
+            # One answer per document, fail-open across chunks — see
+            # type_check.merge_signals. None when no call answered it.
+            "typeSignal": type_check.merge_signals(signals),
         },
     )
 

@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -290,7 +292,7 @@ class _TextState:
     ON that image?", a question a 10% error does not change."""
 
     __slots__ = ("tm", "tlm", "size", "leading", "hscale", "char_spacing", "word_spacing",
-                 "widths", "default_width", "bytes_per_char", "render_mode")
+                 "widths", "default_width", "bytes_per_char", "render_mode", "font", "embedded")
 
     def __init__(self) -> None:
         self.tm: Matrix = _IDENTITY
@@ -304,6 +306,8 @@ class _TextState:
         self.default_width = _DEFAULT_GLYPH_WIDTH
         self.bytes_per_char = 1
         self.render_mode = 0
+        self.font = ""
+        self.embedded: Optional[bool] = None
 
     def copy(self) -> "_TextState":
         other = _TextState()
@@ -312,13 +316,47 @@ class _TextState:
         return other
 
 
+class _GState:
+    """The slice of the graphics state that says whether a fill HIDES what is
+    under it: its colour (evidence only), its opacity, and the clip that may
+    shrink it. `clip` is page-space bounds, tracked for rectangular clips only
+    — the ones a generator uses to confine a background to a cell."""
+
+    __slots__ = ("fill", "fill_known", "alpha", "opaque", "clip")
+
+    def __init__(self) -> None:
+        self.fill: Optional[Tuple[float, float, float]] = (0.0, 0.0, 0.0)
+        self.fill_known = True
+        self.alpha = 1.0
+        self.opaque = True      # Normal blend mode and no soft mask
+        self.clip: Optional[Tuple[float, float, float, float]] = None
+
+    def copy(self) -> "_GState":
+        other = _GState()
+        for name in self.__slots__:
+            setattr(other, name, getattr(self, name))
+        return other
+
+
+_FILL_OPERATORS = (b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*")
+_PATH_END_OPERATORS = _FILL_OPERATORS + (b"S", b"s", b"n")
+_MAX_SHAPES = 3000
+# Names an editor gives the optional-content group or marked-content tag it
+# puts a watermark in (Acrobat, Word, LibreOffice, iLovePDF, PDF-XChange).
+_WATERMARK_NAME = re.compile(r"water\s*mark|marca\s*(de)?\s*_?\s*agua|wasserzeichen|filigran", re.I)
+# Acrobat tags what "Add watermark / background" paints in the form's /PieceInfo.
+_ACROBAT_ADDITIONS = {"/Watermark": "MARCA_DE_AGUA_ACROBAT", "/Background": "FONDO_AGREGADO_ACROBAT"}
+
+
 class _PageWalk:
     """One pass over a page's content stream (and the Form XObjects it
-    paints), tracking just enough graphics state to answer three things: how
-    much text is drawn VISIBLY vs invisibly, where each image lands, and in
-    what ORDER text and images were painted (with where each visible string
-    sits), so "text typed over a scan" and "an image dropped over text" can be
-    read off the file."""
+    paints), tracking just enough graphics state to answer: how much text is
+    drawn VISIBLY vs invisibly, where each image lands, in what ORDER text,
+    images and filled rectangles were painted (with where each visible string
+    sits) — so "text typed over a scan", "an image dropped over text" and "a
+    box painted over a value" can be read off the file — plus what each string
+    was set in (font, size, angle, opacity) and whether the generator tagged
+    it as a watermark."""
 
     def __init__(self, reader: Any, box: Tuple[float, float, float, float], rotation: int):
         self.reader = reader
@@ -335,8 +373,17 @@ class _PageWalk:
         # it paints ARE placed on the page and are recorded, flagged.
         self.counting = True
         self.annotation: Optional[str] = None
+        # Filled axis-aligned rectangles, in paint order with text and images.
+        self.shapes: List[Dict[str, Any]] = []
+        # {base font: {"embedded": bool|None, "chars": visible characters}}
+        self.font_usage: Dict[str, Dict[str, Any]] = {}
+        # Watermark tags met (marked content, optional content, Acrobat's
+        # PieceInfo) and how many of them are open at this point of the walk.
+        self.watermark_tags: List[str] = []
+        self._in_watermark = 0
 
-    def walk(self, stream_source: Any, resources: Any, ctm: Matrix, depth: int) -> None:
+    def walk(self, stream_source: Any, resources: Any, ctm: Matrix, depth: int,
+             gs: Optional[_GState] = None) -> None:
         from pypdf.generic import ContentStream
 
         try:
@@ -347,15 +394,71 @@ class _PageWalk:
 
         fonts = _resolve(resources, "/Font") or {}
         xobjects = _resolve(resources, "/XObject") or {}
-        stack: List[Tuple[Matrix, _TextState]] = []
+        ext_states = _resolve(resources, "/ExtGState") or {}
+        properties = _resolve(resources, "/Properties") or {}
+        stack: List[Tuple[Matrix, _TextState, _GState]] = []
         ts = _TextState()
+        gs = gs.copy() if gs is not None else _GState()
+        # The path under construction: rectangles (page-space bounds) and
+        # whether anything in it is NOT a rectangle (curves, slanted lines).
+        rects: List[Tuple[float, float, float, float]] = []
+        points: List[Tuple[float, float]] = []
+        only_rects = True
+        pending_clip = False
+        marks: List[bool] = []   # one per open BMC/BDC of THIS stream
 
         for operands, operator in content.operations:
             if operator == b"q":
-                stack.append((ctm, ts.copy()))
+                stack.append((ctm, ts.copy(), gs.copy()))
             elif operator == b"Q":
                 if stack:
-                    ctm, ts = stack.pop()
+                    ctm, ts, gs = stack.pop()
+            elif operator == b"re":
+                values = _as_float_list(operands)
+                if values and len(values) == 4 and _axis_aligned(ctm):
+                    x, y, w, h = values
+                    rects.append(_bbox_through(ctm, x, y, x + w, y + h))
+                else:
+                    only_rects = False
+            elif operator in (b"m", b"l"):
+                values = _as_float_list(operands)
+                if values and len(values) == 2:
+                    if operator == b"m" and points:
+                        only_rects = _close_polygon(points, rects) and only_rects
+                        points = []
+                    a, b, c, d, e, f = ctm
+                    points.append((a * values[0] + c * values[1] + e, b * values[0] + d * values[1] + f))
+            elif operator in (b"c", b"v", b"y"):
+                only_rects = False
+            elif operator in (b"W", b"W*"):
+                pending_clip = True
+            elif operator in _PATH_END_OPERATORS:
+                if points:
+                    only_rects = _close_polygon(points, rects) and only_rects
+                if operator in _FILL_OPERATORS and only_rects and gs.opaque and gs.alpha >= 0.95:
+                    for rect in rects:
+                        self._shape(rect, gs)
+                if pending_clip and only_rects and len(rects) == 1:
+                    gs.clip = _intersect(gs.clip, rects[0])
+                rects, points, only_rects, pending_clip = [], [], True, False
+            elif operator in (b"g", b"rg", b"k", b"sc", b"scn"):
+                gs.fill, gs.fill_known = _fill_colour(operator, operands, gs.fill_known)
+            elif operator == b"cs":
+                name = str(operands[0]) if operands else ""
+                gs.fill_known = name in ("/DeviceGray", "/DeviceRGB", "/DeviceCMYK")
+                gs.fill = (0.0, 0.0, 0.0) if gs.fill_known else None
+            elif operator == b"gs":
+                _apply_ext_state(gs, _resolve(ext_states, str(operands[0])) if operands else None)
+            elif operator in (b"BMC", b"BDC"):
+                tag = _watermark_tag(operands, properties)
+                marks.append(tag is not None)
+                if tag is not None:
+                    self._in_watermark += 1
+                    if tag not in self.watermark_tags:
+                        self.watermark_tags.append(tag)
+            elif operator == b"EMC":
+                if marks and marks.pop():
+                    self._in_watermark -= 1
             elif operator == b"cm":
                 values = _as_float_list(operands)
                 if values and len(values) == 6:
@@ -400,41 +503,58 @@ class _PageWalk:
                 ts.size = size[0] if size else ts.size
                 ts.bytes_per_char = _bytes_per_char(fonts, font_name)
                 ts.widths, ts.default_width = _font_widths(fonts, font_name)
+                ts.font = _base_font(fonts, font_name) or font_name
+                ts.embedded = _font_embedded(fonts, font_name)
                 if font_name:
-                    self.fonts.add(_base_font(fonts, font_name) or font_name)
+                    self.fonts.add(ts.font)
             elif operator == b"Tj":
                 if operands:
-                    self._show(ts, ctm, [operands[-1]])
+                    self._show(ts, ctm, [operands[-1]], gs)
             elif operator == b"'":
                 self._next_line(ts, 0.0, -ts.leading)
                 if operands:
-                    self._show(ts, ctm, [operands[-1]])
+                    self._show(ts, ctm, [operands[-1]], gs)
             elif operator == b'"':
                 values = _as_float_list(operands[:2]) if len(operands) >= 3 else None
                 if values:
                     ts.word_spacing, ts.char_spacing = values[0], values[1]
                 self._next_line(ts, 0.0, -ts.leading)
                 if operands:
-                    self._show(ts, ctm, [operands[-1]])
+                    self._show(ts, ctm, [operands[-1]], gs)
             elif operator == b"TJ":
                 if operands and isinstance(operands[0], (list, tuple)):
-                    self._show(ts, ctm, list(operands[0]))
+                    self._show(ts, ctm, list(operands[0]), gs)
             elif operator == b"Do":
                 name = str(operands[0]) if operands else ""
-                self._paint(xobjects, name, ctm, depth)
+                self._paint(xobjects, name, ctm, depth, gs)
             elif operator == b"INLINE IMAGE":
                 settings = (operands or {}).get("settings") if isinstance(operands, dict) else None
                 if settings is not None:
                     self.seq += 1
                     self.images.append(_inline_record(settings, operands, ctm, self.box, self.rotation,
                                                       self.seq, self.annotation))
+        self._in_watermark -= sum(1 for open_mark in marks if open_mark)   # unbalanced stream
+
+    def _shape(self, rect: Tuple[float, float, float, float], gs: _GState) -> None:
+        """One opaque filled rectangle, clipped, in paint order."""
+        clipped = _intersect(gs.clip, rect) if gs.clip is not None else rect
+        if clipped is None or clipped[2] - clipped[0] <= 0 or clipped[3] - clipped[1] <= 0:
+            return
+        self.seq += 1
+        if not self.counting or len(self.shapes) >= _MAX_SHAPES:
+            return
+        self.shapes.append({
+            "rect": _visual_rect(*clipped, self.box, self.rotation),
+            "colour": _colour_name(gs.fill) if gs.fill_known else "DESCONOCIDO",
+            "seq": self.seq,
+        })
 
     @staticmethod
     def _next_line(ts: _TextState, tx: float, ty: float) -> None:
         ts.tlm = _concat((1.0, 0.0, 0.0, 1.0, tx, ty), ts.tlm)
         ts.tm = ts.tlm
 
-    def _show(self, ts: _TextState, ctm: Matrix, items: Sequence[Any]) -> None:
+    def _show(self, ts: _TextState, ctm: Matrix, items: Sequence[Any], gs: Optional[_GState] = None) -> None:
         """One text-showing operator: count its characters, record where the
         string lands, and advance the text matrix past it."""
         chars = 0
@@ -456,6 +576,8 @@ class _PageWalk:
             # searchable scan. Mode 7 only adds the glyphs to the clip path.
             if visible:
                 self.visible_chars += chars
+                usage = self.font_usage.setdefault(ts.font or "?", {"embedded": ts.embedded, "chars": 0})
+                usage["chars"] += chars
             else:
                 self.invisible_chars += chars
         if chars > 0:
@@ -463,26 +585,43 @@ class _PageWalk:
             if self.counting and len(self.text_runs) < _MAX_TEXT_RUNS:
                 trm = _concat(ts.tm, ctm)
                 x0, y0, x1, y1 = _bbox_through(trm, 0.0, -0.25 * ts.size, max(advance, 0.0), 0.8 * ts.size)
+                # How far the baseline is from horizontal/vertical: 0 for
+                # normal and margin (90°) text, up to 45 for a diagonal legend.
+                angle = math.degrees(math.atan2(trm[1], trm[0]))
                 self.text_runs.append({
                     "rect": _visual_rect(x0, y0, x1, y1, self.box, self.rotation),
                     "chars": chars, "visible": visible, "seq": self.seq,
+                    "font": ts.font, "size": round(abs(ts.size) * math.hypot(trm[0], trm[1]), 1),
+                    "skew": round(abs(((angle + 45.0) % 90.0) - 45.0), 1),
+                    "alpha": round(gs.alpha, 2) if gs is not None else 1.0,
+                    "watermarkTag": self._in_watermark > 0,
                 })
         if advance:
             ts.tm = _concat((1.0, 0.0, 0.0, 1.0, advance, 0.0), ts.tm)
 
-    def _paint(self, xobjects: Any, name: str, ctm: Matrix, depth: int) -> None:
+    def _paint(self, xobjects: Any, name: str, ctm: Matrix, depth: int, gs: Optional[_GState] = None) -> None:
         try:
             obj = xobjects[name].get_object()
         except Exception:
             return
         subtype = str(obj.get("/Subtype", ""))
+        tag = _object_watermark_tag(obj)
+        if tag is not None and tag not in self.watermark_tags:
+            self.watermark_tags.append(tag)
         if subtype == "/Image":
             self.seq += 1
-            self.images.append(_image_record(obj, name, ctm, self.box, self.rotation, self.seq, self.annotation))
+            record = _image_record(obj, name, ctm, self.box, self.rotation, self.seq, self.annotation)
+            record["alpha"] = round(gs.alpha, 2) if gs is not None else 1.0
+            record["watermarkTag"] = self._in_watermark > 0 or tag is not None
+            self.images.append(record)
         elif subtype == "/Form" and depth < _MAX_FORM_DEPTH:
             matrix = _as_float_list(obj.get("/Matrix") or [])
             inner = _concat(tuple(matrix), ctm) if matrix and len(matrix) == 6 else ctm  # type: ignore[arg-type]
-            self.walk(obj, obj.get("/Resources") or {}, inner, depth + 1)
+            self._in_watermark += 1 if tag is not None else 0
+            try:
+                self.walk(obj, obj.get("/Resources") or {}, inner, depth + 1, gs)
+            finally:
+                self._in_watermark -= 1 if tag is not None else 0
 
     def walk_annotation(self, annot: Any, subtype: str) -> bool:
         """Paint an annotation's normal appearance (`/AP /N`) onto the page, the
@@ -522,6 +661,145 @@ class _PageWalk:
         finally:
             self.counting, self.annotation = previous
         return True
+
+
+def _axis_aligned(m: Matrix) -> bool:
+    """A rectangle through `m` is still a rectangle with horizontal and
+    vertical sides (no skew, no rotation other than a quarter turn)."""
+    a, b, c, d, _, _ = m
+    scale = max(abs(a), abs(b), abs(c), abs(d), 1e-9)
+    return (abs(b) < 1e-3 * scale and abs(c) < 1e-3 * scale) or (abs(a) < 1e-3 * scale and abs(d) < 1e-3 * scale)
+
+
+def _close_polygon(points: List[Tuple[float, float]], rects: List[Tuple[float, float, float, float]]) -> bool:
+    """A `m l l l (h)` subpath: when its corners are those of an axis-aligned
+    rectangle, add it to `rects` and say so. Generators draw table cells and
+    redaction boxes either way (`re`, or four lines)."""
+    if not 4 <= len(points) <= 5:
+        return False
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    tol = 0.01 * max(x1 - x0, y1 - y0, 1.0)
+    if all(min(abs(x - x0), abs(x - x1)) <= tol for x in xs) and all(min(abs(y - y0), abs(y - y1)) <= tol for y in ys):
+        rects.append((x0, y0, x1, y1))
+        return True
+    return False
+
+
+def _intersect(a: Optional[Tuple[float, float, float, float]],
+               b: Tuple[float, float, float, float]) -> Optional[Tuple[float, float, float, float]]:
+    if a is None:
+        return b
+    x0, y0, x1, y1 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    return (x0, y0, max(x1, x0), max(y1, y0))
+
+
+def _fill_colour(operator: bytes, operands: Sequence[Any], known: bool) -> Tuple[Optional[Tuple[float, float, float]], bool]:
+    """The non-stroking colour as RGB, and whether it could be read. A pattern
+    (`scn` with a name) or a tint of a colour space this walker does not
+    resolve (Separation, Indexed) is "unknown": still opaque paint, but its
+    colour is not reported."""
+    values = _as_float_list(operands)
+    if not values:
+        return None, False
+    if operator == b"g" or (operator in (b"sc", b"scn") and len(values) == 1 and known):
+        return (values[0],) * 3, True
+    if operator == b"rg" or (operator in (b"sc", b"scn") and len(values) == 3):
+        return (values[0], values[1], values[2]), True
+    if operator == b"k" or (operator in (b"sc", b"scn") and len(values) == 4):
+        c, m, y, k = values[:4]
+        return ((1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k)), True
+    return None, False
+
+
+def _colour_name(rgb: Optional[Tuple[float, float, float]]) -> str:
+    if rgb is None:
+        return "DESCONOCIDO"
+    if min(rgb) >= 0.92:
+        return "BLANCO"
+    if max(rgb) <= 0.15:
+        return "NEGRO"
+    return "#%02x%02x%02x" % tuple(int(round(_clamp01(v) * 255)) for v in rgb)
+
+
+def _apply_ext_state(gs: _GState, state: Any) -> None:
+    if state is None:
+        return
+    try:
+        if state.get("/ca") is not None:
+            gs.alpha = float(state.get("/ca"))
+        blend = state.get("/BM")
+        if blend is not None:
+            blend = blend.get_object() if hasattr(blend, "get_object") else blend
+            names = [str(b) for b in blend] if isinstance(blend, (list, tuple)) else [str(blend)]
+            gs.opaque = names[0] in ("/Normal", "/Compatible")
+        mask = state.get("/SMask")
+        if mask is not None and str(mask) != "/None":
+            gs.opaque = False
+    except Exception:
+        return
+
+
+def _watermark_tag(operands: Sequence[Any], properties: Any) -> Optional[str]:
+    """What a `BMC`/`BDC` says about the content it opens: Acrobat, Word and
+    LibreOffice mark a watermark as `/Artifact <</Subtype /Watermark>>`;
+    others put it in an optional-content group named after it."""
+    if len(operands) < 2:
+        return None
+    tag, props = str(operands[0]), operands[1]
+    try:
+        if not hasattr(props, "keys"):
+            props = _resolve(properties, str(props))
+        if props is None or not hasattr(props, "get"):
+            return None
+        if tag == "/Artifact" and str(props.get("/Subtype", "")) == "/Watermark":
+            return "ARTEFACTO_MARCA_DE_AGUA"
+        if tag == "/OC" and _WATERMARK_NAME.search(str(props.get("/Name", ""))):
+            return "CAPA_MARCA_DE_AGUA"
+    except Exception:
+        return None
+    return None
+
+
+def _object_watermark_tag(obj: Any) -> Optional[str]:
+    """A Form/Image XObject an editor added as a watermark or background:
+    Acrobat's `/PieceInfo /ADBE_CompoundType /Private`, or an `/OC` group
+    named after it."""
+    try:
+        piece = _resolve(obj, "/PieceInfo")
+        compound = _resolve(piece, "/ADBE_CompoundType") if piece is not None else None
+        if compound is not None:
+            kind = _ACROBAT_ADDITIONS.get(str(compound.get("/Private", "")))
+            if kind:
+                return kind
+        group = _resolve(obj, "/OC")
+        if group is not None and _WATERMARK_NAME.search(str(group.get("/Name", ""))):
+            return "CAPA_MARCA_DE_AGUA"
+    except Exception:
+        return None
+    return None
+
+
+def _font_embedded(fonts: Any, name: str) -> Optional[bool]:
+    """Does the file carry this font's program? Type 3 fonts ARE their
+    program. None when the font cannot be read."""
+    font = _font_object(fonts, name)
+    if font is None:
+        return None
+    try:
+        if str(font.get("/Subtype", "")) == "/Type3":
+            return True
+        if str(font.get("/Subtype", "")) == "/Type0":
+            descendants = _resolve(font, "/DescendantFonts") or []
+            font = descendants[0].get_object() if descendants else None
+            if font is None:
+                return None
+        descriptor = _resolve(font, "/FontDescriptor")
+        if descriptor is None:
+            return False
+        return any(descriptor.get(key) is not None for key in ("/FontFile", "/FontFile2", "/FontFile3"))
+    except Exception:
+        return None
 
 
 def _original_bytes(item: Any) -> bytes:
@@ -724,6 +1002,9 @@ def inspect_page(reader: Any, page_index: int, policy: Optional[Dict[str, Any]] 
             "images": walk.images,
             "annotations": annotations,
             "rotation": rotation % 360,
+            # Points, as shown (after /Rotate): what "is this page the same
+            # sheet as the others?" compares.
+            "size": [round(geometry[3 if rotation % 180 else 2], 1), round(geometry[2 if rotation % 180 else 3], 1)],
             "overlay": overlay_facts(walk, policy),
         })
     except Exception as e:
@@ -792,6 +1073,18 @@ def overlay_facts(walk: _PageWalk, policy: Optional[Dict[str, Any]] = None) -> D
     - `imagesOverText`: images (not decoration, not the page itself) painted
       AFTER a visible string they cover — the "white box over the amount"
       edit. None when the page has no visible text.
+    - `shapesOverText`: the same for opaque filled RECTANGLES — the redaction
+      bar and the "white-out, then retype" of every online editor. A
+      generator paints a cell's background BEFORE its text; a box painted
+      after the string it covers hides it. None when the page has no visible
+      text.
+    - `watermark`: what on the page looks like a watermark — content the
+      generator itself tagged as one (`tags`), strings set on a diagonal
+      (`diagonalRuns`), and translucent strings or images (`translucentRuns`,
+      `translucentImages`). Raw candidates: the thresholds are the integrity
+      policy's.
+    - `fontUsage`: visible characters per font and whether the file embeds
+      it, most used first.
     """
     cfg = {**DEFAULT_POLICY, **(policy or {})}
     full_coverage = float(cfg.get("full_page_coverage", DEFAULT_POLICY["full_page_coverage"]))
@@ -835,11 +1128,44 @@ def overlay_facts(walk: _PageWalk, policy: Optional[Dict[str, Any]] = None) -> D
                 })
         over_text = over_text[:10]
 
+    shapes_over: Optional[List[Dict[str, Any]]] = None
+    if visible_runs:
+        shapes_over = []
+        for shape in walk.shapes:
+            covered = [
+                r for r in visible_runs
+                if int(r["seq"]) < int(shape["seq"]) and _overlap_ratio(r["rect"], shape["rect"], "a") >= min_overlap
+            ]
+            if covered:
+                shapes_over.append({
+                    "rect": shape["rect"], "colour": shape["colour"],
+                    "coveredRuns": len(covered), "coveredChars": sum(int(r["chars"]) for r in covered),
+                })
+        shapes_over = shapes_over[:20]
+
+    def brief(run: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: run.get(k) for k in ("rect", "chars", "size", "skew", "alpha", "font")}
+
     return {
         "fullPageImages": len(full),
         "visibleRuns": len(visible_runs),
         "textAfterFullPageImageChars": after_full,
         "imagesOverText": over_text,
+        "shapesOverText": shapes_over,
+        "watermark": {
+            "tags": list(walk.watermark_tags),
+            "taggedChars": sum(int(r["chars"]) for r in visible_runs if r.get("watermarkTag")),
+            "diagonalRuns": [brief(r) for r in visible_runs if float(r.get("skew") or 0) >= 10.0][:20],
+            "translucentRuns": [brief(r) for r in visible_runs if float(r.get("alpha") or 1) < 0.9][:20],
+            "translucentImages": [
+                {"name": i.get("name"), "rect": i.get("rect"), "coverage": i.get("coverage"), "alpha": i.get("alpha")}
+                for i in page_images if float(i.get("alpha") or 1) < 0.9
+            ][:10],
+        },
+        "fontUsage": [
+            {"font": name, **usage}
+            for name, usage in sorted(walk.font_usage.items(), key=lambda kv: -int(kv[1]["chars"]))
+        ][:40],
     }
 
 

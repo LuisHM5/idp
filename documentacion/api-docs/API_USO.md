@@ -892,6 +892,29 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 > bajo `"A,B"` haría el expediente invisible para `?docType=A` (y no hay forma de
 > enumerar particiones sin un Scan). Buscar por los tipos de adentro sigue
 > funcionando igual, vía `ContainedDocumentTypes` — ver §6.
+>
+> **`documentMatchesType` dice si el archivo ES lo que se declaró.** Tres
+> llaves en la raíz, **siempre presentes**:
+>
+> | Llave | Valor | Significado |
+> |---|---|---|
+> | `documentMatchesType` | `true` / `false` / `null` | `false` = el contenido es de otra naturaleza (una constancia fiscal subida en la casilla del estado de cuenta). `null` = no se evaluó (XML, tabular, flujo estándar, verificación apagada). |
+> | `rejectionConfidence` | `0.0`-`1.0` | Qué tan seguro está el sistema de que NO es el documento declarado. `0.0` cuando corresponde o no se evaluó. |
+> | `detectedDocument` | texto / `null` | Qué parece ser en realidad ("Constancia de situación fiscal del SAT"). |
+>
+> Cuando es `false` el documento sale **`RECHAZADO`** por un check
+> `document_type_match` bloqueante en `documents[].checks`, su `confidence`
+> cae a **≤ 0.05** (los campos que el modelo haya leído se conservan con su
+> propia confianza, pero el número del documento dice que no hay documento de
+> ese tipo) y `documents[].typeCheck` repite el veredicto por documento — en un
+> archivo con varios, la raíz es `false` si ALGUNO no corresponde y
+> `rejectionConfidence` es la máxima. Una variante extranjera, de otro banco,
+> país o formato, o un escaneo malo del MISMO documento es `true`: la
+> pregunta es de naturaleza, no de calidad. Cuesta cero llamadas extra (viaja
+> en la misma extracción). Cuando lo que el modelo dice choca con lo que se
+> leyó (TODOS los campos obligatorios llenos y con buena confianza), el
+> efecto baja a `REQUIERE_REVISION` con `typeCheck.reason =
+> "SEÑAL_CONTRADICHA_POR_CAMPOS"` en vez de rechazar.
 
 **Mientras procesa — `202`:**
 
@@ -922,6 +945,9 @@ abreviados deliberadamente:
   "result": {
     "envelopeVersion": 2,
     "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "documentMatchesType": true, // false = el archivo no es lo declarado → RECHAZADO
+    "rejectionConfidence": 0.0,  // 0-1, qué tan seguro de que NO lo es
+    "detectedDocument": null,    // qué parece ser cuando no corresponde
     "documentCount": 1,
     "validation": {
       "status": "APROBADO", // o REQUIERE_REVISION / RECHAZADO

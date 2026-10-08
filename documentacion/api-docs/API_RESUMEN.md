@@ -167,6 +167,7 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 | `result.validation.status` | `APROBADO` `REQUIERE_REVISION` `RECHAZADO` |
 | `result.documents[]` | **siempre un arreglo**, con 1 o con N: `index` `documentType` `pageStart` `pageEnd` `status` `fields`. Un tipo solicitado ausente lleva rango `null` y `REVIEW_REQUIRED` |
 | `result.documentCount` · `result.envelopeVersion` | cuántos documentos se encontraron (sin `OTRO` ni marcadores ausentes) · `2` (ausente = resultado guardado con la forma anterior) |
+| `result.documentMatchesType` · `result.rejectionConfidence` · `result.detectedDocument` | siempre presentes: ¿el archivo ES lo que se declaró? `false` → `RECHAZADO`, `confidence` ≤ 0.05, con la confianza del rechazo (0-1) y qué parece ser en realidad; `null`/`0.0`/`null` = no se evaluó (XML, tabular). Detalle por documento en `result.documents[].typeCheck` |
 | `result.documents[].authenticity` | solo en tipos que verifican autenticidad física (`CARTA_NOM35`): `verdict` (`AUTENTICO`·`SOSPECHOSO`·`NO_AUTENTICO`·`NO_EVALUADO`), `layers`, `reasons[{code,hard,message}]`, `referencesFound`. Resumen: el estatus lo deciden los campos (`CAPTURA_FISICA`, `FIRMA_PRESENTE`…). Mandar `metadata.proveedor` en el `POST` para comparar contra las firmas/sellos registrados de ese proveedor |
 | `result.tracking` · `result.metadata` · `result.warnings` · `result.checks` | contexto y detalle |
 | `fullResult` | solo con `full=1`; resultado profundo desde S3 con la metadata vigente superpuesta |
@@ -196,6 +197,9 @@ Formas mínimas de la respuesta:
   "result": {
     "envelopeVersion": 2,
     "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "documentMatchesType": true,
+    "rejectionConfidence": 0.0,
+    "detectedDocument": null,
     "documentCount": 1,
     "validation": { "status": "APROBADO", "reviewRequired": false },
     "documents": [{

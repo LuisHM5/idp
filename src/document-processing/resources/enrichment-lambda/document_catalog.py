@@ -204,6 +204,14 @@ class TypeRegistryEntry:
     # pipeline is coupled to which type declares it. See catalogs/README.md →
     # "Autenticidad física (`authenticity`)".
     authenticity: Optional[Dict[str, Any]] = None
+    # Optional tuning of the TYPE CHECK (pipeline/type_check.py): "is this
+    # file really the document that was declared?" — asked of the model in
+    # the same extraction call, graded like any rule. Every field-centric
+    # type gets it by default; this block only adjusts it. Shape:
+    # {"enabled"?: bool, "on_fail"?: "reject"|"review"|"info",
+    #  "min_required_filled"?: 0.0-1.0}. None = the defaults (on, `reject`,
+    # 1.0). See catalogs/README.md → "Verificación de tipo (`type_check`)".
+    type_check: Optional[Dict[str, Any]] = None
     # Declarative UNIQUE KEY(s) for this type: the field(s) whose value
     # identifies one document of this type on its own (a pedimento number, a
     # CFDI UUID...). Written by `unique_keys.py` to the lookup table as
@@ -510,6 +518,7 @@ def _parse_entry(
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),
             authenticity=data.get("authenticity"),
+            type_check=data.get("type_check") if isinstance(data.get("type_check"), dict) else None,
             segmentation_candidate=data.get("segmentation_candidate"),
             namespaces=data.get("namespaces", {}) or {},
         )

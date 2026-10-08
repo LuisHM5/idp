@@ -469,3 +469,58 @@ def test_sin_valor_compartido_no_se_toca_nada():
     doc = env["documents"][0]
     assert "fieldConfidence" not in doc
     assert all("confidence" in v for v in doc["fields"].values())
+
+
+# ------------------------------------------- verificación de tipo (raíz)
+
+def test_las_llaves_de_tipo_siempre_estan_en_la_raiz():
+    """`documentMatchesType`/`rejectionConfidence`/`detectedDocument` existen
+    aunque la etapa no haya corrido: un consumidor no pregunta si están."""
+    env = _build(_result([_doc()]))
+
+    assert env["documentMatchesType"] is None
+    assert env["rejectionConfidence"] == 0.0
+    assert env["detectedDocument"] is None
+    assert "typeCheck" not in env["documents"][0]
+
+
+def test_un_archivo_que_no_es_lo_declarado_se_ve_en_la_raiz_y_en_el_documento():
+    tc = {"evaluated": True, "matches": False, "rejectionConfidence": 0.93,
+          "detected": "Constancia de situación fiscal", "reason": "DOCUMENTO_NO_CORRESPONDE",
+          "guard": {"requiredFilled": 0, "requiredTotal": 3}}
+    result = _result(
+        [_doc("ESTADO_CUENTA_PORTAL", status="REJECTED", confidence=0.05, typeCheck=tc)],
+        status="REJECTED",
+        typeCheck={"matches": False, "rejectionConfidence": 0.93, "detected": "Constancia de situación fiscal"},
+    )
+
+    env = _build(result)
+
+    assert env["documentMatchesType"] is False
+    assert env["rejectionConfidence"] == 0.93
+    assert env["detectedDocument"] == "Constancia de situación fiscal"
+    assert env["validation"]["status"] == "RECHAZADO"
+    assert env["documents"][0]["typeCheck"] == {
+        "matches": False, "rejectionConfidence": 0.93,
+        "detected": "Constancia de situación fiscal", "reason": "DOCUMENTO_NO_CORRESPONDE",
+    }
+    # La guardia es auditoría del resultado completo, no del envelope.
+    assert "guard" not in env["documents"][0]["typeCheck"]
+
+
+def test_un_archivo_que_si_corresponde_lo_dice_sin_ruido():
+    tc = {"evaluated": True, "matches": True, "rejectionConfidence": 0.0, "detected": None, "reason": None, "guard": {}}
+    env = _build(_result([_doc(typeCheck=tc)], typeCheck={"matches": True, "rejectionConfidence": 0.0, "detected": None}))
+
+    assert env["documentMatchesType"] is True
+    assert env["rejectionConfidence"] == 0.0
+    assert env["detectedDocument"] is None
+    assert env["documents"][0]["typeCheck"] == {"matches": True, "rejectionConfidence": 0.0, "detected": None}
+
+
+def test_el_flujo_estandar_lleva_las_mismas_llaves_sin_evaluar():
+    env = envelope.build_standard(
+        document_id="doc-1", classification="CURP", entity_map={"CURP": "X"}, checks=[],
+        status="APROBADO", tracking={"createdAt": "2026-10-08T00:00:00+00:00"}, metadata=None, summary="ok",
+    )
+    assert (env["documentMatchesType"], env["rejectionConfidence"], env["detectedDocument"]) == (None, 0.0, None)

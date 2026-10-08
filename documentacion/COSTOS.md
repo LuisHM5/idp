@@ -963,6 +963,36 @@ El índice vectorial (S3 Vectors, `document-validation-references[-dev]`) guarda
 un vector de 1024 dimensiones por referencia activa; su almacenamiento y sus
 consultas no tienen línea en la auditoría por documento y **no están medidos**.
 
+## 11. Verificación de tipo (`type_check`) — medido 2026-10-08
+
+"¿El archivo ES el documento que se declaró?" se pregunta **dentro de la misma
+llamada de extracción** (una llave `_DOCUMENTO` en el tool schema, ~30 tokens
+de salida y ~120 de entrada por la regla del prompt): **no hay línea nueva en
+la auditoría de costos** porque no hay llamada nueva — queda dentro de
+`BedrockExtraction`. Sobre un documento típico (~900 tokens de salida con
+MiniMax) es < 4 % de la salida, dentro del ruido entre dos corridas del mismo
+archivo (776 vs 946 tokens en la constancia de abajo).
+
+Dataset: los 10 archivos reales de la casilla "Estado de cuenta" del portal
+(`ESTADO_CUENTA_PORTAL`, MiniMax M2.5, `pnpm procesar`): 9 estados de cuenta
+legítimos (carátulas mexicanas, cartas de bancos extranjeros, wire
+instructions) + 1 constancia de situación fiscal subida por error.
+
+| | Resultado |
+|---|---|
+| Costo | $0.1145 total, **$0.0115/doc** (incluye visión de integridad y OCR; el estado de cuenta ya costaba eso antes) |
+| Tiempo | 21 s/doc (12-52 s; MiniMax, sin cambio apreciable) |
+| Legítimos | **9/9 `documentMatchesType: true`** — ningún falso positivo, incluidas las variantes extranjeras |
+| Constancia | `false`, `rejectionConfidence 1.0`, `detectedDocument: "Constancia de Situación Fiscal del SAT"`, `confidence 0.05` |
+
+Lo que enseñó la segunda corrida de la constancia: el modelo llenó `TITULAR`
+con la razón social del contribuyente y `PAIS` con `MEX` (2 de 3 obligatorios,
+confianza 0.95), así que la guardia "la mayoría de los obligatorios llenos ⇒
+revisar en vez de rechazar" (0.5) dejó pasar el archivo ajeno a
+`REQUIERE_REVISION`. El default quedó en **1.0 (todos)**: un documento
+legítimo bien leído tiene todos sus obligatorios, y uno al que le falta alguno
+iba a revisión de todos modos.
+
 ## Tráfico de pruebas reales
 
 `pnpm test:real` genera costos auténticos y persiste documentos igual que una

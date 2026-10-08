@@ -333,6 +333,9 @@ paths:
                     result:
                       envelopeVersion: 2
                       documentClassification: FACTURA_FLETE_EXTRANJERO
+                      documentMatchesType: true
+                      rejectionConfidence: 0.0
+                      detectedDocument: null
                       documentCount: 1
                       validation: { status: APROBADO, reviewRequired: false }
                       documents:
@@ -1780,6 +1783,34 @@ components:
                 es la partition key de un GSI y sólo admite un valor exacto.
                 Buscar por los tipos de adentro (`?docType=PEDIMENTO_ERP`)
                 funciona igual, vía `ContainedDocumentTypes`.
+            documentMatchesType:
+              type: [boolean, "null"]
+              description: >
+                ¿El archivo ES el documento que se declaró? `false` cuando el
+                contenido es de otra naturaleza (una constancia fiscal subida
+                como estado de cuenta): el documento sale `RECHAZADO`, su
+                `confidence` se cae a ≤ 0.05 y `rejectionConfidence` /
+                `detectedDocument` dicen qué tan seguro y qué parece ser. `true`
+                cuando corresponde (una variante extranjera o de otro formato
+                del MISMO documento sigue siendo `true`). `null` = no se evaluó
+                (XML, tabular, flujo estándar, verificación apagada). En un
+                archivo con varios documentos es `false` si ALGUNO no
+                corresponde; el detalle por documento va en
+                `documents[].typeCheck`. Siempre presente.
+            rejectionConfidence:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: >
+                Qué tan seguro está el sistema de que el archivo NO es lo que se
+                declaró. `0.0` cuando corresponde o no se evaluó; con varios
+                documentos, la máxima entre los que no corresponden.
+            detectedDocument:
+              type: [string, "null"]
+              example: Constancia de situación fiscal del SAT
+              description: >
+                Qué es en realidad el archivo según el modelo, en palabras
+                (máximo ~15). `null` cuando corresponde o no se evaluó.
             documentCount:
               type: integer
               description: >
@@ -1861,6 +1892,25 @@ components:
         error: { type: string, description: "Presente solo si falló ESTE documento." }
         errorType: { type: string }
         liquidacionNormalizada: { type: object, additionalProperties: true }
+        typeCheck:
+          type: object
+          description: >
+            Veredicto por documento de la verificación de tipo (presente solo
+            cuando se evaluó). La raíz del envelope (`documentMatchesType`,
+            `rejectionConfidence`, `detectedDocument`) es el agregado del
+            archivo; aquí se ve CUÁL documento no era lo que se declaró.
+          properties:
+            matches: { type: boolean }
+            rejectionConfidence: { type: number, minimum: 0, maximum: 1 }
+            detected: { type: [string, "null"] }
+            reason:
+              type: string
+              enum: [DOCUMENTO_NO_CORRESPONDE, SEÑAL_CONTRADICHA_POR_CAMPOS]
+              description: >
+                Solo cuando `matches` es falso. `SEÑAL_CONTRADICHA_POR_CAMPOS` =
+                el modelo dijo que no corresponde pero TODOS los campos
+                obligatorios sí se leyeron: el documento va a revisión en vez de
+                rechazarse.
         authenticity:
           $ref: "#/components/schemas/AuthenticitySummary"
         fields:
@@ -2130,7 +2180,7 @@ components:
           description: >
             `PENDING` reservada, esperando imagen y confirmación; `ACTIVE` en
             uso; `INACTIVE` dada de baja.
-        format: { type: string, enum: [png, jpeg], description: Formato real, leído de los bytes. }
+        format: { type: string, enum: [png, jpeg], description: "Formato real, leído de los bytes." }
         width: { type: integer, description: Ancho en px. }
         height: { type: integer, description: Alto en px. }
         sha256: { type: string, description: SHA-256 del archivo registrado. }

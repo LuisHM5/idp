@@ -238,8 +238,33 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
     # and image hashes behind them, which stay in the full S3 result.
     if doc.get("authenticity"):
         view["authenticity"] = _authenticity_view(doc["authenticity"])
+    # Per-document verdict of the type check (pipeline/type_check). The root
+    # carries the file-level aggregate; this is where a bundle says WHICH
+    # document was not what it claimed. Omitted when the stage did not run.
+    if isinstance(doc.get("typeCheck"), dict) and doc["typeCheck"].get("evaluated"):
+        tc = doc["typeCheck"]
+        view["typeCheck"] = {
+            "matches": tc.get("matches"),
+            "rejectionConfidence": tc.get("rejectionConfidence", 0.0),
+            "detected": tc.get("detected"),
+            **({"reason": tc["reason"]} if tc.get("reason") else {}),
+        }
     view["fields"] = fields
     return view
+
+
+def type_match_view(aggregate: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Las tres llaves de la raíz del envelope que dicen si el archivo ES lo
+    que se declaró (pipeline/type_check.aggregate). SIEMPRE presentes, para
+    que un consumidor no tenga que preguntar si existen: `null`/`0.0`/`null`
+    significa "no se evaluó" (XML, tabular, flujo estándar, kill switch)."""
+    agg = aggregate if isinstance(aggregate, dict) else {}
+    matches = agg.get("matches")
+    return {
+        "documentMatchesType": matches if isinstance(matches, bool) else None,
+        "rejectionConfidence": float(agg.get("rejectionConfidence") or 0.0),
+        "detectedDocument": agg.get("detected") or None,
+    }
 
 
 def _authenticity_view(audit: Dict[str, Any]) -> Dict[str, Any]:
@@ -408,6 +433,7 @@ def build(
         "documentId": document_id,
         "envelopeVersion": ENVELOPE_VERSION,
         "documentClassification": classification_of(documents, fallback_classification),
+        **type_match_view(result.get("typeCheck")),
         "documentCount": len(main),
         "tracking": tracking,
         **({"metadata": metadata} if metadata else {}),
@@ -499,6 +525,9 @@ def build_standard(
         "documentId": document_id,
         "envelopeVersion": ENVELOPE_VERSION,
         "documentClassification": classification,
+        # El flujo estándar no pregunta al modelo si el archivo es lo que se
+        # declaró: las tres llaves existen con su valor de "no evaluado".
+        **type_match_view(None),
         "documentCount": 1,
         "tracking": tracking,
         **({"metadata": metadata} if metadata else {}),

@@ -175,7 +175,7 @@ como en el DSL viejo.
 | Campo | Leído por el código | Qué es |
 |---|---|---|
 | `catalog_status` | no, metadato interno | Madurez operativa: `stable` para tipos calibrados o `beta` mientras falten muestras representativas. No aparece en `GET /document-types` ni cambia el pipeline. |
-| `description` | sí | Va al prompt de clasificación (Bedrock). Sé discriminante. |
+| `description` | sí | Va al prompt de clasificación (Bedrock) **y** encabeza cada llamada de extracción ("Documento DECLARADO como X. {description}"), donde además es lo que el modelo usa para decidir si el archivo de verdad es ese documento (ver `type_check`). Sé discriminante, pero no la escribas como una lista cerrada de formatos: medido con MiniMax, una descripción que enumera formatos como si fueran los únicos hace que una variante legítima (un extracto de registro holandés) salga vacía o se tome por otro documento. |
 | `fields` | sí | El árbol de campos — ver abajo. Su sola presencia es lo que activa el DSL field-centric (`document_catalog.py: if "fields" in data`). |
 | `display_name` | sí | Nombre legible (`"Pedimento Aduanal"`). Se guarda en `DocumentTypeName` y el API lo acepta en `?docType=`. Si falta, se deriva del `TYPE_ID`. |
 | `aliases` | sí | Otros nombres que el API acepta en `?docType=` (`["pedimento", "pedimento de importación"]`). |
@@ -194,6 +194,7 @@ como en el DSL viejo.
 | `qr_recovery` | sí | Recuperación determinística de campos desde un QR embebido. Declara cómo localizar la página, filtrar la URL, mapear parámetros y publicar el payload/estado; ver la sección siguiente. |
 | `unique_key` / `unique_keys` | sí | Campo(s) cuyo valor identifica UN documento de este tipo por sí solo, indexados como `TIPODOC#valor` para que buscar por ellos sea una sola Query. Normalmente se declara sobre el campo (`fields[X].unique_key`); aquí, a nivel de tipo, es la única forma para un tipo del DSL legado. Ver [Unique keys](#unique-keys-unique_key-buscar-por-un-campo-sin-recorrer-el-tipo). |
 | `page_selection` | sí | Selección de páginas de interés: manda a Bedrock **solo** las páginas cuyo texto cumple los marcadores del tipo, en vez del documento completo. Opt-in por tipo; ver la sección siguiente. |
+| `type_check` | sí, opcional | Ajusta la **verificación de tipo** ("¿este archivo ES el documento que se declaró?"), que todo tipo con `fields` tiene encendida por default: `on_fail` (`reject` default / `review` / `info`), `min_required_filled` (0.5) y `enabled`. Ver [Verificación de tipo](#verificación-de-tipo-type_check-el-archivo-es-lo-que-se-declaró). |
 | `segmentation_candidate` | sí, opcional | **Solo `false` tiene efecto**: saca al tipo de la lista de candidatos de la clasificación automática (subidas sin `documentType`). Ausente = se decide por la forma del tipo. Es el escape hatch para un tipo que el clasificador confunde con un hermano — `PEDIMENTO_ERP` lo usa, por ser el mismo documento físico que `PEDIMENTO_ADUANAL`. Nunca afecta a un tipo que el caller declara explícitamente. También lo saca del prompt de clasificación del flujo upstream, que viaja en una variable de entorno de Lambda (4KB): cada tipo listado ahí cuesta ~140 bytes, y un tipo nuevo que solo se usa declarándolo **debe** llevar este flag o el deploy acaba fallando por tamaño (el synth lo avisa antes). Ver [Candidatura de auto-clasificación](#candidatura-de-auto-clasificación-segmentation_candidate). |
 | `form_mapping` | sí, pero heredado | Mecanismo viejo para campos computados (ver más abajo) — hoy solo tiene sentido si no usas la convención `concept_aliases`/`source`/`filters` directo en `fields`. Para tipos nuevos, prefiere esa convención. |
 | `prompt_profile` | **no, reservado** | Se lee en `_shared.json._model_profiles` pero ningún código lo consume todavía. No lo confundas con algo funcional. |
@@ -1529,6 +1530,88 @@ Y dos umbrales que **no** son lo mismo:
   floor ..."` y un check `discard_low_confidence` (severidad `warning`, así
   que el documento cae a revisión, no a rechazo). La confianza baja se
   conserva en el nodo: es la que explica por qué no hay valor.
+
+### Verificación de tipo (`type_check`): ¿el archivo ES lo que se declaró?
+
+Cuando quien sube el archivo declara el tipo (`documentType=ESTADO_CUENTA_PORTAL`)
+el segmentador no corre: el archivo entero se toma por ese tipo y el extractor
+llena el schema con lo que encuentre. Antes nada comprobaba que el contenido
+correspondiera. Un archivo ajeno salía mal **por accidente**: si el modelo no
+hallaba nada, fallaban los `presence` y se rechazaba con confianza 0; pero si
+compartía dos o tres campos (un RFC, una fecha, una razón social) quedaba
+`PARTIALLY_APPROVED` con confianza 0.6-0.8 y nadie se enteraba de que era otro
+documento. Medido: una constancia fiscal subida en la casilla del estado de
+cuenta del portal.
+
+**Cómo funciona (`pipeline/type_check.py`), sin una llamada extra a Bedrock:**
+
+1. En el **mismo tool call** de extracción el schema lleva una llave
+   `_DOCUMENTO` (`corresponde`, `confianza`, `descripcion`) y el prompt la regla
+   "antes de extraer, decide si el texto ES ese documento; `corresponde=false`
+   SOLO si es de otra naturaleza; una variante extranjera, de otro banco, país
+   o formato, o un escaneo malo del MISMO documento SÍ corresponde; extrae los
+   campos de todos modos". ~30 tokens de salida. Solo la pide la llamada de
+   escalares (la partición `arrays` ve el mismo texto). Con varios chunks el
+   merge es **fail-open**: basta que uno reconozca el documento.
+2. **Guardia gratis** para que el modelo no tumbe solo un documento que
+   claramente se leyó: si ≥ `min_required_filled` (default **1.0 = todos**) de
+   los campos `required` de primer nivel salieron llenos con confianza ≥
+   `min_confidence`, la señal se degrada (`reason: SEÑAL_CONTRADICHA_POR_CAMPOS`)
+   y el efecto baja un escalón (`reject` → `review`). Por qué "todos" y no "la
+   mayoría" (medido 2026-10-08 con MiniMax): sobre la constancia fiscal subida
+   como estado de cuenta el modelo llenó `TITULAR` con la razón social del
+   contribuyente y `PAIS` con `MEX` — 2 de 3 obligatorios — y con 0.5 el
+   archivo ajeno se escapaba a revisión. Un documento legítimo bien leído tiene
+   todos sus obligatorios; si le falta uno iba a revisión de todos modos. Si el
+   tipo declara `page_selection.markers`,
+   los marcadores deciden en los dos sentidos: alguna página los alcanza →
+   degrada aunque no haya campos; ninguna → rechazo pleno aunque haya campos
+   (son evidencia más fuerte que tres campos genéricos).
+3. **Efecto**: un check `document_type_match` en `documents[i].checks` graduado
+   por `on_fail` (default `reject` → `blocking` → `REJECTED` → `RECHAZADO`), y
+   `documents[i].confidence` capada a **0.05** — los campos conservan su valor
+   y su propia confianza; lo que cae es el número del documento, porque no hay
+   documento de ese tipo.
+
+**Salida.** En la raíz del envelope, siempre presentes:
+`documentMatchesType` (`true`/`false`/`null` = no evaluado),
+`rejectionConfidence` (0-1, la confianza del modelo en que NO es el
+documento; `0.0` si corresponde) y `detectedDocument` (qué parece ser). Por
+documento, `documents[i].typeCheck` (`matches`, `rejectionConfidence`,
+`detected`, `reason`); en el resultado completo de S3 además `guard` con lo
+que vio la guardia (`requiredFilled`/`requiredTotal`/`markers`).
+
+**Ajuste por tipo** (opcional, hot-reloadable con `pnpm sync:one`; la
+verificación en sí es CÓDIGO y necesita la Lambda desplegada):
+
+```jsonc
+"type_check": {
+  "on_fail": "review",          // reject (default) | review | info
+  "min_required_filled": 1.0,   // 0-1, la guardia (default: todos los obligatorios)
+  "enabled": true               // false la apaga para este tipo
+}
+```
+
+Kill switch global fail-open: `TYPE_CHECK_ENABLED=false` → `evaluated: false`,
+sin check ni cap, `documentMatchesType: null`. Un tipo XML/tabular nunca la
+evalúa (no hay modelo al que preguntarle).
+
+**Qué NO es.** No es un clasificador: no dice qué tipo del catálogo es el
+archivo, solo si es el declarado. No es autenticidad: una carta falsificada
+que *parece* carta corresponde. Y no es calidad: un escaneo ilegible del
+documento correcto corresponde (y sus campos vacíos lo mandan a revisión por
+la vía normal).
+
+**Cuándo tocarlo.** Si una variante legítima sale `documentMatchesType:
+false`, el remedio es la `description` del tipo (que diga que acepta esa
+variante), no la guardia ni `on_fail`. Mídelo con el modelo DESPLEGADO
+(`pnpm procesar -- <pdf> <TIPO> minimax.minimax-m2.5`) sobre los documentos
+reales del tipo antes de endurecer nada. Medido el 2026-10-08 sobre los 10
+archivos reales de la casilla "Estado de cuenta" del portal (carátulas
+mexicanas, cartas de bancos extranjeros, wire instructions y la constancia
+fiscal mal subida): 9/9 legítimos `true`, la constancia `false` con
+`rejectionConfidence 1.0` y detectada como "Constancia de Situación Fiscal del
+SAT" — ver `documentacion/COSTOS.md` §11.
 
 ### Reglas de validación soportadas (`rule_type`)
 

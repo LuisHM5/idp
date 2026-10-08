@@ -48,7 +48,7 @@ from .normalize import (
     pedimento_consecutivo,
 )
 from . import confidence as conf_policy
-from . import page_locator, page_selector
+from . import page_locator, page_selector, type_check
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
@@ -173,6 +173,20 @@ def _extract_segment(
         doc["_row_confidences"] = extracted.row_confidences
         doc["_text"] = "\n".join(p.text for p in seg_pages)
         doc["extractionMeta"] = extracted.meta
+        # Type check (pipeline/type_check): the model's "is this really a
+        # <type>?" from the SAME extraction call, plus the free guard. Its
+        # own try/except: a bug here must never turn a cleanly extracted
+        # document into a PROCESSING_ERROR, same rule as the authenticity
+        # pass. The verdict only takes effect at validation time below.
+        if type_check.applies_to(entry):
+            try:
+                doc["typeCheck"] = type_check.evaluate(
+                    extracted.meta.get("typeSignal"), doc["_entities"], doc["_confidences"],
+                    entry, seg_pages,
+                ).to_json()
+            except Exception as exc:  # noqa: BLE001 - best effort by design
+                logger.exception("type_check failed for %s pages %d-%d", seg.doc_type, seg.page_start, seg.page_end)
+                doc["typeCheck"] = type_check.not_evaluated(f"{type(exc).__name__}: {str(exc)[:120]}").to_json()
         if selection is not None:
             # Priced with the REAL usage Bedrock billed for the pages that
             # were sent, so `savings` reports what filtering actually avoided
@@ -559,6 +573,13 @@ def process_pdf(
             )
             doc["extractedEntities"] = resolved_tree
             doc["fields"] = {}
+            # "This file is not a <type>" enters as ONE more check, graded by
+            # the type's `type_check.on_fail` (default reject → blocking), so
+            # the rejection takes the same road as any catalog rule and is
+            # visible in `checks` next to them.
+            mismatch = type_check.mismatch_check(doc.get("typeCheck"), entry)
+            if mismatch is not None:
+                checks.append(mismatch)
             doc["checks"] = checks_to_json(checks)
             doc["status"] = engine.document_status_from_checks(checks)
             doc["businessDestination"] = entry.business_destination or None
@@ -571,7 +592,12 @@ def process_pdf(
             # those zeros in would sink the document's own number for fields
             # that were never on the page to begin with.
             confidence_summary = conf_policy.summarize(effective_confidences.values())
-            doc["confidence"] = confidence_summary.mean or 0.0
+            # A file that is not this document at all is capped near 0 no
+            # matter how confidently its stray fields were read: the number
+            # describes the DOCUMENT, and there is no document of this type.
+            doc["confidence"] = type_check.cap_confidence(
+                doc.get("typeCheck"), confidence_summary.mean or 0.0
+            )
             if confidence_summary.shared is not None:
                 doc["fieldConfidence"] = confidence_summary.shared
             # Persisted (not popped) — handler.py's envelope assembly needs to
@@ -731,6 +757,10 @@ def process_pdf(
             or any(d.get("resolution") == "marked_otro" for d in segmentation_degraded)
         ),
         "documents": documents,
+        # File-level answer to "is this what was declared?" over the main
+        # documents — what the envelope surfaces as `documentMatchesType` /
+        # `rejectionConfidence` / `detectedDocument`. Per document: `typeCheck`.
+        "typeCheck": type_check.aggregate(documents),
         "crossDocumentChecks": cross_checks,
         "warnings": warnings,
         **({"truncated": {"originalPages": original_page_count, "processedPages": page_cap}} if truncated else {}),

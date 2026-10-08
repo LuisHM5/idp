@@ -659,6 +659,32 @@ validación, sin volver a recorrer ni mutar el árbol renderizado.
 La variante legacy hace lo mismo con `_call_model()`, `_merge_fields()` y
 `_merge_arrays()` sobre un schema plano.
 
+### 12.6a Verificación de tipo (`pipeline/type_check.py`)
+
+Dentro de cada llamada field-tree el tool schema lleva una llave extra
+`_DOCUMENTO` (`type_check.tool_property`, solo en `scope` `all`/`non_arrays`) y
+el prefijo del prompt la regla `type_check.PROMPT_RULE`: ¿el texto ES el
+documento declarado? `_call_model_field_tree` la lee de `parsed` ANTES de
+`_parse_field_tree_response` (que solo recorre las llaves del catálogo y la
+tiraría) y la devuelve como 5.º elemento; `_extract_document_field_tree` combina
+las de todos los chunks con `merge_signals` (fail-open: basta un `corresponde`)
+en `ExtractedDoc.meta["typeSignal"]`.
+
+En `_extract_segment`, justo después de `doc["extractionMeta"]`,
+`type_check.evaluate(signal, _entities, _confidences, entry, seg_pages)` aplica la
+guardia (campos `required` llenos con confianza ≥ `min_confidence`, o los
+`page_selection.markers` si el tipo los declara) y deja `doc["typeCheck"]`; su
+propio `try/except` evita que un fallo aquí vuelva `PROCESSING_ERROR` un
+documento bien extraído. El efecto se aplica en la validación: `mismatch_check`
+agrega un `RuleCheck` `document_type_match` (bloqueante con `on_fail: reject`,
+el default) antes de `document_status_from_checks`, y `cap_confidence` deja
+`doc["confidence"]` ≤ 0.05. `process_pdf` resume los documentos principales en
+`result["typeCheck"]` (`aggregate`), que `envelope.build` publica como
+`documentMatchesType` / `rejectionConfidence` / `detectedDocument` en la raíz
+(`type_match_view`) y `document_view` como `documents[i].typeCheck`. Kill switch
+`TYPE_CHECK_ENABLED=false`; ajuste por tipo en el bloque `type_check` del
+catálogo (`TypeRegistryEntry.type_check`).
+
 ### 12.6b Pasada de autenticidad física (`expediente._run_authenticity`)
 
 Entre `_mark("extraction")` y la validación, `process_pdf()` corre una pasada
