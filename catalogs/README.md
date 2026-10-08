@@ -68,7 +68,7 @@ del portal**, que acepta la variante mexicana y la extranjera del documento, con
 | Tipo | Qué acepta | Lo que decide las reglas |
 |---|---|---|
 | `IDENTIFICACION_OFICIAL_PORTAL` | INE, pasaporte de cualquier país, licencia de conducir, cédula, tarjeta de residencia | `TIPO_IDENTIFICACION` (lista cerrada). `INE` fija `PAIS = MEX` (`derived`); la vigencia se exige y se compara contra hoy |
-| `ESTADO_CUENTA_PORTAL` | Carátula de estado de cuenta, carta del banco o instrucciones de transferencia | `PAIS` del banco. México exige CLABE de 18 dígitos (que además fija `PAIS = MEX`); fuera de México, número de cuenta o IBAN |
+| `ESTADO_CUENTA_PORTAL` | Carátula de estado de cuenta, carta del banco o instrucciones de transferencia | `PAIS` del banco. México exige CLABE de 18 dígitos (que además fija `PAIS = MEX`); fuera de México, número de cuenta o IBAN. Además verifica que el archivo no fue tocado: preset `INTEGRIDAD_PDF`, una revisión visual de la página (`vision.page_review`) y `ORIGEN_DOCUMENTO` — un estado de cuenta generado desde Word es un recorte pegado. Todo en `review` |
 | `CONTRATO_SERVICIO_PORTAL` | Contrato de prestación de servicios o de obra, u orden/presupuesto aceptado | Sin variantes: tipo de contrato, las dos partes y el objeto |
 | `ACTA_CONSTITUTIVA_PORTAL` | Escritura constitutiva, protocolización de asamblea o su equivalente extranjero | `PAIS`. México exige número de escritura y notario; `TIPO_INSTRUMENTO` informa, no reprueba |
 | `REGISTRO_PUBLICO_COMERCIO_PORTAL` | Boleta de inscripción del RPC (SIGER) con o sin forma precodificada, o extracto de un registro extranjero | `PAIS`. México exige folio mercantil y al menos un acto inscrito |
@@ -800,6 +800,9 @@ calcado de él): marcadores por campo (`authenticity_source`) sobre campos
 nombre de campo ni un nombre de elemento**: todo sale de aquí. La forma corta de
 declararlo es un preset (`"$presets": ["INTEGRIDAD_PDF"]`, ver «Presets de
 campos»); la forma larga, campo por campo, es `base/recursos_humanos/CARTA_NOM35.json`.
+Un ejemplo sin firmas ni referencias — integridad del archivo más una revisión
+visual de la página, para un documento que puede llegar digital o escaneado — es
+`custom/portal/ESTADO_CUENTA_PORTAL.json`.
 
 Guía operativa completa (qué detecta cada capa, medición sobre cartas reales,
 cómo dar de alta las firmas y sellos de cada proveedor, arranque en observación,
@@ -1115,7 +1118,7 @@ Los resultados caen en campos `computed` normales. Cada uno dice qué señal qui
 | `structure.physical_capture` | `true` captura de papel · `false` composición digital (determinista) · *vacío* si la estructura sola no alcanza |
 | `structure.origin` | `ESCANER` · `APP_CAPTURA` · `OFIMATICA` · `DESCONOCIDO` · `IMAGEN` — solo evidencia |
 | `structure.capture_as_expected` | la captura coincide con `expected_capture`: con `FISICO` es `structure.physical_capture`; con `DIGITAL`, `false` si el archivo es un escaneo (`CAPTURA_DISTINTA_DE_LA_ESPERADA`, suave) · *vacío* con `ANY` o indeterminado |
-| `pixels.natural_background` | `false` = fondo perfectamente uniforme · *vacío* en bitonales o sin área en blanco |
+| `pixels.natural_background` | `false` = fondo perfectamente uniforme · *vacío* en bitonales o sin área en blanco. El motivo `FONDO_SIN_RUIDO_DE_CAPTURA` solo se levanta si el tipo lee esta señal o declara `expected_capture: "FISICO"`: en un tipo que acepta PDF digital, el fondo liso no es un hallazgo |
 | `pixels.error_level_uniform` | ELA sobre los bytes JPEG del archivo (la carga, o la imagen de página completa de un escaneo): `false` = un bloque con nivel de error muy distinto al resto · *vacío* si no es JPEG, es chico o tiene poco contenido. **Sin calibrar con imágenes reales: evidencia** |
 | `element.<KIND>.present` | se ve en la página · *vacío* si la visión no corrió |
 | `element.<KIND>.not_pasted` | `false` si hay una imagen incrustada justo ahí (determinista) o el modelo ve indicios |

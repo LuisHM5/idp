@@ -31,6 +31,7 @@ LAMBDA_DIR = REPO_ROOT / "src/document-processing/resources/enrichment-lambda"
 sys.path.insert(0, str(LAMBDA_DIR))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
+from catalog_paths import active_catalog_path  # noqa: E402
 import document_catalog as dc  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline import authenticity, page_raster, pdf_integrity, vision_inspector  # noqa: E402
@@ -420,3 +421,95 @@ def test_el_reporte_de_archivo_se_calcula_una_vez_por_carga(monkeypatch):
         assert doc["_entities"]["ARCHIVO_SIN_REGUARDADO"] is True
 
     assert len(llamadas) == 1
+
+
+# ---------------------------------------------------------------- ESTADO_CUENTA_PORTAL
+
+
+ESTADO_CUENTA = "ESTADO_CUENTA_PORTAL"
+CUENTA_MEXICANA = {"PAIS": "MEX", "TIPO_DOCUMENTO": "ESTADO_CUENTA", "BANCO": "BBVA",
+                   "TITULAR": "EJEMPLO COMERCIAL SA DE CV", "CLABE": "012345678901234567"}
+CARTA_EXTRANJERA = {"PAIS": "NLD", "TIPO_DOCUMENTO": "CARTA_BANCARIA", "BANCO": "Banco Ejemplo",
+                    "TITULAR": "Ejemplo B.V.", "IBAN": "NL00BANK0123456789"}
+
+
+def _estado_cuenta():
+    path = active_catalog_path(REPO_ROOT, ESTADO_CUENTA)
+    return _parse_entry(ESTADO_CUENTA, json.loads(path.read_text(encoding="utf-8"))[ESTADO_CUENTA])
+
+
+def _revision_visual(monkeypatch, indicios=()):
+    monkeypatch.setattr(vision_inspector, "locate", lambda *a, **k: pytest.fail("no hay elementos que ubicar"))
+    monkeypatch.setattr(vision_inspector, "review_page",
+                        lambda *a, **k: ({"editSigns": list(indicios), "certainty": 0.9, "description": ""},
+                                         {"modelId": "haiku", "usage": {"inputTokens": 1500, "outputTokens": 40}}))
+
+
+def _correr_estado_cuenta(entry, reader, extraido):
+    doc = {"documentType": entry.type_id, "pageStart": 1, "pageEnd": len(reader.pages),
+           "_entities": dict(extraido), "_confidences": {}}
+    authenticity.run(doc, entry, authenticity.source_for(b"", reader, False), {"documentId": "doc-1"})
+    return doc
+
+
+def _fallas(entry, doc):
+    estado, checks = estatus(entry, doc)
+    return estado, sorted(c.field for c in checks if not c.valid and not c.skipped)
+
+
+def test_el_estado_de_cuenta_pide_integridad_y_una_sola_revision_visual():
+    spec = authenticity.spec_for(_estado_cuenta())
+
+    assert spec["layers"] == {"integrity", "structure", "pixels", "vision"}
+    assert spec["expected_capture"] == "ANY"            # PDF de origen o escaneo: los dos valen
+    assert spec["elements"] == {} and not spec.get("references")
+    assert spec["vision"]["page_review"] is True
+
+
+def test_un_estado_de_cuenta_nativo_del_banco_se_aprueba(monkeypatch):
+    _revision_visual(monkeypatch)
+    entry = _estado_cuenta()
+    from pypdf import PdfReader
+
+    doc = _correr_estado_cuenta(entry, PdfReader(io.BytesIO(pdf_bytes(texto(TEXTO_CARTA)))), CUENTA_MEXICANA)
+
+    # El fondo liso de un PDF digital es lo esperado: no lo vuelve sospechoso.
+    assert doc["authenticity"]["reasons"] == []
+    assert doc["_entities"]["VEREDICTO_AUTENTICIDAD"] == authenticity.VERDICT_AUTHENTIC
+    assert doc["_entities"]["SIN_INDICIOS_DE_EDICION"] is True
+    assert doc["authenticityMeta"]["calls"] == 1
+    assert _fallas(entry, doc) == (DOC_APPROVED, [])
+
+
+def test_un_escaneo_del_estado_de_cuenta_tambien_se_aprueba(monkeypatch):
+    _revision_visual(monkeypatch)
+    entry = _estado_cuenta()
+    reader, _ = escaneo()
+
+    doc = _correr_estado_cuenta(entry, reader, CUENTA_MEXICANA)
+
+    assert _fallas(entry, doc) == (DOC_APPROVED, [])
+
+
+def test_indicios_de_edicion_en_la_pagina_mandan_el_estado_de_cuenta_a_revision(monkeypatch):
+    _revision_visual(monkeypatch, indicios=("TEXTO_SUPERPUESTO",))
+    entry = _estado_cuenta()
+    reader, _ = escaneo()
+
+    doc = _correr_estado_cuenta(entry, reader, CUENTA_MEXICANA)
+
+    assert _fallas(entry, doc) == (DOC_REVIEW, ["SIN_INDICIOS_DE_EDICION"])
+
+
+def test_un_estado_de_cuenta_pegado_en_word_va_a_revision_y_una_carta_bancaria_no(monkeypatch):
+    _revision_visual(monkeypatch)
+    entry = _estado_cuenta()
+
+    pegado = _correr_estado_cuenta(entry, word_con_firma_pegada(), CUENTA_MEXICANA)
+    assert pegado["_entities"]["ORIGEN_DOCUMENTO"] == "OFIMATICA"
+    estado, fallas = _fallas(entry, pegado)
+    assert estado == DOC_REVIEW and "ORIGEN_DOCUMENTO" in fallas
+
+    # Una carta sí la redacta el banco en Word: el origen no la acusa.
+    carta = _correr_estado_cuenta(entry, word_con_firma_pegada(), CARTA_EXTRANJERA)
+    assert "ORIGEN_DOCUMENTO" not in _fallas(entry, carta)[1]

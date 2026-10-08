@@ -7,6 +7,10 @@ benchmark de modelos que decide la palanca principal.
 **Fecha del análisis:** 2026-09-23 · cuenta `886031931562`, `us-east-1`,
 stacks `DocumentValidationStack` (prod) y `DocumentValidationStack-Dev`.
 
+**Actualización 2026-10-07:** benchmark de modelos baratos (§10) y mejoras
+cuantificadas (§11). Al 2026-10-07 ninguna palanca de §8 está aplicada: el
+modelo desplegado sigue siendo `minimax.minimax-m2.5`.
+
 ---
 
 ## 1. Veredicto en cinco líneas
@@ -26,6 +30,21 @@ stacks `DocumentValidationStack` (prod) y `DocumentValidationStack-Dev`.
 5. Los ~10s de plomería también son recuperables casi sin riesgo: ventana de
    batching de SQS, dos pasos de Step Functions cuyo resultado se descarta, y
    el primer poll del cliente.
+
+**Lo que agregó la ronda del 2026-10-07 (§10 y §11):**
+
+6. **Ningún modelo barato sirve hoy como reemplazo.** Nova 2 Lite y GLM 4.7
+   Flash son tan rápidos como Haiku y cuestan como MiniMax o menos, pero pierden
+   los arreglos o devuelven la extracción vacía en pedimentos (§10.3).
+7. **Haiku 4.5 sigue siendo el único rápido y estable** (2.2-8.2x más rápido que
+   MiniMax en extracción, a 2.6-4.2x el costo), **pero no es el techo de
+   calidad**: en `normal_pend.pdf` inventó los números de factura copiando el
+   ejemplo del hint del catálogo, 3 de 3 corridas. MiniMax los extrajo bien.
+8. **El envoltorio `{value, confidence}` por campo es el 18-47% del JSON de
+   salida** (31-47% en documentos de 1-3 páginas). Es la mejora de formato más grande disponible y aplica a cualquier
+   modelo (§11.1).
+9. **Con un modelo rápido, el OCR pasa a ser la mitad del tiempo** en
+   expedientes grandes: 15.3s de `pageLoad` contra 15.4s de extracción (§11.3).
 
 ---
 
@@ -89,7 +108,7 @@ De `tracking.timings` de documentos reales (ambiente dev, ms → s):
 | PEDIMENTO_ERP (113 pág) | 72.3s | 13.2s | **59.1s** | 3 768 | 64 |
 | PEDIMENTO_ERP (139 pág) | 196.1s | 17.8s | **178.3s** | 13 833 | 78 |
 
-Las etapas son **estrictamente secuenciales** (`expediente.py:455-589`):
+Las etapas son **estrictamente secuenciales** (`expediente.py:448-598`):
 `pageLoad` termina por completo —todas las páginas, todo el OCR— antes de que
 arranque la segmentación, y la autenticidad corre después de la barrera de
 extracción aunque solo necesite los campos de su propio documento.
@@ -117,7 +136,7 @@ Dos agravantes concretos:
   son ~150. No hay `additionalModelRequestFields` en ningún punto del repo, así
   que hoy el reasoning de MiniMax **no se puede bajar ni apagar**.
 - **El caso común nunca cachea.** `use_cache = len(chunks) > 1`
-  (`text_extractor.py:706`): el documento de 1 página reenvía todo el árbol de
+  (`text_extractor.py:775`): el documento de 1 página reenvía todo el árbol de
   campos sin `cachePoint` en cada llamada.
 
 ---
@@ -127,7 +146,7 @@ Dos agravantes concretos:
 `pdf_pages.load_pages` (`:165-194`) hace OCR de **todas** las páginas escaneadas
 antes de que `page_selector` decida cuáles importan — una llamada sync a
 Textract por página (`pdf_pages.py:144`), con `TEXTRACT_WORKERS=8`. Ya está
-documentado en `document-validation-stack.ts:351-354`: *"a 31-page scan pays 31
+documentado en `document-validation-stack.ts:373-376`: *"a 31-page scan pays 31
 Textract calls even when 3 pages end up going to the model"*.
 
 Es el origen de los 13-18s de `pageLoad` en los pedimentos escaneados.
@@ -220,15 +239,15 @@ correr `pnpm test:e2e:suite` y el ground truth de
 
 1. **El catálogo se recarga en CADA invocación.** `bin/app.ts:48` pone
    `forceReloadCatalog: true` en dev **y en prod** → `handler.py:724-726`
-   invalida el caché siempre: re-parseo de 224 KB de `config/catalogs.json`
-   (`document_catalog.py:575-591`) + un `Scan` a la tabla de catálogo (`:614`) +
+   invalida el caché siempre: re-parseo de 531 KB de `config/catalogs.json`
+   (`document_catalog.py:642`) + un `Scan` a la tabla de catálogo (`:681`) +
    otro `Scan` a `FallbackModelsTable` (`model_fallback.py:66`).
 2. **`PEDIMENTO_ERP` está a 441 caracteres de duplicar sus llamadas.** Su bloque
    de esquema mide 9 559 chars contra el umbral de split de 10 000
    (`text_extractor.py:61`): un hint más y las llamadas por chunk se duplican en
    silencio.
 3. **JSON truncado aceptado sin aviso.** El split por overflow de `max_tokens`
-   solo dispara con `len(pages) > 1` (`text_extractor.py:678`). Con MiniMax
+   solo dispara con `len(pages) > 1` (`text_extractor.py:747`). Con MiniMax
    clampeado a 8 192 tokens de salida (`bedrock.py:347-350`), una página densa
    que agote el presupuesto devuelve JSON truncado que se parsea y se acepta.
 4. **No existe notificación push.** El evento terminal de EventBridge lleva
@@ -251,8 +270,8 @@ correr `pnpm test:e2e:suite` y el ground truth de
 | 3 | `Choice` que salta clasificación+procesamiento con tipo declarado | -3.5s | medio: hay que inyectar un `classificationResult` sintético | override de `createStandardProcessingWorkflow` en `multi-model-document-processing.ts` |
 | 4 | Push (estado de validación en el evento / webhook por app) | -5s percibidos + el overshoot del backoff | bajo | `document-validation-stack.ts`, `AppsTable` |
 | 5 | `additionalModelRequestFields` para bajar reasoning | proporcional a los tokens de salida | bajo | `pipeline/bedrock.py` |
-| 6 | Caché de prompt también con 1 chunk | TTFT y tokens de entrada | bajo | `text_extractor.py:706` |
-| 7 | `TEXTRACT_WORKERS` 8 → 12-16 | -5 a -10s en escaneados | bajo: techo de throttling | `document-validation-stack.ts:361` (ya es env var) |
+| 6 | Caché de prompt también con 1 chunk | TTFT y tokens de entrada | bajo | `text_extractor.py:775` |
+| 7 | `TEXTRACT_WORKERS` 8 → 12-16 | -5 a -10s en escaneados | bajo: techo de throttling | `document-validation-stack.ts:383` (ya es env var) |
 | 8 | `page_selection` en más tipos | hasta -81% de páginas a extracción | bajo | catálogos, ver `ARQUITECTURA.md:130` |
 | 9 | OCR en dos pasadas | el grueso de `pageLoad` | alto: rompe el fail-open | `pdf_pages.py` + `page_selector.py` |
 
@@ -284,7 +303,7 @@ wall clock ≈ arranque + (tokens_de_salida / throughput)
 | **`max_tokens` del modelo** | techo de salida por llamada | MiniMax está clampeado a 8 192 (`bedrock.py:347-350`); si se agota, el JSON se trunca (§7.3) | `_KNOWN_MODEL_MAX_TOKENS` |
 | **Ventana de contexto** | cuánto texto entra por llamada | decide cuántos chunks → cuántas llamadas (`_MAX_CHUNK_CHARS = 28_000`) | catálogo del modelo |
 | **Cuotas TPM/RPM y throttling** | techo de concurrencia | limita `CHUNK_WORKERS`/`EXTRACT_WORKERS`; un throttle se paga como reintento con backoff de 2-16s (`bedrock.py:512-524`) | CloudWatch `EstimatedTPMQuotaUsage`, `InvocationThrottles` |
-| **Soporte de prompt caching** | reutilizar el prefijo del prompt | baja TTFT y tokens de entrada; hoy solo se usa con >1 chunk (`text_extractor.py:706`) | `cost_calibration.json` → `supportsPromptCache` |
+| **Soporte de prompt caching** | reutilizar el prefijo del prompt | baja TTFT y tokens de entrada; hoy solo se usa con >1 chunk (`text_extractor.py:775`) | `cost_calibration.json` → `supportsPromptCache` |
 
 ### 9.2 Datos publicados (Artificial Analysis, consulta del 2026-09-23)
 
@@ -356,3 +375,146 @@ Tres cosas que sólo se ven midiendo:
 - [AWS — nuevas métricas de TTFT y consumo estimado de cuota](https://aws.amazon.com/blogs/machine-learning/improve-operational-visibility-for-inference-workloads-on-amazon-bedrock-with-new-cloudwatch-metrics-for-ttft-and-estimated-quota-consumption)
 - [Amazon Bedrock — latency-optimized inference](https://docs.aws.amazon.com/bedrock/latest/userguide/latency-optimized-inference.html)
 - Datos de Haiku 4.5, MiniMax-M3 y Kimi: consulta al MCP de Artificial Analysis, 2026-09-23.
+
+---
+
+## 10. Benchmark de modelos baratos (2026-10-07)
+
+Pregunta: ¿hay un modelo barato que se acerque a Haiku 4.5 en velocidad y
+calidad? Haiku se tomó como referencia de comparación. 72 corridas con
+`pnpm bench:latencia`, costo reportado por el script $1.08 (sobrestimado: tarifa
+los modelos nuevos como Haiku). Resultados crudos en
+`bench-latencia/20261007-*/`.
+
+### 10.1 Candidatos y tarifas
+
+Tarifas de AWS Price List, `us-east-1`, standard, consultadas el 2026-10-07.
+
+| Modelo | Índice de inteligencia | $/1M entrada | $/1M salida | Resultado del preflight |
+|---|---:|---:|---:|---|
+| `minimax.minimax-m2.5` (desplegado) | 22.8 | 0.30 | 1.20 | corre |
+| `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 15.4 | 1.10 | 5.50 | corre |
+| `zai.glm-4.7-flash` | 14.9 | 0.07 | 0.40 | corre |
+| `us.amazon.nova-2-lite-v1:0` | 8.7 | 0.33 | 2.75 | corre solo con perfil `us.` |
+| `zai.glm-4.7` | 22.2 | 0.60 | 2.20 | corre |
+| `us.zai.glm-5.3` | 44.8 | sin SKU publicado | sin SKU publicado | corre solo con perfil `us.`; 7.5-18.0s en CURP, tan lento como MiniMax: **descartado** |
+| `us.moonshotai.kimi-k3` | 43.6 | 3.30 | 16.50 | **descartado**: 3x el precio de Haiku y rechaza el campo `temperature` que `bedrock.py:785` siempre manda |
+
+Índice de inteligencia: Artificial Analysis Intelligence Index, consultado el
+2026-10-07. Variantes publicadas: Haiku 4.5 y Nova 2 Lite sin razonamiento;
+GLM 4.7 y GLM 4.7 Flash con razonamiento; GLM 5.3 y Kimi K3 en modo "Max".
+El índice no predijo la calidad de extracción (§10.3): GLM 4.7 (22.2) devolvió
+la salida vacía, y los dos de índice más alto ni siquiera pasaron el preflight
+por precio o velocidad.
+
+### 10.2 Velocidad y precio
+
+Segundos de la etapa `extraction`, mediana de 3 repeticiones (min-max). `$` es
+solo Bedrock, tokens medidos × tarifa real.
+
+| Documento | MiniMax M2.5 (índice 22.8) | Haiku 4.5 (15.4) | Nova 2 Lite (8.7) | GLM 4.7 Flash (14.9) | GLM 4.7 (22.2) |
+|---|---|---|---|---|---|
+| `curp.pdf` (1 pág) | 15.6s (9.2-16.9) · $0.0014 | 2.7s (2.7-2.8) · $0.0050 | 1.5s (1.4-2.1) · $0.0016 | 1.8s (1.2-2.6) · $0.0002 | no medido |
+| `2607-0973-6100971_P.PDF-1.pdf` (2 pág) | 21.9s (13.3-26.8) · $0.0041 | 8.5s (8.5-8.5) · $0.0170 | 5.0s (4.5-5.5) · $0.0053 | 7.1s (6.6-7.1) · $0.0009 | 8.3s (8.0-11.8) · $0.0067 |
+| `normal_pend.pdf` (3 pág) | 20.7s (17.3-49.8) · $0.0045 | 9.4s (9.4-9.5) · $0.0191 | 0.9s, **salida vacía** | 6.9s (6.7-**192.0**) · $0.0010 | 11.6s, **salida vacía** |
+| `FLETE.pdf` (esquema >10K, 2 llamadas) | 34.8s (13.1-38.9) · $0.0051 | 4.2s (4.1-4.3) · $0.0198 | 6.9s (5.1-8.3) · $0.0091 | 10.8s (9.8-11.3) · $0.0014 | 5.3s (5.1-7.8) · $0.0077 |
+| `26 07 3435 6041353 CG.pdf` (139 pág, 1 rep) | 78.7s · $0.0296* | 15.4s · $0.0777* | 2.0s, **salida vacía** | no medido | no medido |
+
+\* Incluye $0.015 de Textract (10 páginas) y, en Haiku, escritura de caché.
+
+Haiku contra MiniMax en extracción: 5.8x, 2.6x, 2.2x, 8.2x y 5.1x más rápido,
+a 3.5x, 4.2x, 4.2x, 3.9x y 2.6x el costo. Su variación entre corridas idénticas
+fue de 0-1%; la de MiniMax, de 24-50%.
+
+Las cifras de MiniMax y Haiku coinciden con las de §6 dentro de la variación de
+MiniMax (CURP 15.6s contra 11.98s; pedimento de 2 páginas 21.9s contra 30.22s;
+Haiku 2.7s y 8.5s contra 2.85s y 8.79s).
+
+### 10.3 Calidad
+
+"Distinto de Haiku" no es un error por sí solo; lo verificado contra el texto
+del documento se marca como tal.
+
+| Modelo | Qué pasó |
+|---|---|
+| **Haiku 4.5** | Completo y determinista. **Error verificado en `normal_pend.pdf`:** devolvió `FACTURAS[].Factura` = `35079805` y `35079806`, 3 de 3 corridas. El documento dice `517010` y `517043`; `35079805` solo aparece en el hint del catálogo (`'COVE2689JP013 / 35079805'`) y `35079806` no aparece en ningún lado. |
+| **MiniMax M2.5** | Facturas correctas en `normal_pend.pdf`. Deja vacíos `Referencia` y las dos `TASA` del cuadro de liquidación (ya verificado en §6.2 que sí están en el documento). En `FLETE.pdf` deja vacíos `IMPORTE`, `TARIFA` y `NOTAS`, y una de tres corridas perdió casi toda la fila de conceptos. |
+| **Nova 2 Lite** | **Tool call vacío** (`toolInput: {}`, 16 tokens de salida) en `normal_pend.pdf` 3 de 3 y en las 2 llamadas del expediente de 139 páginas. En el pedimento de 2 páginas quedó en `REVIEW_REQUIRED` con `TASA` = 2 y 1 (Haiku: 330 y 16) y `GI_Total` = 11027 (Haiku: 17389). En `FLETE.pdf` intercambia domicilio de cliente y destinatario respecto a Haiku (sin verificar quién acierta). |
+| **GLM 4.7 Flash** | En `normal_pend.pdf` repite la misma factura en las dos filas, cruza importes entre filas, y una corrida tardó 192s. En `FLETE.pdf` pierde la fila de conceptos y da otro cliente. En CURP deja `FOLIO` vacío y mete el nombre completo en `NOMBRES`. |
+| **GLM 4.7** | **Ignora el tool call forzado**: termina con `stopReason: end_turn` y texto libre, así que la extracción sale vacía en `normal_pend.pdf` y en `FLETE.pdf` (3 de 3). |
+
+Las fallas de Nova 2 Lite y GLM 4.7 son de compatibilidad con cómo el pipeline
+pide la salida (`toolChoice` forzado, `bedrock.py:786-797`), no de lectura del
+documento. No se investigó la causa; mientras no se resuelva, no son candidatos.
+
+### 10.4 Conclusión
+
+- No hay atajo barato: de los cinco candidatos nuevos, ninguno extrae un
+  pedimento de 3 páginas de forma usable.
+- La decisión real sigue siendo MiniMax contra Haiku: 2.2-8.2x menos tiempo de
+  extracción y variación casi nula, a cambio de +$0.004 a +$0.05 por documento.
+- Antes de adoptar Haiku hay que quitar del hint de `FACTURAS` el ejemplo con
+  un número de factura realista y volver a medir: tal como está, Haiku lo copia.
+- Nova 2 Lite rinde 164-286 tok/s a un tercio del precio de Haiku. Si se
+  resuelve el tool call vacío, merece otra medición.
+
+---
+
+## 11. Mejoras cuantificadas (2026-10-07)
+
+Estimadas sobre las salidas reales del benchmark (`_prompt_output.json`), sin
+implementar nada. Los porcentajes de formato son por caracteres del JSON, no por
+tokens medidos.
+
+### 11.1 Formato de salida
+
+| Documento | JSON de salida | Sin `{value, confidence}` | Arreglos en columnas | Ambos |
+|---|---:|---:|---:|---:|
+| CURP (0 filas) | 474 chars | -46% | 0% | -46% |
+| Pedimento 2 pág (3 filas) | 1 759 | -38% | -1% | no calculado |
+| `normal_pend.pdf` (4 filas) | 2 171 | -31% | -12% | no calculado |
+| `FLETE.pdf` (1 fila) | 1 749 | -33% | 0% | no calculado |
+| Expediente 139 pág (24 filas) | 5 482 | -18% | -36% | -51% |
+
+- **El envoltorio por campo** (`text_extractor.py:431-434`) es la palanca grande
+  en documentos chicos. Quitarlo implica decidir de dónde sale la confianza por
+  campo que hoy consume el resultado.
+- **El formato columnar** (nombres de columna una vez, no por fila) solo paga
+  cuando hay muchas filas: 36% con 24 filas, nada con 1-3.
+- Como el tiempo es proporcional a los tokens de salida, en el expediente de 139
+  páginas la mitad del JSON equivale a cerca de 7s menos con Haiku y cerca de
+  40s menos con MiniMax.
+
+### 11.2 Lo que no apareció en esta ronda
+
+- **Truncamiento por `max_tokens`:** 0 de 72 corridas. El expediente de 139
+  páginas hoy genera 3 399-4 112 tokens de salida en 2 llamadas, contra los
+  13 833-16 662 de §4 y §6.3: la selección de páginas y la confianza por fila ya
+  lo bajaron. El riesgo de §7.3 sigue en el código, pero ningún documento de
+  prueba lo dispara.
+- **Split por esquema grande:** `FLETE.pdf` hace 2 llamadas concurrentes y con
+  Haiku termina en 4.2s. Duplica tokens de entrada (12 482), no latencia.
+- **Razonamiento de MiniMax:** 626-733 tokens de salida para un CURP cuyo JSON
+  mide 519 caracteres; Haiku usa 320 para 474. Sigue sin poder apagarse.
+
+### 11.3 Carga de páginas
+
+En el expediente de 139 páginas `pageLoad` tardó 15.3-16.0s en las tres corridas.
+El texto nativo de las 139 páginas con pypdf tarda 1.2s medido aparte, así que
+unos 14s son Textract sobre 10 páginas escaneadas. Con Haiku eso es la mitad del
+total (30.7s). Medido en local, donde `TEXTRACT_WORKERS` vale 4; el Lambda usa 8.
+
+### 11.4 Orden sugerido
+
+| # | Mejora | Efecto medido o estimado | Qué toca |
+|---|---|---|---|
+| 1 | Quitar el ejemplo realista del hint de `FACTURAS` y re-medir Haiku | requisito para adoptar Haiku | catálogo `PEDIMENTO_ERP` |
+| 2 | Extracción en Haiku 4.5 | extracción 2.2-8.2x más rápida; +$0.004 a +$0.05 por documento | `BEDROCK_EXTRACTOR_MODEL_ID` (env var, sin código) |
+| 3 | Plomería de §8 (#2, #3, #4) | ~10s fijos por documento | CDK y API |
+| 4 | Quitar el envoltorio por campo; columnas en arreglos | -18% a -51% del JSON de salida | `text_extractor.py` |
+| 5 | OCR solo de las páginas seleccionadas, o más workers | hasta ~14s en expedientes con escaneos | `pdf_pages.py`, `page_selector.py` |
+| 6 | Investigar el tool call vacío de Nova 2 Lite | abriría un modelo rápido a un tercio del precio de Haiku | `bedrock.py` |
+
+Estimación para el pedimento de 2 páginas, de punta a punta: hoy unos 32s de
+mediana (21.9s de extracción + ~10s de plomería) con picos arriba de 60s; con
+#2, unos 18s; con #2 y #3, unos 11s.

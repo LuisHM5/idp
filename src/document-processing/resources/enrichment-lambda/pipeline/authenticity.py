@@ -606,8 +606,15 @@ def _run_pixels(spec, source: PageSource, structure, rasters, analysed, wanted, 
             natural = False if False in verdicts else True if True in verdicts else None
             pixels_audit.update({"naturalBackground": natural, "perPage": per_page})
             signals["pixels.natural_background"] = natural
-            states.append(LAYER_FAIL if natural is False else LAYER_OK)
-            if natural is False:
+            # A flat background accuses only where paper is expected (or the
+            # type asked for this very signal). When the raster exists just
+            # because vision needs one, a born-digital PDF is flat by
+            # construction: evidence in the audit, not a finding.
+            accuses = natural is False and (
+                "pixels.natural_background" in wanted or spec.get("expected_capture") == "FISICO"
+            )
+            states.append(LAYER_FAIL if accuses else LAYER_OK)
+            if accuses:
                 _reason(audit, "FONDO_SIN_RUIDO_DE_CAPTURA", "pixels", False,
                         "El fondo es perfectamente uniforme: posible exportación digital o captura de pantalla")
 

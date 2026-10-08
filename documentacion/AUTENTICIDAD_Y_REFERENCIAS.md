@@ -565,7 +565,7 @@ por página, hashes de imagen, huellas) queda en `results/<documentId>.json`.
 | `IMAGEN_CON_TRANSPARENCIA` | estructura | sí |
 | `<ELEMENTO>_ES_IMAGEN_INSERTADA` | estructura + visión | sí |
 | `ORIGEN_OFIMATICA` | estructura | no (evidencia) |
-| `FONDO_SIN_RUIDO_DE_CAPTURA` | pixeles | no |
+| `FONDO_SIN_RUIDO_DE_CAPTURA` | pixeles | no. Solo se levanta cuando el tipo espera papel (`expected_capture: "FISICO"`) o lee `pixels.natural_background`; si el raster existe únicamente porque la visión lo necesita, el fondo liso de un PDF digital queda en la auditoría y no es un hallazgo |
 | `CAPTURA_NO_ES_PAPEL` | visión | no |
 | `<ELEMENTO>_AUSENTE` | visión | no |
 | `<ELEMENTO>_CON_INDICIOS_DE_INSERCION` | visión | no |
@@ -654,8 +654,9 @@ milisegundos, sobre bytes que ya están en memoria. En la capa de visión,
 `vision.trigger: "on_suspicion"` omite la llamada de ubicación (`locate`) cuando
 ninguna capa gratis levantó un motivo no informativo — el archivo limpio no paga
 modelo —, y `vision.page_review: true` agrega una llamada más, del tamaño de
-`locate` (la página a 1568 px; ESTIMADA en ~3,300 tokens de entrada, no medida
-aún), en la misma línea `BedrockAuthenticity`.
+`locate` (la página a 1568 px), en la misma línea `BedrockAuthenticity`. Medida
+el 2026-10-08 sobre 10 estados de cuenta reales con Haiku 4.5: ~2,750 tokens de
+entrada y 70 de salida, **~$0.003 por documento**.
 
 ### Medido sobre las 49 cartas reales (2026-09-24)
 
@@ -699,6 +700,38 @@ pasado por la capa. El preset está pensado para los tipos digitales de origen,
 donde un guardado posterior, una anotación o un parche sí son la anomalía. Antes
 de ponérselo a
 cualquier tipo: mide con su carpeta real.
+
+### Medido sobre 10 estados de cuenta reales del portal (2026-10-08)
+
+`ESTADO_CUENTA_PORTAL` es el primer tipo que declara `INTEGRIDAD_PDF` más
+`vision.page_review` sin elementos ni referencias: acepta el PDF del banco y su
+escaneo (`expected_capture: "ANY"`) y pregunta solo si el archivo fue tocado.
+Capas gratis con `pnpm autenticidad -- --type ESTADO_CUENTA_PORTAL --dir
+<carpeta>`; la visión, con una llamada real por archivo (Haiku 4.5).
+
+| Archivo real | Qué lo señala | Sale |
+|---|---|---|
+| 4 de 10: PDF del banco, escaneo de Adobe Scan, carta impresa desde Vista Previa | nada | aprobado |
+| Recorte de la carátula pegado en Word e impreso a PDF (2) | `ORIGEN_DOCUMENTO = OFIMATICA` en un `ESTADO_CUENTA` — en uno es el **único** rastro: 1 generación, sin editor, y la visión no ve nada | revisión |
+| Saldos tachados con rectángulos negros en Vista Previa | `ANOTACIONES_EN_PAGINA` (`/Stamp`), guardado incremental y la visión (`PARCHE_DE_FONDO`) | revisión |
+| PDF del banco guardado de nuevo 18 días después | `ARCHIVO_CON_ACTUALIZACIONES_INCREMENTALES` | revisión |
+| Carta e instrucciones de transferencia hechas en Word por bancos extranjeros (2) | `IMAGEN_SOBRE_TEXTO_NATIVO` (la firma como imagen sobre el renglón); una, además, `MODIFICADO_DESPUES_DE_FIRMAR` | revisión |
+
+Tres lecturas:
+
+- **La revisión visual no acusó a ningún archivo sin tocar** (0 de 9) y sí vio
+  las tachaduras. No ve un recorte limpio pegado en Word: eso lo decide el
+  origen del archivo, no el modelo.
+- **`ORIGEN_DOCUMENTO` como regla es de este tipo, no del preset**: un estado de
+  cuenta periódico nunca sale de un programa de oficina, una carta bancaria sí.
+  Por eso la regla lleva `when` sobre `TIPO_DOCUMENTO`.
+- **El fondo liso dejó de acusar a los PDF digitales.** Al pedir visión se
+  rasteriza la página y la capa de pixeles levantaba `FONDO_SIN_RUIDO_DE_CAPTURA`
+  en 5 de 10 — todo PDF nativo salía `SOSPECHOSO`. Hoy ese motivo solo existe
+  cuando el tipo espera papel o lee `pixels.natural_background`.
+
+6 de 10 a revisión es alto porque la muestra lo es: la casilla recibe recortes y
+archivos re-guardados. Todo arranca en `review`; nada rechaza solo.
 
 ### Calibración (de dónde salen los umbrales)
 

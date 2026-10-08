@@ -1,7 +1,7 @@
 {
   "ESTADO_CUENTA_PORTAL": {
     "catalog_status": "beta",
-    "schema_version": "1.1.0",
+    "schema_version": "1.2.0",
     "display_name": "Estado de cuenta bancario (portal, nacional o extranjero)",
     "aliases": [
       "estado de cuenta portal",
@@ -20,7 +20,17 @@
     "__COMENTARIO_pais__": "PAIS es el país del banco donde vive la cuenta y decide qué reglas corren (param `when`). Cuenta mexicana: se exige la CLABE de 18 dígitos y, si el RFC viene impreso, su formato. Cuenta extranjera: se exige el número de cuenta o el IBAN, lo que el documento traiga. Una CLABE de 18 dígitos fija PAIS = MEX sin depender del modelo (`derived`): fuera de México ese dato no existe. La condición acepta MEX, MX o MÉXICO a propósito, igual que en la constancia fiscal: si el modelo se sale de la clave de 3 letras, la regla `regex` de PAIS lo marca y las reglas mexicanas siguen corriendo. Ver catalogs/README.md -> 'when: a qué documentos aplica la regla'.",
     "__COMENTARIO_antiguedad__": "A propósito NO hay regla de antigüedad sobre FECHA_EMISION: las muestras reales del portal traen estados de cuenta y cartas de más de un año. Si el negocio fija un máximo, se agrega aquí una regla `date_max_age` (en años enteros) con el `on_fail` que corresponda; no hace falta tocar código.",
     "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, como los demás tipos del portal: su salida está acoplada a ese sistema, que ya sabe qué documento está cargando. Se pide declarándolo: documentType=ESTADO_CUENTA_PORTAL.",
+    "__COMENTARIO_integridad__": "¿El archivo es el que entregó el banco (PDF de origen o escaneo de la hoja) o fue tocado después? Tres verificaciones, todas en observación (`on_fail: review`: mandan a una persona, ninguna rechaza sola). (1) `\"$presets\": [\"INTEGRIDAD_PDF\"]`: gratis, lee los bytes — guardado de nuevo por un editor, anotaciones encima (sellos o tachaduras de Vista Previa/Acrobat), texto escrito sobre el escaneo, una imagen que tapa el texto original, firma digital que ya no cubre el archivo, un editor en los metadatos. (2) `SIN_INDICIOS_DE_EDICION`: una llamada de visión sobre la primera página (`vision.page_review`) que busca datos sobrescritos, parches, fuentes o alineación rotas; es lo único que puede ver una edición que no dejó rastro en el archivo (editar, imprimir y volver a escanear). (3) `ORIGEN_DOCUMENTO`: un estado de cuenta periódico nunca sale de Word; si el archivo lo generó un programa de oficina es un recorte o captura de pantalla pegado en un documento. Esa regla aplica solo a TIPO_DOCUMENTO = ESTADO_CUENTA (`when`): una carta bancaria o unas instrucciones de transferencia sí las redacta el banco en Word. `expected_capture` es ANY a propósito: se aceptan el PDF de origen y el escaneo. `NIVEL_DE_ERROR_UNIFORME` (ELA sobre el JPEG de un escaneo) es solo evidencia (`info`): no está calibrado. Medido el 2026-10-08 sobre los 10 archivos reales del portal: 6 van a revisión — 2 recortes del estado de cuenta pegados en Word (uno sin ningún otro rastro: solo lo ve ORIGEN_DOCUMENTO), 1 con tachaduras hechas en Vista Previa (lo ven las anotaciones y la visión), 1 PDF del banco guardado de nuevo 18 días después, y 2 documentos de Word de bancos extranjeros con la firma como imagen sobre el texto (uno, además, modificado después de su firma digital). La revisión visual (Haiku 4.5, ~$0.003 por documento) marcó solo el de las tachaduras: ningún falso positivo en los otros 9. Antes de subir una señal a `reject`, volver a medir con `pnpm autenticidad -- --type ESTADO_CUENTA_PORTAL --dir <carpeta>`. Spec: catalogs/README.md -> 'Autenticidad e integridad'.",
+    "authenticity": {
+      "expected_capture": "ANY",
+      "vision": {
+        "page_review": true
+      }
+    },
     "fields": {
+      "$presets": [
+        "INTEGRIDAD_PDF"
+      ],
       "PAIS": {
         "type": "string",
         "required": true,
@@ -262,6 +272,55 @@
             "validation": []
           }
         }
+      },
+      "SIN_INDICIOS_DE_EDICION": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "vision.no_edit_signs",
+        "hint": "Falso cuando la revisión visual de la primera página encuentra indicios de edición: un dato sobrescrito, un parche que tapa el original, un valor en otra fuente, una cifra fuera de su columna, una costura de recorte o una zona con otra nitidez. Vacío si la revisión no corrió.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La página muestra indicios de edición (dato sobrescrito, parche o imagen pegada); se requiere el archivo original del banco"
+          }
+        ]
+      },
+      "ORIGEN_DOCUMENTO": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "structure.origin",
+        "hint": "Programa que generó el archivo: ESCANER, APP_CAPTURA, OFIMATICA, DESCONOCIDO o IMAGEN.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(?!OFIMATICA$).+",
+            "on_fail": "review",
+            "message": "El estado de cuenta fue generado desde un programa de oficina (Word): es un recorte o una captura pegada en un documento, no el PDF del banco ni su escaneo",
+            "when": {
+              "field": "TIPO_DOCUMENTO",
+              "eq": "ESTADO_CUENTA"
+            }
+          }
+        ]
+      },
+      "NIVEL_DE_ERROR_UNIFORME": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "pixels.error_level_uniform",
+        "hint": "Verdadero cuando el análisis de nivel de error (ELA) de la imagen escaneada no encuentra una zona con compresión distinta al resto. Vacío si el archivo no es un escaneo JPEG. Solo evidencia.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "info",
+            "message": "Una zona de la imagen escaneada tiene un nivel de error de compresión distinto al resto: posible parche"
+          }
+        ]
       }
     },
     "cross_field_validation": []
