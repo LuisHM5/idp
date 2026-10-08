@@ -102,6 +102,8 @@ def _correr(entry, ruta: Path, entidades: dict) -> dict:
         "capaVision": (auditoria.get("layers") or {}).get("vision"),
         "error": auditoria.get("visionError"),
         "indicios": revision.get("editSigns") or [],
+        "marcasDeAgua": revision.get("watermarks") or [],
+        "textoMarcaDeAgua": revision.get("watermarkText") or "",
         "descripcion": revision.get("description") or "",
         "presentes": sorted(k for k, v in elementos.items() if isinstance(v, dict) and v.get("present")),
         "motivosVision": sorted(r["code"] for r in auditoria.get("reasons", []) if r.get("layer") == "vision"),
@@ -117,7 +119,8 @@ def _correr(entry, ruta: Path, entidades: dict) -> dict:
 
 def _firma(r: dict) -> tuple:
     """Lo que el modelo DIJO, para contar diferencias contra la referencia."""
-    return (r["capaVision"], tuple(r["indicios"]), tuple(r["presentes"]), tuple(r["motivosVision"]))
+    return (r["capaVision"], tuple(r["indicios"]), tuple(r["marcasDeAgua"]), tuple(r["presentes"]),
+            tuple(r["motivosVision"]))
 
 
 def main() -> int:
@@ -155,7 +158,7 @@ def main() -> int:
             try:
                 resultados[modelo][ruta.name] = _correr(entry, ruta, entidades)
             except Exception as e:  # un archivo ilegible no tumba la comparación
-                resultados[modelo][ruta.name] = {"capaVision": "ERROR", "error": str(e)[:200], "indicios": [], "presentes": [],
+                resultados[modelo][ruta.name] = {"capaVision": "ERROR", "error": str(e)[:200], "indicios": [], "marcasDeAgua": [], "presentes": [],
                                                  "motivosVision": [], "fallan": [], "estatus": None, "llamadas": 0,
                                                  "uso": {}, "costoUsd": 0.0, "segundos": 0.0, "descripcion": "", "modeloUsado": None}
 
@@ -165,7 +168,9 @@ def main() -> int:
         print(f"\n{ruta.name}")
         for modelo in modelos:
             r = resultados[modelo][ruta.name]
-            dicho = ", ".join(r["indicios"] + r["motivosVision"]) or "sin indicios"
+            dicho = ", ".join(r["indicios"] + r["marcasDeAgua"] + r["motivosVision"]) or "sin indicios"
+            if r.get("textoMarcaDeAgua"):
+                dicho += f" «{r['textoMarcaDeAgua']}»"
             if r["presentes"]:
                 dicho += f" · presentes: {', '.join(r['presentes'])}"
             if r["error"]:

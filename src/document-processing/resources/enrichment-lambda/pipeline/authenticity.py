@@ -43,6 +43,12 @@ Signals a field can ask for (`authenticity_source`):
   integrity.signature_intact         the latest signature reaches the end of the file / EMPTY if unsigned
   integrity.no_active_content        no JavaScript, OpenAction, attachments (configurable)
   integrity.camera_metadata          image uploads: EXIF camera data present (info)
+  integrity.no_watermark             no watermark the FILE can show: tagged as one, diagonal or
+                                     translucent legend, a tool's line / EMPTY on a pure scan
+  integrity.no_shape_over_text       no opaque box painted OVER visible text (redaction, white-out)
+  integrity.fonts_consistent         no handful of characters in a font the file does not embed
+  integrity.no_hidden_content        no layer switched off, no hidden annotation
+  integrity.pages_consistent         the document's pages are one kind and size / EMPTY for one page
   structure.physical_capture         True / False / (empty = undeterminable)
   structure.origin                   ESCANER | APP_CAPTURA | OFIMATICA | DESCONOCIDO | IMAGEN
   structure.capture_as_expected      matches the block's `expected_capture` / empty when ANY
@@ -57,6 +63,8 @@ Signals a field can ask for (`authenticity_source`):
   references.suggested_key           the key whose registered references this document
                                      matched when the upload declared none (`references.search`)
   vision.no_edit_signs               `vision.page_review`: the model sees no edit signs on the page
+  vision.no_watermark                `vision.page_review`: no watermark foreign to the issuer
+  vision.watermark_text              what that watermark says (info)
   memory.elements_unique             False = same ink as ANOTHER letter (reject-level)
   memory.elements_not_similar        False = suspiciously alike (review-level or worse)
   memory.not_duplicate               False = this very letter was already received
@@ -532,6 +540,10 @@ def _run_integrity(spec, source: PageSource, page_indexes, structure, analysed, 
                     # Structure was not requested (or ran on other pages):
                     # walk the page here — pypdf only, still free.
                     facts = pdf_forensics.inspect_page(source.raw_reader, index, policy)
+                if "integrity.no_watermark" in (spec.get("wanted") or ()):
+                    # Only for the types that ask: reading the page's text is
+                    # the one part of this layer that is not a single pass.
+                    facts = {**facts, "toolPhrases": pdf_integrity.tool_phrases(source.raw_reader, index, policy)}
                 page_reps.append(pdf_integrity.page_report(facts, policy))
             # The JPEG a scan stores keeps the metadata of whatever wrote it —
             # an image edited in Photoshop and "printed" to PDF included.
@@ -737,7 +749,7 @@ def _run_vision_locate(spec, entry, elements, rasters, page_index, structure, au
 
 def _run_vision_page_review(spec, entry, rasters, page_index, structure, audit, signals, doc) -> None:
     """`vision.page_review`: one call asking the model whether the rendered
-    page shows signs of editing. A judgement, so review-level at most; it runs
+    page shows signs of editing or a watermark that is not the issuer's. A judgement, so review-level at most; it runs
     under the same trigger as `locate` and is billed on the same line."""
     layers = audit["layers"]
     vision = _vision_spec(spec)
@@ -772,6 +784,14 @@ def _run_vision_page_review(spec, entry, rasters, page_index, structure, audit, 
         layers["vision"] = LAYER_FAIL
         _reason(audit, "INDICIOS_DE_EDICION_EN_PAGINA", "vision", False,
                 f"El modelo ve indicios de edición en la página ({', '.join(signs)})")
+    marks = review.get("watermarks") or []
+    signals["vision.no_watermark"] = not marks
+    signals["vision.watermark_text"] = review.get("watermarkText") or None
+    if marks:
+        layers["vision"] = LAYER_FAIL
+        text = review.get("watermarkText")
+        _reason(audit, "MARCA_DE_AGUA_VISIBLE", "vision", False,
+                f"El modelo ve una marca de agua ajena al emisor ({', '.join(marks)})" + (f": «{text}»" if text else ""))
 
 
 def _candidates(spec, page_report: Dict[str, Any], raster: Any, digital: bool) -> List[Dict[str, Any]]:

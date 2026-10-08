@@ -37,6 +37,25 @@ Sources of evidence, and why each is read the way it is:
 - **Paint order** (`pdf_forensics.overlay_facts`): visible text drawn after
   the full-page image = typed onto a scan; an image drawn after text it
   covers = a patch over the original.
+- **Boxes over text** (same paint-order walk): an opaque filled rectangle
+  painted after a string it covers is a redaction bar, or the white-out an
+  online editor lays down before retyping a value. A generator paints a
+  cell's background BEFORE its text, so this does not fire on shaded tables.
+- **Watermarks.** What the file itself says is one — content tagged
+  `/Artifact /Watermark`, an optional-content group or Acrobat `/PieceInfo`
+  named after it, a `/Watermark` annotation — plus what looks like one:
+  a legend set on a diagonal, large translucent text, a translucent image,
+  and the line a trial editor or a scanning app leaves ("Scanned with…").
+  A watermark burnt into the pixels of a scan is invisible here: that is
+  the vision layer's (`vision.no_watermark`), and this signal stays EMPTY
+  on a page that is only a scan.
+- **Foreign font.** A file whose text is set in embedded fonts, except a
+  handful of characters in a font it does NOT embed: what an editor leaves
+  when it retypes a value with whatever font the machine had.
+- **Hidden content.** Optional-content layers switched off and annotations
+  flagged hidden: content the file carries and a viewer does not show.
+- **Page mix.** Scanned pages among born-digital ones, or born-digital
+  pages of different sizes, inside one document: a replaced or inserted page.
 - **Signatures.** Only the geometry: the latest `/ByteRange` must reach the
   end of the file, otherwise something was appended after signing. No
   cryptography (no `cryptography` in the bundle), stated plainly.
@@ -96,6 +115,32 @@ DEFAULT_INTEGRITY: Dict[str, Any] = {
     "overlay_margin": 0.06,
     # Share of a text run an image must cover to count as painted OVER it.
     "image_over_text_min_overlap": 0.5,
+    # Visible characters an opaque rectangle must cover to count as painted
+    # OVER text (a check-box square over its own bullet glyph is not a patch).
+    "shape_over_text_min_chars": 2,
+    # A diagonal or translucent string is a watermark from this size up (pt)…
+    "watermark_min_font_size": 14,
+    # …"translucent" being at or below this fill opacity…
+    "watermark_max_alpha": 0.6,
+    # …and a translucent image from this share of the page up.
+    "watermark_min_image_coverage": 0.05,
+    # Lines (lower-case substrings of the page's own text) a trial editor,
+    # an online converter or a scanning app prints on what it exports.
+    "watermark_phrases": [
+        "camscanner", "scanned with", "scanned by", "escaneado con", "escaneado por", "tinyscanner",
+        "genius scan", "adobe scan", "ilovepdf", "sejda", "pdfescape", "smallpdf", "pdffiller",
+        "pdfelement", "wondershare", "pdf-xchange", "foxit", "nitro pro", "soda pdf", "trial version",
+        "version de prueba", "versión de prueba", "evaluation version", "evaluation copy",
+        "unregistered version", "demo version", "watermark",
+    ],
+    # A font the file does not embed is "foreign" when the page has at least
+    # `min_page_chars` visible characters, at least `min_embedded_share` of
+    # them in embedded fonts, and the font shows at most `max_chars`.
+    "foreign_font_min_page_chars": 200,
+    "foreign_font_min_embedded_share": 0.9,
+    "foreign_font_max_chars": 60,
+    # Born-digital pages of one document may differ in size by this fraction.
+    "page_size_tolerance": 0.05,
     # PDF/A-3 invoices legitimately carry their XML as an attachment.
     "allow_embedded_files": False,
     # Annotation actions that are active content (a /URI link is not).
@@ -121,6 +166,11 @@ R_IMAGE_EDITOR = "IMAGEN_CON_SOFTWARE_DE_EDICION"
 R_EXIF_DATES = "FECHAS_EXIF_INCONSISTENTES"
 R_NO_CAMERA = "SIN_METADATOS_DE_CAMARA"
 R_UNDETERMINED = "INTEGRIDAD_NO_DETERMINABLE"
+R_WATERMARK = "MARCA_DE_AGUA_EN_PAGINA"
+R_SHAPE_OVER_TEXT = "RECUADRO_SOBRE_TEXTO_NATIVO"
+R_FOREIGN_FONT = "FUENTE_AJENA_EN_PAGINA"
+R_HIDDEN_CONTENT = "CONTENIDO_OCULTO_EN_PDF"
+R_PAGES_MIXED = "PAGINAS_DE_ORIGEN_DISTINTO"
 
 # Default severity of each finding. "hard" makes the verdict NO_AUTENTICO,
 # "soft" SOSPECHOSO, "info" nothing — what it does to the DOCUMENT is the
@@ -141,6 +191,11 @@ SEVERITY: Dict[str, str] = {
     R_EXIF_DATES: "soft",
     R_NO_CAMERA: "info",
     R_UNDETERMINED: "info",
+    R_WATERMARK: "soft",
+    R_SHAPE_OVER_TEXT: "soft",
+    R_FOREIGN_FONT: "soft",
+    R_HIDDEN_CONTENT: "soft",
+    R_PAGES_MIXED: "soft",
 }
 
 MESSAGES: Dict[str, str] = {
@@ -159,6 +214,11 @@ MESSAGES: Dict[str, str] = {
     R_EXIF_DATES: "La fecha de modificación EXIF es posterior a la de captura ({detail})",
     R_NO_CAMERA: "La imagen no trae metadatos de cámara (pudo pasar por mensajería o ser una captura de pantalla)",
     R_UNDETERMINED: "No se pudo leer la estructura del archivo para evaluar su integridad ({detail})",
+    R_WATERMARK: "La página lleva una marca de agua o leyenda sobrepuesta ({kinds})",
+    R_SHAPE_OVER_TEXT: "Hay {n} recuadro(s) opaco(s) pintado(s) encima del texto original ({colours}): tachadura o parche sobre un dato",
+    R_FOREIGN_FONT: "{n} carácter(es) usan una fuente que el archivo no incrusta ({fonts}) mientras el resto usa fuentes incrustadas: texto agregado por un editor",
+    R_HIDDEN_CONTENT: "El PDF lleva contenido que no se muestra ({kinds})",
+    R_PAGES_MIXED: "Las páginas del documento no son homogéneas ({detail}): posible página sustituida o insertada",
 }
 
 SIGNALS: List[str] = [
@@ -167,6 +227,8 @@ SIGNALS: List[str] = [
     "integrity.no_form_fields", "integrity.no_text_overlay", "integrity.no_image_over_text",
     "integrity.digitally_signed", "integrity.signature_intact", "integrity.no_active_content",
     "integrity.camera_metadata",
+    "integrity.no_watermark", "integrity.no_shape_over_text", "integrity.fonts_consistent",
+    "integrity.no_hidden_content", "integrity.pages_consistent",
 ]
 
 _MAX_DICT_SLICE = 65536
@@ -290,6 +352,7 @@ def file_report(raw: bytes, reader: Any, policy: Optional[Dict[str, Any]] = None
     report["software"] = _software(reader, xmp_raw, cfg)
     report["signatures"], report["forms"] = _acroform(reader, len(raw or b""))
     report["activeContent"] = _active_content(reader, cfg)
+    report["optionalContent"] = _optional_content(reader)
     # Measured on real files: Microsoft Word writes EVERY PDF in two passes —
     # the document, then an incremental section adding its XMP metadata — so
     # a plain Word export shows two generations with creation == modification
@@ -543,6 +606,52 @@ def _active_content(reader: Any, cfg: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _optional_content(reader: Any) -> Dict[str, Any]:
+    """The file's optional-content groups (layers) and the ones its default
+    configuration switches OFF: content a viewer does not show."""
+    out: Dict[str, Any] = {"groups": [], "hidden": []}
+    try:
+        props = reader.trailer["/Root"].get("/OCProperties")
+        props = props.get_object() if props is not None else None
+        if props is None:
+            return out
+
+        def names(refs: Any) -> List[str]:
+            found = []
+            refs = refs.get_object() if hasattr(refs, "get_object") else refs
+            for ref in refs or []:
+                try:
+                    found.append(str(ref.get_object().get("/Name", "") or "?")[:80])
+                except Exception:
+                    continue
+            return found[:40]
+
+        out["groups"] = names(props.get("/OCGs"))
+        default = props.get("/D")
+        default = default.get_object() if default is not None else None
+        if default is not None:
+            out["hidden"] = names(default.get("/OFF"))
+            if str(default.get("/BaseState", "/ON")) == "/OFF":
+                shown = set(names(default.get("/ON")))
+                out["hidden"] = [n for n in out["groups"] if n not in shown]
+    except Exception as e:
+        out["error"] = str(e)[:100]
+    return out
+
+
+def tool_phrases(reader: Any, page_index: int, policy: Optional[Dict[str, Any]] = None) -> List[str]:
+    """The `watermark_phrases` found in a page's own text (pypdf, no OCR): the
+    line a trial editor or a scanning app prints on its output. Never raises."""
+    phrases = [str(p).lower() for p in policy_for(policy).get("watermark_phrases") or []]
+    if not phrases:
+        return []
+    try:
+        text = (reader.pages[page_index].extract_text() or "").lower()
+    except Exception:
+        return []
+    return [p for p in phrases if p in text][:10]
+
+
 def _embedded_file_names(tree: Any) -> List[str]:
     names: List[str] = []
     try:
@@ -583,6 +692,7 @@ def page_report(structure_page: Dict[str, Any], policy: Optional[Dict[str, Any]]
         flagged.append({k: annot.get(k) for k in ("subtype", "rect", "hidden", "hasImage", "contents") if k in annot})
     out["annotations"] = flagged[:20]
     out["annotationSubtypes"] = sorted({a["subtype"] for a in flagged})
+    out["hiddenAnnotations"] = sorted({a["subtype"] for a in flagged if a.get("hidden")})
     out["actions"] = actions
     overlay = structure_page.get("overlay") or {}
     chars = overlay.get("textAfterFullPageImageChars")
@@ -594,7 +704,80 @@ def page_report(structure_page: Dict[str, Any], policy: Optional[Dict[str, Any]]
     over = overlay.get("imagesOverText")
     out["imagesOverText"] = over
     out["noImageOverText"] = None if over is None else not over
+
+    shapes = overlay.get("shapesOverText")
+    if shapes is not None:
+        shapes = [s for s in shapes if int(s.get("coveredChars") or 0) >= int(cfg.get("shape_over_text_min_chars") or 0)]
+    out["shapesOverText"] = shapes
+    out["noShapeOverText"] = None if shapes is None else not shapes
+
+    visible = int(structure_page.get("visibleTextChars") or 0)
+    out["size"] = structure_page.get("size")
+    # The page IS a scan (one full-page image, no text of its own) or was
+    # born digital; anything in between says nothing about the page mix.
+    out["kind"] = ("ESCANEO" if overlay.get("fullPageImages") and visible < 40
+                   else "NATIVA" if visible >= int(cfg.get("foreign_font_min_page_chars") or 0) else None)
+
+    mark = overlay.get("watermark")
+    if mark is None:
+        out["watermarkKinds"], out["noWatermark"] = [], None
+    else:
+        min_size = float(cfg.get("watermark_min_font_size") or 0)
+        max_alpha = float(cfg.get("watermark_max_alpha") or 0)
+        kinds = list(mark.get("tags") or [])
+        if any(a.get("subtype") == "/Watermark" for a in flagged):
+            kinds.append("ANOTACION_MARCA_DE_AGUA")
+        if any(float(r.get("size") or 0) >= min_size or float(r.get("alpha") or 1) < 0.9
+               for r in mark.get("diagonalRuns") or []):
+            kinds.append("TEXTO_DIAGONAL")
+        if any(float(r.get("alpha") or 1) <= max_alpha and float(r.get("size") or 0) >= min_size
+               for r in mark.get("translucentRuns") or []):
+            kinds.append("TEXTO_TRANSLUCIDO")
+        if any(float(i.get("alpha") or 1) <= max_alpha
+               and float(i.get("coverage") or 0) >= float(cfg.get("watermark_min_image_coverage") or 0)
+               for i in mark.get("translucentImages") or []):
+            kinds.append("IMAGEN_TRANSLUCIDA")
+        phrases = list(structure_page.get("toolPhrases") or [])
+        if phrases:
+            kinds.append("LEYENDA_DE_HERRAMIENTA")
+            out["toolPhrases"] = phrases
+        out["watermarkKinds"] = kinds
+        # A watermark burnt into a scan's pixels cannot be read off the file.
+        out["noWatermark"] = None if (not kinds and out["kind"] == "ESCANEO") else not kinds
+
+    usage = overlay.get("fontUsage")
+    out["foreignFonts"], out["fontsConsistent"] = [], None
+    if usage is not None and visible >= int(cfg.get("foreign_font_min_page_chars") or 0):
+        total = sum(int(f.get("chars") or 0) for f in usage) or 1
+        embedded = sum(int(f.get("chars") or 0) for f in usage if f.get("embedded") is True)
+        if embedded / total >= float(cfg.get("foreign_font_min_embedded_share") or 0):
+            out["foreignFonts"] = [
+                {"font": f.get("font"), "chars": f.get("chars")} for f in usage
+                if f.get("embedded") is False and 0 < int(f.get("chars") or 0) <= int(cfg.get("foreign_font_max_chars") or 0)
+            ]
+            out["fontsConsistent"] = not out["foreignFonts"]
     return out
+
+
+def _page_mix(pages: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> Tuple[Optional[bool], str]:
+    """Are the document's pages one kind of thing? `(consistent, detail)`;
+    None with fewer than two classifiable pages. Scans are not compared by
+    size: a phone crops every sheet differently."""
+    kinds = [p.get("kind") for p in pages if p.get("kind")]
+    if len(kinds) < 2:
+        return None, ""
+    if len(set(kinds)) > 1:
+        scans = [str(p.get("page")) for p in pages if p.get("kind") == "ESCANEO"]
+        return False, f"página(s) {', '.join(scans)} escaneada(s) entre páginas digitales de origen"
+    tol = float(cfg.get("page_size_tolerance") or 0)
+    native = [p for p in pages if p.get("kind") == "NATIVA" and p.get("size")]
+    if len(native) >= 2:
+        base = sorted(native[0]["size"])
+        for page in native[1:]:
+            size = sorted(page["size"])
+            if any(abs(a - b) > tol * max(b, 1.0) for a, b in zip(size, base)):
+                return False, f"la página {page.get('page')} mide {page['size'][0]:.0f}x{page['size'][1]:.0f} pt y la primera {native[0]['size'][0]:.0f}x{native[0]['size'][1]:.0f} pt"
+    return True, ""
 
 
 # ------------------------------------------------------------------ image report
@@ -772,6 +955,15 @@ def signals_from(
             if kinds:
                 say(R_ACTIVE_CONTENT, kinds=", ".join(str(k) for k in kinds))
 
+        layers = file_rep.get("optionalContent") or {}
+        hidden = [f"capa oculta «{name}»" for name in layers.get("hidden") or []]
+        for page in page_reps:
+            hidden.extend(f"anotación oculta {s}" for s in page.get("hiddenAnnotations") or [])
+        if "error" not in layers:
+            signals["integrity.no_hidden_content"] = not hidden
+            if hidden:
+                say(R_HIDDEN_CONTENT, kinds=", ".join(dict.fromkeys(hidden)))
+
     usable_pages = [p for p in page_reps if not p.get("error")]
     if usable_pages:
         subtypes: List[str] = []
@@ -789,6 +981,28 @@ def signals_from(
         signals["integrity.no_image_over_text"] = _aggregate([p.get("noImageOverText") for p in usable_pages])
         if signals["integrity.no_image_over_text"] is False:
             say(R_IMAGE_OVER_TEXT, n=sum(len(p.get("imagesOverText") or []) for p in usable_pages))
+
+        signals["integrity.no_shape_over_text"] = _aggregate([p.get("noShapeOverText") for p in usable_pages])
+        if signals["integrity.no_shape_over_text"] is False:
+            shapes = [s for p in usable_pages for s in p.get("shapesOverText") or []]
+            say(R_SHAPE_OVER_TEXT, n=len(shapes), colours=", ".join(dict.fromkeys(str(s.get("colour")) for s in shapes)))
+
+        signals["integrity.no_watermark"] = _aggregate([p.get("noWatermark") for p in usable_pages])
+        if signals["integrity.no_watermark"] is False:
+            kinds = list(dict.fromkeys(k for p in usable_pages for k in p.get("watermarkKinds") or []))
+            phrases = list(dict.fromkeys(ph for p in usable_pages for ph in p.get("toolPhrases") or []))
+            say(R_WATERMARK, kinds=", ".join(kinds) + (f": «{'», «'.join(phrases)}»" if phrases else ""))
+
+        signals["integrity.fonts_consistent"] = _aggregate([p.get("fontsConsistent") for p in usable_pages])
+        if signals["integrity.fonts_consistent"] is False:
+            fonts = [f for p in usable_pages for f in p.get("foreignFonts") or []]
+            say(R_FOREIGN_FONT, n=sum(int(f.get("chars") or 0) for f in fonts),
+                fonts=", ".join(dict.fromkeys(str(f.get("font")) for f in fonts)))
+
+        consistent, detail = _page_mix(usable_pages, cfg)
+        signals["integrity.pages_consistent"] = consistent
+        if consistent is False:
+            say(R_PAGES_MIXED, detail=detail)
 
     if image_rep and not image_rep.get("error"):
         if image_rep.get("editor"):

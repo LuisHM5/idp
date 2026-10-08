@@ -1,7 +1,7 @@
 {
   "ESTADO_CUENTA_PORTAL": {
     "catalog_status": "beta",
-    "schema_version": "1.3.0",
+    "schema_version": "1.4.0",
     "display_name": "Estado de cuenta bancario (portal, nacional o extranjero)",
     "aliases": [
       "estado de cuenta portal",
@@ -36,7 +36,8 @@
     },
     "fields": {
       "$presets": [
-        "INTEGRIDAD_PDF"
+        "INTEGRIDAD_PDF",
+        "ALTERACIONES_PDF"
       ],
       "PAIS": {
         "type": "string",
@@ -285,15 +286,38 @@
         "required": false,
         "computed": true,
         "authenticity_source": "vision.no_edit_signs",
-        "hint": "Falso cuando la revisión visual de la primera página encuentra indicios de edición: un dato sobrescrito, un parche que tapa el original, un valor en otra fuente, una cifra fuera de su columna, una costura de recorte o una zona con otra nitidez. Vacío si la revisión no corrió.",
+        "hint": "Falso cuando la revisión visual de la primera página encuentra indicios de edición: un dato sobrescrito, un parche que tapa el original, un valor en otra fuente, una cifra fuera de su columna, una costura de recorte, una zona con otra nitidez, una tachadura, un dato borrado con corrector, anotaciones dibujadas encima o elementos de una captura de pantalla. Vacío si la revisión no corrió.",
         "validation": [
           {
             "rule_type": "boolean_true",
             "allow_empty": true,
             "on_fail": "review",
-            "message": "La página muestra indicios de edición (dato sobrescrito, parche o imagen pegada); se requiere el archivo original del banco"
+            "message": "La página muestra indicios de edición (dato sobrescrito, parche, tachadura, anotación o captura de pantalla); se requiere el archivo original del banco"
           }
         ]
+      },
+      "SIN_MARCA_DE_AGUA_VISIBLE": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "vision.no_watermark",
+        "hint": "Falso cuando la revisión visual de la primera página ve una marca de agua o leyenda sobrepuesta ajena al banco: la marca de una app de escaneo o de un editor, un aviso de versión de prueba, o un texto como COPIA, MUESTRA o CANCELADO encima del contenido. El logotipo o patrón de fondo del propio banco no cuenta. Vacío si la revisión no corrió.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "La página lleva una marca de agua o leyenda sobrepuesta ajena al banco; se requiere el estado de cuenta original sin marcas"
+          }
+        ]
+      },
+      "TEXTO_MARCA_DE_AGUA": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "vision.watermark_text",
+        "hint": "Lo que dice la marca de agua que vio la revisión visual. Solo evidencia.",
+        "validation": []
       },
       "ORIGEN_DOCUMENTO": {
         "type": "string",

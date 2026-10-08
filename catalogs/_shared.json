@@ -333,6 +333,114 @@
         "validation": []
       }
     },
+    "ALTERACIONES_PDF": {
+      "__COMENTARIO__": "Alteraciones que un PDF deja a la vista en su propio contenido, más allá de lo que revisa INTEGRIDAD_PDF: marca de agua, recuadro opaco pintado sobre el texto (tachadura o parche), texto agregado con una fuente que el archivo no incrusta, contenido oculto y páginas de origen distinto. Capa `integrity`: gratis, sin rasterizar ni modelo. Se combina con INTEGRIDAD_PDF (`\"$presets\": [\"INTEGRIDAD_PDF\", \"ALTERACIONES_PDF\"]`). Todas arrancan en on_fail=review. Límite: solo ven lo que está en la estructura del archivo; una marca de agua o una tachadura quemadas en los pixeles de un escaneo las ve la revisión visual (`vision.no_watermark`, `vision.no_edit_signs`), y por eso `SIN_MARCA_DE_AGUA` queda VACÍO en una página que es solo un escaneo.",
+      "AUTENTICIDAD_EVALUADA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "evaluated",
+        "hint": "Verdadero cuando todas las capas de verificación que este tipo pide pudieron correr.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "on_fail": "review",
+            "message": "No se pudo completar la verificación de integridad del archivo; requiere revisión manual"
+          }
+        ]
+      },
+      "SIN_MARCA_DE_AGUA": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_watermark",
+        "hint": "Verdadero cuando el archivo no lleva una marca de agua: contenido etiquetado como tal, una leyenda en diagonal o translúcida, una imagen translúcida, o la línea que deja una app de escaneo o un editor de prueba. Vacío si la página es solo un escaneo.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El archivo lleva una marca de agua o una leyenda sobrepuesta (COPIA, versión de prueba, marca de una app de escaneo o de un editor); se requiere el documento original sin marcas"
+          }
+        ]
+      },
+      "SIN_RECUADRO_SOBRE_TEXTO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_shape_over_text",
+        "hint": "Verdadero cuando ningún recuadro opaco fue pintado encima del texto original de la página. Vacío si la página no tiene texto nativo.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Hay un recuadro opaco pintado encima del texto original: una tachadura o un parche que tapa un dato para reescribirlo"
+          }
+        ]
+      },
+      "FUENTES_CONSISTENTES": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.fonts_consistent",
+        "hint": "Falso cuando unos pocos caracteres usan una fuente que el archivo no incrusta mientras el resto del texto usa fuentes incrustadas. Vacío si la página tiene poco texto nativo o el archivo no incrusta sus fuentes.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Unos pocos caracteres usan una fuente distinta, que el archivo no incrusta: texto agregado o reescrito con un editor"
+          }
+        ]
+      },
+      "SIN_CONTENIDO_OCULTO": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.no_hidden_content",
+        "hint": "Verdadero cuando el PDF no tiene capas apagadas ni anotaciones ocultas.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "El PDF lleva contenido que no se muestra (una capa apagada o una anotación oculta)"
+          }
+        ]
+      },
+      "PAGINAS_HOMOGENEAS": {
+        "type": "boolean",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "integrity.pages_consistent",
+        "hint": "Falso cuando el documento mezcla páginas escaneadas con páginas digitales de origen, o páginas digitales de distinto tamaño. Vacío si tiene una sola página.",
+        "validation": [
+          {
+            "rule_type": "boolean_true",
+            "allow_empty": true,
+            "on_fail": "review",
+            "message": "Las páginas del documento no son del mismo origen o tamaño: posible página sustituida o insertada"
+          }
+        ]
+      },
+      "VEREDICTO_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "verdict",
+        "hint": "AUTENTICO, SOSPECHOSO, NO_AUTENTICO o NO_EVALUADO.",
+        "validation": []
+      },
+      "MOTIVOS_AUTENTICIDAD": {
+        "type": "string",
+        "required": false,
+        "computed": true,
+        "authenticity_source": "reasons",
+        "hint": "Códigos de los hallazgos de autenticidad e integridad, separados por coma.",
+        "validation": []
+      }
+    },
     "INTEGRIDAD_IMAGEN": {
       "__COMENTARIO__": "Integridad de una foto o imagen suelta (JPG/PNG): software de edición en EXIF/APP13/PNG/XMP, fechas EXIF, datos de cámara y análisis de nivel de error de compresión. Las dos últimas son evidencia (on_fail=info): la mensajería quita el EXIF, y el ELA no está calibrado con imágenes reales; súbelas a review solo con datos de `pnpm autenticidad`.",
       "AUTENTICIDAD_EVALUADA": {

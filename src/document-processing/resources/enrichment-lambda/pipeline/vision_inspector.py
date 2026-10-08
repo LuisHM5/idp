@@ -358,6 +358,17 @@ EDIT_SIGNS = [
     "ALINEACION_ROTA",         # a figure out of its column, a label out of its row
     "BORDE_DE_RECORTE",        # a straight seam where content was pasted in
     "RESOLUCION_DISTINTA",     # a region visibly sharper or blurrier than its surroundings
+    "TACHADURA_O_CENSURA",     # opaque bars or boxes covering data
+    "CORRECTOR_O_BORRADO",     # a value erased or whited out, leaving a blank where data belongs
+    "ANOTACION_AGREGADA",      # highlighter, arrows, text boxes or digital strokes drawn on top
+    "CAPTURA_DE_PANTALLA",     # screen furniture: a viewer's toolbar, a cursor, a window edge, a phone status bar
+]
+# A watermark that is not the issuer's own design. What the issuer prints as
+# a background (its logo, a security pattern) is deliberately not a kind.
+WATERMARK_KINDS = [
+    "HERRAMIENTA",             # a scanning app's, editor's or converter's brand, or a trial-version notice
+    "LEYENDA_SOBREPUESTA",     # a large, diagonal or translucent legend over the content: COPIA, MUESTRA, CANCELADO…
+    "OTRA",                    # any other repeated or translucent mark foreign to the document
 ]
 
 
@@ -369,10 +380,18 @@ def review_schema() -> Dict[str, Any]:
                 "type": "array", "items": {"type": "string", "enum": EDIT_SIGNS},
                 "description": "Indicios INEQUÍVOCOS de edición visibles en la página. Lista vacía si no ves ninguno.",
             },
+            "marcas_de_agua": {
+                "type": "array", "items": {"type": "string", "enum": WATERMARK_KINDS},
+                "description": "Marcas de agua o leyendas sobrepuestas AJENAS al diseño del emisor. Lista vacía si no hay.",
+            },
+            "texto_marca_de_agua": {
+                "type": "string",
+                "description": "Transcripción literal de la marca de agua. Vacío si no hay o es ilegible.",
+            },
             "certeza": {"type": "number", "description": "0..1"},
             "descripcion": {"type": "string", "description": "Dónde y qué se ve, en una frase. Vacío si no hay indicios."},
         },
-        "required": ["indicios"],
+        "required": ["indicios", "marcas_de_agua"],
     }
 
 
@@ -380,7 +399,20 @@ def review_prompt(monochrome: bool) -> str:
     lines = [
         "La imagen PÁGINA es una hoja de un documento. Examina si el CONTENIDO fue editado después "
         "de generarse: un dato sobrescrito, un parche que tapa el original, un valor en una fuente "
-        "distinta, una cifra fuera de su columna, una costura de recorte, una zona con otra nitidez.",
+        "distinta, una cifra fuera de su columna, una costura de recorte, una zona con otra nitidez. "
+        "También cuentan: barras o recuadros opacos que tapan datos (TACHADURA_O_CENSURA); un dato "
+        "borrado o cubierto con corrector, que deja un hueco donde debería haber algo "
+        "(CORRECTOR_O_BORRADO); resaltador, flechas, cuadros de texto o trazos digitales encima "
+        "(ANOTACION_AGREGADA); y elementos de una pantalla — barra de un visor, cursor, borde de "
+        "ventana, barra de estado de un teléfono — que delatan una captura de pantalla "
+        "(CAPTURA_DE_PANTALLA).",
+        "Aparte, en marcas_de_agua reporta toda marca de agua o leyenda sobrepuesta que NO sea parte "
+        "del diseño del emisor: HERRAMIENTA es la marca de una app de escaneo, de un editor o de un "
+        "convertidor de PDF, o un aviso de versión de prueba; LEYENDA_SOBREPUESTA es un texto grande, "
+        "diagonal o translúcido encima del contenido (COPIA, MUESTRA, SIN VALOR, CANCELADO, BORRADOR, "
+        "CONFIDENCIAL…); OTRA es cualquier otra marca repetida o translúcida ajena al documento. El "
+        "logotipo o el patrón de seguridad que el propio emisor imprime de fondo NO es una marca de "
+        "agua. Transcribe la marca en texto_marca_de_agua.",
         "Marca un indicio SOLO si es inequívoco a simple vista. Un documento normal — algo borroso, "
         "con compresión JPEG, con sellos o firmas en tinta, con notas manuscritas al margen — NO es "
         "un documento editado. Ante la duda, lista vacía: acusar a un documento genuino es el error "
@@ -397,14 +429,16 @@ def review_page(
     vision_spec: Optional[Dict[str, Any]] = None,
     monochrome: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """`vision.page_review`: does the rendered page show signs of editing?
-    One call, forced tool output of enums. A judgement — review-level at
-    most, never a rejection. Raises on a failed/empty call."""
+    """`vision.page_review`: does the rendered page show signs of editing, or
+    a watermark that is not the issuer's? One call, forced tool output of
+    enums (the watermark's text is the one string, and nothing is decided on
+    it). A judgement — review-level at most, never a rejection. Raises on a
+    failed/empty call."""
     tool_input, meta = bedrock.converse_structured(
         review_prompt(monochrome),
         review_schema(),
         "reportar_revision",
-        "Reporta los indicios de edición visibles en la página.",
+        "Reporta los indicios de edición y las marcas de agua visibles en la página.",
         model_id=bedrock.resolve_model(STAGE, type_entry),
         max_tokens=600,
         system=_SYSTEM,
@@ -416,6 +450,8 @@ def review_page(
         raise ValueError("vision page review returned no tool input")
     return {
         "editSigns": [s for s in tool_input.get("indicios") or [] if s in EDIT_SIGNS],
+        "watermarks": [s for s in _as_list(tool_input.get("marcas_de_agua")) if s in WATERMARK_KINDS],
+        "watermarkText": _printable(tool_input.get("texto_marca_de_agua"), 120),
         "certainty": _unit(tool_input.get("certeza")),
         "description": str(tool_input.get("descripcion") or "").strip()[:300],
     }, meta
@@ -445,6 +481,12 @@ def _distinctive_tokens(text: str) -> set:
         t for t in re.split(r"[^A-Z0-9]+", folded.upper())
         if len(t) >= 4 and t not in _LEGAL_NOISE and not t.isdigit()
     }
+
+
+def _printable(value: Any, limit: int) -> str:
+    """A model-transcribed string as one short printable line."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
 def _clean_bbox(raw: Any) -> Optional[List[float]]:
