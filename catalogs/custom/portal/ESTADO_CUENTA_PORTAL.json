@@ -1,7 +1,7 @@
 {
   "ESTADO_CUENTA_PORTAL": {
     "catalog_status": "beta",
-    "schema_version": "1.2.0",
+    "schema_version": "1.3.0",
     "display_name": "Estado de cuenta bancario (portal, nacional o extranjero)",
     "aliases": [
       "estado de cuenta portal",
@@ -21,10 +21,17 @@
     "__COMENTARIO_antiguedad__": "A propósito NO hay regla de antigüedad sobre FECHA_EMISION: las muestras reales del portal traen estados de cuenta y cartas de más de un año. Si el negocio fija un máximo, se agrega aquí una regla `date_max_age` (en años enteros) con el `on_fail` que corresponda; no hace falta tocar código.",
     "__COMENTARIO_segmentation_candidate__": "Fuera de la clasificación automática, como los demás tipos del portal: su salida está acoplada a ese sistema, que ya sabe qué documento está cargando. Se pide declarándolo: documentType=ESTADO_CUENTA_PORTAL.",
     "__COMENTARIO_integridad__": "¿El archivo es el que entregó el banco (PDF de origen o escaneo de la hoja) o fue tocado después? Tres verificaciones, todas en observación (`on_fail: review`: mandan a una persona, ninguna rechaza sola). (1) `\"$presets\": [\"INTEGRIDAD_PDF\"]`: gratis, lee los bytes — guardado de nuevo por un editor, anotaciones encima (sellos o tachaduras de Vista Previa/Acrobat), texto escrito sobre el escaneo, una imagen que tapa el texto original, firma digital que ya no cubre el archivo, un editor en los metadatos. (2) `SIN_INDICIOS_DE_EDICION`: una llamada de visión sobre la primera página (`vision.page_review`) que busca datos sobrescritos, parches, fuentes o alineación rotas; es lo único que puede ver una edición que no dejó rastro en el archivo (editar, imprimir y volver a escanear). (3) `ORIGEN_DOCUMENTO`: un estado de cuenta periódico nunca sale de Word; si el archivo lo generó un programa de oficina es un recorte o captura de pantalla pegado en un documento. Esa regla aplica solo a TIPO_DOCUMENTO = ESTADO_CUENTA (`when`): una carta bancaria o unas instrucciones de transferencia sí las redacta el banco en Word. `expected_capture` es ANY a propósito: se aceptan el PDF de origen y el escaneo. `NIVEL_DE_ERROR_UNIFORME` (ELA sobre el JPEG de un escaneo) es solo evidencia (`info`): no está calibrado. Medido el 2026-10-08 sobre los 10 archivos reales del portal: 6 van a revisión — 2 recortes del estado de cuenta pegados en Word (uno sin ningún otro rastro: solo lo ve ORIGEN_DOCUMENTO), 1 con tachaduras hechas en Vista Previa (lo ven las anotaciones y la visión), 1 PDF del banco guardado de nuevo 18 días después, y 2 documentos de Word de bancos extranjeros con la firma como imagen sobre el texto (uno, además, modificado después de su firma digital). La revisión visual (Haiku 4.5, ~$0.003 por documento) marcó solo el de las tachaduras: ningún falso positivo en los otros 9. Antes de subir una señal a `reject`, volver a medir con `pnpm autenticidad -- --type ESTADO_CUENTA_PORTAL --dir <carpeta>`. Spec: catalogs/README.md -> 'Autenticidad e integridad'.",
+    "__COMENTARIO_model_ids__": "Solo la etapa de visión (la revisión de la página) corre con Amazon Nova 2 Lite, en prueba contra Haiku 4.5, que queda de respaldo en `authenticity.vision.fallback_models` si Nova no está disponible. No toca la extracción de campos: la visión resuelve su modelo por su propia cadena (`model_ids.vision` -> BEDROCK_VISION_MODEL_ID -> Haiku 4.5) y nunca hereda el modelo general, que es de solo texto. Medido el 2026-10-08 (10 archivos reales + 6 ediciones sintéticas): Nova cuesta ~$0.0008 por documento contra ~$0.0035 de Haiku, pero NO marcó ninguna edición, ni las tachaduras negras que Haiku y Kimi K2.5 sí ven; ningún modelo probado marcó un dato sobrescrito con otra fuente o con un parche. Para volver a Haiku basta quitar `model_ids`. Comparar modelos con `pnpm vision:comparar -- --type ESTADO_CUENTA_PORTAL --dir <carpeta>`; ver catalogs/README.md -> `model_ids`.",
+    "model_ids": {
+      "vision": "us.amazon.nova-2-lite-v1:0"
+    },
     "authenticity": {
       "expected_capture": "ANY",
       "vision": {
-        "page_review": true
+        "page_review": true,
+        "fallback_models": [
+          "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        ]
       }
     },
     "fields": {

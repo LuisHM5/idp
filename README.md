@@ -38,6 +38,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | [`documentacion/FLUJO_EJECUCION.md`](documentacion/FLUJO_EJECUCION.md) | Recorrido general del pipeline y su dataflow. |
 | [`documentacion/TRAZA_CODIGO_COMPLETA.md`](documentacion/TRAZA_CODIGO_COMPLETA.md) | Traza técnica independiente, función por función y línea por línea, con payloads, bifurcaciones y llamadas AWS. |
 | [`documentacion/ENVIAR_DOCUMENTO_API.md`](documentacion/ENVIAR_DOCUMENTO_API.md) | Cómo mandar un documento y leer su resultado (script o curl). |
+| [`documentacion/mejoras-futuras/`](documentacion/mejoras-futuras/MEJORAS_FUTURAS.md) | 🔭 Mejoras planeadas sin implementar: un resumen de todas y un plan por mejora. |
 | [`catalogs/README.md`](catalogs/README.md) | El DSL del catálogo: shape de cada campo, todas las `rule_type`, cómo crear un tipo nuevo. |
 | [`AGENTS.md`](AGENTS.md) | Guía para agentes de IA trabajando en este repo (arquitectura, convenciones, comandos). |
 

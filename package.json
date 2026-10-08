@@ -31,6 +31,7 @@
     "paginas": ".venv/bin/python scripts/analizar-seleccion-paginas.py",
     "autenticidad": ".venv/bin/python scripts/analizar-autenticidad.py",
     "test:autenticidad": ".venv/bin/python scripts/test-autenticidad.py",
+    "vision:comparar": ".venv/bin/python scripts/comparar-vision.py",
     "refs:register": ".venv/bin/python scripts/manage-references.py register",
     "refs:list": ".venv/bin/python scripts/manage-references.py list",
     "refs:remove": ".venv/bin/python scripts/manage-references.py remove",

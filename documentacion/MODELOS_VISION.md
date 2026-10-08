@@ -188,6 +188,43 @@ tarifa (`tests/unit/test_pricing_coverage.py`). Además hay que correr
 
 ---
 
+## 7.1 Medido en la tarea real: revisión de página de un estado de cuenta (2026-10-08)
+
+`pnpm vision:comparar -- --type ESTADO_CUENTA_PORTAL --dir <carpeta>` corre solo
+la etapa de autenticidad, una vez por modelo. Dos conjuntos: los 10 estados de
+cuenta reales del portal (1 con saldos tachados, 9 sin tocar) y 6 ediciones
+sintéticas hechas sobre dos de ellos (CLABE reescrita en otra fuente, CLABE en la
+misma fuente mal alineada, nombre sobre un parche gris, parche blanco dentro de
+una banda gris, RFC en fuente monoespaciada, tachaduras negras).
+
+| Modelo | Tachaduras negras (2) | Dato sobrescrito (5) | Falsos positivos (9 limpios) | s/doc | $/doc |
+|---|---|---|---|---:|---:|
+| Claude Haiku 4.5 | 2 de 2 | 0 de 5 | 0 | 1.7 | $0.0035 |
+| Kimi K2.5 | 1 de 1 ¹ | 0 de 5 | no medido | 1.5 | $0.0020 |
+| Amazon Nova 2 Lite | 0 de 2 | 0 de 5 | 0 | 2.2 | $0.0008 |
+| Qwen3 VL 235B | 0 de 1 ¹ | 0 de 5 | no medido | 1.7 | $0.0014 |
+| Claude Sonnet 5.5 | — | — | — | — | `AccessDeniedException`: la cuenta no lo tiene habilitado |
+
+¹ Solo corrieron sobre las 6 sintéticas.
+
+Lecturas:
+
+- **Nova 2 Lite y Qwen3 VL no sirven para esta tarea**: ni siquiera marcan un
+  rectángulo negro que tapa datos (Nova lo describe como «medida de protección
+  de información» y devuelve lista vacía). El ahorro es de ~$0.0027 por documento.
+- **Kimi K2.5 igualó a Haiku** en las sintéticas por 0.57x del costo y sin la
+  latencia de 11 s medida en septiembre. Falta correrlo sobre los 9 reales limpios.
+- **Ningún modelo ve un dato sobrescrito**, ni con un prompt que le pide revisar
+  bloque por bloque fuente, fondo y alineación (probado, mismo resultado). Una
+  CLABE en negrita con serifa dentro de una tabla sin serifa pasa como «sin
+  indicios». `vision.page_review` hoy detecta tachaduras y poco más; la defensa
+  real contra un dato cambiado son las capas gratis (re-guardado, imagen sobre
+  texto, texto sobre escaneo) y comparar el dato contra otra fuente.
+- `ESTADO_CUENTA_PORTAL` quedó con `model_ids.vision` = Nova 2 Lite a petición,
+  para observarlo; con estos números, lo que conviene es Haiku o Kimi K2.5.
+
+---
+
 ## 8. Cómo se verificó
 
 | Fuente | Qué aportó |

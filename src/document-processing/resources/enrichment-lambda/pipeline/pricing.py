@@ -98,6 +98,33 @@ _BEDROCK_PRICING: Dict[str, Dict[str, float]] = {
         "cacheRead": 1.00,
         "cacheWrite": 1.00,
     },
+    # Vision-capable models a type can pin with `model_ids.vision` (rates from
+    # documentacion/MODELOS_VISION.md §4). Without a row here a vision call is
+    # priced at the default model's rates and flagged `approximate`.
+    "us.amazon.nova-2-lite-v1:0": {
+        "input": 0.33,
+        "output": 2.75,
+        "cacheRead": 0.33,
+        "cacheWrite": 0.33,
+    },
+    "qwen.qwen3-vl-235b-a22b": {
+        "input": 0.53,
+        "output": 2.66,
+        "cacheRead": 0.53,
+        "cacheWrite": 0.53,
+    },
+    "us.meta.llama4-maverick-17b-instruct-v1:0": {
+        "input": 0.24,
+        "output": 0.97,
+        "cacheRead": 0.24,
+        "cacheWrite": 0.24,
+    },
+    "mistral.mistral-large-3-675b-instruct": {
+        "input": 0.50,
+        "output": 1.50,
+        "cacheRead": 0.50,
+        "cacheWrite": 0.50,
+    },
 }
 _DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
