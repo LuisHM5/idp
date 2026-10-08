@@ -519,6 +519,11 @@ los pide con `"$presets": [...]`, todos arrancan en `review` salvo donde se dice
 | | `SIN_IMAGEN_SOBRE_TEXTO` | una imagen colocada encima del texto original (parche). **Vacío** sin texto nativo |
 | | `SIN_CONTENIDO_ACTIVO` | JavaScript, acciones automáticas o adjuntos no permitidos |
 | | `EDITOR_DETECTADO`, `AUTENTICIDAD_EVALUADA`, `VEREDICTO_AUTENTICIDAD`, `MOTIVOS_AUTENTICIDAD` | como arriba |
+| `ALTERACIONES_PDF` | `SIN_MARCA_DE_AGUA` | marca de agua que el archivo deja ver: etiquetada como tal, leyenda en diagonal o translúcida, imagen translúcida, línea de una app de escaneo o editor de prueba. **Vacío** en un escaneo puro |
+| | `SIN_RECUADRO_SOBRE_TEXTO` | un recuadro opaco pintado encima del texto original (tachadura, o parche para reescribir un dato). **Vacío** sin texto nativo |
+| | `FUENTES_CONSISTENTES` | unos pocos caracteres en una fuente que el archivo no incrusta. **Vacío** si el archivo no incrusta sus fuentes |
+| | `SIN_CONTENIDO_OCULTO` | una capa apagada o una anotación oculta |
+| | `PAGINAS_HOMOGENEAS` | escaneos entre páginas digitales, o páginas digitales de otro tamaño. **Vacío** con una sola página |
 | `INTEGRIDAD_IMAGEN` | `SIN_EDITOR_EN_METADATOS` | EXIF `Software`, APP13 de Photoshop, PNG `Software` o historial XMP nombran un editor |
 | | `FECHAS_METADATOS_CONSISTENTES` | fecha EXIF de modificación posterior a la de captura |
 | | `METADATOS_DE_CAMARA` (`info`) | sin marca/modelo/fecha de captura — la mensajería los quita, no acusa |
@@ -585,11 +590,12 @@ por página, hashes de imagen, huellas) queda en `results/<documentId>.json`.
 | `ANOTACIONES_EN_PAGINA` · `CAMPOS_DE_FORMULARIO` | integridad | no (suave) |
 | `TEXTO_ESCRITO_SOBRE_ESCANEO` · `IMAGEN_SOBRE_TEXTO_NATIVO` | integridad | no (suave) |
 | `CONTENIDO_ACTIVO_EN_PDF` | integridad | no (suave) |
+| `MARCA_DE_AGUA_EN_PAGINA` · `RECUADRO_SOBRE_TEXTO_NATIVO` · `FUENTE_AJENA_EN_PAGINA` · `CONTENIDO_OCULTO_EN_PDF` · `PAGINAS_DE_ORIGEN_DISTINTO` | integridad (`ALTERACIONES_PDF`) | no (suave) |
 | `IMAGEN_CON_SOFTWARE_DE_EDICION` · `FECHAS_EXIF_INCONSISTENTES` | integridad (imágenes) | no (suave) |
 | `FIRMA_DIGITAL_PRESENTE` · `MODIFICADO_DESPUES_DE_CREADO` · `SIN_METADATOS_DE_CAMARA` · `INTEGRIDAD_NO_DETERMINABLE` | integridad | no (informativo) |
 | `NIVEL_DE_ERROR_NO_UNIFORME` | pixeles (ELA) | no (suave) |
 | `CAPTURA_DISTINTA_DE_LA_ESPERADA` | estructura (`expected_capture`) | no (suave) |
-| `INDICIOS_DE_EDICION_EN_PAGINA` | visión (`page_review`) | no |
+| `INDICIOS_DE_EDICION_EN_PAGINA` · `MARCA_DE_AGUA_VISIBLE` | visión (`page_review`) | no |
 | `VISION_OMITIDA_SIN_SOSPECHA` | visión (`trigger: on_suspicion`) | no (informativo) |
 
 «Duro» hace el veredicto `NO_AUTENTICO`; «suave», `SOSPECHOSO`; «informativo» no
@@ -700,6 +706,44 @@ pasado por la capa. El preset está pensado para los tipos digitales de origen,
 donde un guardado posterior, una anotación o un parche sí son la anomalía. Antes
 de ponérselo a
 cualquier tipo: mide con su carpeta real.
+
+### Marcas de agua y alteraciones del contenido (`ALTERACIONES_PDF`, 2026-10-08)
+
+Cinco señales más de la capa gratis, y dos de la revisión visual, para lo que
+`INTEGRIDAD_PDF` no mira: lo que quedó pintado en la página.
+
+| Alteración sintética sobre un estado de cuenta real | Capa gratis | Revisión visual (Haiku 4.5 / Nova 2 Lite) |
+|---|---|---|
+| Parche blanco sobre un dato y el dato reescrito | `SIN_RECUADRO_SOBRE_TEXTO` + `FUENTES_CONSISTENTES` | no lo ven |
+| Tachadura negra vectorial sobre un dato | `SIN_RECUADRO_SOBRE_TEXTO` | no la ven (un solo renglón); sí ven las barras grandes del archivo real |
+| Texto agregado con una fuente que el archivo no trae | `FUENTES_CONSISTENTES` | — |
+| «COPIA» en diagonal, translúcida | `SIN_MARCA_DE_AGUA` | la ven los dos |
+| «DOCUMENTO SIN VALOR» etiquetado como marca de agua | `SIN_MARCA_DE_AGUA` | la ven los dos |
+| «Scanned with CamScanner» a 7 pt al pie | `SIN_MARCA_DE_AGUA` (frase de herramienta) | no la ven |
+| Capa de contenido apagada | `SIN_CONTENIDO_OCULTO` | — |
+| Página escaneada metida tras una página digital | `PAGINAS_HOMOGENEAS` | — |
+
+Las mismas ediciones «impresas y vueltas a escanear» (la página es una imagen)
+dejan a las capas gratis sin nada que leer: ahí solo queda la visión, que ve la
+marca de agua grande y no ve ni el parche, ni la tachadura de un renglón, ni la
+leyenda de 7 pt.
+
+Falsos positivos, medidos sobre 178 PDF reales (`test-docs/` y la carpeta del
+portal): **uno**, `FUENTE_AJENA_EN_PAGINA` en una carta de Word ya clasificada
+como no auténtica (la fecha está en una Arial sin incrustar; el resto, en
+Calibri incrustada). Dos ajustes salieron de esa medición:
+
+- Word deja los espacios y párrafos vacíos de una carta en una Arial que nunca
+  incrusta: la fuente ajena se cuenta en caracteres con tinta, no en espacios.
+- `pypdf.get_original_bytes()` le antepone un BOM a todo glifo de 2 bytes que
+  empieza en `0x00`; el recorrido contaba esos textos al doble y los ubicaba el
+  doble de anchos (una constancia impresa con «Microsoft: Print To PDF» salía
+  con recuadros «sobre» texto que no tocaban). Ahora se leen los bytes que pypdf
+  guardó al parsear; `visibleTextChars` de esos archivos baja a la mitad, que es
+  el valor correcto. Los 46 anclajes de NOM-035 no cambian.
+
+Un texto con opacidad casi cero (las anclas que un servicio de firma
+electrónica deja en un contrato) no es una marca de agua.
 
 ### Medido sobre 10 estados de cuenta reales del portal (2026-10-08)
 

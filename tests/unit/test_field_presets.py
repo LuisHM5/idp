@@ -104,7 +104,7 @@ def test_los_presets_del_repo_usan_senales_que_la_etapa_conoce():
         conocidas |= {f"element.{elemento}.{s}" for s in
                       ("present", "not_pasted", "text", "ink_colour", "issuer_consistent", "matches_reference")}
     presets = {k: v for k, v in COMPARTIDO["_field_presets"].items() if not k.startswith("__")}
-    assert set(presets) == {"INTEGRIDAD_PDF", "INTEGRIDAD_IMAGEN", "CAPTURA_FISICA",
+    assert set(presets) == {"INTEGRIDAD_PDF", "ALTERACIONES_PDF", "INTEGRIDAD_IMAGEN", "CAPTURA_FISICA",
                             *(f"{e}_CONTRA_REFERENCIA" for e in elementos)}
     for nombre, campos in presets.items():
         for campo, spec in campos.items():

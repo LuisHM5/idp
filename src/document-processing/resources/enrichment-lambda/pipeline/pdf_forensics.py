@@ -375,7 +375,8 @@ class _PageWalk:
         self.annotation: Optional[str] = None
         # Filled axis-aligned rectangles, in paint order with text and images.
         self.shapes: List[Dict[str, Any]] = []
-        # {base font: {"embedded": bool|None, "chars": visible characters}}
+        # {base font: {"embedded": bool|None, "chars": visible characters,
+        #              "inked": the ones that are not a space}}
         self.font_usage: Dict[str, Dict[str, Any]] = {}
         # Watermark tags met (marked content, optional content, Acrobat's
         # PieceInfo) and how many of them are open at this point of the walk.
@@ -558,12 +559,15 @@ class _PageWalk:
         """One text-showing operator: count its characters, record where the
         string lands, and advance the text matrix past it."""
         chars = 0
+        blanks = 0      # spaces, where the font's codes can be read as such
         advance = 0.0   # text-space units, before Tm
         for item in items:
             if isinstance(item, (bytes, bytearray, str)):
                 raw = _original_bytes(item)
                 n = len(raw) // max(ts.bytes_per_char, 1)
                 chars += n
+                if ts.bytes_per_char == 1:
+                    blanks += raw.count(b" ")
                 advance += _string_advance(raw, ts)
             else:
                 try:
@@ -576,8 +580,9 @@ class _PageWalk:
             # searchable scan. Mode 7 only adds the glyphs to the clip path.
             if visible:
                 self.visible_chars += chars
-                usage = self.font_usage.setdefault(ts.font or "?", {"embedded": ts.embedded, "chars": 0})
+                usage = self.font_usage.setdefault(ts.font or "?", {"embedded": ts.embedded, "chars": 0, "inked": 0})
                 usage["chars"] += chars
+                usage["inked"] += chars - blanks
             else:
                 self.invisible_chars += chars
         if chars > 0:
@@ -806,6 +811,14 @@ def _original_bytes(item: Any) -> bytes:
     """The string operand as the bytes the font will look up."""
     if isinstance(item, (bytes, bytearray)):
         return bytes(item)
+    # pypdf keeps the bytes it parsed. Its `get_original_bytes()` REBUILDS
+    # them instead, and prepends a UTF-16 BOM to any string it guessed was
+    # UTF-16 because it starts with 0x00 — which is every 2-byte glyph code of
+    # an Identity-H font: each glyph then counted double and landed twice as
+    # far to the right (measured on a "Microsoft: Print To PDF" file).
+    stored = getattr(item, "_original_bytes", None)
+    if isinstance(stored, (bytes, bytearray)):
+        return bytes(stored)
     getter = getattr(item, "get_original_bytes", None)
     if callable(getter):
         try:
@@ -1083,8 +1096,8 @@ def overlay_facts(walk: _PageWalk, policy: Optional[Dict[str, Any]] = None) -> D
       (`diagonalRuns`), and translucent strings or images (`translucentRuns`,
       `translucentImages`). Raw candidates: the thresholds are the integrity
       policy's.
-    - `fontUsage`: visible characters per font and whether the file embeds
-      it, most used first.
+    - `fontUsage`: visible characters per font (`inked`: not counting
+      spaces) and whether the file embeds it, most used first.
     """
     cfg = {**DEFAULT_POLICY, **(policy or {})}
     full_coverage = float(cfg.get("full_page_coverage", DEFAULT_POLICY["full_page_coverage"]))

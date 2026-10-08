@@ -513,3 +513,40 @@ def test_un_estado_de_cuenta_pegado_en_word_va_a_revision_y_una_carta_bancaria_n
     # Una carta sí la redacta el banco en Word: el origen no la acusa.
     carta = _correr_estado_cuenta(entry, word_con_firma_pegada(), CARTA_EXTRANJERA)
     assert "ORIGEN_DOCUMENTO" not in _fallas(entry, carta)[1]
+
+
+def test_una_marca_de_agua_vista_por_el_modelo_manda_el_estado_de_cuenta_a_revision(monkeypatch):
+    monkeypatch.setattr(vision_inspector, "review_page", lambda *a, **k: (
+        {"editSigns": [], "watermarks": ["HERRAMIENTA"], "watermarkText": "Scanned with CamScanner"},
+        {"modelId": "haiku", "usage": {"inputTokens": 1500, "outputTokens": 40}}))
+    entry = _estado_cuenta()
+    reader, _ = escaneo()
+
+    doc = _correr_estado_cuenta(entry, reader, CUENTA_MEXICANA)
+
+    assert doc["_entities"]["TEXTO_MARCA_DE_AGUA"] == "Scanned with CamScanner"
+    assert doc["_entities"].get("SIN_MARCA_DE_AGUA") in (None, "")       # un escaneo: el archivo no la puede mostrar
+    assert "MARCA_DE_AGUA_VISIBLE" in [r["code"] for r in doc["authenticity"]["reasons"]]
+    assert _fallas(entry, doc) == (DOC_REVIEW, ["SIN_MARCA_DE_AGUA_VISIBLE"])
+
+
+def test_un_estado_de_cuenta_con_un_dato_tapado_y_reescrito_va_a_revision_sin_ayuda_del_modelo(monkeypatch):
+    _revision_visual(monkeypatch)                                     # el modelo no ve nada
+    entry = _estado_cuenta()
+    from pypdf import PdfReader
+
+    parche = b"1 1 1 rg 0 -4 612 16 re f\n"                          # el renglón está en el origen
+    doc = _correr_estado_cuenta(entry, PdfReader(io.BytesIO(pdf_bytes(texto(TEXTO_CARTA) + parche))), CUENTA_MEXICANA)
+
+    assert _fallas(entry, doc) == (DOC_REVIEW, ["SIN_RECUADRO_SOBRE_TEXTO"])
+
+
+def test_la_revision_visual_cuenta_como_vista_una_marca_que_el_modelo_solo_transcribio(monkeypatch):
+    monkeypatch.setattr(vision_inspector.bedrock, "resolve_model", lambda *a, **k: "modelo")
+    monkeypatch.setattr(vision_inspector.bedrock, "converse_structured", lambda *a, **k: (
+        {"indicios": ["TACHADURA_O_CENSURA", "INVENTADO"], "marcas_de_agua": [], "texto_marca_de_agua": " COPIA\n"}, {}))
+
+    revision, _ = vision_inspector.review_page(b"jpeg", None)
+
+    assert revision["editSigns"] == ["TACHADURA_O_CENSURA"]
+    assert revision["watermarks"] == ["OTRA"] and revision["watermarkText"] == "COPIA"

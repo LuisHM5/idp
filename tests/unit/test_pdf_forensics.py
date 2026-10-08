@@ -296,3 +296,13 @@ def test_una_pagina_ilegible_queda_indeterminada_en_vez_de_tronar():
 
     assert reporte["physicalCapture"] is None
     assert "error" in reporte["perPage"][0]
+
+
+def test_los_glifos_de_dos_bytes_que_empiezan_en_cero_no_se_cuentan_doble():
+    # pypdf adivina UTF-16 en <0033...> y `get_original_bytes()` le antepone
+    # un BOM que el archivo no trae: se leen los bytes que guardó al parsear.
+    from pypdf.generic._utils import create_string_object
+
+    glifos = create_string_object(b"\x00\x33\x00\x4c\x00\x51")
+
+    assert pf._original_bytes(glifos) == b"\x00\x33\x00\x4c\x00\x51"

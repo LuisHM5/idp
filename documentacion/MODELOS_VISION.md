@@ -223,6 +223,35 @@ Lecturas:
 - `ESTADO_CUENTA_PORTAL` quedó con `model_ids.vision` = Nova 2 Lite a petición,
   para observarlo; con estos números, lo que conviene es Haiku o Kimi K2.5.
 
+### Segunda medición, con el prompt ampliado (mismo día)
+
+La revisión de página ahora nombra cuatro indicios más (`TACHADURA_O_CENSURA`,
+`CORRECTOR_O_BORRADO`, `ANOTACION_AGREGADA`, `CAPTURA_DE_PANTALLA`) y pide las
+marcas de agua ajenas al emisor (`vision.no_watermark`). Misma llamada; el
+prompt creció ~500 tokens.
+
+| Caso | Haiku 4.5 | Nova 2 Lite |
+|---|---|---|
+| 9 estados de cuenta reales sin tocar | 0 marcados | 0 marcados |
+| Real con saldos tachados (barras negras grandes) | `TACHADURA_O_CENSURA` | `TACHADURA_O_CENSURA` |
+| Sintético con tachaduras grandes | sí | sí |
+| «COPIA» diagonal translúcida (página escaneada) | marca de agua, texto correcto | la marca como indicio de edición; transcribe «PROBATORIA» |
+| «DOCUMENTO SIN VALOR» gris a 40 pt | marca de agua; transcribe «DOCUMENTO CONFIDENCIAL» | la marca como texto superpuesto, texto correcto |
+| Tachadura de un solo renglón, parche blanco con dato reescrito, nombre sobre parche gris | no | no |
+| «Scanned with CamScanner» a 7 pt al pie (escaneada) | no | no |
+| $/doc · s/doc | $0.0044 · 2.6 | $0.0010 · 2.7 |
+
+- **Nombrar la tachadura en la lista bastó para que Nova la marque**: antes la
+  describía y devolvía lista vacía. En estos 17 archivos Nova y Haiku mandan a
+  revisión exactamente los mismos.
+- **Nova clasifica peor, no ve menos**: pone la marca de agua en el campo de
+  indicios o solo la transcribe. Por eso un texto transcrito sin tipo cuenta
+  como marca vista (`OTRA`). La transcripción de ambos modelos falla en texto
+  tenue: es evidencia, nunca un dato.
+- **Lo pequeño sigue sin verse** a 1568 px: un renglón tapado o una leyenda de
+  7 pt. Eso lo cubren las capas gratis cuando el PDF conserva su texto
+  (`ALTERACIONES_PDF`); en un escaneo, nada lo cubre hoy.
+
 ---
 
 ## 8. Cómo se verificó

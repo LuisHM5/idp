@@ -448,10 +448,16 @@ def review_page(
     )
     if not tool_input or not isinstance(tool_input.get("indicios"), list):
         raise ValueError("vision page review returned no tool input")
+    watermarks = [s for s in _as_list(tool_input.get("marcas_de_agua")) if s in WATERMARK_KINDS]
+    watermark_text = _printable(tool_input.get("texto_marca_de_agua"), 120)
+    if watermark_text and not watermarks:
+        # Measured: a weaker model transcribes the legend and leaves the list
+        # empty. Having read one IS having seen one.
+        watermarks = ["OTRA"]
     return {
         "editSigns": [s for s in tool_input.get("indicios") or [] if s in EDIT_SIGNS],
-        "watermarks": [s for s in _as_list(tool_input.get("marcas_de_agua")) if s in WATERMARK_KINDS],
-        "watermarkText": _printable(tool_input.get("texto_marca_de_agua"), 120),
+        "watermarks": watermarks,
+        "watermarkText": watermark_text,
         "certainty": _unit(tool_input.get("certeza")),
         "description": str(tool_input.get("descripcion") or "").strip()[:300],
     }, meta

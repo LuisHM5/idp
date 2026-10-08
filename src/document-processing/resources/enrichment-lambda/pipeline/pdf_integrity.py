@@ -51,7 +51,8 @@ Sources of evidence, and why each is read the way it is:
   on a page that is only a scan.
 - **Foreign font.** A file whose text is set in embedded fonts, except a
   handful of characters in a font it does NOT embed: what an editor leaves
-  when it retypes a value with whatever font the machine had.
+  when it retypes a value with whatever font the machine had. Spaces do not
+  count: Word sets a letter's blanks in an Arial it never embeds.
 - **Hidden content.** Optional-content layers switched off and annotations
   flagged hidden: content the file carries and a viewer does not show.
 - **Page mix.** Scanned pages among born-digital ones, or born-digital
@@ -727,10 +728,12 @@ def page_report(structure_page: Dict[str, Any], policy: Optional[Dict[str, Any]]
         kinds = list(mark.get("tags") or [])
         if any(a.get("subtype") == "/Watermark" for a in flagged):
             kinds.append("ANOTACION_MARCA_DE_AGUA")
-        if any(float(r.get("size") or 0) >= min_size or float(r.get("alpha") or 1) < 0.9
-               for r in mark.get("diagonalRuns") or []):
+        if any((float(r.get("size") or 0) >= min_size or float(r.get("alpha") or 1) < 0.9)
+               and float(r.get("alpha") or 1) >= 0.05 for r in mark.get("diagonalRuns") or []):
             kinds.append("TEXTO_DIAGONAL")
-        if any(float(r.get("alpha") or 1) <= max_alpha and float(r.get("size") or 0) >= min_size
+        # Opacity ~0 is not a faint legend, it is text nobody is meant to see
+        # (the anchor tags an e-signature service leaves in a contract).
+        if any(0.05 <= float(r.get("alpha") or 1) <= max_alpha and float(r.get("size") or 0) >= min_size
                for r in mark.get("translucentRuns") or []):
             kinds.append("TEXTO_TRANSLUCIDO")
         if any(float(i.get("alpha") or 1) <= max_alpha
@@ -751,9 +754,13 @@ def page_report(structure_page: Dict[str, Any], policy: Optional[Dict[str, Any]]
         total = sum(int(f.get("chars") or 0) for f in usage) or 1
         embedded = sum(int(f.get("chars") or 0) for f in usage if f.get("embedded") is True)
         if embedded / total >= float(cfg.get("foreign_font_min_embedded_share") or 0):
+            # Counted in INKED characters: Word leaves the spaces and empty
+            # paragraphs of a letter in an Arial it never embeds (measured on
+            # real letters) — a font that draws nothing was not typed in.
             out["foreignFonts"] = [
-                {"font": f.get("font"), "chars": f.get("chars")} for f in usage
-                if f.get("embedded") is False and 0 < int(f.get("chars") or 0) <= int(cfg.get("foreign_font_max_chars") or 0)
+                {"font": f.get("font"), "chars": f.get("inked")} for f in usage
+                if f.get("embedded") is False
+                and 0 < int(f.get("inked", f.get("chars")) or 0) <= int(cfg.get("foreign_font_max_chars") or 0)
             ]
             out["fontsConsistent"] = not out["foreignFonts"]
     return out

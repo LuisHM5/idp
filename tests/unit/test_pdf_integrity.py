@@ -36,6 +36,7 @@ from pypdf.generic import (  # noqa: E402
     ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
+    FloatObject,
     NameObject,
     NumberObject,
     TextStringObject,
@@ -680,3 +681,234 @@ def test_una_imagen_ilegible_no_truena():
     señales, motivos = pi.signals_from(None, [], rep, None, is_image=True)
     assert señales["integrity.camera_metadata"] is None
     assert not motivos
+
+
+# ------------------------------------------------------------------ alteraciones del contenido
+
+
+def pdf_alterado(*contenidos, incrustada=False, alfa=None, capa_oculta=False):
+    """Una página por contenido. `/F1` es Helvetica sin incrustar; con
+    `incrustada`, `/FE` es una fuente que el archivo sí trae. `alfa` define el
+    estado gráfico `/GS`; `capa_oculta`, un grupo de contenido opcional
+    `/Capa` apagado."""
+    writer = PdfWriter()
+    helvetica = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    }))
+    fuentes = DictionaryObject({NameObject("/F1"): helvetica})
+    if incrustada:
+        programa = DecodedStreamObject()
+        programa.set_data(b"\x00" * 16)
+        descriptor = DictionaryObject({NameObject("/Type"): NameObject("/FontDescriptor"),
+                                       NameObject("/FontFile2"): writer._add_object(programa)})
+        fuentes[NameObject("/FE")] = writer._add_object(DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/TrueType"),
+            NameObject("/BaseFont"): NameObject("/ABCDEF+BancoSans"),
+            NameObject("/FontDescriptor"): writer._add_object(descriptor),
+        }))
+    recursos = DictionaryObject({
+        NameObject("/Font"): fuentes,
+        NameObject("/XObject"): DictionaryObject({NameObject("/Pag"): _imagen(writer)}),
+    })
+    if alfa is not None:
+        recursos[NameObject("/ExtGState")] = DictionaryObject({
+            NameObject("/GS"): DictionaryObject({NameObject("/ca"): FloatObject(alfa)})})
+    if capa_oculta:
+        grupo = writer._add_object(DictionaryObject({NameObject("/Type"): NameObject("/OCG"),
+                                                     NameObject("/Name"): TextStringObject("Original")}))
+        recursos[NameObject("/Properties")] = DictionaryObject({NameObject("/Capa"): grupo})
+        writer._root_object[NameObject("/OCProperties")] = DictionaryObject({
+            NameObject("/OCGs"): ArrayObject([grupo]),
+            NameObject("/D"): DictionaryObject({NameObject("/OFF"): ArrayObject([grupo])}),
+        })
+    for contenido in contenidos:
+        page = writer.add_blank_page(ANCHO, ALTO)
+        page[NameObject("/Resources")] = recursos
+        stream = DecodedStreamObject()
+        stream.set_data(contenido)
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    return _bytes(writer)
+
+
+CUERPO = texto_en(72, 700, TEXTO_CARTA)
+CUERPO_INCRUSTADO = f"BT /FE 11 Tf 72 700 Td ({TEXTO_CARTA}) Tj ET\n".encode()
+DATO = texto_en(72, 500, "012180001234567895")
+SOBRE_EL_DATO = b"70 495 140 16 re f\n"
+
+
+def test_un_recuadro_opaco_pintado_despues_del_texto_es_un_parche():
+    _, señales, motivos = evaluar(pdf_alterado(CUERPO + DATO + b"1 1 1 rg " + SOBRE_EL_DATO))
+
+    assert señales["integrity.no_shape_over_text"] is False
+    assert motivos[pi.R_SHAPE_OVER_TEXT] == "soft"
+
+
+def test_el_recuadro_reporta_su_color_y_cuanto_texto_tapa():
+    reader = PdfReader(io.BytesIO(pdf_alterado(CUERPO + DATO + b"0 g " + SOBRE_EL_DATO)))
+
+    (recuadro,) = pi.page_report(pf.inspect_page(reader, 0))["shapesOverText"]
+
+    assert recuadro["colour"] == "NEGRO" and recuadro["coveredChars"] == 18
+
+
+def test_un_recuadro_dibujado_con_cuatro_lineas_tambien_cuenta():
+    lineas = b"1 1 1 rg 70 495 m 210 495 l 210 511 l 70 511 l h f\n"
+
+    _, señales, _ = evaluar(pdf_alterado(CUERPO + DATO + lineas))
+
+    assert señales["integrity.no_shape_over_text"] is False
+
+
+def test_el_fondo_de_una_celda_pintado_antes_del_texto_no_es_un_parche():
+    _, señales, motivos = evaluar(pdf_alterado(CUERPO + b"0.9 g " + SOBRE_EL_DATO + b"0 g " + DATO))
+
+    assert señales["integrity.no_shape_over_text"] is True
+    assert pi.R_SHAPE_OVER_TEXT not in motivos
+
+
+def test_un_resaltado_translucido_no_tapa_el_texto():
+    _, señales, _ = evaluar(pdf_alterado(CUERPO + DATO + b"/GS gs 1 1 0 rg " + SOBRE_EL_DATO, alfa=0.4))
+
+    assert señales["integrity.no_shape_over_text"] is True
+
+
+def test_un_relleno_recortado_fuera_del_texto_no_lo_tapa():
+    # El generador recorta a una franja de arriba y rellena "toda la página".
+    recortado = b"q 0 740 612 52 re W n 1 1 1 rg 0 0 612 792 re f Q\n"
+
+    _, señales, _ = evaluar(pdf_alterado(DATO + recortado + CUERPO))
+
+    assert señales["integrity.no_shape_over_text"] is True
+
+
+def test_una_leyenda_en_diagonal_es_una_marca_de_agua():
+    diagonal = b"0.8 g BT /F1 72 Tf 0.707 0.707 -0.707 0.707 150 200 Tm (COPIA) Tj ET\n"
+    reader = PdfReader(io.BytesIO(pdf_alterado(CUERPO + diagonal)))
+
+    reporte = pi.page_report(pf.inspect_page(reader, 0))
+    señales, motivos = pi.signals_from(None, [reporte], None)
+
+    assert reporte["watermarkKinds"] == ["TEXTO_DIAGONAL"]
+    assert señales["integrity.no_watermark"] is False
+    assert [c for c, _, _ in motivos] == [pi.R_WATERMARK]
+
+
+def test_el_texto_vertical_del_margen_no_es_una_marca_de_agua():
+    vertical = b"BT /F1 20 Tf 0 1 -1 0 30 100 Tm (Folio fiscal al margen) Tj ET\n"
+
+    _, señales, _ = evaluar(pdf_alterado(CUERPO + vertical))
+
+    assert señales["integrity.no_watermark"] is True
+
+
+def test_lo_que_el_archivo_etiqueta_como_marca_de_agua_lo_es():
+    etiquetada = (b"/Artifact <</Subtype /Watermark /Type /Pagination>> BDC "
+                  b"BT /F1 9 Tf 200 400 Td (SIN VALOR) Tj ET EMC\n")
+    reader = PdfReader(io.BytesIO(pdf_alterado(CUERPO + etiquetada)))
+
+    reporte = pi.page_report(pf.inspect_page(reader, 0))
+
+    assert reporte["watermarkKinds"] == ["ARTEFACTO_MARCA_DE_AGUA"] and reporte["noWatermark"] is False
+
+
+def test_un_texto_grande_y_translucido_es_una_marca_de_agua():
+    translucido = b"q /GS gs BT /F1 48 Tf 100 400 Td (BORRADOR) Tj ET Q\n"
+    reader = PdfReader(io.BytesIO(pdf_alterado(CUERPO + translucido, alfa=0.3)))
+
+    assert pi.page_report(pf.inspect_page(reader, 0))["watermarkKinds"] == ["TEXTO_TRANSLUCIDO"]
+
+
+def test_la_linea_que_deja_una_app_de_escaneo_es_una_marca_de_agua():
+    raw = pdf_alterado(CUERPO + texto_en(200, 20, "Scanned with CamScanner"))
+    reader = PdfReader(io.BytesIO(raw))
+    hechos = pf.inspect_page(reader, 0)
+
+    frases = pi.tool_phrases(reader, 0)
+    reporte = pi.page_report({**hechos, "toolPhrases": frases})
+    _, motivos = pi.signals_from(None, [reporte], None)
+
+    assert frases == ["camscanner", "scanned with"]
+    assert reporte["watermarkKinds"] == ["LEYENDA_DE_HERRAMIENTA"]
+    assert "camscanner" in motivos[0][2]
+
+
+def test_en_un_escaneo_puro_la_marca_de_agua_no_se_puede_leer_del_archivo():
+    _, señales, _ = evaluar(pdf_alterado(PAGINA_COMPLETA))
+
+    assert señales["integrity.no_watermark"] is None          # la ve la revisión visual
+    assert señales["integrity.no_shape_over_text"] is None
+
+
+def test_unos_caracteres_en_una_fuente_sin_incrustar_son_texto_agregado():
+    _, señales, motivos = evaluar(pdf_alterado(CUERPO_INCRUSTADO + DATO, incrustada=True))
+
+    assert señales["integrity.fonts_consistent"] is False
+    assert motivos[pi.R_FOREIGN_FONT] == "soft"
+
+
+def test_un_archivo_que_no_incrusta_sus_fuentes_no_se_juzga_por_ellas():
+    _, señales, _ = evaluar(pdf_alterado(CUERPO + DATO))
+
+    assert señales["integrity.fonts_consistent"] is None
+
+
+def test_todo_en_fuentes_incrustadas_es_consistente():
+    _, señales, _ = evaluar(pdf_alterado(CUERPO_INCRUSTADO, incrustada=True))
+
+    assert señales["integrity.fonts_consistent"] is True
+
+
+def test_una_capa_apagada_es_contenido_oculto():
+    oculto = b"/OC /Capa BDC BT /F1 9 Tf 72 300 Td (dato original) Tj ET EMC\n"
+
+    archivo, señales, motivos = evaluar(pdf_alterado(CUERPO + oculto, capa_oculta=True))
+
+    assert archivo["optionalContent"]["hidden"] == ["Original"]
+    assert señales["integrity.no_hidden_content"] is False
+    assert motivos[pi.R_HIDDEN_CONTENT] == "soft"
+
+
+def test_sin_capas_no_hay_contenido_oculto():
+    _, señales, _ = evaluar(pdf_alterado(CUERPO))
+
+    assert señales["integrity.no_hidden_content"] is True
+
+
+def test_una_pagina_escaneada_entre_paginas_digitales_delata_una_sustitucion():
+    _, señales, motivos = evaluar(pdf_alterado(CUERPO, PAGINA_COMPLETA))
+
+    assert señales["integrity.pages_consistent"] is False
+    assert motivos[pi.R_PAGES_MIXED] == "soft"
+
+
+def test_paginas_del_mismo_origen_son_homogeneas_y_una_sola_no_dice_nada():
+    _, varias, _ = evaluar(pdf_alterado(CUERPO, CUERPO))
+    _, una, _ = evaluar(pdf_alterado(CUERPO))
+
+    assert varias["integrity.pages_consistent"] is True
+    assert una["integrity.pages_consistent"] is None
+
+
+def test_un_pdf_limpio_no_levanta_ninguna_alteracion():
+    _, señales, motivos = evaluar(pdf_alterado(CUERPO_INCRUSTADO, CUERPO_INCRUSTADO, incrustada=True))
+
+    assert not motivos
+    assert all(señales[s] is True for s in (
+        "integrity.no_watermark", "integrity.no_shape_over_text", "integrity.fonts_consistent",
+        "integrity.no_hidden_content", "integrity.pages_consistent"))
+
+
+def test_los_espacios_que_word_deja_en_una_fuente_sin_incrustar_no_son_texto_agregado():
+    espacios = texto_en(72, 500, "          ")
+
+    _, señales, motivos = evaluar(pdf_alterado(CUERPO_INCRUSTADO + espacios, incrustada=True))
+
+    assert señales["integrity.fonts_consistent"] is True and not motivos
+
+
+def test_un_texto_con_opacidad_casi_cero_no_es_una_marca_de_agua():
+    ancla = b"q /GS gs BT /F1 15 Tf 400 100 Td (\\\\s1\\\\) Tj ET Q\n"
+    reader = PdfReader(io.BytesIO(pdf_alterado(CUERPO + ancla, alfa=0.01)))
+
+    assert pi.page_report(pf.inspect_page(reader, 0))["noWatermark"] is True
