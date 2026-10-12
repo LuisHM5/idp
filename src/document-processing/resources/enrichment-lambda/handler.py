@@ -313,9 +313,10 @@ def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str, Dict[str, str]]:
 
     The metadata is returned rather than only consumed here because it is the
     channel the upload API uses for signals that only this Lambda needs:
-    `model-id` (applied here) and `document-counts` (read by the caller — see
-    `_declared_counts_from_metadata`). Both are stripped from the caller's own
-    `metadata` at upload time, so neither can be forged.
+    `model-id` (applied here), `extraction-mode` and `document-counts` (read by
+    the caller — see `_extraction_mode_from_metadata` and
+    `_declared_counts_from_metadata`). They are stripped from the caller's own
+    `metadata` at upload time, so they cannot be forged through that bag.
     """
     import boto3  # defer boto3 import; Lambda runtime provides it
 
@@ -360,6 +361,23 @@ def _declared_counts_from_metadata(s3_metadata: Dict[str, str]) -> Dict[str, Any
         else:
             logger.warning("document-counts: valor ilegible '%s' para %s; usando catálogo/default", value, name)
     return counts
+
+
+def _extraction_mode_from_metadata(s3_metadata: Dict[str, str]) -> str:
+    """Per-upload extraction strategy, enabled only on the development stack.
+
+    The same gate as ``model-id`` prevents a production caller from forcing a
+    more expensive full-model run. Invalid or unavailable values fail open to
+    the catalog, never to an accidental AI-free extraction.
+    """
+    raw = str((s3_metadata or {}).get("extraction-mode") or "catalog").strip().lower()
+    if raw not in {"catalog", "model", "hybrid", "deterministic"}:
+        logger.warning("extraction-mode inválido %r; usando catálogo", raw)
+        return "catalog"
+    if raw != "catalog" and os.environ.get("ALLOW_MODEL_OVERRIDE", "").lower() != "true":
+        logger.warning("extraction-mode %s ignorado: override deshabilitado en este ambiente", raw)
+        return "catalog"
+    return raw
 
 
 def _apply_model_override(s3_metadata: Dict[str, str]) -> None:
@@ -555,6 +573,7 @@ def _run_expediente(
     # one schema, and there is nothing to choose it with), and what lets the
     # segmenter run — restricted to `declared_types` — instead of short-circuiting.
     declared_counts = _declared_counts_from_metadata(s3_metadata)
+    extraction_mode = _extraction_mode_from_metadata(s3_metadata)
     declared_types = _declared_types_from_key(key)
     declared_type = declared_types[0] if len(declared_types) == 1 else None
     if declared_type:
@@ -608,6 +627,7 @@ def _run_expediente(
             source_format=ext if ext in ("jpg", "jpeg", "png") else "pdf",
             declared_types=declared_types,
             declared_counts=declared_counts,
+            extraction_mode=extraction_mode,
             # What we know ABOUT the upload (not what's in it). Generic: a
             # catalog can name an upload-metadata key it needs, e.g. the
             # supplier whose registered signatures to compare against.

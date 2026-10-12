@@ -1,5 +1,7 @@
 """Deterministic-first extraction configured entirely by the field DSL."""
 
+import json
+
 import sys
 from pathlib import Path
 
@@ -82,6 +84,31 @@ def test_extrae_escalares_y_filas_y_deduplica():
     assert result.row_confidences
 
 
+def test_pedimento_erp_default_sin_ia_cubre_layout_real_de_17_paginas():
+    raw = json.loads((REPO_ROOT / "catalogs/custom/erp/PEDIMENTO_ERP.json").read_text())
+    entry = _parse_entry("PEDIMENTO_ERP", raw["PEDIMENTO_ERP"])
+    pages = [PageText(1, """PEDIMENTO Página 1 de 17
+NUM. PEDIMENTO:26  07  3435  6041353    T.OPER    CVE. PEDIMENTO:    REGIMEN:IMPA1    IMD
+DESTINO:    TIPO CAMBIO:    PESO BRUTO:917.50230    6304.154    ADUANA E/S:    071
+CUADRO DE LIQUIDACION
+CONCEPTO F.P. IMPORTE CONCEPTO F.P. IMPORTE TOTALES
+DTA 0 462 IVA 0 48644 EFECTIVO 66,963
+IGI/IGE 0 1552 PRV 0 330 OTROS 0
+IVA/PRV 0 53 2IG 0 15922 TOTAL 66,963
+DEPÓSITO REFERENCIADO
+""", "native", 0.98)]
+
+    result = deterministic_text.extract(pages, entry)
+
+    assert deterministic_text.policy_for(entry)["fallback"] == "review"
+    assert result.entity_map["Tipo"] == "IMP"
+    assert result.entity_map["Cve_Pedimento"] == "A1"
+    assert result.entity_map["Tipo_Cambio"] == "17.50230"
+    liquidation = result.entity_map["CUADRO_LIQUIDACION"]
+    assert liquidation["TOTAL"] == "66,963"
+    assert [row["CLAVE_CONCEPTO"] for row in liquidation["CONCEPTOS"]] == [
+        "DTA", "IVA", "IGI/IGE", "PRV", "PRV", "2IG",
+    ]
 def test_array_combina_layouts_de_row_selectors():
     entry = _parse_entry("TABLA", {
         "description": "Tabla con dos layouts.",
@@ -283,3 +310,56 @@ def test_segmento_completo_omite_bedrock_y_publica_meta(monkeypatch):
     assert savings["estimatedOutputTokensSaved"] > 0
     assert doc["_recovered_sources"]["FOLIO"] == "DETERMINISTIC_TEXT"
     assert doc["typeCheck"]["matches"] is True
+
+
+def test_override_deterministic_no_llama_bedrock_aunque_haya_faltantes(monkeypatch):
+    entry = _entry()
+    monkeypatch.setattr(expediente, "get_type_entry", lambda _type: entry)
+    monkeypatch.setattr(
+        expediente,
+        "extract_document",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Bedrock no debe ejecutarse")),
+    )
+
+    doc = expediente._extract_segment(
+        Segment("PRUEBA", 1, 1, 1.0), PAGES, None,
+        extraction_mode="deterministic",
+    )
+
+    assert doc["extractionMeta"]["strategy"] == "deterministic"
+    assert doc["extractionMeta"]["extractionMode"] == {
+        "requested": "deterministic",
+        "effective": "deterministic",
+    }
+    assert doc["extractionMeta"]["usage"] == {}
+
+
+def test_override_model_reproduce_el_camino_completo_anterior(monkeypatch):
+    entry = _entry()
+    calls = []
+
+    def fake_extract(_pages, _entry, **kwargs):
+        calls.append(kwargs)
+        return text_extractor.ExtractedDoc(
+            entity_map={"FOLIO": "MODEL"},
+            confidences={"FOLIO": 0.8},
+            row_confidences={},
+            meta={"usage": {"inputTokens": 10, "outputTokens": 2}},
+        )
+
+    monkeypatch.setattr(expediente, "get_type_entry", lambda _type: entry)
+    monkeypatch.setattr(expediente, "extract_document", fake_extract)
+
+    doc = expediente._extract_segment(
+        Segment("PRUEBA", 1, 1, 1.0), PAGES, None,
+        extraction_mode="model",
+    )
+
+    assert len(calls) == 1
+    assert "field_tree" not in calls[0]
+    assert doc["_entities"]["FOLIO"] == "MODEL"
+    assert doc["extractionMeta"]["strategy"] == "model"
+    assert doc["extractionMeta"]["extractionMode"] == {
+        "requested": "model",
+        "effective": "model",
+    }

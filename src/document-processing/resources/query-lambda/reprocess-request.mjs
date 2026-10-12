@@ -14,7 +14,12 @@ const MAX_DOCUMENT_TYPES_CHARS = 200;
 
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
 const REQUIRES_DECLARED_TYPE = new Set(["xml", "xlsx", "csv"]);
-const SYSTEM_OBJECT_METADATA = new Set(["app-origin", "model-id", "document-counts"]);
+const SYSTEM_OBJECT_METADATA = new Set([
+  "app-origin",
+  "model-id",
+  "extraction-mode",
+  "document-counts",
+]);
 
 export function parseBody(event) {
   const raw = event.body;

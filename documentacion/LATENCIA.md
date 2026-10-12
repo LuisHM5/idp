@@ -217,6 +217,30 @@ dejó vacíos y Haiku sí extrajo**, verificados contra el texto del documento:
 
 Es decir: en este documento el modelo más rápido también fue el más completo.
 
+#### 6.2.1 PEDIMENTO_ERP — por qué 17 páginas tardaron 162 s
+
+Medición del 2026-10-12 sobre
+`test-docs/dataset-pedimentos/pedimento-260734356041353.pdf`:
+
+| Estrategia | pageLoad | extracción | total pipeline | input/output IA | resultado |
+|---|---:|---:|---:|---:|---|
+| `missing_fields` desplegado | 1.65s | **160.75s** | **162.47s** | 38,804 / 10,058 | revisión |
+| determinística local | 0.32s | **0.12s** (mapper: 15ms) | **0.46s** | **0 / 0** | aprobado |
+
+No fue el tamaño del JSON final. El mapper dejó algunos campos sin resolver y
+`fallback: missing_fields` abrió MiniMax sobre el texto de las 17 páginas; el
+tiempo está íntegramente en `tracking.timings.extraction`. Los 10,058 tokens de
+salida explican la mayor parte de la espera no streaming. El mismo contenido ya
+tenía dos históricos de MiniMax (extraído como 17 de 139 páginas): 84.8s y
+178.3s de extracción, confirmando la varianza del modelo.
+
+Desde `PEDIMENTO_ERP` 1.2.0 el catálogo usa `fallback: review`: el default no
+ejecuta IA de extracción. En dev se compara el mismo archivo sin editar el
+catálogo con `pnpm enviar ... --extraction-mode model|hybrid|deterministic`;
+`model` reproduce el comportamiento anterior. La cifra local es el piso del
+pipeline, no una promesa de tiempo end-to-end en AWS (SQS/Step Functions y
+transferencia siguen fuera de esos 0.46s).
+
 ### 6.3 Histórico (gratis, `pnpm bench:latencia -- --historico`)
 
 Corridas locales ya guardadas en `resultados/` — fechas y catálogos distintos,

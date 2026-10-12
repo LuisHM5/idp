@@ -367,6 +367,14 @@ las filas de todos los selectores se combinan antes de aplicar
 - Con `fallback: missing_fields`, `text_extractor` recibe un JSON Schema que
   contiene **solo** las ramas no resueltas. Un valor determinístico gana siempre
   y el modelo nunca lo sobrescribe. Si no queda ninguna rama, no hay llamada.
+- Con `fallback: review`, nunca se abre Bedrock para la extracción: los campos
+  que el mapper no resuelva quedan vacíos y la validación normal decide
+  APROBADO/REQUIERE_REVISION. `PEDIMENTO_ERP` usa este modo por default.
+- En dev, el request puede comparar las estrategias sin cambiar el catálogo:
+  `extractionMode=model|hybrid|deterministic` (o
+  `pnpm enviar ... --extraction-mode ...`). `model` reproduce el schema completo
+  anterior; `hybrid` fuerza `missing_fields`; `deterministic` fuerza `review`.
+  Omitirlo (`catalog`) conserva esta configuración.
 - El resultado marca esos valores con `source: "DETERMINISTIC_TEXT"` y
   `extractionMeta` dice `strategy: deterministic|hybrid|model`, campos
   resueltos/fallback, fuentes de página y duración del mapper.
@@ -374,7 +382,8 @@ las filas de todos los selectores se combinan antes de aplicar
   confirman si un modelo realmente corrió; `deterministicSavings` estima los
   tokens de entrada/salida evitados contra el schema completo, y
   `documents[].deterministicExtraction.fallbackFields` dice qué ramas sí se
-  mandaron al modelo. Los tokens facturados nunca se mezclan con los
+  mandaron al modelo. `documents[].extractionMode` muestra el modo solicitado y
+  el efectivo. Los tokens facturados nunca se mezclan con los
   estimados.
 - Config inválida o regex sin match falla abierto hacia el fallback. El
   catálogo nunca ejecuta código ni expresiones arbitrarias.

@@ -481,7 +481,7 @@ paths:
         - Claves en minúsculas tras normalizar, con forma
           `[a-z0-9][a-z0-9._-]*`; valores planos US-ASCII; 2 KB para el mapa
           resultante completo.
-        - `app-origin`, `model-id` y `document-counts` son reservadas y no se pueden modificar.
+        - `app-origin`, `model-id`, `extraction-mode` y `document-counts` son reservadas y no se pueden modificar.
 
         Las apps registradas necesitan `AllowMetadataWrite=true` (se otorga
         con `pnpm apps:grant -- --name APP --metadata-write`) y solo pueden
@@ -713,6 +713,9 @@ paths:
 
             - `INVALID_OCCURRENCE_MODE` — `occurrenceMode` no es `single` ni
             `multiple`.
+
+            - `INVALID_EXTRACTION_MODE` — `extractionMode` no es `catalog`,
+            `model`, `hybrid` ni `deterministic`.
 
             - `INVALID_JSON` — el body no es JSON válido.
 
@@ -1511,6 +1514,16 @@ components:
           description: >
             Solo dev — procesa este documento con el modelo de Bedrock indicado,
             sin redeploy. El stack de prod lo ignora a propósito.
+        extractionMode:
+          type: string
+          enum: [catalog, model, hybrid, deterministic]
+          default: catalog
+          description: >
+            Solo dev — sobrescribe la estrategia para este documento. `catalog`
+            conserva el tipo; `model` reproduce el schema completo a Bedrock;
+            `hybrid` usa el mapper y manda sólo faltantes; `deterministic` no
+            ejecuta IA de extracción y deja los faltantes a validación/revisión.
+            Prod ignora el override a propósito.
         metadata:
           type: object
           description: |
@@ -1533,7 +1546,7 @@ components:
               INVALID_METADATA`.
             - **2 KB en total** entre claves y valores (tope de S3) → `400
               INVALID_METADATA`.
-            - `app-origin`, `model-id` y `document-counts` son claves **del sistema** y se
+            - `app-origin`, `model-id`, `extraction-mode` y `document-counts` son claves **del sistema** y se
               descartan en silencio: la primera es la trazabilidad que
               `?system=` filtra y sale de tu API key, no del body.
 
@@ -1960,6 +1973,13 @@ components:
             resolvedFieldCount: { type: integer, minimum: 0 }
             fallbackFields: { type: array, items: { type: string } }
             tokenSavings: { type: object, additionalProperties: true }
+        extractionMode:
+          type: object
+          description: Modo solicitado por el request y estrategia efectiva para este tipo.
+          properties:
+            requested: { type: string, enum: [catalog, model, hybrid, deterministic] }
+            effective: { type: string, enum: [model, hybrid, deterministic] }
+            reason: { type: string, enum: [type_has_no_deterministic_mapping] }
         authenticity:
           $ref: "#/components/schemas/AuthenticitySummary"
         fields:
@@ -1967,8 +1987,9 @@ components:
           description: >
             Los campos del documento. Escalar -> `{value, confidence, valid}`
             (+ `reason` solo si `valid` es falso, + `source` solo si NO es
-            MODEL_EXTRACTION). Objeto -> `{fields: {...}}`. Arreglo ->
-            `{items: [{fields: {...}}]}`. **Un campo se omite solo cuando el
+            MODEL_EXTRACTION). Objeto -> `{fields: {...}}`. Arreglo de objetos ->
+            `{items: [{fields: {...}}]}`; arreglo escalar ->
+            `{items: [{value, confidence, valid}]}`. **Un campo se omite solo cuando el
             documento no lo traía Y no era obligatorio**: todo lo demás viaja con
             su `confidence`; si no hubo medición, vale `0.0`.
           additionalProperties: true

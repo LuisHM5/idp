@@ -383,7 +383,9 @@ def test_el_pipeline_real_llena_tipo_pago(monkeypatch, qr_decodificado):
     monkeypatch.setattr(expediente.page_selector, "enabled_for", lambda _e: False)
     seg = Segment(doc_type="PEDIMENTO_ERP", page_start=1, page_end=1, confidence=0.9)
 
-    doc = expediente._extract_segment(seg, [PAGINA_QR], model_id=None, reader=object())
+    doc = expediente._extract_segment(
+        seg, [PAGINA_QR], model_id=None, reader=object(), extraction_mode="model"
+    )
 
     assert doc["_entities"]["Tipo_Pago"] == 3
     assert doc["_recovered_sources"]["Tipo_Pago"] == SOURCE_DERIVED

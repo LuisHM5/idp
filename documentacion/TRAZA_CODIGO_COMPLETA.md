@@ -495,24 +495,28 @@ Archivo: `handler.py:437`.
    `_apply_model_override()`.
 3. `_apply_model_override()` (`:269`) acepta `Metadata.model-id` solo cuando
    `ALLOW_MODEL_OVERRIDE=true`, configurado únicamente en dev.
-4. `_declared_type_from_key()` (`:237`) reconoce el tipo manual únicamente si
+4. `_extraction_mode_from_metadata()` lee `Metadata.extraction-mode` con la
+   misma compuerta dev-only. `catalog` conserva el tipo; `model` reproduce el
+   extractor completo; `hybrid` fuerza fallback de faltantes y `deterministic`
+   prohíbe la llamada de extracción.
+5. `_declared_type_from_key()` (`:237`) reconoce el tipo manual únicamente si
    existe en el catálogo. Un texto con formato válido pero desconocido no se
    convierte en `declared_type`.
-5. `_declared_file_type()` (`:224`) prefiere `content.fileType`; si falta, usa la
+6. `_declared_file_type()` (`:224`) prefiere `content.fileType`; si falta, usa la
    extensión de la key.
-6. Enruta:
+7. Enruta:
    - `.xml` → `pipeline.xml_document.process_xml()`;
    - `.xlsx`, `.xlsm`, `.csv` → `pipeline.tabular_document.process_tabular()`;
    - imagen/PDF → `pipeline.expediente.process_pdf()`.
-7. Escribe el resultado completo con `PutObject` en
+8. Escribe el resultado completo con `PutObject` en
    `results/{documentId}.json`. Un fallo de esta escritura no aborta la
    validación; `resultLocation` queda `null`.
-8. Elige clasificación final:
+9. Elige clasificación final:
    - un documento no `OTRO`: su tipo;
    - varios: `EXPEDIENTE_ADUANAL_MULTIDOCUMENTO`;
    - ninguno: conserva la clasificación upstream.
-9. Agrega `tracking.modelIds`, `appOrigin` y `modelFallbacks`.
-10. `pipeline/envelope.py::build()` arma el envelope v2 que cabe en el estado de Step
+10. Agrega `tracking.modelIds`, `appOrigin` y `modelFallbacks`.
+11. `pipeline/envelope.py::build()` arma el envelope v2 que cabe en el estado de Step
     Functions y retorna el envelope canónico.
 
 ## 12. Camino PDF o imagen, función por función

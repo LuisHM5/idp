@@ -199,3 +199,16 @@ def test_override_does_not_leak_into_the_next_invocation(monkeypatch):
     bedrock.reset_used_models()  # what handler() calls per invocation
 
     assert bedrock.resolve_model("extractor") == "base-model"
+
+
+def test_extraction_mode_override_is_dev_only(monkeypatch):
+    assert handler._extraction_mode_from_metadata({"extraction-mode": "deterministic"}) == "catalog"
+
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    assert handler._extraction_mode_from_metadata({"extraction-mode": "deterministic"}) == "deterministic"
+    assert handler._extraction_mode_from_metadata({"extraction-mode": "model"}) == "model"
+
+
+def test_invalid_extraction_mode_fails_open_to_catalog(monkeypatch):
+    monkeypatch.setenv("ALLOW_MODEL_OVERRIDE", "true")
+    assert handler._extraction_mode_from_metadata({"extraction-mode": "inventado"}) == "catalog"

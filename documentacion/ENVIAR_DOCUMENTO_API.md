@@ -8,8 +8,9 @@ Guía para mandar un documento al pipeline de validación y leer el resultado.
 pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP  # dev (default)
 pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP --env prod
 pnpm enviar invoices-flete.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
+pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode deterministic
 pnpm enviar carta.pdf CARTA_NOM35 --meta proveedor=10021   # metadata de carga (repetible); ver CARTA_NOM35.md
-# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod]
+# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod]
 ```
 
 Para probar de una vez la subida, la espera eficiente por `202`/`Retry-After`
@@ -30,6 +31,30 @@ variables de entorno ni volver a desplegar:
 pnpm enviar doc.pdf PEDIMENTO_ERP --model amazon.nova-pro-v1:0
 ```
 
+### Comparar extracción con y sin IA (solo dev)
+
+`--extraction-mode` sobrescribe la estrategia únicamente para esa carga:
+
+```bash
+# Configuración normal del catálogo. PEDIMENTO_ERP usa código sin IA por default.
+pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode catalog
+
+# Comportamiento anterior: schema completo a Bedrock.
+pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode model
+
+# Código primero; sólo los campos faltantes van a Bedrock.
+pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode hybrid
+
+# Código solamente; un faltante se valida y manda a revisión, nunca abre Bedrock.
+pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode deterministic
+```
+
+La respuesta confirma lo que ocurrió con `aiExecuted`/`aiUsage` y, por
+documento, `extractionMode.requested`, `extractionMode.effective` y
+`deterministicExtraction.strategy`. Un tipo sin mapeo determinístico conserva
+el modelo aunque se pida `hybrid` o `deterministic`, y reporta la razón; así no
+devuelve un documento vacío por un override incompatible.
+
 `--occurrence-mode multiple` agrega `"occurrenceMode":"multiple"` al POST y
 busca todas las ocurrencias de cada tipo sin `:N`/`:all`; si se omite, el API
 usa primero `occurrence_mode` del catálogo y después el default global
@@ -46,8 +71,9 @@ Aplica a todas las fases del pipeline y gana sobre `BEDROCK_*_MODEL_ID`. El
 resultado registra qué modelo corrió en cada fase (`tracking.modelIds`), así
 que puedes mandar el mismo archivo con dos modelos y comparar.
 
-**Solo funciona en dev.** El stack de prod no define `ALLOW_MODEL_OVERRIDE`, así
-que ignora el valor a propósito: viene de quien sube el archivo, y en prod
+**Los overrides `--model` y `--extraction-mode` solo funcionan en dev.** El
+stack de prod no define `ALLOW_MODEL_OVERRIDE`, así que los ignora a propósito:
+vienen de quien sube el archivo, y en prod
 dejaría que un tercero elija el modelo —y con él el costo y la calidad de
 extracción— sobre documentos ajenos. Si lo usas contra prod, el script avisa y
 el documento se procesa con el modelo configurado.

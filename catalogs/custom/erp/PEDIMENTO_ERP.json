@@ -4,7 +4,7 @@
     "catalog_status": "stable",
     "__COMENTARIO_segmentation_candidate__": "PEDIMENTO_ERP y PEDIMENTO_ADUANAL son el MISMO documento fisico (mismos page_selection.markers: NUM. PEDIMENTO / CVE. PEDIM / T. OPER / CUADRO DE LIQUIDACION); lo que cambia son los nombres de los campos de salida, no lo que se ve en la pagina. Por eso este tipo se saca de la clasificacion automatica: un clasificador que lee texto no tiene con que elegir entre los dos, y elegir mal cambia el shape del resultado. Se pide declarandolo: documentType=PEDIMENTO_ERP (solo, o dentro de una lista separada por comas). Quitar esta linea lo devuelve a la lista de candidatos.",
     "segmentation_candidate": false,
-    "schema_version": "1.1.0",
+    "schema_version": "1.2.0",
     "display_name": "Pedimento (mapeo ERP)",
     "aliases": [],
     "description": "Pedimento aduanal extraído con los nombres de campo de la tabla del ERP, listo para insertar sin traducción intermedia.",
@@ -12,7 +12,7 @@
     "min_confidence": 0.8,
     "deterministic_extraction": {
       "enabled": true,
-      "fallback": "missing_fields"
+      "fallback": "review"
     },
     "__COMENTARIO_nombres_acoplados__": "Los campos llevan el nombre de la columna del ERP, incluidos No_Pedimento y Patente. Lo que antes ataba esos dos a NUMERO_PEDIMENTO/PATENTE era el pipeline: `pedimento_role` (expediente.py) declara el ROL de cada campo, así que la recuperación determinista (QR -> patente/consecutivo/año/aduana, concatenación de los 15 dígitos, relleno por regex desde el texto y la copia del valor QR) sigue funcionando con cualquier nombre. No_Pedimento juega los dos roles ('numero' y 'normalizado') porque el ERP tiene una sola columna de 15 dígitos. ANIO_PEDIMENTO, ADUANA_DESPACHO y NUMERO_CONSECUTIVO conservan su nombre canónico por no tener columna en el ERP: son insumo del QR.",
     "__COMENTARIO_equivalencias__": {
@@ -286,6 +286,12 @@
               "group": "value",
               "transform": "upper",
               "flags": ["ignore_case"]
+            },
+            {
+              "regex": "REGIMEN\\s*:\\s*(?P<value>IMP|EXP)(?=[A-Z0-9])",
+              "group": "value",
+              "transform": "upper",
+              "flags": ["ignore_case"]
             }
           ]
         },
@@ -304,9 +310,16 @@
         "text_source": {
           "selectors": [
             {
+              "regex": "REGIMEN\\s*:\\s*(?:IMP|EXP)(?P<value>[A-Z][0-9])\\b",
+              "group": "value",
+              "transform": "upper",
+              "flags": ["ignore_case"]
+            },
+            {
               "regex": "CVE\\.?\\s*PEDIM(?:ENTO)?\\s*:\\s*(?P<value>[A-Z0-9]+)",
               "group": "value",
               "transform": "upper",
+              "accept_regex": "^[A-Z][0-9]$",
               "flags": ["ignore_case"]
             }
           ]
@@ -321,6 +334,11 @@
           "selectors": [
             {
               "regex": "TIPO\\s+CAMBIO\\s*:\\s*(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            },
+            {
+              "regex": "PESO\\s+BRUTO\\s*:\\s*\\d(?P<value>\\d{1,3}\\.\\d{3,6})(?=\\s)",
               "group": "value",
               "flags": ["ignore_case"]
             }
@@ -537,7 +555,7 @@
             "type": "array",
             "required": true,
             "text_source": {
-              "row_regex": "(?P<clave>IVA\\s+PRV|IGI/IGE|F\\.?IEPS|DTA|PRV|IVA|IEPS|ECI|MT|CC|REC)\\s+(?P<forma_pago>\\d+)\\s+(?P<importe>[\\d,.]+)",
+              "row_regex": "(?P<clave>IVA\\s+PRV|IGI/IGE|F\\.?IEPS|2I[FG]|DTA|PRV|IVA|IEPS|ECI|MT|CC|REC)\\s+(?P<forma_pago>\\d+)\\s+(?P<importe>[\\d,.]+)",
               "groups": {
                 "CLAVE_CONCEPTO": "clave",
                 "FORMA_PAGO": "forma_pago",
@@ -587,7 +605,7 @@
             "text_source": {
               "selectors": [
                 {
-                  "regex": "(?m)^\\s*EFECTIVO\\s+(?P<value>[\\d,.]+)\\s*$",
+                  "regex": "(?m)\\bEFECTIVO\\s+(?P<value>[\\d,.]+)\\s*$",
                   "group": "value",
                   "region": {
                     "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
@@ -608,7 +626,7 @@
             "text_source": {
               "selectors": [
                 {
-                  "regex": "(?m)^\\s*OTROS\\s+(?P<value>[\\d,.]+)\\s*$",
+                  "regex": "(?m)\\bOTROS\\s+(?P<value>[\\d,.]+)\\s*$",
                   "group": "value",
                   "region": {
                     "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
@@ -628,7 +646,7 @@
             "text_source": {
               "selectors": [
                 {
-                  "regex": "(?m)^\\s*TOTAL\\s+(?P<value>[\\d,.]+)\\s*$",
+                  "regex": "(?m)\\bTOTAL\\s+(?P<value>[\\d,.]+)\\s*$",
                   "group": "value",
                   "region": {
                     "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",

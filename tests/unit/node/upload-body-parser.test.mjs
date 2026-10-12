@@ -12,6 +12,7 @@ import test from "node:test";
 
 import {
   normalizeMetadata,
+  parseExtractionMode,
   parseBody,
 } from "../../../src/document-processing/resources/upload-lambda/body-parser.mjs";
 
@@ -131,6 +132,14 @@ test("contentBase64 sigue parseándose: el handler lo rechaza, no el parser", ()
   assert.equal(Buffer.from(body.contentBase64, "base64").toString(), "%PDF-1.7");
 });
 
+test("extractionMode admite los cuatro modos y default por catálogo", () => {
+  assert.deepEqual(parseExtractionMode(undefined), { mode: "catalog" });
+  for (const mode of ["catalog", "model", "hybrid", "deterministic"]) {
+    assert.deepEqual(parseExtractionMode(mode.toUpperCase()), { mode });
+  }
+  assert.equal(parseExtractionMode("rapido").error.code, "INVALID_EXTRACTION_MODE");
+});
+
 // --- normalizeMetadata ----------------------------------------------------
 // La metadata del POST se guarda como metadata de objeto S3 y de ahí la lee el
 // consumidor SQS para dejarla en el envelope, donde `?meta.<clave>=` la filtra.
@@ -152,8 +161,13 @@ test("descarta vacíos y nulos en vez de guardar claves sin valor", () => {
   assert.deepEqual(metadata, { e: "ok" });
 });
 
-test("una clave reservada del sistema se ignora: nadie suplanta a otra app", () => {
-  const { metadata } = normalizeMetadata({ "app-origin": "OTRA_APP", "model-id": "x", lote: "A1" });
+test("una clave reservada del sistema se ignora: nadie suplanta opciones operativas", () => {
+  const { metadata } = normalizeMetadata({
+    "app-origin": "OTRA_APP",
+    "model-id": "x",
+    "extraction-mode": "model",
+    lote: "A1",
+  });
   assert.deepEqual(metadata, { lote: "A1" });
 });
 

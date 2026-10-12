@@ -78,7 +78,8 @@ def compact_node(node: Any) -> Optional[Dict[str, Any]]:
     Escalar -> {value, confidence, valid} + `reason` solo si `valid` es falso
     + `source` solo si NO es MODEL_EXTRACTION (o sea, solo cuando algo
     interesante pasó: normalizado, recuperado del QR, derivado).
-    Objeto   -> {fields: {...}}   Arreglo -> {items: [{fields: {...}}]}
+    Objeto   -> {fields: {...}}   Arreglo de objetos -> {items: [{fields: {...}}]}
+    Arreglo escalar -> {items: [{value, confidence, valid, ...}]}
 
     **Regla de omisión: un campo se omite si NO tiene valor Y `valid` es true.**
     Eso significa exactamente "el documento no lo traía y nadie lo exigía". Un
@@ -95,7 +96,7 @@ def compact_node(node: Any) -> Optional[Dict[str, Any]]:
     if isinstance(node.get("items"), list):
         # Las filas NUNCA se descartan: `len(items)` es la señal de cuántos
         # renglones traía el documento, y perderla es peor que un objeto vacío.
-        return {"items": [_compact_row(row) for row in node["items"]]}
+        return {"items": [_compact_array_item(row) for row in node["items"]]}
 
     if isinstance(node.get("fields"), dict):
         sub = compact_fields(node["fields"])
@@ -142,6 +143,20 @@ def _compact_row(row: Any) -> Dict[str, Any]:
         if row.get("reason"):
             out["reason"] = row["reason"]
     return out
+
+
+def _compact_array_item(item: Any) -> Dict[str, Any]:
+    """Compact one object row or scalar-array item without changing its shape."""
+    if isinstance(item, dict) and "value" in item:
+        compact = compact_node(item)
+        # Scalar items with a real value always compact; keep cardinality even
+        # for a defensive empty item, matching the object-array invariant.
+        return compact or {
+            "value": item.get("value"),
+            "confidence": item.get("confidence") or 0.0,
+            "valid": item.get("valid", True),
+        }
+    return _compact_row(item)
 
 
 def compact_fields(tree: Dict[str, Any]) -> Dict[str, Any]:
@@ -250,6 +265,8 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
             **({"reason": tc["reason"]} if tc.get("reason") else {}),
         }
     extraction_meta = doc.get("extractionMeta") or {}
+    if isinstance(extraction_meta.get("extractionMode"), dict):
+        view["extractionMode"] = dict(extraction_meta["extractionMode"])
     deterministic = extraction_meta.get("deterministicExtraction")
     if isinstance(deterministic, dict):
         token_savings = deterministic.get("tokenSavings") or {}

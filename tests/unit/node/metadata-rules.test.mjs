@@ -44,6 +44,7 @@ test("un patch vacío o compuesto solo de claves reservadas se rechaza", () => {
   const reserved = parseMetadataPatch({
     "app-origin": "OTRA",
     "MODEL-ID": "x",
+    "extraction-mode": "model",
     "document-counts": "A=all",
   });
   assert.equal(reserved.error.code, "EMPTY_PATCH");

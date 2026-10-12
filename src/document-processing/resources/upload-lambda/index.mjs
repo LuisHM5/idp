@@ -28,6 +28,7 @@ import { consumeDailyDocument, dailyLimitResponse } from "./daily-doc-cap.mjs";
 import {
   parseBody,
   normalizeMetadata,
+  parseExtractionMode,
   parseDocumentTypes,
   classificationModeFor,
   rawKeyFor,
@@ -192,6 +193,11 @@ export async function handler(event) {
   }
   const requestedOccurrenceMode = body.occurrenceMode ?? body.occurrence_mode;
 
+  const extraction = parseExtractionMode(body.extractionMode);
+  if (extraction.error) {
+    return errorResponse(400, extraction.error.code, extraction.error.message);
+  }
+
   if (!fileName) {
     return errorResponse(400, "MISSING_FIELD", "Field 'fileName' is required");
   }
@@ -228,11 +234,14 @@ export async function handler(event) {
   const objectMetadata = { ...normalizedMetadata.metadata };
   // A per-request model override travels as S3 object metadata. The
   // enrichment Lambda only honours it when the deployment allows it (dev), so
-  // accepting it here is inert in prod. Both keys below are set AFTER the
+  // accepting it here is inert in prod. The execution keys below are set AFTER the
   // caller's metadata and are stripped from it by normalizeMetadata, so a body
   // field can never impersonate another app or smuggle in a model override.
   if (typeof modelId === "string" && modelId.trim()) {
     objectMetadata["model-id"] = modelId.trim();
+  }
+  if (extraction.mode !== "catalog") {
+    objectMetadata["extraction-mode"] = extraction.mode;
   }
   if (appOrigin) {
     objectMetadata["app-origin"] = appOrigin;

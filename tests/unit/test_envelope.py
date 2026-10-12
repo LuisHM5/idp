@@ -121,6 +121,22 @@ def test_los_arreglos_conservan_todas_sus_filas():
     assert node["items"][1]["valid"] is False and node["items"][1]["reason"] == "fila ilegible"
 
 
+def test_un_arreglo_escalar_conserva_sus_valores_y_procedencia():
+    node = envelope.compact_node({
+        "items": [
+            _node("COVE123", confidence=0.98, source="DETERMINISTIC_TEXT"),
+            _node("COVE456", confidence=0.97, source="DETERMINISTIC_TEXT"),
+        ]
+    })
+
+    assert node == {"items": [
+        {"value": "COVE123", "confidence": 0.98, "valid": True,
+         "source": "DETERMINISTIC_TEXT"},
+        {"value": "COVE456", "confidence": 0.97, "valid": True,
+         "source": "DETERMINISTIC_TEXT"},
+    ]}
+
+
 def test_objetos_anidados_vacios_desaparecen_enteros():
     assert envelope.compact_node({"valid": True, "fields": {"A": _node(None)}}) is None
     kept = envelope.compact_node({"valid": True, "fields": {"A": _node("x")}})
@@ -414,6 +430,7 @@ def test_envelope_publica_ahorro_determinista_y_fallbacks_por_documento():
     }
     doc = _doc(extractionMeta={
         "strategy": "hybrid",
+        "extractionMode": {"requested": "hybrid", "effective": "hybrid"},
         "deterministicExtraction": {
             "resolvedFields": ["A", "B"],
             "fallbackFields": ["C"],
@@ -431,6 +448,9 @@ def test_envelope_publica_ahorro_determinista_y_fallbacks_por_documento():
     assert env["deterministicSavings"]["estimatedOutputTokensSaved"] == 300
     assert env["deterministicSavings"]["estimatedInputTokensWithoutDeterministic"] == 6074
     detail = env["documents"][0]["deterministicExtraction"]
+    assert env["documents"][0]["extractionMode"] == {
+        "requested": "hybrid", "effective": "hybrid",
+    }
     assert detail["strategy"] == "hybrid"
     assert detail["aiExecuted"] is True
     assert detail["resolvedFieldCount"] == 2

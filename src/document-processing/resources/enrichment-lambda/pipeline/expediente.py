@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from document_catalog import (
+    TypeRegistryEntry,
     get_cross_document_rules,
     get_type_entry,
     normalize_declared_types,
@@ -103,6 +104,32 @@ _IMPORTER_RFC_FIELDS = (
     "RFC_IMPORTADOR",
 )
 
+_EXTRACTION_MODES = {"catalog", "model", "hybrid", "deterministic"}
+
+
+def _requested_extraction_mode(value: Optional[str]) -> str:
+    normalized = str(value or "catalog").strip().lower()
+    return normalized if normalized in _EXTRACTION_MODES else "catalog"
+
+
+def _deterministic_policy(
+    entry: TypeRegistryEntry, requested_mode: str
+) -> Optional[Dict[str, Any]]:
+    """Resolve a request override over the catalog's deterministic policy.
+
+    Overrides only apply when the type actually declares a deterministic
+    mapping. This keeps ``deterministic`` from silently returning an empty
+    document for an unsupported type; such a type safely stays on the model.
+    """
+    configured = deterministic_text.policy_for(entry)
+    if configured is None or requested_mode == "model":
+        return None
+    if requested_mode == "hybrid":
+        return {**configured, "fallback": "missing_fields"}
+    if requested_mode == "deterministic":
+        return {**configured, "fallback": "review"}
+    return configured
+
 
 def _extract_segment(
     seg: Segment,
@@ -110,6 +137,7 @@ def _extract_segment(
     model_id: Optional[str],
     reader: Optional[Any] = None,
     source_name: str = "",
+    extraction_mode: str = "catalog",
 ) -> Dict[str, Any]:
     """Extract one segment into a document dict. Runs in a worker thread.
 
@@ -167,9 +195,11 @@ def _extract_segment(
         else:
             selection = None
 
+    requested_mode = _requested_extraction_mode(extraction_mode)
+    configured_policy = deterministic_text.policy_for(entry)
+    policy = _deterministic_policy(entry, requested_mode)
     try:
-        if deterministic_text.enabled_for(entry):
-            policy = deterministic_text.policy_for(entry) or {"fallback": "missing_fields"}
+        if policy is not None and entry.field_tree:
             try:
                 deterministic = deterministic_text.extract(extract_pages, entry)
                 pending_tree = deterministic_text.unresolved_tree(
@@ -183,7 +213,7 @@ def _extract_segment(
                 deterministic = deterministic_text.ExtractionResult(
                     warnings=["internal deterministic extraction error; full model fallback"]
                 )
-                pending_tree = entry.field_tree or {}
+                pending_tree = {} if requested_mode == "deterministic" else (entry.field_tree or {})
 
             if pending_tree:
                 model_result = extract_document(
@@ -247,6 +277,12 @@ def _extract_segment(
                 else "model" if fallback_fields
                 else "deterministic"
             )
+            model_result.meta["extractionMode"] = {
+                "requested": requested_mode,
+                "effective": (
+                    "deterministic" if policy["fallback"] == "review" else "hybrid"
+                ),
+            }
             model_result.meta["deterministicExtraction"] = {
                 "elapsedMs": deterministic.elapsed_ms,
                 "attemptedFields": sorted(deterministic.attempted_paths),
@@ -262,6 +298,16 @@ def _extract_segment(
             doc.setdefault("_recovered_sources", {}).update(deterministic.source_overrides)
         else:
             extracted = extract_document(extract_pages, entry, model_id=model_id)
+            extracted.meta["strategy"] = "model"
+            extracted.meta["extractionMode"] = {
+                "requested": requested_mode,
+                "effective": "model",
+                **(
+                    {"reason": "type_has_no_deterministic_mapping"}
+                    if requested_mode in {"hybrid", "deterministic"} and configured_policy is None
+                    else {}
+                ),
+            }
         doc["_entities"] = extracted.entity_map
         doc["_confidences"] = extracted.confidences
         # Per-row confidences of array fields (see pipeline.confidence): the
@@ -505,6 +551,7 @@ def process_pdf(
     declared_types: Optional[Sequence[str]] = None,
     declared_counts: Optional[Dict[str, Any]] = None,
     context: Optional[Dict[str, Any]] = None,
+    extraction_mode: str = "catalog",
 ) -> Dict[str, Any]:
     """Process a (possibly multi-document) PDF — or, when `source_format` is
     an image type ("jpg"/"jpeg"/"png"), a single standalone photographed/
@@ -616,7 +663,9 @@ def process_pdf(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         documents: List[Dict[str, Any]] = list(
             pool.map(
-                lambda seg: _extract_segment(seg, pages, model_id, qr_reader, source_name),
+                lambda seg: _extract_segment(
+                    seg, pages, model_id, qr_reader, source_name, extraction_mode
+                ),
                 segments,
             )
         )

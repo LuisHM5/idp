@@ -5,7 +5,7 @@
 # cliente HTTP externo sin credenciales AWS.
 #
 # Uso:
-#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
+#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
 #
 #   TIPO_DOCUMENTO admite varios tipos separados por coma
 #   (PEDIMENTO_ADUANAL,FACTURA_HONORARIOS): el archivo se segmenta y cada
@@ -18,6 +18,7 @@
 #   scripts/enviar-documento.sh expediente.pdf            # sin tipo → Bedrock clasifica
 #   scripts/enviar-documento.sh expediente.pdf --env prod # manda al stack de prod
 #   scripts/enviar-documento.sh doc.pdf PEDIMENTO_ADUANAL --model amazon.nova-pro-v1:0
+#   scripts/enviar-documento.sh doc.pdf PEDIMENTO_ERP --extraction-mode deterministic
 #   scripts/enviar-documento.sh facturas.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
 #
 # Opciones:
@@ -32,6 +33,12 @@
 #                     Solo dev: el stack de prod ignora el valor a propósito
 #                     (ALLOW_MODEL_OVERRIDE), porque viene de quien sube el
 #                     archivo y decidiría costo y calidad de extracción.
+#   --extraction-mode catalog|model|hybrid|deterministic
+#                     Estrategia solo para ESTE documento. `catalog` conserva
+#                     la configuración del tipo; `model` reproduce la extracción
+#                     completa anterior; `hybrid` usa código y manda a IA solo
+#                     faltantes; `deterministic` no llama a IA de extracción y
+#                     deja los faltantes para revisión. Default: catalog.
 #   --occurrence-mode single|multiple
 #                     Cardinalidad de los tipos sin sufijo para ESTE POST.
 #                     Si se omite: catálogo; después single con un tipo o
@@ -90,6 +97,7 @@ REGION="${AWS_REGION:-us-east-1}"
 FILE=""
 DOC_TYPE=""
 MODEL_ID=""
+EXTRACTION_MODE="catalog"
 OCCURRENCE_MODE=""
 META_JSON=""
 while [[ $# -gt 0 ]]; do
@@ -112,6 +120,12 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       MODEL_ID="$2"; shift 2 ;;
+    --extraction-mode)
+      if [[ $# -lt 2 ]]; then
+        echo "Falta el valor de --extraction-mode (catalog, model, hybrid o deterministic)." >&2
+        exit 2
+      fi
+      EXTRACTION_MODE="${2,,}"; shift 2 ;;
     --env)
       if [[ $# -lt 2 ]]; then
         echo "Falta el valor de --env (dev o prod)." >&2
@@ -156,6 +170,11 @@ if [[ -n "$OCCURRENCE_MODE" && "$OCCURRENCE_MODE" != "single" && "$OCCURRENCE_MO
   exit 2
 fi
 
+if [[ "$EXTRACTION_MODE" != "catalog" && "$EXTRACTION_MODE" != "model" && "$EXTRACTION_MODE" != "hybrid" && "$EXTRACTION_MODE" != "deterministic" ]]; then
+  echo "Modo de extracción inválido: $EXTRACTION_MODE (usa catalog, model, hybrid o deterministic)." >&2
+  exit 2
+fi
+
 # Un tipo, o varios separados por coma — mismo contrato que POST /documents.
 # Solo se valida la FORMA: los topes (8 tipos / 200 caracteres) los aplica la
 # API, para no tener dos fuentes de verdad de los límites. Fallar aquí evita
@@ -176,7 +195,7 @@ if [[ -z "$STACK_NAME" ]]; then
 fi
 
 if [[ -z "$FILE" ]]; then
-  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
+  echo "Uso: $0 archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]" >&2
   echo "     TIPO_DOCUMENTO acepta varios tipos y sufijos :N/:all, sin espacios." >&2
   exit 2
 fi
@@ -200,6 +219,10 @@ if [[ -n "$MODEL_ID" ]]; then
     echo "Modelo para este documento: $MODEL_ID"
   fi
 fi
+if [[ "$ENV" == "prod" && "$EXTRACTION_MODE" != "catalog" ]]; then
+  echo "AVISO: --extraction-mode solo aplica en dev; el stack de prod usa el catálogo." >&2
+fi
+echo "Modo de extracción para este documento: $EXTRACTION_MODE"
 
 RESULT_TARGET=(--env "$ENV")
 if [[ "$STACK_EXPLICIT" == true ]]; then
@@ -291,6 +314,7 @@ trap 'rm -f "$REQ_BODY_FILE"' EXIT
   [[ -n "$DOC_TYPE" ]] && printf ',"documentType":"%s"' "$DOC_TYPE"
   [[ -n "$OCCURRENCE_MODE" ]] && printf ',"occurrenceMode":"%s"' "$OCCURRENCE_MODE"
   [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
+  [[ "$EXTRACTION_MODE" != "catalog" ]] && printf ',"extractionMode":"%s"' "$EXTRACTION_MODE"
   [[ -n "$META_JSON" ]] && printf ',"metadata":{%s}' "$META_JSON"
   printf '}'
 } > "$REQ_BODY_FILE"

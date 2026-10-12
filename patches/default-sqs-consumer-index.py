@@ -126,10 +126,11 @@ def handler(event, context):
                         head = s3_client.head_object(Bucket=bucket, Key=key)
                         object_metadata = head.get('Metadata') or {}
                         app_origin = object_metadata.get('app-origin')
-                        # `model-id` is an execution knob, not document context.
+                        # Execution knobs are not caller-owned document context.
                         upload_metadata = {
                             k: v for k, v in object_metadata.items()
-                            if k not in ('app-origin', 'model-id') and v not in (None, '')
+                            if k not in ('app-origin', 'model-id', 'extraction-mode')
+                            and v not in (None, '')
                         }
                     except Exception as e:
                         print(f'Could not read upload metadata for s3://{bucket}/{key}: {e}')

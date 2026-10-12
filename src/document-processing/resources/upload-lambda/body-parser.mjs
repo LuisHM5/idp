@@ -64,13 +64,36 @@ export function parseBody(event) {
  * write them. `app-origin` is the traceability signal the query API filters on
  * (`GET /documents?system=`) and it is resolved from the request's OWN
  * x-api-key — letting a body field set it would let any app claim to be
- * another one. `model-id` has its own top-level `modelId` field, y
+ * another one. `model-id` has its own top-level `modelId` field,
+ * `extraction-mode` has its own top-level `extractionMode` field, y
  * `document-counts` transporta la cardinalidad resuelta desde `occurrenceMode`
  * y los sufijos `:N`/`:all` de `documentType`: si un caller pudiera escribirla
  * a mano podría pedir un tipo y hacer que el pipeline buscara otro número de
  * documentos del que declaró.
  */
-const RESERVED_METADATA_KEYS = new Set(["app-origin", "model-id", "document-counts"]);
+const RESERVED_METADATA_KEYS = new Set([
+  "app-origin",
+  "model-id",
+  "extraction-mode",
+  "document-counts",
+]);
+
+export const EXTRACTION_MODES = new Set(["catalog", "model", "hybrid", "deterministic"]);
+
+/** Validate the per-upload extraction strategy without coupling it to HTTP. */
+export function parseExtractionMode(value) {
+  if (value === undefined || value === null || value === "") return { mode: "catalog" };
+  if (typeof value !== "string" || !EXTRACTION_MODES.has(value.trim().toLowerCase())) {
+    return {
+      error: {
+        code: "INVALID_EXTRACTION_MODE",
+        message:
+          "Field 'extractionMode' must be 'catalog', 'model', 'hybrid' or 'deterministic'",
+      },
+    };
+  }
+  return { mode: value.trim().toLowerCase() };
+}
 
 /** S3's ceiling for all user metadata on one object (keys + values together). */
 const MAX_METADATA_BYTES = 2048;
