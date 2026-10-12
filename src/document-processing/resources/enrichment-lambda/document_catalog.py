@@ -172,6 +172,12 @@ class TypeRegistryEntry:
     # `cross_field_validation`) since cross-field rules use the exact same
     # ValidationRule shape either way.
     field_tree: Optional[Dict[str, "FieldSpec"]] = None
+    # Optional deterministic-first extraction policy for field-centric PDF/
+    # image types. Per-field selectors live in FieldSpec.params["text_source"];
+    # this type-level block opts the document in and chooses what happens when
+    # selectors leave gaps (missing_fields | full_model | review). Detection is
+    # by catalog shape, never TYPE_ID; see pipeline/deterministic_text.py.
+    deterministic_extraction: Optional[Dict[str, Any]] = None
     # Optional declarative QR-code recovery (pipeline/qr_recovery.py): when
     # set, the pipeline rasterizes the first page of a matched segment,
     # decodes any QR code found, and maps its URL query params onto fields
@@ -514,6 +520,11 @@ def _parse_entry(
             model_id=data.get("model_id") or None,
             model_ids=data.get("model_ids", {}) or {},
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}, presets=True),
+            deterministic_extraction=(
+                data.get("deterministic_extraction")
+                if isinstance(data.get("deterministic_extraction"), dict)
+                else None
+            ),
             unique_keys=_parse_unique_keys(data),
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),

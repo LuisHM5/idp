@@ -48,13 +48,13 @@ from .normalize import (
     pedimento_consecutivo,
 )
 from . import confidence as conf_policy
-from . import page_locator, page_selector, type_check
+from . import deterministic_text, page_locator, page_selector, type_check
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import CONTAINER_TYPE, Segment, segment_pages
-from .text_extractor import _chunk_pages as chunk_pages, extract_document
+from .text_extractor import ExtractedDoc, _chunk_pages as chunk_pages, extract_document
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,81 @@ def _extract_segment(
             selection = None
 
     try:
-        extracted = extract_document(extract_pages, entry, model_id=model_id)
+        if deterministic_text.enabled_for(entry):
+            policy = deterministic_text.policy_for(entry) or {"fallback": "missing_fields"}
+            try:
+                deterministic = deterministic_text.extract(extract_pages, entry)
+                pending_tree = deterministic_text.unresolved_tree(
+                    entry.field_tree or {}, deterministic.resolved_paths, policy["fallback"]
+                )
+            except Exception:  # noqa: BLE001 - the optimization must fail open
+                logger.exception(
+                    "deterministic text extraction failed for %s; using the full model schema",
+                    seg.doc_type,
+                )
+                deterministic = deterministic_text.ExtractionResult(
+                    warnings=["internal deterministic extraction error; full model fallback"]
+                )
+                pending_tree = entry.field_tree or {}
+
+            if pending_tree:
+                model_result = extract_document(
+                    extract_pages, entry, model_id=model_id, field_tree=pending_tree
+                )
+            else:
+                usable = [
+                    float(getattr(p, "confidence", 1.0))
+                    for p in extract_pages
+                    if getattr(p, "source", "native") != "empty"
+                ]
+                model_result = ExtractedDoc(
+                    entity_map={},
+                    confidences={},
+                    row_confidences={},
+                    meta={
+                        "chunks": 0,
+                        "schemaPartitions": 0,
+                        "pages": [p.number for p in extract_pages],
+                        "usage": {},
+                        "segmentConfidence": round(sum(usable) / len(usable), 4) if usable else 0.0,
+                        "typeSignal": None,
+                    },
+                )
+
+            model_result.entity_map = deterministic_text.merge_entities(
+                deterministic.entity_map,
+                model_result.entity_map,
+                entry.field_tree or {},
+                resolved_paths=deterministic.resolved_paths,
+            )
+            model_result.confidences = {
+                **model_result.confidences,
+                **deterministic.confidences,
+            }
+            model_result.row_confidences = {
+                **model_result.row_confidences,
+                **deterministic.row_confidences,
+            }
+            fallback_fields = deterministic_text.path_list(pending_tree)
+            model_result.meta["strategy"] = (
+                "hybrid" if fallback_fields and deterministic.resolved_paths
+                else "model" if fallback_fields
+                else "deterministic"
+            )
+            model_result.meta["deterministicExtraction"] = {
+                "elapsedMs": deterministic.elapsed_ms,
+                "attemptedFields": sorted(deterministic.attempted_paths),
+                "resolvedFields": sorted(deterministic.resolved_paths),
+                "fallbackFields": fallback_fields,
+                "warnings": deterministic.warnings,
+                "pageSources": {
+                    str(page.number): getattr(page, "source", "unknown") for page in extract_pages
+                },
+            }
+            extracted = model_result
+            doc.setdefault("_recovered_sources", {}).update(deterministic.source_overrides)
+        else:
+            extracted = extract_document(extract_pages, entry, model_id=model_id)
         doc["_entities"] = extracted.entity_map
         doc["_confidences"] = extracted.confidences
         # Per-row confidences of array fields (see pipeline.confidence): the

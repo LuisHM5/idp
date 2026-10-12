@@ -167,6 +167,20 @@ Tres advertencias para no leer de más estos números:
    tumbó uno de ellos — pero un pedimento escaneado es casi todo páginas de
    pedimento, así que la selección excede `max_ratio` y cae en fail-open.
 
+## 0-ter. Extracción determinística de `PEDIMENTO_ERP` (2026-10-12) — implementada, pendiente de medición desplegada
+
+`PEDIMENTO_ERP` intenta ahora sus `text_source` sobre el texto pypdf/Textract
+antes de Bedrock. Si todos los campos quedan resueltos, la línea
+`usage.extraction` lleva cero tokens; si hay huecos, sólo el sub-schema faltante
+se factura. Esto no elimina el costo de Textract de una página escaneada ni una
+clasificación automática: para evitar esta última la carga debe declarar
+`documentType=PEDIMENTO_ERP`.
+
+Todavía no se publica un porcentaje de ahorro: debe medirse en el stack
+desplegado contra los mismos archivos del E2E y verificarse primero el ground
+truth de `tests/integration/expected_pedimentos.json`. La fuente auditable por
+archivo es `documents[].extractionMeta` (`strategy`, `fallbackFields`, `usage`).
+
 ## 0. Recálculo 2026-08-04 (vía MCP AWS — Cost Explorer + Pricing API)
 
 Datos nuevos desde el último corte: **54 resultados** en

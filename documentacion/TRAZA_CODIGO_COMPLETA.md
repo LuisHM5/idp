@@ -599,19 +599,29 @@ Cada worker ejecuta `_extract_segment()` (`expediente.py:88`):
 2. Carga el catálogo del tipo.
 3. En clasificación automática, para `OTRO` o tipo sin schema no llama al
    modelo; en una solicitud cerrada los `OTRO` ya fueron retirados.
-4. `text_extractor.extract_document()` obtiene entidades y confianzas.
-5. `_recover_from_qr()` intenta corrección determinista si el catálogo declara
+4. Si el tipo declara `deterministic_extraction`, `deterministic_text.extract()`
+   aplica los `fields[].text_source` sobre las páginas seleccionadas y arma el
+   subárbol pendiente. `fallback: missing_fields` llama
+   `text_extractor.extract_document(..., field_tree=subárbol)` únicamente para
+   esos huecos; un subárbol vacío omite Bedrock. Sin el bloque, la extracción
+   existente recibe el schema completo.
+5. El merge conserva siempre el valor determinístico, combina confianzas por
+   path y publica `source=DETERMINISTIC_TEXT` más el detalle en
+   `extractionMeta.deterministicExtraction`.
+6. `_recover_from_qr()` intenta corrección determinista si el catálogo declara
    fuente QR y `QR_RECOVERY_ENABLED` está activo.
-6. `_recover_references()` recupera referencias/pedimentos mediante regex sobre
+7. `_recover_references()` recupera referencias/pedimentos mediante regex sobre
    texto ya leído.
-7. `build_liquidacion_normalizada()` llena el computed field cuando el catálogo
+8. `build_liquidacion_normalizada()` llena el computed field cuando el catálogo
    declara su mapeo.
-8. Una excepción se encapsula en ese documento con `DOC_ERROR`, `error` y
+9. Una excepción se encapsula en ese documento con `DOC_ERROR`, `error` y
    `errorType`; no derriba los otros segmentos.
 
 ### 12.6 `text_extractor.extract_document()` (`text_extractor.py:514`)
 
-Primero bifurca por DSL:
+Primero bifurca por DSL. En el camino field-centric puede recibir un `field_tree`
+parcial construido por `deterministic_text`; las particiones, prompt y tool
+schema contienen únicamente esas ramas:
 
 - field-centric → `_extract_document_field_tree()`;
 - legacy → lógica de scalars + repeatables.

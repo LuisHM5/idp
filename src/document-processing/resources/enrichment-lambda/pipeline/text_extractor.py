@@ -792,10 +792,13 @@ def _call_model_field_tree(
 
 
 def _extract_document_field_tree(
-    pages: List[PageText], type_entry: TypeRegistryEntry, model_id: Optional[str] = None
+    pages: List[PageText], type_entry: TypeRegistryEntry, model_id: Optional[str] = None,
+    field_tree: Optional[Dict[str, FieldSpec]] = None,
 ) -> ExtractedDoc:
+    selected_tree = type_entry.field_tree if field_tree is None else field_tree
+    selected_tree = selected_tree or {}
     chunks = _chunk_pages(pages)
-    partitions = _field_tree_call_partitions(type_entry.field_tree)
+    partitions = _field_tree_call_partitions(selected_tree)
     use_cache = len(chunks) > 1
     calls = [(chunk, scope, tree) for chunk in chunks for scope, tree in partitions]
     workers = min(_CHUNK_WORKERS, len(calls)) or 1
@@ -818,7 +821,7 @@ def _extract_document_field_tree(
     row_confidences: Dict[str, Dict[str, float]] = {}
     signals: List[Optional[Dict[str, Any]]] = []
     for entity, conf, row_conf, chunk_usage, signal in results:
-        entity_map = _merge_field_tree_entities(entity_map, entity, type_entry.field_tree)
+        entity_map = _merge_field_tree_entities(entity_map, entity, selected_tree)
         confidences.update(conf)
         row_confidences.update(row_conf)
         usage = _merge_usage(usage, chunk_usage)
@@ -846,10 +849,11 @@ def extract_document(
     pages: List[PageText],
     type_entry: TypeRegistryEntry,
     model_id: Optional[str] = None,
+    field_tree: Optional[Dict[str, FieldSpec]] = None,
 ) -> ExtractedDoc:
     """Extract the catalog schema from a document's pages."""
     if type_entry.field_tree:
-        return _extract_document_field_tree(pages, type_entry, model_id)
+        return _extract_document_field_tree(pages, type_entry, model_id, field_tree)
 
     chunks = _chunk_pages(pages)
 

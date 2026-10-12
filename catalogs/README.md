@@ -184,6 +184,7 @@ como en el DSL viejo.
 | `schema_version` | solo informativo | Se registra en `tracking.schema.typeVersions` de cada resultado para saber qué versión de schema procesó el documento. **No cambia ningún comportamiento del código** — no hay ningún `if schema_version == ...` en el pipeline. Súbelo cuando quieras dejar rastro de un cambio relevante, no por obligación. |
 | `occurrence_mode` | sí, opcional | Default del tipo cuando el POST no manda `occurrenceMode` ni `:N`/`:all`: `single` conserva la primera ocurrencia; `multiple` conserva todas. Si falta, aplica el default global: `single` con un tipo declarado, `multiple` con varios. |
 | `pipeline: "expediente"` | sí, pero opcional | Ver [`pipeline: expediente`](#pipeline-expediente-qué-controla-realmente) abajo — **ya no es requisito para que se extraigan los campos.** |
+| `deterministic_extraction` | sí, opcional | Activa el mapeo de texto antes de Bedrock para PDF/imagen field-centric. `fallback` admite `missing_fields` (modelo solo para ramas faltantes), `full_model` o `review`. Ver [Extracción determinística desde texto](#extracción-determinística-desde-texto-text_source). |
 | `model_id` | sí, opcional | ID de modelo Bedrock (o ARN de inference-profile) que extrae específicamente ESTE tipo — pisa `BEDROCK_EXTRACTOR_MODEL_ID`/`BEDROCK_MODEL_ID` configurados por variable de entorno. Aplica a cualquier fase que corra para este tipo (`extractor`, y `recovery` si el tipo declara `extraction_strategy`) salvo que esa fase tenga su propia entrada en `model_ids`. Ausente o `null` → hereda lo configurado. |
 | `model_ids` | sí, opcional | Igual que `model_id` pero por FASE: `{"extractor": "...", "recovery": "..."}`. Pisa a `model_id` cuando ambos nombran la misma fase — así un tipo puede fijar solo `recovery` (p. ej. porque su fallback de Textract necesita un modelo distinto al de extracción normal) sin tocar las demás. `segmenter` no aplica aquí: la segmentación de un expediente corre ANTES de saber a qué tipo pertenece cada rango de páginas, así que no hay un `type_entry` del que leer el override — solo responde a `BEDROCK_SEGMENTER_MODEL_ID` y al override de desarrollo. La fase **`vision`** (etapa de autenticidad) también se fija aquí — `{"vision": "us.amazon.nova-2-lite-v1:0"}` — y es independiente de todo lo demás: resuelve por una cadena propia y más corta, `model_ids.vision` → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5, y **nunca** hereda `model_id`, `BEDROCK_MODEL_ID` ni el override de desarrollo (son modelos de texto; el general de este despliegue no acepta imágenes). Su respaldo por indisponibilidad tampoco es la lista compartida: es `authenticity.vision.fallback_models` del propio tipo (`[]` = no cambia de modelo). El modelo debe aceptar imágenes en Converse — candidatos probados y medidos en `documentacion/MODELOS_VISION.md`; compáralos en tu tipo con `pnpm vision:comparar` antes de fijar uno. |
 | ↳ jerarquía completa | — | De mayor a menor prioridad: **(1)** override de desarrollo por request (`ALLOW_MODEL_OVERRIDE`, dev-only, ver `document-validation-stack.ts` — fuerza TODA la invocación sin importar tipo ni fase) → **(2)** `model_ids[fase]` del catálogo → **(3)** `model_id` del catálogo → **(4)** `BEDROCK_<FASE>_MODEL_ID` de entorno → **(5)** `BEDROCK_MODEL_ID` de entorno / fallback fijo. La utilidad que implementa y documenta este orden es `pipeline/bedrock.py::resolve_model` (`_model_candidates` es la única fuente de verdad del orden; `explain_model_resolution` expone los 5 candidatos y cuál ganó, útil para depurar "por qué este documento usó el modelo X"). Esto decide solo **qué modelo se intenta primero**; si ese modelo falla por indisponibilidad (no habilitado, no existe, error/timeout del proveedor), `pipeline/bedrock.py::_invoke_with_fallback` cambia al siguiente modelo de una lista ORDENADA E INDEPENDIENTE (`pipeline/model_fallback.py`, tabla DynamoDB `FALLBACK_MODELS_TABLE` opcional) — ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6. Los dos mecanismos no se mezclan: el catálogo nunca es candidato de fallback, y la tabla de fallback nunca decide qué se intenta primero. |
@@ -292,6 +293,90 @@ como en el DSL viejo.
   condición" más abajo.
 - **`unique_key`** marca el campo por el que se busca este tipo — ver la
   sección siguiente.
+
+### Extracción determinística desde texto (`text_source`)
+
+Un PDF digital ya tiene texto por `pypdf`; una página escaneada ya tiene texto
+después de `Textract DetectDocumentText`. Si el formato es suficientemente
+estable, el catálogo puede mapear ese texto con regex antes de pedirle a
+Bedrock que lo estructure:
+
+```jsonc
+"deterministic_extraction": {
+  "enabled": true,
+  "fallback": "missing_fields" // missing_fields | full_model | review
+},
+"fields": {
+  "FOLIO": {
+    "type": "string",
+    "required": true,
+    "text_source": {
+      "selectors": [{
+        "regex": "FOLIO\\s*:\\s*(?P<value>[A-Z0-9-]+)",
+        "group": "value",
+        "flags": ["ignore_case"],
+        "occurrence": "first"
+      }],
+      "model_fallback": "if_missing" // if_missing | never
+    }
+  }
+}
+```
+
+El motor intenta `selectors` en orden y toma el primero que encuentre. Un
+selector admite `group` por nombre o índice, `occurrence: first|last`,
+`pages: "first"|[1,2,...]`, flags `ignore_case`/`multiline`/`dotall`, los
+transforms cerrados `digits`/`upper`, y `accept_regex` para rechazar una captura
+que matcheó el contexto pero no tiene una forma confiable. Las regex usan la
+sintaxis de Python: un grupo nombrado es `(?P<nombre>...)`.
+
+Para restringir una búsqueda a una sección, agrega al selector —o al bloque de
+un array— `region: {start_regex, end_regex, flags}`. Esto evita que una etiqueta
+repetida en otra tabla produzca un falso positivo.
+
+Un array de objetos se declara como una extracción atómica:
+
+```jsonc
+"text_source": {
+  "row_regex": "(?m)^(?P<folio>\\S+)\\s+(?P<importe>[\\d,.]+)$",
+  "groups": {"FOLIO": "folio", "IMPORTE": "importe"},
+  "deduplicate_by": ["FOLIO"]
+}
+```
+
+Si una misma tabla tiene dos layouts confiables, usa `row_selectors` en vez de
+un solo `row_regex`; cada elemento lleva su propio `row_regex` y `groups`, y
+las filas de todos los selectores se combinan antes de aplicar
+`deduplicate_by`:
+
+```jsonc
+"row_selectors": [
+  {"row_regex": "...", "groups": {"FOLIO": "folio"}},
+  {"row_regex": "...", "groups": {"FOLIO": "numero_alterno"}}
+]
+```
+
+- Cada match es una fila. `groups` mapea grupos nombrados a `item_fields`; los
+  campos de fila `required` deben estar presentes o ese match se descarta.
+- Los arrays son atómicos: si no sale ninguna fila confiable, todo el array va
+  al fallback; no se mezclan medias filas del regex con medias filas del modelo.
+- Para arrays de escalares usa `regex`/`row_regex` más `group`.
+- `model_fallback: never` deja el campo vacío si no hubo match. Sirve para un
+  opcional cuya ausencia es legítima; usarlo en un requerido hará que la
+  validación normal lo mande a revisión.
+- Con `fallback: missing_fields`, `text_extractor` recibe un JSON Schema que
+  contiene **solo** las ramas no resueltas. Un valor determinístico gana siempre
+  y el modelo nunca lo sobrescribe. Si no queda ninguna rama, no hay llamada.
+- El resultado marca esos valores con `source: "DETERMINISTIC_TEXT"` y
+  `extractionMeta` dice `strategy: deterministic|hybrid|model`, campos
+  resueltos/fallback, fuentes de página y duración del mapper.
+- Config inválida o regex sin match falla abierto hacia el fallback. El
+  catálogo nunca ejecuta código ni expresiones arbitrarias.
+
+`PEDIMENTO_ERP` es el piloto activo. Para eliminar además la clasificación por
+modelo debe subirse declarando `documentType=PEDIMENTO_ERP`; una carga sin tipo
+todavía puede usar Bedrock para segmentar/clasificar aunque la extracción sea
+determinística.
 
 ### Presets de campos (`$presets`): pedir una verificación con una línea
 

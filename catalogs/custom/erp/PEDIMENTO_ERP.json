@@ -4,12 +4,16 @@
     "catalog_status": "stable",
     "__COMENTARIO_segmentation_candidate__": "PEDIMENTO_ERP y PEDIMENTO_ADUANAL son el MISMO documento fisico (mismos page_selection.markers: NUM. PEDIMENTO / CVE. PEDIM / T. OPER / CUADRO DE LIQUIDACION); lo que cambia son los nombres de los campos de salida, no lo que se ve en la pagina. Por eso este tipo se saca de la clasificacion automatica: un clasificador que lee texto no tiene con que elegir entre los dos, y elegir mal cambia el shape del resultado. Se pide declarandolo: documentType=PEDIMENTO_ERP (solo, o dentro de una lista separada por comas). Quitar esta linea lo devuelve a la lista de candidatos.",
     "segmentation_candidate": false,
-    "schema_version": "1.0.0",
+    "schema_version": "1.1.0",
     "display_name": "Pedimento (mapeo ERP)",
     "aliases": [],
     "description": "Pedimento aduanal extraído con los nombres de campo de la tabla del ERP, listo para insertar sin traducción intermedia.",
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "min_confidence": 0.8,
+    "deterministic_extraction": {
+      "enabled": true,
+      "fallback": "missing_fields"
+    },
     "__COMENTARIO_nombres_acoplados__": "Los campos llevan el nombre de la columna del ERP, incluidos No_Pedimento y Patente. Lo que antes ataba esos dos a NUMERO_PEDIMENTO/PATENTE era el pipeline: `pedimento_role` (expediente.py) declara el ROL de cada campo, así que la recuperación determinista (QR -> patente/consecutivo/año/aduana, concatenación de los 15 dígitos, relleno por regex desde el texto y la copia del valor QR) sigue funcionando con cualquier nombre. No_Pedimento juega los dos roles ('numero' y 'normalizado') porque el ERP tiene una sola columna de 15 dígitos. ANIO_PEDIMENTO, ADUANA_DESPACHO y NUMERO_CONSECUTIVO conservan su nombre canónico por no tener columna en el ERP: son insumo del QR.",
     "__COMENTARIO_equivalencias__": {
       "No_Pedimento": "No_Pedimento (15 dígitos, armado en código desde el QR)",
@@ -119,6 +123,16 @@
         "unique_key": {
           "normalize": "digits"
         },
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "NUM\\.?\\s*PEDIMENTO\\s*:\\s*(?P<value>\\d{2}\\s+\\d{2}\\s+\\d{4}\\s+\\d{7})",
+              "group": "value",
+              "transform": "digits",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Número de pedimento COMPLETO, 15 dígitos, sin espacios: el valor impreso en 'NUM. PEDIMENTO' del ENCABEZADO (formato AA AA NNNN NNNNNNN = año + aduana + patente + consecutivo), o la concatenación de ANIO_PEDIMENTO + ADUANA_DESPACHO + PATENTE... (por ejemplo 26 + 07 + 0823 + 6001630 = 260708236001630). Conservar todos los dígitos: nunca convertir a número, nunca quitar ceros a la derecha ni truncar el último dígito. ADVERTENCIA: más abajo, en el recuadro DEPÓSITO REFERENCIADO / PAGO ELECTRÓNICO, hay un campo DISTINTO etiquetado solo 'PEDIMENTO:' (sin 'NUM.') con ÚNICAMENTE el consecutivo de 7 dígitos (ej. '6001630'), porque ahí PATENTE y ADUANA se muestran por separado. NUNCA tomar ese valor corto: el de NUM. PEDIMENTO del encabezado es el correcto, de 15 dígitos.",
         "validation": [
           {
@@ -131,6 +145,15 @@
       "ANIO_PEDIMENTO": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "NUM\\.?\\s*PEDIMENTO\\s*:\\s*(?P<value>\\d{2})\\s+\\d{2}\\s+\\d{4}\\s+\\d{7}",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Año del número de pedimento en formato de 2 dígitos.",
         "validation": [
           {
@@ -143,6 +166,15 @@
       "ADUANA_DESPACHO": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "NUM\\.?\\s*PEDIMENTO\\s*:\\s*\\d{2}\\s+(?P<value>\\d{2})\\s+\\d{4}\\s+\\d{7}",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Aduana contenida en el número de pedimento. Extraer 2 dígitos y conservar ceros iniciales.",
         "validation": [
           {
@@ -155,6 +187,15 @@
       "NUMERO_CONSECUTIVO": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "NUM\\.?\\s*PEDIMENTO\\s*:\\s*\\d{2}\\s+\\d{2}\\s+\\d{4}\\s+(?P<value>\\d{7})",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Consecutivo del pedimento. Extraer exactamente 7 dígitos como string, sin eliminar ceros finales.",
         "validation": [
           {
@@ -168,6 +209,15 @@
         "type": "string",
         "required": true,
         "pedimento_role": "patente",
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "NUM\\.?\\s*PEDIMENTO\\s*:\\s*\\d{2}\\s+\\d{2}\\s+(?P<value>\\d{4})\\s+\\d{7}",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Patente o autorización del agente aduanal. Extraer como string de 4 dígitos (el ERP la guarda sin ceros a la izquierda: 0823 -> 823).",
         "validation": [
           {
@@ -199,18 +249,46 @@
       "Referencia": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?m)^\\s*REF\\s*:\\s*(?P<value>[A-Z0-9._/-]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Referencia del agente/agencia aduanal impresa como 'REF:' en el encabezado de cada página del pedimento (ej. 0011111123604). Copiar tal cual, sin la etiqueta REF.",
         "validation": []
       },
       "Fecha_Entrada": {
         "type": "date",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?m)^\\s*ENTRADA\\s+(?P<value>\\d{2}/\\d{2}/\\d{4})",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Fecha marcada como ENTRADA en el pedimento. Normalizar a YYYY-MM-DD.",
         "validation": []
       },
       "Tipo": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?:T\\.?\\s*OPER|TIPO\\s+OPER)\\s*:\\s*(?P<value>IMP|EXP)\\b",
+              "group": "value",
+              "transform": "upper",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Código T.OPER o TIPO OPER. Normalmente IMP o EXP.",
         "validation": [
           {
@@ -223,12 +301,31 @@
       "Cve_Pedimento": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "CVE\\.?\\s*PEDIM(?:ENTO)?\\s*:\\s*(?P<value>[A-Z0-9]+)",
+              "group": "value",
+              "transform": "upper",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Campo CVE.PEDIMENTO o CVE.PEDIM, por ejemplo A1 o R1.",
         "validation": []
       },
       "Tipo_Cambio": {
         "type": "number",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "TIPO\\s+CAMBIO\\s*:\\s*(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Tipo de cambio impreso en el encabezado.",
         "validation": [
           {
@@ -267,24 +364,61 @@
       "Pais_Origen": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?m)^\\s*\\d+\\s+\\d{6,8}.*?\\s(?P<value>[A-Z]{3})\\s+[A-Z]{3}\\s+(?:IGI|IGE|IGI/IGE)",
+              "group": "value"
+            }
+          ],
+          "model_fallback": "never"
+        },
         "hint": "País de origen principal de las mercancías, tal como aparece en la columna PAIS ORIGEN/PAIS VENTA de cada partida. Utilizarlo solamente cuando las partidas compartan el mismo país. NUNCA tomarlo de un bloque de domicilio (proveedor, importador o transportista); copiar el código/valor literal impreso en la partida (ej. USA), sin traducir ni expandir.",
         "validation": []
       },
       "Valor_ComercialDol": {
         "type": "number",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VALOR\\s+DOLARES\\s*:\\s*(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Campo VALOR DOLARES del encabezado del pedimento.",
         "validation": []
       },
       "ValorAduana": {
         "type": "number",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VALOR\\s+ADUANA\\s*:\\s*(?P<value>[\\d,.]+)",
+              "group": "value",
+              "accept_regex": "^[\\d,]+(?:\\.\\d+)?$",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Campo VALOR ADUANA, normalmente expresado en pesos mexicanos.",
         "validation": []
       },
       "Valor_ComercialPesos": {
         "type": "number",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "PRECIO\\s+PAGADO/VALOR\\s+COMERCIAL\\s*:\\s*(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ]
+        },
         "hint": "Campo PRECIO PAGADO/VALOR COMERCIAL:. Se utiliza como Valor Comercial Pesos en la pantalla de captura. (No confundir con ValorAduana)",
         "validation": []
       },
@@ -292,6 +426,16 @@
         "type": "number",
         "required": false,
         "default": 0,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VAL\\.?\\s*SEGUROS\\s+SEGUROS\\s+FLETES\\s+EMBALAJES\\s+OTROS\\s+INCREMENTABLES\\s+(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ],
+          "model_fallback": "never"
+        },
         "hint": "Campo VAL. SEGUROS del bloque de gastos incrementables.",
         "validation": []
       },
@@ -299,6 +443,16 @@
         "type": "number",
         "required": false,
         "default": 0,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VAL\\.?\\s*SEGUROS\\s+SEGUROS\\s+FLETES\\s+EMBALAJES\\s+OTROS\\s+INCREMENTABLES\\s+[\\d,.]+\\s+(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ],
+          "model_fallback": "never"
+        },
         "hint": "Campo SEGUROS del bloque de gastos incrementables.",
         "validation": []
       },
@@ -306,6 +460,16 @@
         "type": "number",
         "required": false,
         "default": 0,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VAL\\.?\\s*SEGUROS\\s+SEGUROS\\s+FLETES\\s+EMBALAJES\\s+OTROS\\s+INCREMENTABLES\\s+[\\d,.]+\\s+[\\d,.]+\\s+(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ],
+          "model_fallback": "never"
+        },
         "hint": "Campo FLETES del bloque de gastos incrementables.",
         "validation": []
       },
@@ -313,6 +477,16 @@
         "type": "number",
         "required": false,
         "default": 0,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VAL\\.?\\s*SEGUROS\\s+SEGUROS\\s+FLETES\\s+EMBALAJES\\s+OTROS\\s+INCREMENTABLES\\s+[\\d,.]+\\s+[\\d,.]+\\s+[\\d,.]+\\s+(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ],
+          "model_fallback": "never"
+        },
         "hint": "Campo EMBALAJES del bloque de gastos incrementables.",
         "validation": []
       },
@@ -320,6 +494,16 @@
         "type": "number",
         "required": false,
         "default": 0,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "VAL\\.?\\s*SEGUROS\\s+SEGUROS\\s+FLETES\\s+EMBALAJES\\s+OTROS\\s+INCREMENTABLES\\s+[\\d,.]+\\s+[\\d,.]+\\s+[\\d,.]+\\s+[\\d,.]+\\s+(?P<value>[\\d,.]+)",
+              "group": "value",
+              "flags": ["ignore_case"]
+            }
+          ],
+          "model_fallback": "never"
+        },
         "hint": "Campo OTROS INCREMENTABLES.",
         "validation": []
       },
@@ -327,6 +511,10 @@
         "type": "number",
         "required": false,
         "default": 0,
+        "text_source": {
+          "selectors": [],
+          "model_fallback": "never"
+        },
         "hint": "Suma de los gastos incrementables (VAL. SEGUROS + SEGUROS + FLETES + EMBALAJES + OTROS INCREMENTABLES). El pedimento no lo imprime como un campo propio: sumar los del bloque de incrementables.",
         "validation": []
       },
@@ -348,6 +536,21 @@
           "CONCEPTOS": {
             "type": "array",
             "required": true,
+            "text_source": {
+              "row_regex": "(?P<clave>IVA\\s+PRV|IGI/IGE|F\\.?IEPS|DTA|PRV|IVA|IEPS|ECI|MT|CC|REC)\\s+(?P<forma_pago>\\d+)\\s+(?P<importe>[\\d,.]+)",
+              "groups": {
+                "CLAVE_CONCEPTO": "clave",
+                "FORMA_PAGO": "forma_pago",
+                "IMPORTE": "importe"
+              },
+              "deduplicate_by": ["CLAVE_CONCEPTO", "IMPORTE"],
+              "flags": ["ignore_case"],
+              "region": {
+                "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
+                "end_regex": "DEP[OÓ]SITO\\s+REFERENCIADO",
+                "flags": ["ignore_case"]
+              }
+            },
             "hint": "Un registro por cada concepto encontrado en el cuadro de liquidación.",
             "validation": [],
             "item_fields": {
@@ -381,6 +584,20 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "(?m)^\\s*EFECTIVO\\s+(?P<value>[\\d,.]+)\\s*$",
+                  "group": "value",
+                  "region": {
+                    "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
+                    "end_regex": "DEP[OÓ]SITO\\s+REFERENCIADO",
+                    "flags": ["ignore_case"]
+                  }
+                }
+              ],
+              "model_fallback": "never"
+            },
             "hint": "Total EFECTIVO impreso.",
             "validation": []
           },
@@ -388,12 +605,39 @@
             "type": "number",
             "required": false,
             "default": 0,
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "(?m)^\\s*OTROS\\s+(?P<value>[\\d,.]+)\\s*$",
+                  "group": "value",
+                  "region": {
+                    "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
+                    "end_regex": "DEP[OÓ]SITO\\s+REFERENCIADO",
+                    "flags": ["ignore_case"]
+                  }
+                }
+              ],
+              "model_fallback": "never"
+            },
             "hint": "Total OTROS impreso.",
             "validation": []
           },
           "TOTAL": {
             "type": "number",
             "required": true,
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "(?m)^\\s*TOTAL\\s+(?P<value>[\\d,.]+)\\s*$",
+                  "group": "value",
+                  "region": {
+                    "start_regex": "CUADRO\\s+DE\\s+LIQUIDACI[OÓ]N",
+                    "end_regex": "DEP[OÓ]SITO\\s+REFERENCIADO",
+                    "flags": ["ignore_case"]
+                  }
+                }
+              ]
+            },
             "hint": "TOTAL impreso en el cuadro de liquidación.",
             "validation": []
           }
@@ -550,6 +794,41 @@
       "FACTURAS": {
         "type": "array",
         "required": true,
+        "text_source": {
+          "row_selectors": [
+            {
+              "row_regex": "(?m)^\\s*(?P<factura>[A-Z0-9._-]+)\\s+(?P<fecha>\\d{2}/\\d{2}/\\d{4})\\s+(?P<incoterm>[A-Z]{3})\\s+(?P<moneda>[A-Z]{3})\\s+(?P<total>[\\d,.]+)\\s+(?P<factor>\\d+(?:\\.\\d+)?)\\s+(?P<dolares>[\\d,.]+)\\s*$",
+              "groups": {
+                "Factura": "factura",
+                "Fecha_Factura": "fecha",
+                "Total_factura": "total",
+                "INCOTERM": "incoterm",
+                "MONEDA_FACTURA": "moneda",
+                "FACTOR_MONEDA_FACTURA": "factor",
+                "FACTURA_VALOR_DOLARES": "dolares"
+              }
+            },
+            {
+              "row_regex": "(?m)^\\s*(?P<acuse>COVE[A-Z0-9]+\\s*/\\s*(?P<factura>[A-Z0-9._-]+))\\s+(?P<fecha>\\d{2}/\\d{2}/\\d{4})\\s+(?P<incoterm>[A-Z]{3})\\s+(?P<moneda>[A-Z]{3})\\s+(?P<total>[\\d,.]+)\\s+(?P<factor>\\d+(?:\\.\\d+)?)\\s+(?P<dolares>[\\d,.]+)\\s*$",
+              "groups": {
+                "Factura": "factura",
+                "num_acuse_valor": "acuse",
+                "Fecha_Factura": "fecha",
+                "Total_factura": "total",
+                "INCOTERM": "incoterm",
+                "MONEDA_FACTURA": "moneda",
+                "FACTOR_MONEDA_FACTURA": "factor",
+                "FACTURA_VALOR_DOLARES": "dolares"
+              }
+            }
+          ],
+          "deduplicate_by": ["Factura", "Fecha_Factura"],
+          "region": {
+            "start_regex": "(?:NUM\\.?\\s*FACTURA|NUMERO\\s+DE\\s+ACUSE\\s+DE\\s+VALOR)\\s+FECHA",
+            "end_regex": "(?m)^\\s*TRANSPORTE\\s+IDENTIFICACION",
+            "flags": ["ignore_case"]
+          }
+        },
         "hint": "Una fila por CADA factura del pedimento, en el orden impreso. Salen del bloque DATOS DEL PROVEEDOR O COMPRADOR: primero el renglón del proveedor (ID. FISCAL, NOMBRE/DENOMINACION O RAZON SOCIAL, DOMICILIO, VINCULACION) y debajo su tabla de facturas, con una fila por factura. UN MISMO PEDIMENTO PUEDE TRAER VARIOS PROVEEDORES, y cada proveedor VARIAS facturas: extrae TODAS las filas de TODAS esas tablas, no solo la primera. En CADA fila repite los datos del proveedor al que pertenece esa factura (el renglón de proveedor que está ARRIBA de su tabla), porque cada fila se guarda como un registro independiente. El encabezado de la primera columna cambia según el pedimento: NUM. FACTURA (el valor ya es el número) o NUMERO DE ACUSE DE VALOR (el valor viene como 'COVE2689JP013 / 35079805'); en los dos casos el número va en Factura y el acuse completo en num_acuse_valor. Si el pedimento imprime además una tabla APARTE que solo lista acuses (columnas NUMERO DE ACUSE DE VALOR, VINCULACIÓN e INCOTERM, sin fecha ni importe), esos acuses NO son facturas: van en ACUSES_VALOR, no aquí.",
         "validation": [],
         "item_fields": {
@@ -649,6 +928,17 @@
         "type": "array",
         "required": false,
         "item_type": "string",
+        "text_source": {
+          "row_regex": "(?m)^\\s*(?P<value>COVE[A-Z0-9]+)\\s+(?:SI|NO)\\s+[A-Z]{3}\\s*$",
+          "group": "value",
+          "deduplicate_by": ["value"],
+          "region": {
+            "start_regex": "NUMERO\\s+DE\\s+ACUSE\\s+DE\\s+VALOR\\s+VINCULACI[OÓ]N\\s+INCOTERM",
+            "end_regex": "(?m)^\\s*TRANSPORTE\\s+IDENTIFICACION",
+            "flags": ["ignore_case"]
+          },
+          "model_fallback": "never"
+        },
         "hint": "Lista de acuses de valor (COVE) que el pedimento imprime en una tabla APARTE, la que bajo DATOS DEL PROVEEDOR O COMPRADOR trae ÚNICAMENTE las columnas NUMERO DE ACUSE DE VALOR, VINCULACIÓN e INCOTERM — sin ID fiscal, sin fecha y sin importe. Un COVE por elemento, en el orden impreso y copiado tal cual ('COVE26871ECA1'). Si el acuse ya viene dentro de la fila de una factura (columna NUMERO DE ACUSE DE VALOR de la tabla de facturas), va en FACTURAS[].num_acuse_valor y NO se repite aquí. No emparejar estos acuses con las facturas de arriba: el pedimento no imprime esa correspondencia.",
         "validation": [
           {

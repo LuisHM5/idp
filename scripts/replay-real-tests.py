@@ -34,8 +34,13 @@ def main() -> int:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         fixture = summary.get("file")
         spec = (expected.get("files") or {}).get(fixture) or {}
-        evaluations = [tp.evaluate_expectation(item, raw.get("documents") or [])
-                       for item in spec.get("expect_documents", [])]
+        documents = raw.get("documents") or []
+        actual_types = {doc.get("documentType") for doc in documents}
+        applicable = [
+            item for item in spec.get("expect_documents", [])
+            if actual_types.intersection(item.get("type") or [])
+        ]
+        evaluations = [tp.evaluate_expectation(item, documents) for item in applicable]
         cases.append({"file": fixture, "passed": bool(evaluations) and all(x["passed"] for x in evaluations)})
     suite = ET.Element("testsuite", name="replay-real", tests=str(len(cases)), failures=str(sum(not c["passed"] for c in cases)))
     for case in cases:

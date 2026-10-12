@@ -49,6 +49,37 @@
             "VALOR_ADUANA", "FECHA_PAGO", "ANIO_PEDIMENTO",
             "ADUANA_DESPACHO", "NUMERO_CONSECUTIVO"
           ]
+        },
+        {
+          "type": ["PEDIMENTO_ERP"],
+          "fields": {
+            "No_Pedimento": "260708236001630",
+            "ANIO_PEDIMENTO": "26",
+            "ADUANA_DESPACHO": "07",
+            "Patente": "0823",
+            "NUMERO_CONSECUTIVO": "6001630",
+            "Cve_Pedimento": "A1",
+            "Tipo": "IMP",
+            "Tipo_Cambio": 17.4958,
+            "Pais_Origen": "USA",
+            "ValorAduana": 435730.0,
+            "Valor_ComercialDol": 24904.86,
+            "Valor_ComercialPesos": 421841.0,
+            "GI_Fletes": 6561.0,
+            "GI_Otros": 7328.0,
+            "Fecha_Entrada": "2026-07-09",
+            "CUADRO_LIQUIDACION.TOTAL": 383.0,
+            "FACTURAS[0].Factura": "517010",
+            "FACTURAS[0].Fecha_Factura": "2026-07-07",
+            "FACTURAS[1].Factura": "517043",
+            "FACTURAS[1].Fecha_Factura": "2026-07-07"
+          },
+          "pedimento_consecutivo": "6001630",
+          "required_present": [
+            "No_Pedimento", "Patente", "Tipo", "Cve_Pedimento", "Tipo_Cambio",
+            "ValorAduana", "Fecha_Entrada", "ANIO_PEDIMENTO",
+            "ADUANA_DESPACHO", "NUMERO_CONSECUTIVO", "FACTURAS"
+          ]
         }
       ]
     },

@@ -295,8 +295,17 @@ def main() -> int:
             print(f"  {YELLOW}no expectations defined for this file — skipping asserts{RESET}")
             continue
 
-        file_ok = True
-        for exp in spec.get("expect_documents", []):
+        # A fixture may carry ground truth for several public mappings of the
+        # same physical document (PEDIMENTO_ADUANAL and PEDIMENTO_ERP). This
+        # runner auto-classifies, so evaluate only the mappings the run
+        # actually produced; the declared-type E2E runner covers the others.
+        actual_types = {d.get("documentType") for d in result.get("documents", [])}
+        expectations = [
+            exp for exp in spec.get("expect_documents", [])
+            if actual_types.intersection(exp.get("type") or [])
+        ]
+        file_ok = bool(expectations)
+        for exp in expectations:
             ok, notes, matched_doc = _check_doc_expectation(exp, result.get("documents", []))
             color = GREEN if ok else RED
             print(f"  {color}{'PASS' if ok else 'FAIL'}{RESET} expectation {exp.get('type')}")

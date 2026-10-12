@@ -22,6 +22,12 @@
     "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase. La fase `vision` (etapa de autenticidad) también va aquí y es independiente: su cadena es model_ids.vision -> BEDROCK_VISION_MODEL_ID -> Haiku 4.5, nunca hereda model_id ni el modelo general, y su respaldo es `authenticity.vision.fallback_models`.",
     "model_ids": {},
 
+    "__COMENTARIO_deterministic_extraction__": "Opcional para PDF/imagen de formato estable. Primero aplica los `text_source` declarados dentro de fields sobre el texto pypdf/Textract y después, con fallback=missing_fields, manda a Bedrock SOLO las ramas que no resolvió. full_model manda el schema completo; review no llama al modelo. Los tipos existentes no cambian si este bloque falta. Ver catalogs/README.md -> Extracción determinística desde texto.",
+    "deterministic_extraction": {
+      "enabled": false,
+      "fallback": "missing_fields"
+    },
+
     "__COMENTARIO_type_check__": "Opcional. Verificación de tipo: en la MISMA llamada de extracción se le pregunta al modelo si el archivo realmente es este documento (cero llamadas extra). Todo tipo con `fields` la tiene encendida sin declarar nada; este bloque solo la ajusta. `on_fail` (default `reject`): qué pasa cuando no corresponde — `reject` = RECHAZADO por un check bloqueante `document_type_match`, `review` = REQUIERE_REVISION, `info` = solo se reporta. `min_required_filled` (default 1.0 = TODOS): guardia gratis — si al menos esa fracción de los campos `required` salió llena con confianza ≥ `min_confidence`, el modelo no puede rechazar solo y el efecto baja a `review` (medido: con 0.5 una constancia fiscal subida como estado de cuenta se escapaba a revisión porque el modelo llenó 2 de 3 obligatorios con datos del contribuyente). `enabled: false` la apaga para este tipo. En la salida: `documentMatchesType`/`rejectionConfidence`/`detectedDocument` en la raíz del envelope y `documents[].typeCheck` por documento; `documents[].confidence` cae a <= 0.05 cuando no corresponde. Borra esta llave si los defaults te sirven. Ver catalogs/README.md -> 'Verificación de tipo'.",
     "type_check": { "on_fail": "reject", "min_required_filled": 1.0 },
 
@@ -53,6 +59,17 @@
         "type": "string",
         "required": true,
         "unique_key": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "FOLIO\\s*:\\s*(?P<value>[A-Z0-9-]+)",
+              "group": "value",
+              "flags": ["ignore_case"],
+              "occurrence": "first"
+            }
+          ],
+          "model_fallback": "if_missing"
+        },
         "hint": "Número de folio impreso en el encabezado, junto a la etiqueta FOLIO o NO.",
         "validation": [
           {

@@ -1151,8 +1151,10 @@ def resolve_field_tree(
                     })
                 return {"items": rendered}
             rendered_items = []
-            for v in items:
-                resolved_v, source = resolve_leaf(spec.name, v, computed, declared_type=spec.item_type)
+            for index, v in enumerate(items):
+                resolved_v, source = resolve_leaf(
+                    spec.name, v, computed, f"{path}[{index}]", spec.item_type
+                )
                 rendered_items.append({
                     "value": resolved_v,
                     "confidence": conf_policy.clamp(

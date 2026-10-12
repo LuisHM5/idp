@@ -94,9 +94,12 @@ handler()  handler.py:715
 2. **`segment_pages`** (`pipeline/segmenter.py`) — parte el PDF en rangos tipados.
    Si hay `declared_type` (usuario forzó), **un solo segmento sin llamar al modelo**;
    si no, una llamada Bedrock clasifica los rangos de página.
-3. **Extracción paralela por segmento** (`expediente.py:174-371`) — cada worker
-   llama `text_extractor.extract_document` (Bedrock con el schema del catálogo,
-   troceado por páginas), luego recuperación y normalización deterministas.
+3. **Extracción paralela por segmento** (`expediente.py:_extract_segment`) —
+   cada worker intenta primero `deterministic_text` cuando el tipo declara
+   `deterministic_extraction`. Con `fallback: missing_fields`, Bedrock recibe
+   únicamente las ramas no resueltas; si no queda ninguna, la llamada se omite.
+   Los tipos sin ese bloque siguen llamando `text_extractor.extract_document`
+   con el schema completo. Después corren recuperación y normalización.
 4. **Validación por documento** (`expediente.py:_extract_segment`) — `engine.run_rules` +
    `resolve_fields` + `document_status` (reglas del catálogo).
 5. **Reglas cross-documento** (`expediente.py:_run_cross_document_rules`) —

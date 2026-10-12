@@ -289,7 +289,18 @@ def evaluate(
     if not policy["enabled"]:
         return not_evaluated("type_check.enabled=false")
     if not signal:
-        return not_evaluated("sin señal del modelo")
+        # A deterministic-only extraction makes no model call, so there is no
+        # `_DOCUMENTO` tool signal to read.  Catalog page markers are still
+        # positive evidence: if the document contains enough of them, report a
+        # deterministic match.  Their absence remains fail-open (not
+        # evaluated), because bad OCR must not reject a legitimate upload.
+        markers = _markers_verdict(type_entry, pages)
+        if markers == "MATCHED":
+            return TypeCheck(
+                True, True, 0.0, None, None,
+                {"markers": markers, "source": "DETERMINISTIC_TEXT"},
+            )
+        return not_evaluated("sin señal del modelo ni marcadores suficientes")
 
     confidence = round(float(signal.get("confianza") or 0.0), 4)
     if signal.get("corresponde"):

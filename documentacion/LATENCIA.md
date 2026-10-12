@@ -132,6 +132,16 @@ no sirve cuando hay una sola llamada, y `ConverseStream` tampoco ayudaría porqu
 el JSON del tool call debe estar completo antes de parsearse. Los únicos dos
 factores son **tokens de salida** y **throughput del modelo**.
 
+Para `PEDIMENTO_ERP` existe ahora un atajo antes de esa llamada:
+`deterministic_text` aplica los `text_source` del catálogo sobre el texto ya
+cargado. `fallback: missing_fields` construye un tool schema sólo con las ramas
+faltantes; si queda vacío, no existe TTFT ni generación de salida de extracción.
+El tiempo del mapper y la estrategia elegida se publican en
+`documents[].extractionMeta.deterministicExtraction` y `strategy`.
+
+No se fija aquí una reducción en segundos hasta repetir `pnpm bench:latencia`
+contra el stack desplegado y confirmar el ground truth de `PEDIMENTO_ERP`.
+
 Dos agravantes concretos:
 
 - **Tokens de razonamiento.** 574 tokens de salida para un INE cuyo JSON real
