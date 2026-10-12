@@ -134,6 +134,50 @@ def test_subschema_contiene_solo_faltantes_con_fallback():
     assert "CALCULADO" not in pending
 
 
+def test_ahorro_compara_schema_completo_con_parcial_sin_mezclarlo_con_usage():
+    entry = _entry()
+    result = deterministic_text.extract(PAGES, entry)
+    pending = deterministic_text.unresolved_tree(
+        entry.field_tree, result.resolved_paths, "missing_fields"
+    )
+
+    savings = text_extractor.estimate_deterministic_token_savings(
+        PAGES,
+        entry,
+        pending,
+        result.entity_map,
+        {"inputTokens": 1000, "outputTokens": 100},
+    )
+
+    assert savings["estimated"] is True
+    assert savings["billedInputTokens"] == 1000
+    assert savings["billedOutputTokens"] == 100
+    assert savings["estimatedInputTokensSaved"] > 0
+    assert savings["estimatedOutputTokensSaved"] > 0
+    assert savings["estimatedInputTokensWithoutDeterministic"] == (
+        1000 + savings["estimatedInputTokensSaved"]
+    )
+
+
+def test_full_model_no_reporta_ahorro_por_campos_que_tambien_pidio():
+    entry = _entry("full_model")
+    result = deterministic_text.extract(PAGES, entry)
+    pending = deterministic_text.unresolved_tree(
+        entry.field_tree, result.resolved_paths, "full_model"
+    )
+
+    savings = text_extractor.estimate_deterministic_token_savings(
+        PAGES,
+        entry,
+        pending,
+        result.entity_map,
+        {"inputTokens": 1000, "outputTokens": 100},
+    )
+
+    assert savings["estimatedInputTokensSaved"] == 0
+    assert savings["estimatedOutputTokensSaved"] == 0
+
+
 def test_review_no_invoca_model_y_full_model_conserva_todo_no_computado():
     entry = _entry()
     result = deterministic_text.extract(PAGES, entry)
@@ -233,5 +277,9 @@ def test_segmento_completo_omite_bedrock_y_publica_meta(monkeypatch):
     assert doc["extractionMeta"]["strategy"] == "deterministic"
     assert doc["extractionMeta"]["chunks"] == 0
     assert doc["extractionMeta"]["usage"] == {}
+    savings = doc["extractionMeta"]["deterministicExtraction"]["tokenSavings"]
+    assert savings["billedInputTokens"] == 0
+    assert savings["estimatedInputTokensSaved"] > 0
+    assert savings["estimatedOutputTokensSaved"] > 0
     assert doc["_recovered_sources"]["FOLIO"] == "DETERMINISTIC_TEXT"
     assert doc["typeCheck"]["matches"] is True

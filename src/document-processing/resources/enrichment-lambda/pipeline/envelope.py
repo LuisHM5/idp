@@ -249,6 +249,20 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
             "detected": tc.get("detected"),
             **({"reason": tc["reason"]} if tc.get("reason") else {}),
         }
+    extraction_meta = doc.get("extractionMeta") or {}
+    deterministic = extraction_meta.get("deterministicExtraction")
+    if isinstance(deterministic, dict):
+        token_savings = deterministic.get("tokenSavings") or {}
+        view["deterministicExtraction"] = {
+            "strategy": extraction_meta.get("strategy"),
+            "aiExecuted": bool(
+                int(token_savings.get("billedInputTokens") or 0)
+                or int(token_savings.get("billedOutputTokens") or 0)
+            ),
+            "resolvedFieldCount": len(deterministic.get("resolvedFields") or []),
+            "fallbackFields": deterministic.get("fallbackFields") or [],
+            "tokenSavings": token_savings,
+        }
     view["fields"] = fields
     return view
 
@@ -264,6 +278,87 @@ def type_match_view(aggregate: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "documentMatchesType": matches if isinstance(matches, bool) else None,
         "rejectionConfidence": float(agg.get("rejectionConfidence") or 0.0),
         "detectedDocument": agg.get("detected") or None,
+    }
+
+
+def ai_execution_view(
+    usage: Optional[Dict[str, Any]], tracking: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """One unambiguous answer to whether an AI model really ran.
+
+    ``tracking.modelIds`` records actual model invocations, including the two
+    upstream Lambda phases whose token usage is not always propagated here.
+    Token totals include only stages whose raw Bedrock usage reached this
+    envelope; ``tokenReportedStages`` makes that boundary explicit.
+    Textract OCR is deliberately not counted as generative AI.
+    """
+    usage = usage or {}
+    tracking = tracking or {}
+    stages = set((tracking.get("modelIds") or {}).keys())
+    reported = set()
+    input_tokens = output_tokens = images = 0
+    for stage, payload in usage.items():
+        if not isinstance(payload, dict) or stage == "pageSelection":
+            continue
+        raw = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        stage_input = int(raw.get("inputTokens") or 0)
+        stage_output = int(raw.get("outputTokens") or 0)
+        stage_images = int(payload.get("images") or 0)
+        if stage_input or stage_output or stage_images:
+            stages.add(stage)
+            reported.add(stage)
+            input_tokens += stage_input
+            output_tokens += stage_output
+            images += stage_images
+    order = {
+        name: index for index, name in enumerate(
+            ("classification", "processing", "segmentation", "pageLocator", "extraction", "authenticity", "embeddings")
+        )
+    }
+    ordered = sorted(stages, key=lambda name: (order.get(name, 99), name))
+    reported_ordered = [name for name in ordered if name in reported]
+    return {
+        "executed": bool(ordered),
+        "stages": ordered,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "images": images,
+        "tokenReportedStages": reported_ordered,
+    }
+
+
+def deterministic_savings_view(documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Aggregate per-document partial-schema counterfactuals."""
+    savings = []
+    for doc in documents:
+        block = ((doc.get("extractionMeta") or {}).get("deterministicExtraction") or {})
+        token_savings = block.get("tokenSavings")
+        if isinstance(token_savings, dict):
+            savings.append(token_savings)
+    if not savings:
+        return None
+
+    def total(name: str) -> int:
+        return sum(int(item.get(name) or 0) for item in savings)
+
+    billed_input = total("billedInputTokens")
+    billed_output = total("billedOutputTokens")
+    saved_input = total("estimatedInputTokensSaved")
+    saved_output = total("estimatedOutputTokensSaved")
+    without_input = billed_input + saved_input
+    without_output = billed_output + saved_output
+    return {
+        "estimated": True,
+        "method": "partial_schema_counterfactual_v1",
+        "documentsMeasured": len(savings),
+        "billedInputTokens": billed_input,
+        "billedOutputTokens": billed_output,
+        "estimatedInputTokensSaved": saved_input,
+        "estimatedOutputTokensSaved": saved_output,
+        "estimatedInputTokensWithoutDeterministic": without_input,
+        "estimatedOutputTokensWithoutDeterministic": without_output,
+        "estimatedInputSavingPct": round(saved_input / without_input * 100, 1) if without_input else 0.0,
+        "estimatedOutputSavingPct": round(saved_output / without_output * 100, 1) if without_output else 0.0,
     }
 
 
@@ -428,12 +523,15 @@ def build(
     views = [document_view(d, i) for i, d in enumerate(documents, 1)]
     main = [d for d in documents if _is_main_document(d)]
     counts = Counter(d.get("status") for d in main if d.get("status"))
+    ai_usage = ai_execution_view(result.get("usage"), tracking)
 
     env: Dict[str, Any] = {
         "documentId": document_id,
         "envelopeVersion": ENVELOPE_VERSION,
         "documentClassification": classification_of(documents, fallback_classification),
         **type_match_view(result.get("typeCheck")),
+        "aiExecuted": ai_usage["executed"],
+        "aiUsage": ai_usage,
         "documentCount": len(main),
         "tracking": tracking,
         **({"metadata": metadata} if metadata else {}),
@@ -445,6 +543,9 @@ def build(
         },
         "documents": views,
     }
+    deterministic_savings = deterministic_savings_view(documents)
+    if deterministic_savings is not None:
+        env["deterministicSavings"] = deterministic_savings
     # Solo las verificaciones que REALMENTE corrieron. Una regla `skipped` es
     # la ausencia de información, no información: en un archivo de facturas
     # extranjeras, 4 de las 5 reglas cruzadas del catálogo aduanal salían
@@ -521,6 +622,7 @@ def build_standard(
             fields[name] = compact
 
     doc_status = STATUS_MAP_REVERSE.get(status, "REVIEW_REQUIRED")
+    ai_usage = ai_execution_view(None, tracking)
     return {
         "documentId": document_id,
         "envelopeVersion": ENVELOPE_VERSION,
@@ -528,6 +630,8 @@ def build_standard(
         # El flujo estándar no pregunta al modelo si el archivo es lo que se
         # declaró: las tres llaves existen con su valor de "no evaluado".
         **type_match_view(None),
+        "aiExecuted": ai_usage["executed"],
+        "aiUsage": ai_usage,
         "documentCount": 1,
         "tracking": tracking,
         **({"metadata": metadata} if metadata else {}),

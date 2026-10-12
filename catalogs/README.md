@@ -370,6 +370,12 @@ las filas de todos los selectores se combinan antes de aplicar
 - El resultado marca esos valores con `source: "DETERMINISTIC_TEXT"` y
   `extractionMeta` dice `strategy: deterministic|hybrid|model`, campos
   resueltos/fallback, fuentes de página y duración del mapper.
+- El envelope público deja la decisión auditable: `aiExecuted`/`aiUsage`
+  confirman si un modelo realmente corrió; `deterministicSavings` estima los
+  tokens de entrada/salida evitados contra el schema completo, y
+  `documents[].deterministicExtraction.fallbackFields` dice qué ramas sí se
+  mandaron al modelo. Los tokens facturados nunca se mezclan con los
+  estimados.
 - Config inválida o regex sin match falla abierto hacia el fallback. El
   catálogo nunca ejecuta código ni expresiones arbitrarias.
 

@@ -176,10 +176,19 @@ se factura. Esto no elimina el costo de Textract de una página escaneada ni una
 clasificación automática: para evitar esta última la carga debe declarar
 `documentType=PEDIMENTO_ERP`.
 
-Todavía no se publica un porcentaje de ahorro: debe medirse en el stack
-desplegado contra los mismos archivos del E2E y verificarse primero el ground
-truth de `tests/integration/expected_pedimentos.json`. La fuente auditable por
-archivo es `documents[].extractionMeta` (`strategy`, `fallbackFields`, `usage`).
+El envelope publica dos números deliberadamente separados:
+
+- `aiExecuted`/`aiUsage`: ejecución y tokens **reales facturados** que Bedrock
+  reportó (el OCR de Textract no cuenta como IA generativa);
+- `deterministicSavings`: contrafactual **estimado** contra una llamada con el
+  schema completo. La entrada usa la densidad tokens/caracteres de la llamada
+  parcial real cuando existe; la salida serializa los valores determinísticos
+  con la forma que habría generado el modelo y aplica 4 caracteres/token.
+
+`documents[].deterministicExtraction` conserva `strategy`, `fallbackFields` y
+el cálculo por documento. El estimado nunca se suma a `usage` ni se presenta
+como factura real. Sigue pendiente medir ahorro de dólares y segundos sobre el
+stack desplegado contra el mismo ground truth E2E.
 
 ## 0. Recálculo 2026-08-04 (vía MCP AWS — Cost Explorer + Pricing API)
 

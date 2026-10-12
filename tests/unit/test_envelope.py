@@ -376,6 +376,67 @@ def test_el_flujo_estandar_emite_la_misma_forma():
     assert doc["fields"]["CURP"]["confidence"] == 0.0
 
 
+def test_envelope_declara_si_realmente_corrio_ia_y_sus_tokens():
+    env = _build(_result(
+        [_doc()],
+        usage={
+            "segmentation": None,
+            "extraction": {
+                "modelId": "minimax.minimax-m2.5",
+                "usage": {"inputTokens": 4074, "outputTokens": 594},
+            },
+            "pageSelection": None,
+        },
+    ), tracking={
+        "createdAt": "2026-09-03T00:00:00+00:00",
+        "modelIds": {"extraction": "minimax.minimax-m2.5"},
+    })
+
+    assert env["aiExecuted"] is True
+    assert env["aiUsage"] == {
+        "executed": True,
+        "stages": ["extraction"],
+        "inputTokens": 4074,
+        "outputTokens": 594,
+        "images": 0,
+        "tokenReportedStages": ["extraction"],
+    }
+
+
+def test_envelope_publica_ahorro_determinista_y_fallbacks_por_documento():
+    savings = {
+        "estimated": True,
+        "method": "partial_schema_counterfactual_v1",
+        "billedInputTokens": 4074,
+        "billedOutputTokens": 594,
+        "estimatedInputTokensSaved": 2000,
+        "estimatedOutputTokensSaved": 300,
+    }
+    doc = _doc(extractionMeta={
+        "strategy": "hybrid",
+        "deterministicExtraction": {
+            "resolvedFields": ["A", "B"],
+            "fallbackFields": ["C"],
+            "tokenSavings": savings,
+        },
+    })
+    env = _build(_result([doc], usage={"extraction": {"usage": {
+        "inputTokens": 4074, "outputTokens": 594,
+    }}}), tracking={
+        "createdAt": "2026-09-03T00:00:00+00:00",
+        "modelIds": {"extraction": "minimax.minimax-m2.5"},
+    })
+
+    assert env["deterministicSavings"]["estimatedInputTokensSaved"] == 2000
+    assert env["deterministicSavings"]["estimatedOutputTokensSaved"] == 300
+    assert env["deterministicSavings"]["estimatedInputTokensWithoutDeterministic"] == 6074
+    detail = env["documents"][0]["deterministicExtraction"]
+    assert detail["strategy"] == "hybrid"
+    assert detail["aiExecuted"] is True
+    assert detail["resolvedFieldCount"] == 2
+    assert detail["fallbackFields"] == ["C"]
+
+
 # ------------------------------------------------ DSL legado
 
 def test_un_documento_del_dsl_legado_se_ve_igual_que_uno_field_centric():

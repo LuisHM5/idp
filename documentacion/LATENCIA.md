@@ -136,8 +136,10 @@ Para `PEDIMENTO_ERP` existe ahora un atajo antes de esa llamada:
 `deterministic_text` aplica los `text_source` del catálogo sobre el texto ya
 cargado. `fallback: missing_fields` construye un tool schema sólo con las ramas
 faltantes; si queda vacío, no existe TTFT ni generación de salida de extracción.
-El tiempo del mapper y la estrategia elegida se publican en
-`documents[].extractionMeta.deterministicExtraction` y `strategy`.
+El envelope publica la estrategia y las ramas que activaron fallback en
+`documents[].deterministicExtraction`; `aiExecuted` confirma si hubo una
+llamada real y `aiUsage` conserva sus tokens. Así un OCR lento ya no puede
+confundirse con una llamada al modelo sólo por la duración total.
 
 No se fija aquí una reducción en segundos hasta repetir `pnpm bench:latencia`
 contra el stack desplegado y confirmar el ground truth de `PEDIMENTO_ERP`.

@@ -915,6 +915,16 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 > leyó (TODOS los campos obligatorios llenos y con buena confianza), el
 > efecto baja a `REQUIERE_REVISION` con `typeCheck.reason =
 > "SEÑAL_CONTRADICHA_POR_CAMPOS"` en vez de rechazar.
+>
+> **`aiExecuted` confirma si realmente corrió IA.** `true` no se infiere por
+> el tiempo: se basa en las etapas que registraron un modelo/usage real.
+> `aiUsage.stages` dice cuáles y `inputTokens`/`outputTokens` conserva los
+> tokens facturados disponibles. Textract puede tardar varios segundos en un
+> escaneo, pero ese OCR no se cuenta como IA generativa. Para tipos con mapeo
+> por código, `deterministicSavings` es un contrafactual explícitamente
+> `estimated`: compara el schema completo contra el schema parcial realmente
+> enviado. Nunca se suma a `usage`. El detalle por documento expone
+> `deterministicExtraction.strategy` y `fallbackFields`.
 
 **Mientras procesa — `202`:**
 
@@ -948,6 +958,15 @@ abreviados deliberadamente:
     "documentMatchesType": true, // false = el archivo no es lo declarado → RECHAZADO
     "rejectionConfidence": 0.0,  // 0-1, qué tan seguro de que NO lo es
     "detectedDocument": null,    // qué parece ser cuando no corresponde
+    "aiExecuted": true,
+    "aiUsage": {
+      "executed": true,
+      "stages": ["extraction"],
+      "inputTokens": 4074,
+      "outputTokens": 594,
+      "images": 0,
+      "tokenReportedStages": ["extraction"]
+    },
     "documentCount": 1,
     "validation": {
       "status": "APROBADO", // o REQUIERE_REVISION / RECHAZADO
@@ -996,6 +1015,29 @@ abreviados deliberadamente:
     "sourceFile": "factura.pdf",
     "pages": { "totalPages": 1, "ocrPages": 1 },
   },
+}
+```
+
+En un tipo que sí declaró extracción determinística, como `PEDIMENTO_ERP`, se
+agregan los bloques de ahorro y decisión por documento:
+
+```jsonc
+{
+  "deterministicSavings": {
+    "estimated": true,
+    "method": "partial_schema_counterfactual_v1",
+    "estimatedInputTokensSaved": 2100,
+    "estimatedOutputTokensSaved": 280
+  },
+  "documents": [{
+    "deterministicExtraction": {
+      "strategy": "hybrid",
+      "aiExecuted": true,
+      "resolvedFieldCount": 18,
+      "fallbackFields": ["No_Pedimento"],
+      "tokenSavings": { "estimated": true, "estimatedInputTokensSaved": 2100 }
+    }
+  }]
 }
 ```
 

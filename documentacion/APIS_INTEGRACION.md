@@ -119,6 +119,8 @@ los campos extraídos:
   "result": {
     "envelopeVersion": 2,
     "documentClassification": "FACTURA_FLETE_EXTRANJERO",
+    "aiExecuted": true,
+    "aiUsage": { "stages": ["extraction"], "inputTokens": 4074, "outputTokens": 594 },
     "validation": { "status": "APROBADO", "reviewRequired": false },
     "documents": [{
       "index": 1,
@@ -132,6 +134,12 @@ los campos extraídos:
   }
 }
 ```
+
+`aiExecuted` responde con evidencia de ejecución, no por duración. En tipos
+determinísticos, `documents[].deterministicExtraction.fallbackFields` explica
+qué campos activaron el modelo. `deterministicSavings` siempre es un
+contrafactual estimado y permanece separado de los tokens facturados de
+`aiUsage`/`usage`.
 
 ```jsonc
 // 200: el workflow falló técnicamente y no produjo result

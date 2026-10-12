@@ -933,6 +933,167 @@ def extract_document(
     )
 
 
+_ESTIMATED_OUTPUT_CHARS_PER_TOKEN = 4.0
+
+
+def _request_chars_for_tree(
+    pages: List[PageText], type_entry: TypeRegistryEntry, tree: Dict[str, FieldSpec]
+) -> int:
+    """Comparable request size for a field-tree extraction.
+
+    This deliberately counts only payload text controlled by this pipeline:
+    prompt, page text and tool schema. Bedrock's hidden protocol overhead is
+    recovered later from the real billed input-token density when a partial
+    call actually ran.
+    """
+    if not tree:
+        return 0
+    normalized_pages = [
+        page
+        if hasattr(page, "source")
+        else PageText(
+            int(getattr(page, "number", index)),
+            str(getattr(page, "text", "") or ""),
+            "unknown",
+            float(getattr(page, "confidence", 1.0)),
+        )
+        for index, page in enumerate(pages, 1)
+    ]
+    total = 0
+    description = (
+        f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto."
+    )
+    for chunk in _chunk_pages(normalized_pages):
+        for scope, partition in _field_tree_call_partitions(tree):
+            system, user = _build_field_tree_prompts(
+                type_entry, chunk, partition, scope
+            )
+            schema = json.dumps(
+                _field_tree_tool_schema(partition, scope),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            total += len(system) + len(user) + len(schema) + len(description)
+    return total
+
+
+def _removed_tree(
+    complete: Dict[str, FieldSpec], requested: Dict[str, FieldSpec]
+) -> Dict[str, FieldSpec]:
+    """Branches omitted from the partial model schema."""
+    removed: Dict[str, FieldSpec] = {}
+    for name, spec in complete.items():
+        if spec.computed:
+            continue
+        requested_spec = requested.get(name)
+        if requested_spec is None:
+            removed[name] = spec
+        elif spec.type == "object" and requested_spec.type == "object":
+            children = _removed_tree(spec.fields, requested_spec.fields)
+            if children:
+                removed[name] = replace(spec, fields=children)
+    return removed
+
+
+def _response_proxy(
+    tree: Dict[str, FieldSpec], entities: Dict[str, Any], in_row: bool = False
+) -> Dict[str, Any]:
+    """Model-shaped JSON for deterministic values omitted from the call.
+
+    It is not presented as billed usage. Its serialized size is only the
+    auditable basis for the estimated output saving below.
+    """
+    proxy: Dict[str, Any] = {}
+    for name, spec in tree.items():
+        value = entities.get(name)
+        if value is None:
+            continue
+        if spec.type == "object":
+            nested = _response_proxy(
+                spec.fields, value if isinstance(value, dict) else {}, in_row
+            )
+            if nested:
+                proxy[name] = nested
+        elif spec.type == "array" and isinstance(value, list):
+            if spec.item_fields:
+                rows = []
+                for row in value:
+                    if not isinstance(row, dict):
+                        continue
+                    rendered = _response_proxy(spec.item_fields, row, in_row=True)
+                    if rendered:
+                        rendered[ROW_CONFIDENCE_KEY] = 0.95
+                        rows.append(rendered)
+                if rows:
+                    proxy[name] = rows
+            elif value:
+                proxy[name] = value
+        elif in_row:
+            proxy[name] = value
+        else:
+            proxy[name] = {"value": value, "confidence": 0.95}
+    return proxy
+
+
+def estimate_deterministic_token_savings(
+    pages: List[PageText],
+    type_entry: TypeRegistryEntry,
+    requested_tree: Dict[str, FieldSpec],
+    deterministic_entities: Dict[str, Any],
+    usage: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Estimate tokens avoided by sending only unresolved schema branches.
+
+    Billed tokens remain the raw Bedrock numbers. Input savings use the real
+    call's tokens-per-controlled-character density whenever a partial call
+    ran; a fully deterministic call uses the explicit 4 chars/token fallback.
+    Output savings serialize the values code already produced in the exact
+    response shape the model would have emitted and apply the same documented
+    4 chars/token approximation. This avoids pretending an unmade full-schema
+    call has exact billing data.
+    """
+    usage = usage or {}
+    billed_input = int(usage.get("inputTokens") or 0)
+    billed_output = int(usage.get("outputTokens") or 0)
+    complete_tree = type_entry.field_tree or {}
+    actual_chars = _request_chars_for_tree(pages, type_entry, requested_tree)
+    full_chars = _request_chars_for_tree(pages, type_entry, complete_tree)
+    saved_input_chars = max(0, full_chars - actual_chars)
+
+    if billed_input > 0 and actual_chars > 0:
+        input_tokens_per_char = billed_input / actual_chars
+        input_method = "real_partial_call_density"
+    else:
+        input_tokens_per_char = 1.0 / _ESTIMATED_OUTPUT_CHARS_PER_TOKEN
+        input_method = "four_chars_per_token"
+    saved_input = int(round(saved_input_chars * input_tokens_per_char))
+
+    removed = _removed_tree(complete_tree, requested_tree)
+    output_proxy = _response_proxy(removed, deterministic_entities)
+    output_chars = len(json.dumps(output_proxy, ensure_ascii=False, separators=(",", ":"))) if output_proxy else 0
+    saved_output = int(round(output_chars / _ESTIMATED_OUTPUT_CHARS_PER_TOKEN))
+
+    without_input = billed_input + saved_input
+    without_output = billed_output + saved_output
+    return {
+        "estimated": True,
+        "method": "partial_schema_counterfactual_v1",
+        "inputMethod": input_method,
+        "outputMethod": "deterministic_response_at_four_chars_per_token",
+        "billedInputTokens": billed_input,
+        "billedOutputTokens": billed_output,
+        "estimatedInputTokensSaved": saved_input,
+        "estimatedOutputTokensSaved": saved_output,
+        "estimatedInputTokensWithoutDeterministic": without_input,
+        "estimatedOutputTokensWithoutDeterministic": without_output,
+        "estimatedInputSavingPct": round(saved_input / without_input * 100, 1) if without_input else 0.0,
+        "estimatedOutputSavingPct": round(saved_output / without_output * 100, 1) if without_output else 0.0,
+        "requestCharsSent": actual_chars,
+        "estimatedRequestCharsWithoutDeterministic": full_chars,
+        "deterministicOutputProxyChars": output_chars,
+    }
+
+
 def _segment_confidence(pages: List[PageText]) -> float:
     """OCR-quality factor for the segment: mean page confidence."""
     if not pages:

@@ -1811,6 +1811,43 @@ components:
               description: >
                 Qué es en realidad el archivo según el modelo, en palabras
                 (máximo ~15). `null` cuando corresponde o no se evaluó.
+            aiExecuted:
+              type: boolean
+              description: >
+                `true` si al menos un modelo de IA se ejecutó realmente en
+                alguna etapa. Se determina por los modelos registrados y el
+                usage real; Textract OCR no cuenta como IA generativa.
+            aiUsage:
+              type: object
+              required: [executed, stages, inputTokens, outputTokens, images, tokenReportedStages]
+              properties:
+                executed: { type: boolean }
+                stages: { type: array, items: { type: string } }
+                inputTokens: { type: integer, minimum: 0 }
+                outputTokens: { type: integer, minimum: 0 }
+                images: { type: integer, minimum: 0 }
+                tokenReportedStages:
+                  type: array
+                  items: { type: string }
+                  description: Etapas cuyos tokens/imágenes sí llegaron al envelope.
+            deterministicSavings:
+              type: object
+              description: >
+                Contrafactual ESTIMADO del ahorro por extraer campos mediante
+                código y enviar al modelo sólo el schema faltante. No forma
+                parte del usage facturado.
+              properties:
+                estimated: { type: boolean, const: true }
+                method: { type: string, enum: [partial_schema_counterfactual_v1] }
+                documentsMeasured: { type: integer, minimum: 1 }
+                billedInputTokens: { type: integer, minimum: 0 }
+                billedOutputTokens: { type: integer, minimum: 0 }
+                estimatedInputTokensSaved: { type: integer, minimum: 0 }
+                estimatedOutputTokensSaved: { type: integer, minimum: 0 }
+                estimatedInputTokensWithoutDeterministic: { type: integer, minimum: 0 }
+                estimatedOutputTokensWithoutDeterministic: { type: integer, minimum: 0 }
+                estimatedInputSavingPct: { type: number, minimum: 0, maximum: 100 }
+                estimatedOutputSavingPct: { type: number, minimum: 0, maximum: 100 }
             documentCount:
               type: integer
               description: >
@@ -1911,6 +1948,18 @@ components:
                 el modelo dijo que no corresponde pero TODOS los campos
                 obligatorios sí se leyeron: el documento va a revisión en vez de
                 rechazarse.
+        deterministicExtraction:
+          type: object
+          description: >
+            Presente cuando el tipo usa `deterministic_extraction`: estrategia
+            efectiva, si ESTE documento llamó IA, ramas enviadas al fallback y
+            estimación auditable de tokens evitados.
+          properties:
+            strategy: { type: string, enum: [deterministic, hybrid, model] }
+            aiExecuted: { type: boolean }
+            resolvedFieldCount: { type: integer, minimum: 0 }
+            fallbackFields: { type: array, items: { type: string } }
+            tokenSavings: { type: object, additionalProperties: true }
         authenticity:
           $ref: "#/components/schemas/AuthenticitySummary"
         fields:

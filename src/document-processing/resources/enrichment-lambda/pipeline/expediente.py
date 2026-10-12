@@ -54,7 +54,12 @@ from .bedrock import fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import CONTAINER_TYPE, Segment, segment_pages
-from .text_extractor import ExtractedDoc, _chunk_pages as chunk_pages, extract_document
+from .text_extractor import (
+    ExtractedDoc,
+    _chunk_pages as chunk_pages,
+    estimate_deterministic_token_savings,
+    extract_document,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +224,24 @@ def _extract_segment(
                 **deterministic.row_confidences,
             }
             fallback_fields = deterministic_text.path_list(pending_tree)
+            try:
+                token_savings = estimate_deterministic_token_savings(
+                    extract_pages,
+                    entry,
+                    pending_tree,
+                    deterministic.entity_map,
+                    model_result.meta.get("usage"),
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry must never break extraction
+                logger.exception("could not estimate deterministic token savings")
+                usage = model_result.meta.get("usage") or {}
+                token_savings = {
+                    "estimated": True,
+                    "method": "partial_schema_counterfactual_v1",
+                    "unavailableReason": f"{type(exc).__name__}: {str(exc)[:120]}",
+                    "billedInputTokens": int(usage.get("inputTokens") or 0),
+                    "billedOutputTokens": int(usage.get("outputTokens") or 0),
+                }
             model_result.meta["strategy"] = (
                 "hybrid" if fallback_fields and deterministic.resolved_paths
                 else "model" if fallback_fields
@@ -230,6 +253,7 @@ def _extract_segment(
                 "resolvedFields": sorted(deterministic.resolved_paths),
                 "fallbackFields": fallback_fields,
                 "warnings": deterministic.warnings,
+                "tokenSavings": token_savings,
                 "pageSources": {
                     str(page.number): getattr(page, "source", "unknown") for page in extract_pages
                 },
