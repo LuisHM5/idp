@@ -11,6 +11,8 @@ stacks `DocumentValidationStack` (prod) y `DocumentValidationStack-Dev`.
 cuantificadas (§11). Al 2026-10-07 ninguna palanca de §8 está aplicada: el
 modelo desplegado sigue siendo `minimax.minimax-m2.5`.
 
+**Actualización 2026-10-08:** ranking final de modelos, texto y visión, en §12.
+
 ---
 
 ## 1. Veredicto en cinco líneas
@@ -375,6 +377,7 @@ Tres cosas que sólo se ven midiendo:
 - [AWS — nuevas métricas de TTFT y consumo estimado de cuota](https://aws.amazon.com/blogs/machine-learning/improve-operational-visibility-for-inference-workloads-on-amazon-bedrock-with-new-cloudwatch-metrics-for-ttft-and-estimated-quota-consumption)
 - [Amazon Bedrock — latency-optimized inference](https://docs.aws.amazon.com/bedrock/latest/userguide/latency-optimized-inference.html)
 - Datos de Haiku 4.5, MiniMax-M3 y Kimi: consulta al MCP de Artificial Analysis, 2026-09-23.
+- Índice, velocidad y precio de §12.1: consulta al MCP de Artificial Analysis, 2026-10-08.
 
 ---
 
@@ -518,3 +521,108 @@ total (30.7s). Medido en local, donde `TEXTRACT_WORKERS` vale 4; el Lambda usa 8
 Estimación para el pedimento de 2 páginas, de punta a punta: hoy unos 32s de
 mediana (21.9s de extracción + ~10s de plomería) con picos arriba de 60s; con
 #2, unos 18s; con #2 y #3, unos 11s.
+
+---
+
+## 12. Resumen final: ranking de modelos (2026-10-08)
+
+Dos rankings porque son dos trabajos distintos y ningún modelo barato hace los
+dos: la **extracción de texto** la corre el modelo general (`model_id` /
+`BEDROCK_EXTRACTOR_MODEL_ID`) y la **visión** su propia cadena
+(`model_ids.vision` → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5). Orden: primero que
+el resultado sea usable, después velocidad y estabilidad, después precio.
+
+### 12.1 Ficha general de cada modelo
+
+Lo publicado sobre el modelo (Artificial Analysis, consulta del 2026-10-08) junto
+a lo medido aquí. Donde difieren manda lo medido: Artificial Analysis no mide
+sobre Bedrock y no publica velocidad para cinco de los siete.
+
+| Modelo | Índice de inteligencia ¹ | tok/s publicado · TTFT | tok/s medido en Bedrock ² | $/1M entrada · salida (Bedrock) | Blended ³ | Índice por $ blended | Visión |
+|---|---:|---|---|---|---:|---:|---|
+| Claude Haiku 4.5 | 15.4 | 94 · 0.42s | **153** (115-266) | $1.10 · $5.50 | $2.20 | 7.0 | sí |
+| MiniMax M2.5 (desplegado) | 22.8 | sin dato | **56** (40-140) | $0.30 · $1.20 | $0.53 | 43.4 | no |
+| Kimi K2.5 | 19.4-23.5 | sin dato | 29-43 ⁴ | $0.60 · $3.00 | $1.20 | 16.2-19.6 | sí |
+| GLM 4.7 Flash | 14.9 | sin dato | **146** (74-177) | $0.07 · $0.40 | $0.15 | 97.7 | no medida |
+| Amazon Nova 2 Lite | 8.7 | 230 · 0.91s | **184** (120-295) | $0.33 · $2.75 | $0.94 | 9.3 | sí |
+| GLM 4.7 | 22.2 | sin dato | **101** (69-158) | $0.60 · $2.20 | $1.00 | 22.2 | no medida |
+| Qwen3 VL 235B | 9.9-13.4 | sin dato | no medido en texto | $0.53 · $2.66 | $1.06 | 9.3-12.6 | sí |
+
+¹ Artificial Analysis Intelligence Index. Haiku 4.5 y Nova 2 Lite, variante sin
+razonamiento; GLM 4.7 y GLM 4.7 Flash, con razonamiento; Kimi K2.5 y Qwen3 VL,
+el rango de sin a con razonamiento (no se verificó cuál sirve Bedrock).
+² Tokens de salida ÷ segundos de la etapa `extraction`, mediana (min-max) de
+las corridas del 2026-10-07 con salida no vacía (`bench-latencia/20261007-*/filas.csv`;
+9 a 13 corridas por modelo). Es throughput efectivo: incluye el arranque y, en
+MiniMax, el razonamiento. El máximo de cada modelo sale de `FLETE.pdf`, que hace
+2 llamadas concurrentes.
+³ Precio mezclado 3:1 (tres partes de entrada por una de salida) con la tarifa
+de Bedrock.
+⁴ Medido en septiembre sobre CURP y pedimento (§6); no entró a la ronda de octubre.
+
+Cómo leerla:
+
+- **El índice de inteligencia no predice la extracción.** MiniMax (22.8) y
+  GLM 4.7 (22.2) empatan en índice; uno extrae bien y el otro devuelve la salida
+  vacía. Haiku (15.4) queda debajo de ambos y es el más completo.
+- **«Índice por $» premia lo barato, no lo que sirve.** GLM 4.7 Flash gana esa
+  columna por mucho (97.7) y no es usable en documentos con filas. Solo sirve
+  para desempatar entre modelos que ya pasaron la prueba de calidad: ahí MiniMax
+  (43.4) rinde seis veces más por dólar que Haiku (7.0), y Haiku cobra la
+  diferencia en velocidad: 2.7 veces más tokens por segundo y variación casi nula.
+- **Lo publicado se queda corto con Haiku y largo con Nova**: Haiku rinde 153
+  tok/s en Bedrock contra 94 publicados; Nova, 184 contra 230.
+
+### 12.2 Texto: extracción de campos
+
+Segundos de la etapa `extraction` y `$` de Bedrock sobre el CURP de 1 página y
+el pedimento de 2 páginas (§10.2; Kimi K2.5, de §6).
+
+| # | Modelo | CURP | Pedimento 2 pág | Variación entre corridas | Calidad medida | Veredicto |
+|---:|---|---|---|---|---|---|
+| 1 | Claude Haiku 4.5 | 2.7s · $0.0050 | 8.5s · $0.0170 | 0-1% | Completo; extrae 3 campos que MiniMax deja vacíos. Copia el número de factura del ejemplo del hint en `normal_pend.pdf` (§10.3) | El más rápido de los que extraen bien. Adoptarlo exige antes corregir ese hint |
+| 2 | MiniMax M2.5 (desplegado) | 15.6s · $0.0014 | 21.9s · $0.0041 | 24-50% | Facturas correctas; deja vacíos `Referencia` y las `TASA`; 1 de 3 corridas perdió una fila en `FLETE.pdf` | Correcto y barato, lento e inestable |
+| 3 | Kimi K2.5 | 6.5s · $0.0018 | 17.5s · $0.0067 | 6.95-18.14s en el pedimento | 60 de 61 campos en el pedimento; cambió 3 campos del CURP sin verificar cuál acierta | Intermedio en todo. Solo medido en septiembre, no en la ronda de octubre |
+| 4 | GLM 4.7 Flash | 1.8s · $0.0002 | 7.1s · $0.0009 | una corrida de 192s | Repite facturas, cruza importes entre filas, pierde la fila de conceptos | El más barato; no usable en documentos con filas |
+| 5 | Amazon Nova 2 Lite | 1.5s · $0.0016 | 5.0s · $0.0053 | baja | Tool call vacío en `normal_pend.pdf` (3 de 3) y en el expediente de 139 páginas | El más rápido; no usable hasta resolver el tool call vacío |
+| 6 | GLM 4.7 | no medido | 8.3s · $0.0067 | — | Ignora el tool call forzado: salida vacía en 2 de 3 documentos | No usable |
+
+Fuera del ranking: GLM 5.3 (tan lento como MiniMax, sin tarifa publicada) y
+Kimi K3 (3x el precio de Haiku y rechaza `temperature`), descartados en el
+preflight (§10.1).
+
+### 12.3 Visión: revisión de página
+
+Tarea real: `vision.page_review` de `ESTADO_CUENTA_PORTAL` — ¿la página muestra
+indicios de edición o una marca de agua ajena al banco? Una llamada por
+documento. Detalle en `MODELOS_VISION.md` §7.1.
+
+| # | Modelo | s/doc | $/doc | Falsos positivos (9 reales limpios) | Qué ve | Veredicto |
+|---:|---|---:|---:|---|---|---|
+| 1 | Claude Haiku 4.5 | 2.6 | $0.0044 | 0 | Tachaduras grandes y marcas de agua que cruzan la página, bien clasificadas | El de mejor juicio; el único medido también en firmas y sellos (`CARTA_NOM35`) |
+| 2 | Amazon Nova 2 Lite | 2.7 | $0.0010 | 0 | Lo mismo que Haiku: manda a revisión los mismos 17 archivos. Clasifica peor (una marca de agua como indicio de edición) y transcribe mal su texto | Mismo resultado a la cuarta parte del precio, solo con el prompt ampliado; con el anterior no marcaba nada |
+| 3 | Kimi K2.5 | 1.5 | $0.0020 | no medido | Vio la tachadura (1 de 1) con el prompt anterior | Sin medir sobre archivos limpios ni con el prompt ampliado |
+| 4 | Qwen3 VL 235B | 1.7 | $0.0014 | no medido | No vio la tachadura (0 de 1) con el prompt anterior | Sin volver a medir con el prompt ampliado |
+
+Las cifras de Kimi y Qwen son del prompt anterior, unos 500 tokens más corto:
+sus `$/doc` no se comparan directo con los de Haiku y Nova.
+
+Fuera del ranking:
+
+- **Aceptan imágenes pero no se midieron en esta tarea:** Llama 4 Maverick y
+  Mistral Large 3 (`MODELOS_VISION.md` §4).
+- **Sin acceso en la cuenta:** Claude Sonnet 5.5 y GPT-6 Luna
+  (`AccessDeniedException`).
+- **No aceptan imágenes:** MiniMax M2.5, GLM 5 y Kimi K2 Thinking.
+
+Lo que ningún modelo vio, en ninguna de las dos rondas: un dato sobrescrito, una
+tachadura de un solo renglón o una leyenda de 7 pt. La latencia de visión
+(~2.6s) se suma a la del documento solo en los tipos que piden señales de
+visión; hoy son `CARTA_NOM35` y `ESTADO_CUENTA_PORTAL`.
+
+### 12.4 En una línea
+
+| Trabajo | Mejor resultado | Más barato que sirve | Desplegado hoy |
+|---|---|---|---|
+| Texto (extracción) | Haiku 4.5 | MiniMax M2.5 | MiniMax M2.5 |
+| Visión (revisión de página) | Haiku 4.5 | Nova 2 Lite | Haiku 4.5 por default; Nova 2 Lite en `ESTADO_CUENTA_PORTAL` (catálogo sin sincronizar) |

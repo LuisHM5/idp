@@ -1,3 +1,9 @@
+> **Superado (2026-10-08).** El ranking vigente para etapas de texto está en
+> `MODELOS_TEXTO.md` y el de visión en `MODELOS_VISION.md`. Medido contra ground
+> truth, el orden es Kimi K2.5 y luego Haiku 4.5; MiniMax M2.5 ya no va primero.
+> Los índices de inteligencia de abajo son de la escala vieja de Artificial
+> Analysis y MiniMax M2.5 y GLM 5 **no** tienen visión.
+
 # Modelos ganadores calidad precio
 
 1. minimax.minimax-m2.5
