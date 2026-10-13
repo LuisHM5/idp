@@ -6,10 +6,11 @@ Esta guía responde dos preguntas distintas:
 2. ¿Qué estrategia **terminó ejecutándose** y si intervino IA generativa?
 
 La decisión global es: **`catalog` debe permanecer como el valor por default de
-`extractionMode`**. No es una quinta forma de extraer; es la política que deja
-que cada tipo elija la ruta correcta. Hoy permite que `PEDIMENTO_ERP` use código
-determinístico, que los XML usen XPath y que los demás PDF/imágenes sigan usando
-el modelo hasta que tengan un mapper confiable.
+`extractionMode`**. No es una quinta forma de extraer: en PDF/imagen busca si el
+tipo declaró un mapper; si existe lo ejecuta y, si no existe, usa IA para todos
+los campos. Hoy eso hace que `PEDIMENTO_ERP` use código determinístico, que los
+XML usen XPath y que los demás PDF/imágenes sigan usando el modelo hasta que
+tengan un mapper confiable.
 
 ## 1. Nombre y efecto de cada modo
 
@@ -19,7 +20,7 @@ expedientes.
 
 | Valor técnico | Nombre operativo | Efecto directo | IA de extracción | Uso recomendado |
 |---|---|---|---:|---|
-| `catalog` | **AUTOMÁTICO SEGÚN EL TIPO** | Lee la política del catálogo. Sin mapper usa `model`; con mapper aplica su `fallback`. | Depende del tipo | **Default global y producción** |
+| `catalog` | **USA EL FLUJO CONFIGURADO: MAPPER SI EXISTE; SI NO, IA** | Busca `deterministic_extraction` en el tipo. Si no existe, manda todos los campos al modelo. Si existe, ejecuta el mapper y su `fallback` decide si los faltantes van a IA o a revisión. | Depende de esa configuración | **Default global y producción** |
 | `model` | **IA PARA TODOS LOS CAMPOS** | Omite el mapper y manda el schema completo al modelo. Reproduce el comportamiento anterior. | Sí | Contrafactual de calidad, latencia y costo en dev |
 | `hybrid` | **CÓDIGO PRIMERO; IA PARA FALTANTES** | Conserva lo resuelto por el mapper y manda únicamente las ramas faltantes al modelo. | Sólo si quedan faltantes | Migración/calibración de un mapper |
 | `deterministic` | **SÓLO CÓDIGO; FALTANTES A REVISIÓN** | No abre el modelo para extraer campos. Lo no resuelto queda vacío y la validación decide si requiere revisión. | No, en la extracción de campos | Prueba estricta del mapper y tipos maduros |
@@ -27,11 +28,41 @@ expedientes.
 La lectura rápida es:
 
 ```text
-catalog       = el tipo decide
+catalog       = mapper configurado → código; sin mapper → IA completa
 model         = IA completa
 hybrid        = código + IA sólo si falta algo
 deterministic = código únicamente
 ```
+
+### Flujo exacto de `catalog`
+
+`catalog` **no intenta construir un mapper automáticamente** y tampoco
+significa “sin IA”. Ejecuta este árbol de decisión:
+
+```text
+archivo
+├─ XML/XLSX/XLSM/CSV
+│  └─ extracción por código (XPath/celda/columna); extractionMode no interviene
+└─ PDF/JPG/PNG
+   └─ ¿el tipo declara deterministic_extraction?
+      ├─ NO
+      │  └─ MODEL: todos los campos van a IA
+      └─ SÍ
+         └─ primero ejecuta el mapper por código
+            ├─ fallback: review
+            │  └─ DETERMINISTIC: no abre IA; faltantes van a revisión
+            └─ fallback: missing_fields
+               ├─ mapper resolvió todo → DETERMINISTIC: no abre IA
+               └─ quedaron faltantes → HYBRID: sólo esos campos van a IA
+```
+
+Ejemplos actuales:
+
+| Carga con `extractionMode: catalog` | Flujo que toma | Efecto |
+|---|---|---|
+| `PEDIMENTO_ERP` PDF | Tiene mapper + `fallback: review` | Código solamente; faltantes a revisión; cero IA de extracción |
+| `ACTA_NACIMIENTO` PDF | No tiene mapper | Todos los campos van al modelo |
+| `PEDIMENTO_ERP_XML` XML | Ruta estructurada por extensión | XPath por código; `extractionMode` no interviene |
 
 Si el request omite `extractionMode` y el schema del tipo tampoco declara
 `deterministic_extraction`, el resultado es inequívoco:
@@ -234,7 +265,7 @@ Las diferencias importantes son:
 
 | Salida | Significado operativo | Efecto |
 |---|---|---|
-| `requested: catalog` | El cliente no fuerza estrategia | El catálogo decide |
+| `requested: catalog` | El cliente no fuerza estrategia | Busca mapper: si existe lo ejecuta y respeta su fallback; si no existe usa IA completa |
 | `requested: model` | El cliente pide el comportamiento anterior | Schema completo a IA |
 | `requested: hybrid` | El cliente pide ahorrar sin aceptar faltantes | Código primero; IA para faltantes |
 | `requested: deterministic` | El cliente prohíbe IA de extracción | Sólo código; faltantes a revisión |

@@ -1520,14 +1520,15 @@ components:
           default: catalog
           description: >
             Solo dev — sobrescribe la extracción de campos para este documento.
-            Nombres operativos y efectos: `catalog` = AUTOMÁTICO SEGÚN EL TIPO
-            (default); `model` = IA PARA TODOS LOS CAMPOS; `hybrid` = CÓDIGO
-            PRIMERO, IA PARA FALTANTES; `deterministic` = SÓLO CÓDIGO, FALTANTES
-            A REVISIÓN. Sin mapper, `catalog`, `hybrid` y `deterministic`
-            resuelven de forma segura a `model`. XML/tabular ignoran este
-            override y se extraen por código. `deterministic` no impide que
-            clasificación, segmentación, localización o autenticidad usen IA;
-            `aiExecuted` confirma la ejecución completa. Prod ignora el override.
+            Efectos: `catalog` (default) busca `deterministic_extraction`; con
+            mapper ejecuta código y respeta su fallback, sin mapper manda todos
+            los campos a IA. `model` = IA PARA TODOS LOS CAMPOS; `hybrid` =
+            CÓDIGO PRIMERO, IA PARA FALTANTES; `deterministic` = SÓLO CÓDIGO,
+            FALTANTES A REVISIÓN. Pedir hybrid/deterministic sin mapper resuelve
+            de forma segura a model. XML/tabular ignoran este override y se
+            extraen por código. `deterministic` no impide que clasificación,
+            segmentación, localización o autenticidad usen IA; `aiExecuted`
+            confirma la ejecución completa. Prod ignora el override.
         metadata:
           type: object
           description: |

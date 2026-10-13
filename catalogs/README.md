@@ -377,10 +377,12 @@ las filas de todos los selectores se combinan antes de aplicar
   Omitirlo (`catalog`) conserva esta configuración y es el default global
   recomendado; ver la matriz de todos los tipos y sus garantías en
   [`documentacion/MODOS_EXTRACCION.md`](../documentacion/MODOS_EXTRACCION.md).
-  En términos operativos: `catalog` = **automático según el tipo**, `model` =
-  **IA para todos los campos**, `hybrid` = **código primero e IA para faltantes**
-  y `deterministic` = **sólo código; faltantes a revisión**. Si el tipo no
-  declara este bloque y el request omite el modo, `catalog` resuelve a `model`.
+  En términos operativos: `catalog` = **usa el mapper configurado; sin mapper,
+  IA para todos los campos**, `model` = **IA para todos los campos**, `hybrid` =
+  **código primero e IA para faltantes** y `deterministic` = **sólo código;
+  faltantes a revisión**. `catalog` no intenta generar un mapper: si el tipo no
+  declara este bloque y el request omite el modo, resuelve directamente a
+  `model`.
 - El resultado marca esos valores con `source: "DETERMINISTIC_TEXT"` y
   `extractionMeta` dice `strategy: deterministic|hybrid|model`, campos
   resueltos/fallback, fuentes de página y duración del mapper.

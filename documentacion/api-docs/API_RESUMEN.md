@@ -54,7 +54,7 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 | `occurrenceMode` | opcional | Sobrescribe los defaults de catálogo para todos los tipos sin sufijo: `single` conserva la primera; `multiple`, todas. También se acepta el alias `occurrence_mode`. `:N`/`:all` prevalece por tipo |
 | `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. `app-origin`, `model-id`, `extraction-mode` y `document-counts` están reservadas. Editable (§5) y filtrable con `meta.<clave>` (§7). En form, JSON en string |
 | `modelId` | opcional | solo dev |
-| `extractionMode` | opcional | solo dev: `catalog` = automático según tipo (**default**); `model` = IA completa; `hybrid` = código + IA para faltantes; `deterministic` = sólo código, faltantes a revisión. Sin configuración del schema: `catalog` resuelve a `model` |
+| `extractionMode` | opcional | solo dev: `catalog` (**default**) = usa mapper si el tipo lo configuró; sin mapper, IA completa. `model` = IA completa; `hybrid` = código + IA para faltantes; `deterministic` = sólo código, faltantes a revisión |
 
 ### Cardinalidad: `single` o `multiple`
 

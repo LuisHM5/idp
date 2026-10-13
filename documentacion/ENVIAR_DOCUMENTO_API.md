@@ -38,7 +38,8 @@ la semántica completa, el inventario de los 30 tipos activos y la decisión de
 default están en [MODOS_EXTRACCION.md](MODOS_EXTRACCION.md).
 
 ```bash
-# AUTOMÁTICO SEGÚN TIPO. PEDIMENTO_ERP usa código sin IA por default.
+# USA EL MAPPER CONFIGURADO; SIN MAPPER, IA COMPLETA.
+# PEDIMENTO_ERP sí tiene mapper y usa código sin IA por default.
 pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode catalog
 
 # IA PARA TODOS LOS CAMPOS. Comportamiento anterior: schema completo a Bedrock.

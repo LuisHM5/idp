@@ -855,7 +855,7 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
   | Valor | Nombre operativo | Efecto |
   |---|---|---|
-  | `catalog` | **Automático según el tipo** | Usa la política del catálogo; sin mapper cae a `model`. Es el default y el comportamiento de producción. |
+  | `catalog` | **Mapper configurado; si no existe, IA completa** | Busca `deterministic_extraction`: si no existe manda todos los campos a Bedrock; si existe ejecuta código y el `fallback` decide entre IA para faltantes o revisión sin IA. Es el default y el comportamiento de producción. |
   | `model` | **IA para todos los campos** | Omite el mapper y manda el schema completo a Bedrock; reproduce el comportamiento anterior. |
   | `hybrid` | **Código primero; IA para faltantes** | Conserva lo resuelto por el mapper y sólo manda las ramas faltantes a Bedrock. |
   | `deterministic` | **Sólo código; faltantes a revisión** | No usa IA para extraer campos; los faltantes pueden mandar el documento a revisión. |
@@ -873,6 +873,13 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
   `pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode model|hybrid|deterministic`.
   Producción ignora overrides distintos de `catalog` con la misma compuerta de
   seguridad que `modelId`.
+
+  Flujo de `catalog` para PDF/imagen: **sin `deterministic_extraction` → IA para
+  todos los campos**; con mapper y `fallback: review` → sólo código y faltantes
+  a revisión; con mapper y `fallback: missing_fields` → código primero y Bedrock
+  únicamente si quedaron campos pendientes. `catalog` no inventa ni intenta
+  generar un mapper. En `PEDIMENTO_ERP` el catálogo declara mapper + `review`,
+  por lo que el default es código sin IA de extracción.
 
   En la respuesta, `requested` dice **qué pidió el cliente**, `effective` dice
   **qué política pudo aplicar el tipo**, y `strategy` dice **qué ocurrió en ese
