@@ -1,0 +1,248 @@
+# Modos de extracción
+
+Esta guía responde dos preguntas distintas:
+
+1. ¿Qué estrategia se **solicitó** para una carga?
+2. ¿Qué estrategia **terminó ejecutándose** y si intervino IA generativa?
+
+La decisión global es: **`catalog` debe permanecer como el valor por default de
+`extractionMode`**. No es una quinta forma de extraer; es la política que deja
+que cada tipo elija la ruta correcta. Hoy permite que `PEDIMENTO_ERP` use código
+determinístico, que los XML usen XPath y que los demás PDF/imágenes sigan usando
+el modelo hasta que tengan un mapper confiable.
+
+## 1. Resumen de los cuatro valores
+
+`extractionMode` es un override de la carga, no una afirmación de lo que
+ocurrió. Sólo modifica la extracción de campos de PDF/JPG/PNG en el pipeline de
+expedientes.
+
+| Valor | Qué hace | IA de extracción | Uso recomendado |
+|---|---|---:|---|
+| `catalog` | Respeta la política versionada del tipo. Sin mapper usa modelo; con mapper aplica su `fallback`. | Depende del tipo | **Default global y producción** |
+| `model` | Omite el mapper y manda el schema completo al modelo. Reproduce el comportamiento anterior. | Sí | Contrafactual de calidad, latencia y costo en dev |
+| `hybrid` | Ejecuta el mapper y manda al modelo únicamente las ramas no resueltas. Los valores determinísticos nunca se sobrescriben. | Sólo si quedan faltantes | Migración/calibración de un mapper |
+| `deterministic` | Ejecuta sólo el mapper. Los faltantes quedan vacíos y la validación decide si requieren revisión. | No, en la extracción de campos | Prueba estricta del mapper y tipos maduros |
+
+Reglas de seguridad:
+
+- `hybrid` y `deterministic` sólo pueden aplicarse si el tipo declara
+  `deterministic_extraction`. En otro tipo la estrategia efectiva permanece
+  `model` y el resultado reporta `reason: type_has_no_deterministic_mapping`.
+  Esto evita entregar un documento vacío por un override incompatible.
+- Los overrides distintos de `catalog` están habilitados sólo en dev. Producción
+  los ignora y vuelve a `catalog`, igual que el override de `modelId`.
+- Un error interno del mapper nunca degrada silenciosamente una carga normal:
+  `catalog`/`hybrid` fallan abierto al modelo completo. En el override explícito
+  `deterministic`, el objetivo es medir código solamente y los faltantes pasan a
+  validación/revisión.
+
+La resolución completa por familia queda así:
+
+| Familia del tipo | `catalog` | `model` | `hybrid` | `deterministic` |
+|---|---|---|---|---|
+| PDF/imagen sin mapper (22 activos) | Modelo | Modelo | Modelo, con razón de incompatibilidad | Modelo, con razón de incompatibilidad |
+| PDF/imagen con mapper (`PEDIMENTO_ERP`) | Política del catálogo: hoy determinística | Modelo completo | Mapper + modelo sólo si faltan ramas | Sólo mapper |
+| XML con XPath (7 activos) | Código XML | Código XML | Código XML | Código XML |
+| XLSX/XLSM/CSV con `cell`/`column` (0 activos) | Código tabular | Código tabular | Código tabular | Código tabular |
+
+En el modo híbrido de un tipo con mapper, `effective` permanece `hybrid`, pero
+la `strategy` observada puede ser `deterministic` si el mapper resolvió todo y
+por tanto no hubo ningún fallback.
+
+## 2. Por qué `catalog` es el default correcto
+
+La alternativa global `deterministic` no es viable: 22 tipos PDF/imagen todavía
+no tienen mapper. `model` renunciaría al ahorro ya conseguido y `hybrid` tendría
+una latencia p95 impredecible: basta un solo campo no resuelto para volver a
+abrir una generación que puede producir miles de tokens.
+
+`catalog` separa la decisión estable del API de la evolución de cada tipo:
+
+- conserva compatibilidad para tipos que sólo tienen extracción por modelo;
+- activa código puro únicamente donde el catálogo ya expresa cómo mapear cada
+  campo y cuál es su fallback;
+- permite cambiar un tipo de `model` a `hybrid` y luego a `deterministic` con
+  una versión de catálogo y `pnpm sync:one`, sin cambiar a los consumidores;
+- mantiene una salida auditable: el request dice `requested: catalog` y el
+  documento dice si la estrategia efectiva fue `model`, `hybrid` o
+  `deterministic`.
+
+Por eso la recomendación operativa es:
+
+```text
+default global del API       = catalog
+PEDIMENTO_ERP en su catálogo = deterministic_extraction + fallback: review
+overrides de request         = experimentos controlados en dev
+```
+
+## 3. Estrategia efectiva de los 30 tipos activos
+
+Inventario del catálogo generado al 2026-10-13. La columna “con `catalog`”
+describe la extracción de campos; otras etapas posibles se explican en §4.
+
+| `TYPE_ID` | Estado | Fuente | Estrategia con `catalog` |
+|---|---|---|---|
+| `ACTA_CONSTITUTIVA_PORTAL` | beta | PDF/imagen | Modelo |
+| `ACTA_NACIMIENTO` | beta | PDF/imagen | Modelo |
+| `CARTA_NOM35` | beta | PDF/imagen | Modelo + autenticidad según catálogo |
+| `CEDULA_PROFESIONAL` | beta | PDF/imagen | Modelo |
+| `CERTIFICADO_POLIZA` | estable | PDF/imagen | Modelo |
+| `CFDI_GASTO_TERCERO_XML` | beta | XML | XPath, código puro |
+| `CFDI_PAGO_DERECHOS_SANITARIOS_XML` | beta | XML | XPath, código puro |
+| `COMPROBANTE_DOMICILIO` | beta | PDF/imagen | Modelo |
+| `COMPROBANTE_ESTUDIOS` | beta | PDF/imagen | Modelo |
+| `CONSTANCIA_NSS` | beta | PDF/imagen | Modelo |
+| `CONSTANCIA_SITUACION_FISCAL` | estable | PDF/imagen | Modelo |
+| `CONSTANCIA_SITUACION_FISCAL_PORTAL` | beta | PDF/imagen | Modelo |
+| `CONTRATO_SERVICIO_PORTAL` | beta | PDF/imagen | Modelo |
+| `CURP` | beta | PDF/imagen | Modelo |
+| `ESTADO_CUENTA_PORTAL` | beta | PDF/imagen | Modelo + integridad según catálogo |
+| `FACTURA_FLETE_EXTRANJERO` | estable | PDF/imagen | Modelo |
+| `FACTURA_HONORARIOS` | estable | PDF/imagen | Modelo |
+| `FACTURA_HONORARIOS_XML` | estable | XML | XPath, código puro |
+| `FACTURA_LOGISTICA_XML` | beta | XML | XPath, código puro |
+| `IDENTIFICACION` | beta | PDF/imagen | Modelo |
+| `IDENTIFICACION_OFICIAL_PORTAL` | beta | PDF/imagen | Modelo |
+| `INE` | estable | PDF/imagen | Modelo |
+| `PASAPORTE` | beta | PDF/imagen | Modelo |
+| `PEDIMENTO_ADUANAL` | estable | PDF/imagen | Modelo |
+| `PEDIMENTO_ADUANAL_XML` | estable | XML | XPath, código puro |
+| `PEDIMENTO_ERP` | estable | PDF/imagen | **Mapper determinístico; `fallback: review`** |
+| `PEDIMENTO_ERP_XML` | beta | XML | XPath, código puro |
+| `PEDIMENTO_GASTOS_ADUANALES_ERP` | beta | PDF/imagen | Modelo |
+| `PEDIMENTO_GASTOS_ADUANALES_ERP_XML` | beta | XML | XPath, código puro |
+| `REGISTRO_PUBLICO_COMERCIO_PORTAL` | beta | PDF/imagen | Modelo |
+
+Totales actuales:
+
+- 22 tipos PDF/imagen con extracción de campos por modelo;
+- 7 tipos XML con XPath determinístico;
+- 1 tipo PDF (`PEDIMENTO_ERP`) con mapper de texto determinístico;
+- 0 tipos tabulares activos. La ruta XLSX/XLSM/CSV ya existe y será código puro
+  mediante `cell`/`column` cuando se publique un catálogo que la use.
+
+Los XML y tabulares se enrutan por la extensión real del archivo antes del
+pipeline PDF; `extractionMode` no cambia esa ruta. Para ellos debe declararse un
+único `documentType`, porque no se usa visión para elegir entre schemas.
+
+## 4. “Extracción sin IA” no siempre significa “carga sin IA”
+
+`deterministic` garantiza que el mapper de campos no abra Bedrock. Todavía
+podrían existir otras etapas generativas si la forma de la carga las exige:
+
+| Etapa | Cuándo puede usar IA | Cómo evitarla cuando aplica |
+|---|---|---|
+| Clasificación | No se declaró tipo o el flujo upstream no pudo hacer bypass | Declarar exactamente un `documentType` |
+| Segmentación | Se deben distinguir varios tipos/segmentos y los marcadores no bastan | Declarar un solo tipo cuando el archivo realmente contiene uno |
+| Localizador de páginas | Los marcadores fallan en un tipo con `expected_pages: "auto"` | Corregir/calibrar `page_selection` |
+| Extracción de campos | Estrategia efectiva `model` o `hybrid` con faltantes | Mapper completo + estrategia determinística |
+| Autenticidad/visión | El catálogo solicita una señal visual | Sólo se elimina quitando esa comprobación del contrato, no con `extractionMode` |
+| OCR de Textract | Página escaneada o imagen | No es IA generativa, pero sí tiene tiempo y costo propios |
+
+Para el camino sin IA generativa de `PEDIMENTO_ERP`, la carga debe declarar
+`documentType=PEDIMENTO_ERP` y dejar `extractionMode=catalog` (o usar
+`deterministic` en dev). La respuesta es la autoridad final: no se debe inferir
+por la duración.
+
+## 5. Cómo comprobar qué ocurrió
+
+En la raíz del resultado:
+
+```jsonc
+{
+  "aiExecuted": false,
+  "aiUsage": {
+    "executed": false,
+    "stages": [],
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "images": 0,
+    "tokenReportedStages": []
+  },
+  "deterministicSavings": {
+    "estimated": true,
+    "billedInputTokens": 0,
+    "billedOutputTokens": 0,
+    "estimatedInputTokensSaved": 20538,
+    "estimatedOutputTokensSaved": 894
+  }
+}
+```
+
+- `aiExecuted` cubre cualquier etapa de modelo registrada para la ejecución,
+  no sólo la extracción.
+- `aiUsage.stages` indica cuáles etapas ejecutaron un modelo.
+- Los totales sólo suman tokens que llegaron reportados al envelope;
+  `tokenReportedStages` explicita esas etapas. Una etapa puede constar como
+  ejecutada aunque su Lambda upstream no haya propagado sus tokens.
+- Textract OCR no cuenta como IA generativa y se ve por separado en
+  `pages.ocrPages` y en `tracking.timings.pageLoad`.
+- `deterministicSavings` es un contrafactual estimado contra el schema completo;
+  nunca se mezcla con tokens facturados.
+
+En cada documento:
+
+```jsonc
+{
+  "extractionMode": {
+    "requested": "catalog",
+    "effective": "deterministic"
+  },
+  "deterministicExtraction": {
+    "strategy": "deterministic",
+    "aiExecuted": false,
+    "resolvedFieldCount": 24,
+    "fallbackFields": [],
+    "tokenSavings": {}
+  }
+}
+```
+
+Las diferencias importantes son:
+
+- `requested` es la intención del request después de aplicar la compuerta del
+  ambiente;
+- `effective` es la política aplicable al tipo;
+- `strategy` es lo que ocurrió en ese documento: puede ser `deterministic`,
+  `hybrid` o `model` según los campos realmente resueltos;
+- `fallbackFields` muestra exactamente qué ramas fueron al modelo.
+
+## 6. Comandos de comparación
+
+El caso normal no necesita flag:
+
+```bash
+pnpm enviar pedimento.pdf PEDIMENTO_ERP
+```
+
+En dev, el mismo archivo se puede medir contra las tres estrategias efectivas:
+
+```bash
+pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode model
+pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode hybrid
+pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode deterministic
+```
+
+Para comparar correctamente hay que conservar el mismo archivo, tipo, modelo y
+catálogo, y revisar al menos:
+
+1. `validation.status` y diferencias de campos;
+2. `tracking.timings.extraction` y `processingSeconds`;
+3. `aiExecuted`, `aiUsage` y `deterministicSavings`;
+4. `fallbackFields`, que explica una cola larga en modo híbrido.
+
+## 7. Evidencia de la decisión en `PEDIMENTO_ERP`
+
+En el pedimento real de 17 páginas medido el 2026-10-12, el fallback híbrido
+abrió MiniMax sobre campos faltantes: la extracción tardó 160.75 s y consumió
+38,804 tokens de entrada y 10,058 de salida. Con el catálogo 1.2.0 y
+`fallback: review`, una ejecución desplegada posterior terminó en 2.47 s, con
+0/0 tokens y `aiExecuted: false`. La mayor latencia no provenía del tamaño del
+JSON final, sino de la generación no streaming del modelo.
+
+Estas cifras prueban la decisión para este layout; no justifican activar un
+mapper incompleto en los otros 22 tipos. Cada nuevo mapper debe contrastarse
+contra ground truth y observarse primero en `hybrid` antes de cambiar su
+fallback de catálogo a `review`.
+

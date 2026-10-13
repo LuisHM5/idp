@@ -34,6 +34,8 @@ pnpm enviar doc.pdf PEDIMENTO_ERP --model amazon.nova-pro-v1:0
 ### Comparar extracción con y sin IA (solo dev)
 
 `--extraction-mode` sobrescribe la estrategia únicamente para esa carga:
+la semántica completa, el inventario de los 30 tipos activos y la decisión de
+default están en [MODOS_EXTRACCION.md](MODOS_EXTRACCION.md).
 
 ```bash
 # Configuración normal del catálogo. PEDIMENTO_ERP usa código sin IA por default.

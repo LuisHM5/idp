@@ -1519,11 +1519,15 @@ components:
           enum: [catalog, model, hybrid, deterministic]
           default: catalog
           description: >
-            Solo dev — sobrescribe la estrategia para este documento. `catalog`
-            conserva el tipo; `model` reproduce el schema completo a Bedrock;
-            `hybrid` usa el mapper y manda sólo faltantes; `deterministic` no
-            ejecuta IA de extracción y deja los faltantes a validación/revisión.
-            Prod ignora el override a propósito.
+            Solo dev — sobrescribe la extracción de campos para este documento.
+            `catalog` es el default recomendado y conserva la política del tipo;
+            `model` reproduce el schema completo a Bedrock; `hybrid` usa el
+            mapper y manda sólo faltantes; `deterministic` no ejecuta IA de
+            extracción y deja los faltantes a validación/revisión. Un tipo sin
+            mapper permanece en `model`. XML/tabular ignoran este override y se
+            extraen por código. `deterministic` no impide que clasificación,
+            segmentación, localización o autenticidad usen IA; `aiExecuted`
+            confirma la ejecución completa. Prod ignora el override a propósito.
         metadata:
           type: object
           description: |

@@ -374,7 +374,9 @@ las filas de todos los selectores se combinan antes de aplicar
   `extractionMode=model|hybrid|deterministic` (o
   `pnpm enviar ... --extraction-mode ...`). `model` reproduce el schema completo
   anterior; `hybrid` fuerza `missing_fields`; `deterministic` fuerza `review`.
-  Omitirlo (`catalog`) conserva esta configuración.
+  Omitirlo (`catalog`) conserva esta configuración y es el default global
+  recomendado; ver la matriz de todos los tipos y sus garantías en
+  [`documentacion/MODOS_EXTRACCION.md`](../documentacion/MODOS_EXTRACCION.md).
 - El resultado marca esos valores con `source: "DETERMINISTIC_TEXT"` y
   `extractionMeta` dice `strategy: deterministic|hybrid|model`, campos
   resueltos/fallback, fuentes de página y duración del mapper.

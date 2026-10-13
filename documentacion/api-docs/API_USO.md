@@ -848,7 +848,31 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 
 - **Archivos `.xml`/`.xlsx`/`.csv`:** para tipos con esquema XML (sufijo `_XML`) o tabular (sufijo `_XLSX`/`_CSV`) `documentType` es **obligatorio** — la API lo rechaza con `400 DOCUMENT_TYPE_REQUIRED` si falta, porque no existe clasificación automática por visión sobre datos ya estructurados. A cambio, el documento se extrae **determinísticamente** (XPath para XML, celda/columna para XLSX/CSV — sin llamar a Bedrock en ningún paso): más rápido y sin costo de modelo. Ver `catalogs/README.md` → "Tipos con fuente XML" / "Tipos con fuente tabular". Ahí además se acepta **exactamente un tipo**: no hay nada que elija entre varios esquemas, así que una lista se rechaza con `400 INVALID_DOCUMENT_TYPE` en vez de leer el archivo con el primero y hacerte creer que se buscaron todos.
 - **`modelId` (solo dev):** procesa **ese documento** con el modelo de Bedrock que indiques, sin redeploy — útil para comparar modelos sobre el mismo archivo. Aplica a todas las fases y gana sobre las variables `BEDROCK_*_MODEL_ID`; el resultado reporta en `tracking.modelIds` qué modelo corrió en cada fase. **El stack de prod lo ignora a propósito** (no define `ALLOW_MODEL_OVERRIDE`): el valor viene de quien sube el archivo, y en prod dejaría que un tercero eligiera el modelo —y con él el costo y la calidad de extracción— sobre documentos ajenos. Con `pnpm enviar`: `--model amazon.nova-pro-v1:0`.
-- **`extractionMode` (solo dev):** compara la estrategia de esta carga: `catalog` (default del tipo), `model` (schema completo a Bedrock, comportamiento anterior), `hybrid` (regex primero y sólo faltantes a Bedrock) o `deterministic` (cero IA de extracción; los faltantes se validan y mandan a revisión). Con `pnpm enviar`: `--extraction-mode model|hybrid|deterministic`. El resultado reporta `aiExecuted`/`aiUsage` y `documents[i].extractionMode`; `PEDIMENTO_ERP` usa `deterministic` por catálogo. Prod lo ignora con la misma compuerta de seguridad que `modelId`.
+- **`extractionMode` (solo dev):** override de la extracción de campos para esta
+  carga. **El default global recomendado es `catalog`**, porque conserva la
+  política versionada de cada tipo: hoy `PEDIMENTO_ERP` elige código
+  determinístico y los tipos PDF/imagen sin mapper conservan el modelo.
+
+  | Valor | Comportamiento |
+  |---|---|
+  | `catalog` | Usa la política del tipo; es el default y el comportamiento de producción. |
+  | `model` | Omite el mapper y manda el schema completo a Bedrock; reproduce el comportamiento anterior. |
+  | `hybrid` | Mapper primero; sólo las ramas faltantes van a Bedrock. |
+  | `deterministic` | Mapper solamente; los faltantes se validan y pueden mandar el documento a revisión. |
+
+  Si se pide `hybrid`/`deterministic` para un tipo que no declara un mapper, el
+  modo efectivo permanece `model` y reporta
+  `reason: type_has_no_deterministic_mapping`; nunca devuelve vacío por un
+  override incompatible. XML/XLSX/CSV se enrutan antes por su formato y ya son
+  determinísticos (XPath o celda/columna), por lo que este override no cambia
+  su extractor. `deterministic` significa **sin IA en la extracción de campos**,
+  no necesariamente sin IA en toda la carga: clasificación, segmentación,
+  localización de páginas o autenticidad todavía pueden ejecutar un modelo.
+  La respuesta final es la autoridad mediante `aiExecuted`, `aiUsage.stages`,
+  `documents[i].extractionMode` y `fallbackFields`. Con el CLI:
+  `pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode model|hybrid|deterministic`.
+  Producción ignora overrides distintos de `catalog` con la misma compuerta de
+  seguridad que `modelId`.
 - **Fallback automático de modelo (siempre activo, no es un flag de request):** si el modelo que le tocaba a una fase (`extractor`/`recovery`) falla porque no está disponible (no habilitado, no existe, error/timeout/cuota del proveedor — nunca por un request mal formado, eso propaga tal cual), el pipeline cambia solo al siguiente modelo de una lista ordenada y reintenta, hasta 4 veces por default. `tracking.modelIds` ya refleja el modelo que **realmente** corrió (no el configurado) cuando esto pasa; además, solo para las fases donde hubo cambio, `tracking.modelFallbacks` reporta el detalle: modelo esperado vs. el que finalmente corrió, cuántos reintentos tomó, y el error de cada intento fallido. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.
 - **Segmentación degradada (clasificación de un expediente con 2+ tipos declarados):** distinto del punto anterior, aquí Bedrock responde 200 OK pero con texto vacío o truncado (`stopReason: "max_tokens"`) — el pipeline lo detecta, sube el presupuesto de salida y reintenta una vez con el modelo más confiable antes de rendirse; para expedientes grandes, la clasificación se reparte en ventanas de páginas que luego se fusionan. Si pese a eso un rango de páginas queda sin clasificar (marcado `OTRO`), `tracking.segmentationDegraded` reporta cuáles, por qué y con qué intentos, `reviewRequired` se fuerza a `true` y se agrega un `warnings[]` legible — en vez del `documentCount: 0` mudo de antes. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.1.
 - **`tracking.appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `tracking.appOrigin` con el nombre de esa app — buscable después vía `GET /documents?system=<app>` (§6). Sale de la **key**, no del body: un `metadata: {"app-origin": "..."}` se descarta, así que ninguna app puede declararse otra. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece dentro de `tracking`.
