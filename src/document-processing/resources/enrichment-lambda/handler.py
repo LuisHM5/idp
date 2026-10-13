@@ -134,6 +134,47 @@ def _upload_metadata(event: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _parse_tracking_timestamp(value: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp carried by S3/Step Functions, normalized to UTC."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _add_upload_to_result_tracking(
+    result: Dict[str, Any], event: Dict[str, Any]
+) -> None:
+    """Add actual S3 upload → final result wall-clock metrics in place.
+
+    ``processingSeconds`` remains the pipeline-only duration. S3's ObjectCreated
+    ``eventTime`` is the first trustworthy instant after the PUT completed, so
+    this metric additionally includes queueing, Step Functions/upstream stages
+    and enrichment. ``registeredAt`` is intentionally not used: requesting the
+    presigned URL can precede the real upload by many minutes.
+    """
+    tracking = result.get("tracking")
+    if not isinstance(tracking, dict):
+        return
+    uploaded = _parse_tracking_timestamp(event.get("eventTime"))
+    completed = _parse_tracking_timestamp(
+        tracking.get("processingCompletedAt")
+        or tracking.get("updatedAt")
+        or tracking.get("createdAt")
+    )
+    if uploaded is None or completed is None:
+        return
+    elapsed = max(0.0, (completed - uploaded).total_seconds())
+    tracking["uploadedAt"] = uploaded.isoformat()
+    tracking["uploadToResultSeconds"] = round(elapsed, 2)
+    tracking["uploadToResultMs"] = round(elapsed * 1000, 2)
+
+
 def build_canonical_result(
     document_id: str,
     classification: str,
@@ -656,6 +697,11 @@ def _run_expediente(
             },
         )
 
+    # Add before persisting the full result. Otherwise the compact envelope
+    # would expose the metric, but reading resultLocation from S3 would replace
+    # it with an older tracking block that did not contain it.
+    _add_upload_to_result_tracking(result, event)
+
     # Persist the FULL result to S3: a large expediente (86 pages, 20+
     # documents with per-field detail) exceeds Step Functions' 256KB
     # state-payload limit, so the workflow only carries a compact summary
@@ -727,6 +773,9 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     reset_used_models()
     started = time.time()
     result = _process(event, context)
+    # Standard-flow results do not pass through `_run_expediente`; applying it
+    # here makes the metric universal. It is idempotent for expediente results.
+    _add_upload_to_result_tracking(result, event)
     # Proxy for billed Lambda duration: measured from inside the invocation,
     # so it excludes init and undercounts slightly (see cost_audit.py), but
     # it's the only duration available before the invocation itself finishes.

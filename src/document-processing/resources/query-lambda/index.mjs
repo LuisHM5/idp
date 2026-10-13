@@ -176,6 +176,7 @@ import {
   scopeToAllowedDocTypes,
 } from "./document-type-catalog.mjs";
 import { consumeDailyDocument, dailyLimitResponse } from "./daily-doc-cap.mjs";
+import { applyLifecycleTracking } from "./lifecycle-tracking.mjs";
 
 // Low-level client kept on its own for daily-doc-cap.mjs, which builds
 // AttributeValue params (shared verbatim with upload-lambda).
@@ -221,6 +222,8 @@ const ITEM_PROJECTION = [
   "WorkflowStatus",
   "ProcessingStatus",
   "ProcessingStatusUpdatedAt",
+  "ProcessingCompletedAt",
+  "UploadedAt",
   "RegisteredAt",
   "UploadExpiresAt",
   "RequestedDocumentType",
@@ -247,8 +250,11 @@ function isMetadataObject(value) {
  * snapshot. EnrichmentResult and results/{id}.json record processing-time
  * state; after PATCH, Metadata is authoritative for every API read. */
 function applyCurrentMetadata(envelope, item) {
-  if (!envelope || !Object.prototype.hasOwnProperty.call(item || {}, "Metadata")) return envelope;
-  return { ...envelope, metadata: isMetadataObject(item.Metadata) ? { ...item.Metadata } : {} };
+  if (!envelope) return envelope;
+  const withMetadata = Object.prototype.hasOwnProperty.call(item || {}, "Metadata")
+    ? { ...envelope, metadata: isMetadataObject(item.Metadata) ? { ...item.Metadata } : {} }
+    : envelope;
+  return applyLifecycleTracking(withMetadata, item);
 }
 
 function parseEnrichment(item) {

@@ -227,12 +227,17 @@ def main() -> int:
         ms = tracking.get("processingMs", exp.get("processingMs"))
         seconds = tracking.get("processingSeconds", exp.get("processingSeconds"))
         duration = f"{ms:.0f}ms" if isinstance(ms, (int, float)) and ms < 1000 else f"{seconds if seconds is not None else '?'}s"
+        upload_to_result = tracking.get("uploadToResultSeconds")
+        total_note = (
+            f" | PUT→resultado {upload_to_result}s"
+            if isinstance(upload_to_result, (int, float)) else ""
+        )
         source_note = SOURCE_FORMAT_NOTE.get(exp.get("sourceFormat")) or (
             f"{pages.get('totalPages')} páginas "
             f"({pages.get('nativePages')} digitales, {pages.get('ocrPages')} OCR)"
         )
         print(f"Expediente: {STATUS_COLOR.get(exp.get('status'), '')}{exp.get('status')}{RESET}  "
-              f"| {source_note} | {duration}")
+              f"| {source_note} | pipeline {duration}{total_note}")
         for doc in documents_of(exp):
             print_document(doc)
         print()

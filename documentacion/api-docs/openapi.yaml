@@ -1724,10 +1724,40 @@ components:
       type: object
       description: >
         Resumen de procedencia/procesamiento, presente en todo resultado
-        (flujo estándar y expediente por igual). `createdAt` siempre está;
-        `modelIds`/`appOrigin`/`modelFallbacks` solo si hay algo que reportar.
+        (flujo estándar y expediente por igual). `processingSeconds` mide sólo
+        el pipeline documental; `uploadToResultSeconds` incluye cola y etapas
+        upstream hasta construir el resultado; `uploadToCompletionSeconds`
+        llega hasta el estado terminal FINISHED/FAILED y se completa al leerlo
+        por API. `createdAt` siempre está; `modelIds`/`appOrigin`/
+        `modelFallbacks` solo si hay algo que reportar.
       properties:
         createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        uploadedAt:
+          type: string
+          format: date-time
+          description: Instante del ObjectCreated de S3, después de terminar el PUT.
+        processingStartedAt: { type: string, format: date-time }
+        processingCompletedAt: { type: string, format: date-time }
+        workflowCompletedAt:
+          type: string
+          format: date-time
+          description: Instante terminal FINISHED/FAILED; disponible en la lectura final por API.
+        processingSeconds:
+          type: number
+          description: Duración exclusiva del pipeline documental.
+        processingMs: { type: number }
+        uploadToResultSeconds:
+          type: number
+          description: Desde el PUT en S3 hasta construir el resultado de enrichment.
+        uploadToResultMs: { type: number }
+        uploadToCompletionSeconds:
+          type: number
+          description: Desde el PUT en S3 hasta que el workflow queda FINISHED/FAILED.
+        uploadToCompletionMs: { type: number }
+        timings:
+          type: object
+          additionalProperties: { type: number }
         modelIds:
           type: object
           description: Modelo que realmente corrió por fase (extractor/recovery/...).

@@ -54,7 +54,7 @@ modelo desplegado sigue siendo `minimax.minimax-m2.5`.
 
 | Fuente | Qué aportó |
 |---|---|
-| Tablas de tracking DynamoDB (dev 121 docs, prod 7) | `Tracking.Timings` por etapa y `ProcessingSeconds` reales |
+| Tablas de tracking DynamoDB (dev 121 docs, prod 7) | `Tracking.Timings` por etapa, `ProcessingSeconds` del pipeline y `UploadToResultSeconds` desde el PUT |
 | `document-validation-costs[-dev]` | tokens entrada/salida y páginas OCR por documento |
 | Historial de Step Functions (`get-execution-history`) | duración exacta de cada estado del workflow |
 | CloudWatch Logs del enrichment Lambda | `Init Duration` (cold start) y `Duration` reales |
@@ -76,6 +76,19 @@ modelo desplegado sigue siendo `minimax.minimax-m2.5`.
 | **`EnrichmentStep`** | **17-220s** | historial SFN — 95%+ del total |
 | `CopyToProcessed` + `DeleteFromRaw` + EventBridge | ~1.2s | historial SFN |
 | Primer poll del cliente | **5s fijos** | `documentacion/api-docs/API_USO.md:313-323` |
+
+La respuesta distingue tres relojes para evitar llamar “total” a una fracción:
+
+- `tracking.processingSeconds`: sólo el pipeline documental;
+- `tracking.uploadToResultSeconds`: desde el `ObjectCreated` de S3 hasta que
+  enrichment construyó el JSON final; incluye SQS, cola y pasos upstream;
+- `tracking.uploadToCompletionSeconds`: desde ese mismo upload hasta el evento
+  terminal `FINISHED`/`FAILED`, incluido `CopyToProcessed` y EventBridge. Este
+  último se completa al consultar el resultado final por API.
+
+El tiempo que el cliente tarda entre pedir la URL prefirmada y efectuar el PUT
+no entra: `registeredAt` mide eso por separado y no representa un documento ya
+subido.
 
 Cold start del enrichment Lambda: **317-386 ms** (`Init Duration` en CloudWatch).
 No es un problema — los imports pesados ya están diferidos (`handler.py:575`,

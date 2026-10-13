@@ -1066,6 +1066,7 @@ abreviados deliberadamente:
     ],
     "tracking": {
       "processingSeconds": 60.71,
+      "uploadToResultSeconds": 64.02,
       "modelIds": { "extraction": "..." },
     },
     "sourceFile": "factura.pdf",
@@ -1147,10 +1148,22 @@ opcionales importantes del envelope:
     // modelFallbacks/segmentationDegraded/timings solo si hay algo que reportar.
     "tracking": {
       "createdAt": "2026-07-27T13:19:04.231Z",
+      // ObjectCreated de S3: el PUT ya terminó. No es el momento en que se
+      // pidió la URL prefirmada.
+      "uploadedAt": "2026-07-27T13:18:15.000Z",
       "processingStartedAt": "...",
       "processingCompletedAt": "...",
+      "workflowCompletedAt": "2026-07-27T13:19:05.500Z",
+      // Sólo el pipeline documental.
       "processingSeconds": 45.23,
       "processingMs": 45231.7,
+      // PUT → JSON final construido (incluye cola y pasos upstream).
+      "uploadToResultSeconds": 49.23,
+      "uploadToResultMs": 49231.7,
+      // PUT → workflow FINISHED/FAILED, incluidos movimiento de archivo y
+      // evento terminal. Se completa al consultar el resultado final por API.
+      "uploadToCompletionSeconds": 50.5,
+      "uploadToCompletionMs": 50500.0,
       // Milisegundos por etapa: en qué se fue el tiempo, sin volver a correr
       // el documento. Solo en los pipelines que lo miden.
       "timings": {
@@ -2582,7 +2595,7 @@ Además del `EnrichmentResult`, cada item lleva columnas de primer nivel que esc
 | `ValidationStatus`                                          | `REQUIERE_REVISION`                                                                                                                                           | Filtro `status=` evaluado en DynamoDB.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `ContainedDocumentTypes`                                    | `["EXPEDIENTE_...", "PEDIMENTO_ERP", "FACTURA"]`                                                                                                              | Tipos **dentro** de un expediente: permite que `docType=FACTURA` encuentre la factura de un expediente.                                                                                                                                                                                                                                                                                                                                                                 |
 | `DocumentName`                                              | `expediente-2026.pdf`                                                                                                                                         | Nombre del archivo original.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `Tracking`                                                  | `{CreatedAt, UpdatedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, Timings, Schema, AppOrigin, ModelIds, ModelFallbacks}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. Misma paridad de campos que `result.tracking` (ver §2 y `indexing.py::_TRACKING_FIELD_MAP`), solo que en PascalCase para combinar con el resto de estas columnas — nunca un subconjunto recortado. `AppOrigin` es lo que filtra `?system=`, pero el filtro se evalúa sobre el envelope, no sobre esta columna. |
+| `Tracking`                                                  | `{CreatedAt, UpdatedAt, UploadedAt, ProcessingStartedAt, ProcessingCompletedAt, ProcessingSeconds, ProcessingTime, UploadToResultSeconds, UploadToResultMs, Timings, Schema, AppOrigin, ModelIds, ModelFallbacks}` | **Map**, no filtrable por GSI (no es escalar) — promovido de `EnrichmentResult.tracking` para verlo en el item mismo (Scan/consola) sin parsear el JSON. `UploadToCompletion*` no se persiste aquí: el API lo calcula al leer combinando `UploadedAt` con el evento terminal `ProcessingCompletedAt`. `AppOrigin` es lo que filtra `?system=`. |
 | `Metadata`                                                  | `{lote: "A123", estado_externo: "EN_REVISION"}`                                                                                                               | **Map mutable**: nace del `metadata` del `POST /documents` (§1), se hereda al reprocesar (§3) y `PATCH /documents/{id}/metadata` (§4) la puede crear o cambiar. Es la fuente actual que la API superpone al snapshot de `EnrichmentResult`/S3 y lo que filtra `?meta.<clave>=`.                                                                                                                                                                                         |
 | `MetadataVersion`, `MetadataUpdatedAt`, `MetadataUpdatedBy` | `3`, fecha ISO, `ERP`                                                                                                                                         | Auditoría/concurrencia de la última edición de metadata; no forman parte de la metadata del usuario ni de sus filtros.                                                                                                                                                                                                                                                                                                                                                  |
 

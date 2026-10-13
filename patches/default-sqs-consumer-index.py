@@ -37,7 +37,10 @@ def _mark_queued(document_id, event_time):
         response = ddb_client.update_item(
             TableName=table_name,
             Key={'DocumentId': {'S': document_id}},
-            UpdateExpression='SET #status = :queued, ProcessingStatusUpdatedAt = :updated',
+            UpdateExpression=(
+                'SET #status = :queued, ProcessingStatusUpdatedAt = :updated, '
+                'UploadedAt = if_not_exists(UploadedAt, :updated)'
+            ),
             ConditionExpression=(
                 'attribute_not_exists(#status) OR '
                 '#status IN (:awaiting, :queued)'
