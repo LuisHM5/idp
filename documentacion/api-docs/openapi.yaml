@@ -1983,6 +1983,23 @@ components:
             resolvedFieldCount: { type: integer, minimum: 0 }
             fallbackFields: { type: array, items: { type: string } }
             tokenSavings: { type: object, additionalProperties: true }
+            profile:
+              type: object
+              description: >
+                Decisión del layout cuando el mapper declara perfiles. Un
+                `matched` permite confiar en el mapeo del perfil;
+                `unknown`/`ambiguous` aplican el fallback configurado.
+              required: [status, id, scores]
+              properties:
+                status:
+                  type: string
+                  enum: [matched, unknown, ambiguous, invalid_config, not_configured]
+                id:
+                  type: [string, "null"]
+                  description: Perfil ganador; null si no hubo uno inequívoco.
+                scores:
+                  type: object
+                  additionalProperties: { type: integer, minimum: 0 }
         extractionMode:
           type: object
           description: >

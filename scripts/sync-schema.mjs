@@ -223,6 +223,13 @@ function main() {
     files = discovered.map(({ path }) => path);
   }
 
+  // Same parser/regex engine as the Lambda. A malformed deterministic mapper
+  // must fail BEFORE the first DynamoDB write, especially for `sync:one`
+  // where the change becomes effective immediately without a deploy.
+  const lintArgs = [resolve(__dirname, "validar-mapeos-deterministas.py")];
+  if (one) lintArgs.push("--file", files[0]);
+  execFileSync("python3", lintArgs, { stdio: "inherit", timeout: 30000 });
+
   console.log(`\n📤 Sincronizando ${files.length} tipo(s) a DynamoDB [env=${environment}] (${table} @ ${region})${dryRun ? " [dry-run]" : ""}...\n`);
 
   let ok = 0, fail = 0;

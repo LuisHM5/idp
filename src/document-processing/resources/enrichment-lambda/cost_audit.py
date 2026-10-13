@@ -105,6 +105,61 @@ def _page_counts(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _extraction_audit(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Actual strategy plus deterministic counterfactuals.
+
+    Billed service costs remain under ``Services``. Estimated savings are
+    deliberately isolated here and are never added to ``TotalCostUsd``.
+    """
+    ai = result.get("aiUsage") if isinstance(result.get("aiUsage"), dict) else {}
+    documents = []
+    estimated_input = estimated_output = 0
+    estimated_cost = 0.0
+    for doc in result.get("documents") or []:
+        if not isinstance(doc, dict):
+            continue
+        mode = doc.get("extractionMode") if isinstance(doc.get("extractionMode"), dict) else {}
+        deterministic = (
+            doc.get("deterministicExtraction")
+            if isinstance(doc.get("deterministicExtraction"), dict)
+            else {}
+        )
+        savings = deterministic.get("tokenSavings") if isinstance(deterministic.get("tokenSavings"), dict) else {}
+        saved_input = int(savings.get("estimatedInputTokensSaved") or 0)
+        saved_output = int(savings.get("estimatedOutputTokensSaved") or 0)
+        counterfactual_model = savings.get("counterfactualModelId")
+        estimated_input += saved_input
+        estimated_output += saved_output
+        if saved_input or saved_output:
+            estimated_cost += bedrock_cost(
+                {"inputTokens": saved_input, "outputTokens": saved_output},
+                counterfactual_model,
+            )["costUsd"]
+        if mode or deterministic:
+            profile = deterministic.get("profile") if isinstance(deterministic.get("profile"), dict) else {}
+            documents.append({
+                "Index": int(doc.get("index") or len(documents) + 1),
+                "DocumentType": str(doc.get("documentType") or "OTRO"),
+                "RequestedMode": mode.get("requested"),
+                "EffectiveMode": mode.get("effective"),
+                "Strategy": deterministic.get("strategy") or "model",
+                "ResolvedFieldCount": int(deterministic.get("resolvedFieldCount") or 0),
+                "FallbackFieldCount": len(deterministic.get("fallbackFields") or []),
+                **({"Profile": profile.get("id"), "ProfileStatus": profile.get("status")} if profile else {}),
+            })
+    return {
+        "AiExecuted": bool(result.get("aiExecuted")),
+        "AiStages": list(ai.get("stages") or []),
+        "Documents": documents,
+        "DeterministicSavings": {
+            "Estimated": True,
+            "EstimatedInputTokensSaved": estimated_input,
+            "EstimatedOutputTokensSaved": estimated_output,
+            "EstimatedCostAvoidedUsd": round(estimated_cost, 6),
+        },
+    }
+
+
 def build_cost_breakdown(
     result: Dict[str, Any], event: Dict[str, Any], duration_ms: float
 ) -> Dict[str, Any]:
@@ -156,6 +211,7 @@ def build_cost_breakdown(
         "totalInputTokens": total_input_tokens,
         "totalOutputTokens": total_output_tokens,
         "pricingVersion": PRICING_VERSION,
+        "extractionAudit": _extraction_audit(result),
     }
     if pages:
         breakdown["pages"] = pages
@@ -220,6 +276,7 @@ def write_cost_record(
         "TotalInputTokens": breakdown["totalInputTokens"],
         "TotalOutputTokens": breakdown["totalOutputTokens"],
         "PricingVersion": breakdown["pricingVersion"],
+        "ExtractionAudit": _decimalize(breakdown["extractionAudit"]),
     }
     if event.get("appOrigin"):
         item["AppOrigin"] = str(event["appOrigin"])

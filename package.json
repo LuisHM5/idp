@@ -8,7 +8,8 @@
   "main": "dist/document-validation-stack.js",
   "scripts": {
     "postinstall": "node scripts/patch-construct.mjs",
-    "build": "node scripts/sync-catalogs.mjs && node scripts/patch-construct.mjs && tsc",
+    "build": "python3 scripts/validar-mapeos-deterministas.py && node scripts/sync-catalogs.mjs && node scripts/patch-construct.mjs && tsc",
+    "catalogs:lint": "python3 scripts/validar-mapeos-deterministas.py",
     "sync": "node scripts/sync-schema.mjs",
     "sync:one": "node scripts/sync-schema.mjs --one",
     "sync:prod": "node scripts/sync-schema.mjs --env prod",

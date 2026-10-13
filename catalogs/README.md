@@ -306,7 +306,16 @@ el caso real de `PEDIMENTO_ERP`— está en
 ```jsonc
 "deterministic_extraction": {
   "enabled": true,
-  "fallback": "missing_fields" // missing_fields | full_model | review
+  "fallback": "missing_fields", // missing_fields | full_model | review
+  "profile_fallback": "full_model",
+  "profiles": [{
+    "id": "FORMATO_A",
+    "pages": "first",
+    "markers": ["ENCABEZADO DISTINTIVO", "OTRO ANCLA SEMÁNTICA"],
+    "min_score": 2,
+    "constants": {"CLAVE_FORMATO": "A"},
+    "expected_fields": ["CLAVE_FORMATO", "FOLIO"]
+  }]
 },
 "fields": {
   "FOLIO": {
@@ -327,10 +336,14 @@ el caso real de `PEDIMENTO_ERP`— está en
 
 El motor intenta `selectors` en orden y toma el primero que encuentre. Un
 selector admite `group` por nombre o índice, `occurrence: first|last`,
-`pages: "first"|[1,2,...]`, flags `ignore_case`/`multiline`/`dotall`, los
-transforms cerrados `digits`/`upper`, y `accept_regex` para rechazar una captura
-que matcheó el contexto pero no tiene una forma confiable. Las regex usan la
-sintaxis de Python: un grupo nombrado es `(?P<nombre>...)`.
+`pages: "first"|[1,2,...]`, flags `ignore_case`/`multiline`/`dotall`, y
+`accept_regex` para rechazar una captura que matcheó el contexto pero no tiene
+una forma confiable. `value` permite devolver una constante cuando la regex
+aparece. `transform` acepta una operación y `transforms` una cadena ordenada de
+operaciones cerradas: `strip`, `collapse_whitespace`, `digits`, `alnum`,
+`upper`, `lower`, `number`, `integer`, `date_iso`, `replace`, `regex_sub` y
+`map`. Las regex usan sintaxis Python: un grupo nombrado es
+`(?P<nombre>...)`. El catálogo nunca ejecuta expresiones o código arbitrario.
 
 Para restringir una búsqueda a una sección, agrega al selector —o al bloque de
 un array— `region: {start_regex, end_regex, flags}`. Esto evita que una etiqueta
@@ -353,7 +366,10 @@ las filas de todos los selectores se combinan antes de aplicar
 
 ```jsonc
 "row_selectors": [
-  {"row_regex": "...", "groups": {"FOLIO": "folio"}},
+  {"row_regex": "...", "groups": {
+    "FOLIO": "folio",
+    "IMPORTE": {"group": "importe", "transforms": ["number"]}
+  }},
   {"row_regex": "...", "groups": {"FOLIO": "numero_alterno"}}
 ]
 ```
@@ -366,6 +382,42 @@ las filas de todos los selectores se combinan antes de aplicar
 - `model_fallback: never` deja el campo vacío si no hubo match. Sirve para un
   opcional cuya ausencia es legítima; usarlo en un requerido hará que la
   validación normal lo mande a revisión.
+- Cada `row_selector` puede declarar sus propios `pages` y `region`; así una
+  misma lista soporta tablas ubicadas en secciones distintas según el layout.
+- `groups` acepta el nombre del grupo o un objeto
+  `{group, transform|transforms}`. Esto permite convertir fecha, entero o monto
+  por celda sin escribir código Python específico del tipo.
+
+#### Perfiles de formato: varios layouts bajo un mismo `TYPE_ID`
+
+`profiles` sirve cuando el contrato de negocio es uno, pero existen varias
+familias de formato. No identifica aseguradoras: reconoce el layout por varias
+señales semánticas del contenido. El perfil con mayor score gana sólo si es
+único y alcanza `min_score`.
+
+- `markers`: regex independientes; cada una aporta un punto como máximo.
+- `pages`: ventana usada para reconocerlo (`"first"` o páginas concretas).
+- `constants`: valores que el perfil prueba por su forma, por ejemplo el rubro.
+- `expected_fields`: contrato exacto de hojas que ese layout debe entregar.
+  Sólo las que falten van al modelo con `fallback: missing_fields`. Los
+  opcionales que ese formato no imprime no disparan IA.
+- `profile_fallback: full_model`: si ningún perfil gana o hay empate, las
+  coincidencias regex son sólo diagnóstico y el modelo recibe el schema
+  completo. `review` conserva una operación estrictamente sin IA.
+
+Estados publicados en `documents[].deterministicExtraction.profile`:
+
+| `status` | Efecto |
+|---|---|
+| `matched` | Perfil único reconocido; aplica constantes y fallback sólo sobre `expected_fields` |
+| `unknown` | Ninguno alcanzó el mínimo; se aplica `profile_fallback` |
+| `ambiguous` | Empate entre perfiles; se aplica `profile_fallback` |
+| `invalid_config` | El perfil refiere una ruta inválida; runtime falla abierto y build/sync lo bloquean |
+| `not_configured` | El mapper no usa perfiles; conserva la semántica anterior |
+
+`pnpm catalogs:lint` valida regex, flags, grupos, transforms, regiones, rutas,
+constantes y el contrato de cada perfil sin AWS. También corre automáticamente
+antes de `pnpm build`, `pnpm sync` y `pnpm sync:one`.
 - Con `fallback: missing_fields`, `text_extractor` recibe un JSON Schema que
   contiene **solo** las ramas no resueltas. Un valor determinístico gana siempre
   y el modelo nunca lo sobrescribe. Si no queda ninguna rama, no hay llamada.
@@ -398,10 +450,12 @@ las filas de todos los selectores se combinan antes de aplicar
 - Config inválida o regex sin match falla abierto hacia el fallback. El
   catálogo nunca ejecuta código ni expresiones arbitrarias.
 
-`PEDIMENTO_ERP` es el piloto activo. Para eliminar además la clasificación por
-modelo debe subirse declarando `documentType=PEDIMENTO_ERP`; una carga sin tipo
-todavía puede usar Bedrock para segmentar/clasificar aunque la extracción sea
-determinística.
+`PEDIMENTO_ERP` usa un mapper único y estricto. `CERTIFICADO_POLIZA` usa cuatro
+perfiles (`EMP`, `FL`, `GMM`, `SV`): los formatos conocidos se extraen por
+código y un campo esperado faltante abre sólo el fallback parcial; un formato
+desconocido o ambiguo vuelve al modelo completo. Para eliminar además la
+clasificación por modelo debe subirse declarando el `documentType`; una carga
+sin tipo todavía puede usar Bedrock para segmentar/clasificar.
 
 ### Presets de campos (`$presets`): pedir una verificación con una línea
 

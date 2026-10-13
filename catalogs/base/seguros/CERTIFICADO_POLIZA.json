@@ -1,7 +1,7 @@
 {
   "CERTIFICADO_POLIZA": {
     "catalog_status": "stable",
-    "schema_version": "5.0.0",
+    "schema_version": "5.1.0",
     "display_name": "Certificado de Póliza de Seguro",
     "aliases": [
       "certificado de póliza",
@@ -16,10 +16,142 @@
     "pipeline": "single_document",
     "business_destination": "CERTIFICADO_POLIZA",
     "min_confidence": 0.8,
+    "deterministic_extraction": {
+      "enabled": true,
+      "fallback": "missing_fields",
+      "profile_fallback": "full_model",
+      "profiles": [
+        {
+          "id": "EMP",
+          "pages": "first",
+          "min_score": 2,
+          "markers": [
+            "Seguro\\s+Empresarial",
+            "Incendio\\s+de\\s+Edificio|Ramos\\s+Diversos",
+            "CERTIFICADO\\s*:\\s*\\d+"
+          ],
+          "constants": {
+            "CLAVE_RUBRO": "EMP",
+            "RUBRO": "Empresarial"
+          },
+          "expected_fields": [
+            "CLAVE_RUBRO",
+            "RUBRO",
+            "ASEGURADORA_NOMBRE",
+            "NUMERO_POLIZA",
+            "NUMERO_CERTIFICADO",
+            "TIPO_SEGURO",
+            "ASEGURADOS",
+            "VIGENCIA_INICIO",
+            "VIGENCIA_FIN"
+          ]
+        },
+        {
+          "id": "FL",
+          "pages": "first",
+          "min_score": 3,
+          "markers": [
+            "CAR[ÁA]TULA\\s+DE\\s+SEGURO\\s+DE\\s+AUTOM[ÓO]VILES",
+            "DATOS\\s+DEL\\s+VEH[ÍI]CULO",
+            "N[úu]mero\\s+de\\s+Serie|Placas\\s*:",
+            "Inciso\\s*:"
+          ],
+          "constants": {
+            "CLAVE_RUBRO": "FL",
+            "RUBRO": "Flotilla"
+          },
+          "expected_fields": [
+            "CLAVE_RUBRO",
+            "RUBRO",
+            "ASEGURADORA_NOMBRE",
+            "NUMERO_POLIZA",
+            "NUMERO_INCISO",
+            "TIPO_SEGURO",
+            "CONTRATANTE.NOMBRE",
+            "CONTRATANTE.RFC",
+            "ASEGURADOS",
+            "VIGENCIA_INICIO",
+            "VIGENCIA_FIN",
+            "BIEN_ASEGURADO.MARCA",
+            "BIEN_ASEGURADO.ANIO",
+            "BIEN_ASEGURADO.NUMERO_SERIE"
+          ]
+        },
+        {
+          "id": "GMM",
+          "pages": "first",
+          "min_score": 3,
+          "markers": [
+            "P[óo]liza\\s+de\\s+Seguro\\s+GMM|GMM2020",
+            "Plan\\s*:\\s*GMM",
+          "Subgrupo\\s+\\d+|Categor[ií]a\\s+\\d+",
+            "Asegurado\\s+Parentesco\\s+Edad\\s+Fecha\\s+Nacimiento"
+          ],
+          "constants": {
+            "CLAVE_RUBRO": "GMM",
+          "RUBRO": "Gastos medicos mayores"
+          },
+          "expected_fields": [
+            "CLAVE_RUBRO",
+            "RUBRO",
+            "ASEGURADORA_NOMBRE",
+            "NUMERO_POLIZA",
+            "NUMERO_CERTIFICADO",
+            "TIPO_SEGURO",
+            "PLAN_PRODUCTO",
+            "CONTRATANTE.NOMBRE",
+            "CONTRATANTE.RFC",
+            "ASEGURADOS",
+            "VIGENCIA_INICIO",
+            "VIGENCIA_FIN",
+            "DEDUCIBLE_GENERAL",
+            "COASEGURO_GENERAL"
+          ]
+        },
+        {
+          "id": "SV",
+          "pages": "first",
+          "min_score": 3,
+          "markers": [
+            "VIDA\\s+GRUPO",
+            "cobertura\\s+por\\s+fallecimiento|Beneficiario",
+            "Consentimiento\\s*-?\\s*Certificado\\s+Individual",
+            "Relaci[óo]n\\s+Laboral"
+          ],
+          "constants": {
+            "CLAVE_RUBRO": "SV",
+            "RUBRO": "Seguro de Vida"
+          },
+          "expected_fields": [
+            "CLAVE_RUBRO",
+            "RUBRO",
+            "ASEGURADORA_NOMBRE",
+            "NUMERO_POLIZA",
+            "NUMERO_CERTIFICADO",
+            "TIPO_SEGURO",
+            "PLAN_PRODUCTO",
+            "CONTRATANTE.NOMBRE",
+            "CONTRATANTE.RFC",
+            "ASEGURADOS",
+            "VIGENCIA_INICIO",
+            "VIGENCIA_FIN"
+          ]
+        }
+      ]
+    },
     "fields": {
       "ASEGURADORA_NOMBRE": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?im)^\\s*(?P<value>(?:SEGUROS\\s+[A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ .,&-]*?|[A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ .,&-]*?\\s+ASEGURADORA(?:\\s+MEXICANA)?))\\s*,?\\s*S\\.?\\s*A\\.?\\s*(?:DE|de)\\s*C\\s*\\.?\\s*V\\.?",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            }
+          ]
+        },
         "hint": "Nombre legal o comercial de la compañía aseguradora que emite el certificado. Puede aparecer en el logotipo, membrete, pie de página o texto de certificación. No tomar el nombre del agente, contratante, corredor, banco ni CONDUSEF.",
         "validation": []
       },
@@ -38,12 +170,36 @@
       "NUMERO_POLIZA": {
         "type": "string",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)(?:N[úu]mero\\s+de\\s+P[óo]liza|No\\.?\\s*P[óo]liza|P[óo]liza\\s+No\\.?)\\s*:?\\s*(?P<value>[A-Z0-9](?:[A-Z0-9./-]*[A-Z0-9])?)",
+              "group": "value"
+            },
+            {
+              "regex": "(?i)P[óo]liza\\s*:\\s*(?P<value>[A-Z0-9](?:[A-Z0-9./-]*[A-Z0-9])?)",
+              "group": "value"
+            }
+          ]
+        },
         "hint": "Identificador principal junto a etiquetas variables como 'Póliza', 'No. Póliza', 'Número de póliza', 'Policy No.' o 'Contrato'. Copiarlo literalmente, conservando letras, ceros, guiones y diagonales. No confundir con certificado, endoso, inciso, recibo, siniestro o registro CNSF.",
         "validation": []
       },
       "NUMERO_CERTIFICADO": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)No\\.?[ \\t]*Certificado[ \\t]*:?[ \\t]*(?P<value>[A-Z0-9][A-Z0-9./-]*)",
+              "group": "value"
+            },
+            {
+              "regex": "(?i)Certificado[ \\t]*:?[ \\t]*(?P<value>\\d[A-Z0-9./-]*)",
+              "group": "value"
+            }
+          ]
+        },
         "hint": "Número individual del certificado, constancia o integrante, identificado como 'Certificado', 'No. Certificado', 'Certificate No.' o equivalente. El formato depende de la aseguradora. No repetir NUMERO_POLIZA cuando no exista un número separado.",
         "validation": []
       },
@@ -62,18 +218,92 @@
       "NUMERO_INCISO": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)Inciso\\s*:?\\s*(?P<value>[A-Z0-9./-]+)",
+              "group": "value"
+            }
+          ]
+        },
         "hint": "Número de inciso, unidad, riesgo o ubicación asegurada cuando el formato lo muestre. Es común en seguros de autos y daños; dejar null en otros ramos.",
         "validation": []
+      },
+      "CLAVE_RUBRO": {
+        "type": "string",
+        "required": true,
+        "hint": "Código canónico del rubro reconocido por el perfil determinístico: EMP, FL, GMM o SV. Si el formato no corresponde inequívocamente a uno de ellos, extraer el código únicamente cuando el contenido permita clasificarlo con certeza.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(EMP|FL|GMM|SV)$",
+            "message": "La clave de rubro debe ser EMP, FL, GMM o SV"
+          }
+        ]
+      },
+      "RUBRO": {
+        "type": "string",
+        "required": true,
+        "hint": "Descripción canónica del rubro: Empresarial, Flotilla, Gastos medicos mayores o Seguro de Vida. Se determina por el contenido y no por la aseguradora ni por el nombre del archivo.",
+        "validation": [
+          {
+            "rule_type": "regex",
+            "pattern": "^(Empresarial|Flotilla|Gastos medicos mayores|Seguro de Vida)$",
+            "message": "El rubro no pertenece al catálogo permitido"
+          }
+        ]
       },
       "TIPO_SEGURO": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)AUTOM[ÓO]VILES\\s+RESIDENTES",
+              "value": "Seguro de Automóviles Residentes"
+            },
+            {
+              "regex": "(?i)(?P<value>Seguro\\s+Empresarial)",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            },
+            {
+              "regex": "(?i)CAR[ÁA]TULA\\s+DE\\s+(?P<value>SEGURO\\s+DE\\s+AUTOM[ÓO]VILES(?:\\s+RESIDENTES)?)",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            },
+            {
+              "regex": "(?i)Certificado\\s+Individual\\s+de\\s+la\\s+P[óo]liza\\s+de\\s+(?P<value>Seguro\\s+GMM[^\\n]*)",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            },
+            {
+              "regex": "(?i)(?P<value>VIDA\\s+GRUPO(?:\\s*\\+\\s*VA)?)",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            }
+          ]
+        },
         "hint": "Ramo, operación o tipo de seguro escrito en el título o datos de la póliza, por ejemplo Gastos Médicos Mayores, Vida, Automóvil, Daños, Hogar, Accidentes, Responsabilidad Civil, Transporte o Salud. Conservar la denominación del documento; no clasificarlo a partir de una cobertura aislada.",
         "validation": []
       },
       "PLAN_PRODUCTO": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)Plan\\s*:\\s*(?P<value>[^\\n]+)",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            },
+            {
+              "regex": "(?i)(?P<value>VIDA\\s+GRUPO(?:\\s*\\+\\s*VA)?)",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            }
+          ]
+        },
         "hint": "Nombre del plan, producto, paquete, programa o versión comercial, aunque la aseguradora use otra etiqueta. No incluir plazo, moneda, forma de pago ni número de póliza.",
         "validation": []
       },
@@ -104,12 +334,40 @@
           "NOMBRE": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "(?im)^\\s*Contratante\\s*:\\s*(?P<value>[^\\n]+?)(?=\\s{2,}[A-Za-zÁÉÍÓÚÜÑáéíóúüñ.]+\\s*:|$)",
+                  "group": "value",
+                  "transforms": ["collapse_whitespace"]
+                },
+                {
+                  "regex": "(?im)^\\s*Datos\\s+del\\s+Contratante[^\\n]*\\n\\s*(?P<value>[A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ .,&'-]{2,}?)(?=\\s{2,}|$)",
+                  "group": "value",
+                  "transforms": ["collapse_whitespace"]
+                }
+              ]
+            },
             "hint": "Nombre completo, denominación o razón social del contratante/tomador. No copiar el nombre de la aseguradora ni del titular si no está identificado también como contratante.",
             "validation": []
           },
           "RFC": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "(?is)Datos\\s+del\\s+Contratante(?:(?!Datos\\s+del\\s+(?:Asegurado|Veh[íi]culo)).){0,700}?(?P<value>[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3})",
+                  "group": "value",
+                  "transforms": ["upper"]
+                },
+                {
+                  "regex": "(?im)^\\s*Domicilio\\s*:.*?R\\.?F\\.?C\\.?\\s*:\\s*(?P<value>[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3})",
+                  "group": "value",
+                  "transforms": ["upper"]
+                }
+              ]
+            },
             "hint": "RFC del contratante o tomador, en mayúsculas y sin espacios ni guiones. No usar RFC de aseguradora, asegurado distinto, agente o proveedor.",
             "validation": [
               {
@@ -136,6 +394,63 @@
       "ASEGURADOS": {
         "type": "array",
         "required": true,
+        "text_source": {
+          "row_selectors": [
+            {
+              "pages": "first",
+              "row_regex": "(?im)^\\s*Asegurado\\s*:\\s*(?P<nombre>[^\\n.]+)",
+              "groups": {
+                "NOMBRE": {"group": "nombre", "transforms": ["collapse_whitespace"]}
+              }
+            },
+            {
+              "pages": "first",
+              "region": {
+                "start_regex": "DATOS\\s+DEL\\s+ASEGURADO",
+                "end_regex": "DATOS\\s+DEL\\s+VEH[ÍI]CULO",
+                "flags": ["ignore_case"]
+              },
+              "row_regex": "(?im)^\\s*Nombre\\s*:\\s*(?P<nombre>[^\\n]+?)(?=\\s{2,}|$)",
+              "groups": {
+                "NOMBRE": {"group": "nombre", "transforms": ["collapse_whitespace"]}
+              }
+            },
+            {
+              "pages": "first",
+              "region": {
+                "start_regex": "Asegurado\\s+Parentesco\\s+Edad",
+                "end_regex": "Empleados\\s+y\\s+sus\\s+dependientes",
+                "flags": ["ignore_case"]
+              },
+              "row_regex": "(?m)^\\s*(?P<nombre>[A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ .'-]{5,}?)\\s{2,}(?P<parentesco>TITULAR|C[ÓO]NYUGE|HIJO|HIJA|DEPENDIENTE)\\s+(?P<edad>\\d{1,3})\\s+(?P<nacimiento>\\d{2}/\\d{2}/\\d{4})\\s+(?P<alta>\\d{2}/\\d{2}/\\d{4})(?:\\s+(?P<antiguedad>\\d{2}/\\d{2}/\\d{4}))?",
+              "groups": {
+                "NOMBRE": {"group": "nombre", "transforms": ["collapse_whitespace"]},
+                "ROL": "parentesco",
+                "PARENTESCO": "parentesco",
+                "EDAD": {"group": "edad", "transforms": ["integer"]},
+                "FECHA_NACIMIENTO": {"group": "nacimiento", "transforms": ["date_iso"]},
+                "FECHA_ALTA": {"group": "alta", "transforms": ["date_iso"]},
+                "ANTIGUEDAD": {"group": "antiguedad", "transforms": ["date_iso"]}
+              }
+            },
+            {
+              "pages": "first",
+              "region": {
+                "start_regex": "Asegurado\\s+.*F\\.?\\s*Nacimiento",
+                "end_regex": "Cobertura\\s+.*Suma\\s+Asegurada",
+                "flags": ["ignore_case"]
+              },
+              "row_regex": "(?m)^\\s*(?P<nombre>[A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ .'-]{5,}?)\\s+(?P<sexo>[MF])\\s+(?P<edad>\\d{1,3})\\s+(?P<nacimiento>\\d{2}/\\d{2}/\\d{4})\\s+(?P<alta>\\d{2}/\\d{2}/\\d{4})",
+              "groups": {
+                "NOMBRE": {"group": "nombre", "transforms": ["collapse_whitespace"]},
+                "EDAD": {"group": "edad", "transforms": ["integer"]},
+                "FECHA_NACIMIENTO": {"group": "nacimiento", "transforms": ["date_iso"]},
+                "FECHA_ALTA": {"group": "alta", "transforms": ["date_iso"]}
+              }
+            }
+          ],
+          "deduplicate_by": ["NOMBRE"]
+        },
         "hint": "Extraer una fila por cada persona o entidad expresamente asegurada, incluidos titular y dependientes. Buscar tablas o bloques llamados Asegurado, Titular, Integrantes, Dependientes, Personas cubiertas o equivalentes; conservar el orden y no incluir al contratante si no está asegurado.",
         "validation": [
           {
@@ -233,12 +548,40 @@
       "VIGENCIA_INICIO": {
         "type": "date",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)Vigencia\\s*:\\s*(?P<value>\\d{1,2}\\s+de\\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+\\s+de\\s+\\d{4})\\s+al",
+              "group": "value",
+              "transforms": ["date_iso"]
+            },
+            {
+              "regex": "(?i)(?:Vigencia\\s+desde|Inicio\\s+vigencia)\\s*:\\s*(?:las\\s+)?(?:\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:h|a\\.?\\s*m\\.?)?\\s*)?(?P<value>\\d{1,2}/\\d{1,2}/\\d{4}|\\d{1,2}\\s+de\\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+\\s+de\\s+\\d{4})",
+              "group": "value",
+              "transforms": ["date_iso"]
+            }
+          ]
+        },
         "hint": "Fecha inicial de cobertura junto a etiquetas como Inicio de vigencia, Desde, Fecha efectiva, Effective date o similar. Normalizar a YYYY-MM-DD. No usar fecha de expedición, alta del asegurado, antigüedad o nacimiento.",
         "validation": []
       },
       "VIGENCIA_FIN": {
         "type": "date",
         "required": true,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)Vigencia\\s*:\\s*\\d{1,2}\\s+de\\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+\\s+de\\s+\\d{4}\\s+al\\s+(?P<value>\\d{1,2}\\s+de\\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+\\s+de\\s+\\d{4})",
+              "group": "value",
+              "transforms": ["date_iso"]
+            },
+            {
+              "regex": "(?i)(?:Hasta|Fin\\s+vigencia)\\s*:\\s*(?:las\\s+)?(?:\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:h|a\\.?\\s*m\\.?)?\\s*)?(?P<value>\\d{1,2}/\\d{1,2}/\\d{4}|\\d{1,2}\\s+de\\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+\\s+de\\s+\\d{4})",
+              "group": "value",
+              "transforms": ["date_iso"]
+            }
+          ]
+        },
         "hint": "Fecha final de cobertura junto a Fin de vigencia, Hasta, Vencimiento, Expiration date o equivalente. Normalizar a YYYY-MM-DD. No usar fecha de expedición ni fin de un periodo de espera.",
         "validation": [
           {
@@ -306,12 +649,35 @@
       "DEDUCIBLE_GENERAL": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)Deducible\\s*:\\s*(?P<value>[\\d,.]+\\s*(?:Pesos|M\\.?N\\.?|MXN))",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            }
+          ]
+        },
         "hint": "Deducible principal o general tal como aparece en la carátula/resumen, incluyendo monto, porcentaje, unidad o 'No aplica'. No tomar un deducible de cobertura específica como general.",
         "validation": []
       },
       "COASEGURO_GENERAL": {
         "type": "string",
         "required": false,
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?i)(?:Coaseguro\\s*:\\s*(?P<after>\\d+(?:[.,]\\d+)?\\s*%)|(?P<before>\\d+(?:[.,]\\d+)?\\s*%)\\s*Coaseguro\\s*:)",
+              "group": "after",
+              "transforms": ["collapse_whitespace"]
+            },
+            {
+              "regex": "(?i)(?P<value>\\d+(?:[.,]\\d+)?\\s*%)\\s*Coaseguro\\s*:",
+              "group": "value",
+              "transforms": ["collapse_whitespace"]
+            }
+          ]
+        },
         "hint": "Coaseguro, copago o participación general del asegurado, conservando porcentaje, monto, tope o 'No aplica'. No tomar el valor de una cobertura específica como general.",
         "validation": []
       },
@@ -435,30 +801,77 @@
           "TIPO": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?i)DATOS\\s+DEL\\s+VEH[ÍI]CULO",
+                  "value": "VEHÍCULO"
+                }
+              ]
+            },
             "hint": "Tipo de bien o riesgo: VEHÍCULO, INMUEBLE, MERCANCÍA, EQUIPO, EMBARCACIÓN u otra denominación impresa.",
             "validation": []
           },
           "DESCRIPCION": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?im)^\\s*Versi[oó]n\\s*:\\s*(?P<value>[^\\n]+?)(?=\\s{2,}N[úu]mero\\s+de\\s+Serie\\s*:|$)",
+                  "group": "value",
+                  "transforms": ["collapse_whitespace"]
+                }
+              ]
+            },
             "hint": "Descripción completa del bien, uso o riesgo asegurado sin repetir identificadores que tengan subcampo propio.",
             "validation": []
           },
           "MARCA": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?im)^\\s*Marca\\s*:\\s*(?P<value>[^,\\n]+)",
+                  "group": "value",
+                  "transforms": ["collapse_whitespace"]
+                }
+              ]
+            },
             "hint": "Marca del vehículo, equipo u otro bien cuando esté impresa.",
             "validation": []
           },
           "MODELO": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?i)Modelo\\s*:\\s*(?P<value>[A-Z0-9./-]+)",
+                  "group": "value"
+                }
+              ]
+            },
             "hint": "Modelo o versión del bien. Conservarlo como string para no perder letras o ceros.",
             "validation": []
           },
           "ANIO": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?i)Modelo\\s*:\\s*(?P<value>(?:19|20)\\d{2})",
+                  "group": "value"
+                }
+              ]
+            },
             "hint": "Año/modelo del vehículo o bien cuando esté explícitamente etiquetado; no tomar el año de vigencia.",
             "validation": [
               {
@@ -471,12 +884,32 @@
           "NUMERO_SERIE": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?i)N[úu]mero\\s+de\\s+Serie\\s*:\\s*(?P<value>[A-HJ-NPR-Z0-9]{11,20})",
+                  "group": "value",
+                  "transforms": ["upper"]
+                }
+              ]
+            },
             "hint": "Número de serie, VIN, chasis, motor, IMEI o identificador único del bien, conservando el formato literal.",
             "validation": []
           },
           "PLACAS": {
             "type": "string",
             "required": false,
+            "text_source": {
+              "selectors": [
+                {
+                  "pages": "first",
+                  "regex": "(?i)Placas\\s*:\\s*(?P<value>[A-Z0-9-]+)",
+                  "group": "value",
+                  "transforms": ["upper"]
+                }
+              ]
+            },
             "hint": "Placas o matrícula del vehículo cuando estén impresas. No confundir con número de serie.",
             "validation": []
           },

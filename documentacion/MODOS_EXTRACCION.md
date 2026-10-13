@@ -8,8 +8,9 @@ Esta guía responde dos preguntas distintas:
 La decisión global es: **`catalog` debe permanecer como el valor por default de
 `extractionMode`**. No es una quinta forma de extraer: en PDF/imagen busca si el
 tipo declaró un mapper; si existe lo ejecuta y, si no existe, usa IA para todos
-los campos. Hoy eso hace que `PEDIMENTO_ERP` use código determinístico, que los
-XML usen XPath y que los demás PDF/imágenes sigan usando el modelo hasta que
+los campos. Hoy `PEDIMENTO_ERP` usa código determinístico estricto,
+`CERTIFICADO_POLIZA` usa perfiles por código con fallback parcial/completo, los
+XML usan XPath y los demás PDF/imágenes siguen usando el modelo hasta que
 tengan un mapper confiable.
 
 ## 1. Nombre y efecto de cada modo
@@ -49,11 +50,14 @@ archivo
       │  └─ MODEL: todos los campos van a IA
       └─ SÍ
          └─ primero ejecuta el mapper por código
+            ├─ ¿declara perfiles?
+            │  ├─ perfil único → confía en mapper y revisa sus expected_fields
+            │  └─ desconocido/empate → profile_fallback: IA completa o revisión
             ├─ fallback: review
             │  └─ DETERMINISTIC: no abre IA; faltantes van a revisión
             └─ fallback: missing_fields
-               ├─ mapper resolvió todo → DETERMINISTIC: no abre IA
-               └─ quedaron faltantes → HYBRID: sólo esos campos van a IA
+               ├─ mapper resolvió lo esperado → DETERMINISTIC: no abre IA
+               └─ quedaron esperados faltantes → HYBRID: sólo esos campos van a IA
 ```
 
 Ejemplos actuales:
@@ -61,6 +65,8 @@ Ejemplos actuales:
 | Carga con `extractionMode: catalog` | Flujo que toma | Efecto |
 |---|---|---|
 | `PEDIMENTO_ERP` PDF | Tiene mapper + `fallback: review` | Código solamente; faltantes a revisión; cero IA de extracción |
+| `CERTIFICADO_POLIZA` de perfil conocido | Tiene mapper + perfil único | Código; sólo un campo esperado faltante abre IA parcial |
+| `CERTIFICADO_POLIZA` con formato nuevo o ambiguo | Ningún perfil gana de forma única | IA completa por `profile_fallback: full_model`; no confía en matches tentativos |
 | `ACTA_NACIMIENTO` PDF | No tiene mapper | Todos los campos van al modelo |
 | `PEDIMENTO_ERP_XML` XML | Ruta estructurada por extensión | XPath por código; `extractionMode` no interviene |
 
@@ -93,8 +99,8 @@ La resolución completa por familia queda así:
 
 | Familia del tipo | `catalog` | `model` | `hybrid` | `deterministic` |
 |---|---|---|---|---|
-| PDF/imagen sin mapper (22 activos) | Modelo | Modelo | Modelo, con razón de incompatibilidad | Modelo, con razón de incompatibilidad |
-| PDF/imagen con mapper (`PEDIMENTO_ERP`) | Política del catálogo: hoy determinística | Modelo completo | Mapper + modelo sólo si faltan ramas | Sólo mapper |
+| PDF/imagen sin mapper (21 activos) | Modelo | Modelo | Modelo, con razón de incompatibilidad | Modelo, con razón de incompatibilidad |
+| PDF/imagen con mapper (`PEDIMENTO_ERP`, `CERTIFICADO_POLIZA`) | Política/perfil del catálogo | Modelo completo | Mapper + modelo sólo si faltan ramas | Sólo mapper |
 | XML con XPath (7 activos) | Código XML | Código XML | Código XML | Código XML |
 | XLSX/XLSM/CSV con `cell`/`column` (0 activos) | Código tabular | Código tabular | Código tabular | Código tabular |
 
@@ -104,7 +110,7 @@ por tanto no hubo ningún fallback.
 
 ## 2. Por qué `catalog` es el default correcto
 
-La alternativa global `deterministic` no es viable: 22 tipos PDF/imagen todavía
+La alternativa global `deterministic` no es viable: 21 tipos PDF/imagen todavía
 no tienen mapper. `model` renunciaría al ahorro ya conseguido y `hybrid` tendría
 una latencia p95 impredecible: basta un solo campo no resuelto para volver a
 abrir una generación que puede producir miles de tokens.
@@ -139,7 +145,7 @@ describe la extracción de campos; otras etapas posibles se explican en §4.
 | `ACTA_NACIMIENTO` | beta | PDF/imagen | Modelo |
 | `CARTA_NOM35` | beta | PDF/imagen | Modelo + autenticidad según catálogo |
 | `CEDULA_PROFESIONAL` | beta | PDF/imagen | Modelo |
-| `CERTIFICADO_POLIZA` | estable | PDF/imagen | Modelo |
+| `CERTIFICADO_POLIZA` | estable | PDF/imagen | **Perfiles `EMP`/`FL`/`GMM`/`SV`: mapper; IA parcial si falta su contrato, IA completa si el perfil es desconocido/ambiguo** |
 | `CFDI_GASTO_TERCERO_XML` | beta | XML | XPath, código puro |
 | `CFDI_PAGO_DERECHOS_SANITARIOS_XML` | beta | XML | XPath, código puro |
 | `COMPROBANTE_DOMICILIO` | beta | PDF/imagen | Modelo |
@@ -168,9 +174,10 @@ describe la extracción de campos; otras etapas posibles se explican en §4.
 
 Totales actuales:
 
-- 22 tipos PDF/imagen con extracción de campos por modelo;
+- 21 tipos PDF/imagen con extracción de campos por modelo;
 - 7 tipos XML con XPath determinístico;
-- 1 tipo PDF (`PEDIMENTO_ERP`) con mapper de texto determinístico;
+- 2 tipos PDF con mapper de texto: `PEDIMENTO_ERP` estricto y
+  `CERTIFICADO_POLIZA` por perfiles con fallback;
 - 0 tipos tabulares activos. La ruta XLSX/XLSM/CSV ya existe y será código puro
   mediante `cell`/`column` cuando se publique un catálogo que la use.
 
@@ -244,6 +251,11 @@ En cada documento:
   "deterministicExtraction": {
     "strategy": "deterministic",
     "aiExecuted": false,
+    "profile": {
+      "id": "FL",
+      "status": "matched",
+      "scores": {"EMP": 0, "FL": 4, "GMM": 0, "SV": 0}
+    },
     "resolvedFieldCount": 24,
     "fallbackFields": [],
     "tokenSavings": {}
@@ -260,6 +272,9 @@ Las diferencias importantes son:
 - `strategy` = **qué ocurrió realmente en ese documento**. Puede ser
   `deterministic`, `hybrid` o `model` según los campos efectivamente resueltos;
 - `fallbackFields` muestra exactamente qué ramas fueron al modelo.
+- `profile.status` explica la decisión de layout: `matched` conserva el mapper;
+  `unknown`/`ambiguous` aplican `profile_fallback`; `not_configured` indica un
+  mapper sin perfiles. `profile.id` sólo existe cuando hubo ganador único.
 
 ### Tabla de interpretación de estados
 

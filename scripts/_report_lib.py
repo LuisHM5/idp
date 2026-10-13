@@ -151,6 +151,33 @@ def _page_selection(ps: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _extraction_audit(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    savings = raw.get("DeterministicSavings") or {}
+    documents = []
+    for doc in raw.get("Documents") or []:
+        documents.append({
+            "index": int(doc.get("Index", 0) or 0),
+            "document_type": doc.get("DocumentType") or "OTRO",
+            "requested_mode": doc.get("RequestedMode"),
+            "effective_mode": doc.get("EffectiveMode"),
+            "strategy": doc.get("Strategy") or "model",
+            "profile": doc.get("Profile"),
+            "profile_status": doc.get("ProfileStatus"),
+            "resolved_fields": int(doc.get("ResolvedFieldCount", 0) or 0),
+            "fallback_fields": int(doc.get("FallbackFieldCount", 0) or 0),
+        })
+    return {
+        "ai_executed": bool(raw.get("AiExecuted")),
+        "ai_stages": list(raw.get("AiStages") or []),
+        "documents": documents,
+        "input_tokens_saved": int(savings.get("EstimatedInputTokensSaved", 0) or 0),
+        "output_tokens_saved": int(savings.get("EstimatedOutputTokensSaved", 0) or 0),
+        "estimated_cost_avoided": float(savings.get("EstimatedCostAvoidedUsd", 0) or 0),
+    }
+
+
 def normalize_cost_item(it: Dict[str, Any]) -> Dict[str, Any]:
     services_raw = it.get("Services") or {}
     services: Dict[str, Dict[str, Any]] = {}
@@ -186,6 +213,7 @@ def normalize_cost_item(it: Dict[str, Any]) -> Dict[str, Any]:
         # número, y reporte.py embebe esto con json.dumps, que no serializa
         # Decimal — el mismo motivo por el que los campos de arriba se castean.
         "page_selection": _page_selection(it.get("PageSelection")),
+        "extraction_audit": _extraction_audit(it.get("ExtractionAudit")),
         "document_id": it.get("DocumentId", ""),
         "document_type": str(it.get("DocumentType") or "OTRO"),
         "document_type_name": it.get("DocumentTypeName") or "",

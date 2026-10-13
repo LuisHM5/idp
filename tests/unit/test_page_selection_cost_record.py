@@ -133,3 +133,87 @@ def test_the_item_is_writable_by_boto3():
     assert floats(item) == []
     assert TypeSerializer().serialize(item)["M"]["charsSkipped"] == {"N": "105096"}
     assert isinstance(item["estimatedInputSavingPct"], Decimal)
+
+
+def test_extraction_strategy_and_deterministic_savings_are_audited_separately():
+    result = {
+        "documentId": "cert-1",
+        "aiExecuted": False,
+        "aiUsage": {"executed": False, "stages": []},
+        "documents": [{
+            "index": 1,
+            "documentType": "CERTIFICADO_POLIZA",
+            "extractionMode": {"requested": "catalog", "effective": "hybrid"},
+            "deterministicExtraction": {
+                "strategy": "deterministic",
+                "resolvedFieldCount": 14,
+                "fallbackFields": [],
+                "profile": {"id": "GMM", "status": "matched"},
+                "tokenSavings": {
+                    "estimatedInputTokensSaved": 5000,
+                    "estimatedOutputTokensSaved": 900,
+                    "counterfactualModelId": "minimax.minimax-m2.5",
+                },
+            },
+        }],
+        "usage": {"extraction": {"modelId": None, "usage": {}}},
+        "pages": {"totalPages": 5, "nativePages": 5, "ocrPages": 0, "emptyPages": 0},
+    }
+
+    breakdown = cost_audit.build_cost_breakdown(result, {}, 2500.0)
+    audit = breakdown["extractionAudit"]
+
+    assert audit["AiExecuted"] is False
+    assert audit["Documents"][0]["Profile"] == "GMM"
+    assert audit["Documents"][0]["Strategy"] == "deterministic"
+    assert audit["DeterministicSavings"]["EstimatedInputTokensSaved"] == 5000
+    assert audit["DeterministicSavings"]["EstimatedCostAvoidedUsd"] > 0
+    assert breakdown["totalCostUsd"] == round(
+        sum(service["costUsd"] for service in breakdown["services"].values()), 6
+    )
+
+
+def test_extraction_audit_is_written_to_the_dedicated_cost_table(monkeypatch):
+    import boto3
+
+    captured = {}
+
+    class Table:
+        def put_item(self, *, Item):
+            captured["item"] = Item
+
+    class Dynamo:
+        def Table(self, name):
+            captured["table"] = name
+            return Table()
+
+    monkeypatch.setattr(cost_audit, "_COST_TABLE", "document-validation-costs-dev")
+    monkeypatch.setattr(boto3, "resource", lambda service: Dynamo())
+    result = {
+        "documentId": "cert-2",
+        "documentClassification": "CERTIFICADO_POLIZA",
+        "aiExecuted": False,
+        "aiUsage": {"stages": []},
+        "documents": [{
+            "index": 1,
+            "documentType": "CERTIFICADO_POLIZA",
+            "extractionMode": {"requested": "catalog", "effective": "hybrid"},
+            "deterministicExtraction": {
+                "strategy": "deterministic",
+                "resolvedFieldCount": 12,
+                "fallbackFields": [],
+                "profile": {"id": "SV", "status": "matched"},
+                "tokenSavings": {"counterfactualModelId": "minimax.minimax-m2.5"},
+            },
+        }],
+        "usage": {},
+        "pages": {"totalPages": 3, "nativePages": 3, "ocrPages": 0, "emptyPages": 0},
+    }
+
+    item = cost_audit.write_cost_record(result, {}, 1200.0)
+
+    assert captured["table"] == "document-validation-costs-dev"
+    assert captured["item"] is item
+    assert item["ExtractionAudit"]["AiExecuted"] is False
+    assert item["ExtractionAudit"]["Documents"][0]["Profile"] == "SV"
+    assert item["Services"]["BedrockExtraction"]["costUsd"] == Decimal("0.0")

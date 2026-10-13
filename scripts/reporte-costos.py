@@ -512,6 +512,8 @@ def write_excel(
         "DocumentId", "DocumentType", "DocumentTypeName", "SourceFile", "AppOrigin", "ProcessedAt",
         "PagesTotal", "PagesNative", "PagesOcr", "PagesEmpty",
         "TotalInputTokens", "TotalOutputTokens", "TotalCostUsd", "CostPerPageUsd", "PricingVersion",
+        "AiExecuted", "ExtractionStrategies", "ExtractionProfiles", "ExtractionProfileStatuses",
+        "Deterministic.InputTokensSaved", "Deterministic.OutputTokensSaved", "Deterministic.CostAvoidedUsd",
         # Selección de páginas: vacío en documentos donde no estuvo activa.
         # CostAvoided es ESTIMADO — no sumarlo a TotalCostUsd.
         "PageSel.PagesExtracted", "PageSel.PagesSkipped",
@@ -526,6 +528,14 @@ def write_excel(
             r["processed_at"], r["pages_total"], r["pages_native"], r["pages_ocr"], r["pages_empty"],
             r["total_input_tokens"], r["total_output_tokens"], r["total_cost"], r["cost_per_page"], r["pricing_version"],
         ]
+        audit = r.get("extraction_audit")
+        row += [
+            audit["ai_executed"],
+            ", ".join(sorted({d["strategy"] for d in audit["documents"]})),
+            ", ".join(sorted({d["profile"] for d in audit["documents"] if d.get("profile")})),
+            ", ".join(sorted({d["profile_status"] for d in audit["documents"] if d.get("profile_status")})),
+            audit["input_tokens_saved"], audit["output_tokens_saved"], audit["estimated_cost_avoided"],
+        ] if audit else [None, None, None, None, None, None, None]
         ps = r.get("page_selection")
         row += [
             ps["pages_extracted"], ps["pages_skipped"],

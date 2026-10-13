@@ -167,14 +167,15 @@ Tres advertencias para no leer de más estos números:
    tumbó uno de ellos — pero un pedimento escaneado es casi todo páginas de
    pedimento, así que la selección excede `max_ratio` y cae en fail-open.
 
-## 0-ter. Extracción determinística de `PEDIMENTO_ERP` (2026-10-12) — implementada, pendiente de medición desplegada
+## 0-ter. Extracción determinística e híbrida por catálogo (2026-10-13)
 
-`PEDIMENTO_ERP` intenta ahora sus `text_source` sobre el texto pypdf/Textract
-antes de Bedrock. Si todos los campos quedan resueltos, la línea
-`usage.extraction` lleva cero tokens; si hay huecos, sólo el sub-schema faltante
-se factura. Esto no elimina el costo de Textract de una página escaneada ni una
-clasificación automática: para evitar esta última la carga debe declarar
-`documentType=PEDIMENTO_ERP`.
+`PEDIMENTO_ERP` y `CERTIFICADO_POLIZA` intentan sus `text_source` sobre el texto
+pypdf/Textract antes de Bedrock. Si todos los campos esperados quedan resueltos,
+la línea `usage.extraction` lleva cero tokens; si hay huecos, sólo el sub-schema
+faltante se factura. En certificados, un perfil desconocido o ambiguo restaura
+el schema completo para no confiar en coincidencias parciales. Esto no elimina
+el costo de Textract de una página escaneada ni una clasificación automática:
+para evitar esta última la carga debe declarar `documentType`.
 
 El envelope publica dos números deliberadamente separados:
 
@@ -185,10 +186,14 @@ El envelope publica dos números deliberadamente separados:
   parcial real cuando existe; la salida serializa los valores determinísticos
   con la forma que habría generado el modelo y aplica 4 caracteres/token.
 
-`documents[].deterministicExtraction` conserva `strategy`, `fallbackFields` y
-el cálculo por documento. El estimado nunca se suma a `usage` ni se presenta
-como factura real. Sigue pendiente medir ahorro de dólares y segundos sobre el
-stack desplegado contra el mismo ground truth E2E.
+`documents[].deterministicExtraction` conserva `strategy`, `profile`,
+`fallbackFields` y el cálculo por documento. El estimado nunca se suma a
+`usage` ni se presenta como factura real. En la medición desplegada del
+pedimento de 17 páginas, el camino híbrido tardó 160.75 s y facturó 38,804
+tokens de entrada + 10,058 de salida; después de completar el mapper y usar
+`fallback: review`, el mismo caso terminó en 2.47 s con 0/0 tokens. Los cuatro
+certificados de calibración se verificaron localmente sin llamadas de modelo;
+su costo/latencia desplegados deben medirse después de sincronizar el catálogo.
 
 ## 0. Recálculo 2026-08-04 (vía MCP AWS — Cost Explorer + Pricing API)
 
@@ -692,6 +697,28 @@ También aparece en los reportes:
 | `pnpm reporte` | tarjeta en el dashboard que **respeta los filtros** (se recalcula en el navegador con el corte activo) y se oculta sola si ningún documento del corte tuvo selección |
 
 En todos, `evitado` va en su propia columna, nunca sumado al costo total.
+
+### Atributo `ExtractionAudit` (2026-10-13)
+
+La misma tabla dedicada de costos guarda ahora cómo se obtuvo la extracción,
+sin inferirlo por el `TYPE_ID` ni por la duración:
+
+| Campo | Qué registra |
+|---|---|
+| `AiExecuted` / `AiStages` | si corrió un modelo en cualquier etapa y cuáles |
+| `Documents[].RequestedMode` / `EffectiveMode` | override solicitado y política resuelta |
+| `Documents[].Strategy` | `model`, `hybrid` o `deterministic` realmente observado |
+| `ResolvedFieldCount` / `FallbackFieldCount` | cuánto resolvió código y cuánto fue a IA |
+| `Profile` / `ProfileStatus` | layout reconocido y estado de la decisión, cuando aplica |
+| `DeterministicSavings.*` | input/output estimados evitados y costo contrafactual según el modelo que habría corrido |
+
+Los costos de Bedrock realmente ejecutado siguen en `Services` y alimentan
+`TotalCostUsd`. `ExtractionAudit.DeterministicSavings` vive aparte y **nunca se
+suma** al total: puro código tiene costo Bedrock $0; híbrido factura sólo el
+fallback; modelo completo factura su usage completo. Textract conserva su costo
+independiente en `Services.TextractOcr`, incluso cuando no hubo IA generativa.
+`pnpm costos -- --id <id>` muestra este bloque y `pnpm reporte:costos` lo exporta
+en las columnas `AiExecuted`, estrategia, perfil/estado, tokens y costo evitado.
 
 **Qué NO se trackea por documento, deliberadamente:** KMS, S3, SQS,
 CloudWatch, API Gateway, DynamoDB. Ninguno es atribuible a una invocación

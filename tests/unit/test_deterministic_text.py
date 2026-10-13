@@ -1,9 +1,10 @@
 """Deterministic-first extraction configured entirely by the field DSL."""
 
 import json
-
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAMBDA_DIR = REPO_ROOT / "src/document-processing/resources/enrichment-lambda"
@@ -148,6 +149,282 @@ def test_array_combina_layouts_de_row_selectors():
         {"FOLIO": "A1", "ACUSE": None, "IMPORTE": "10"},
         {"FOLIO": "B2", "ACUSE": "COVE99", "IMPORTE": "20"},
     ]
+
+
+def test_profiles_declaran_constantes_y_acotan_el_fallback_a_campos_esperados():
+    entry = _parse_entry("PERFILES", {
+        "description": "Formato con dos perfiles.",
+        "deterministic_extraction": {
+            "enabled": True,
+            "fallback": "missing_fields",
+            "profile_fallback": "full_model",
+            "profiles": [{
+                "id": "A",
+                "markers": ["FORMATO A", "FOLIO"],
+                "min_score": 2,
+                "constants": {"CLAVE": "A"},
+                "expected_fields": ["CLAVE", "FOLIO"],
+            }],
+        },
+        "fields": {
+            "CLAVE": {"type": "string", "required": True},
+            "FOLIO": {
+                "type": "string", "required": True,
+                "text_source": {"regex": r"FOLIO:\s*(?P<v>\w+)", "group": "v"},
+            },
+            "OPCIONAL": {"type": "string", "required": False},
+        },
+    })
+
+    result = deterministic_text.extract(
+        [PageText(1, "FORMATO A\nFOLIO: X1", "native", 0.98)], entry
+    )
+    pending = deterministic_text.unresolved_tree(
+        entry.field_tree, result.resolved_paths, "missing_fields",
+        expected_paths=result.expected_paths,
+    )
+
+    assert result.profile_status == "matched"
+    assert result.profile_id == "A"
+    assert result.entity_map == {"CLAVE": "A", "FOLIO": "X1"}
+    assert pending == {}
+    assert "OPCIONAL" not in result.expected_paths
+
+
+def test_transforms_encadenados_y_constante_de_selector_en_filas():
+    entry = _parse_entry("TRANSFORMS", {
+        "description": "Transformaciones cerradas.",
+        "deterministic_extraction": {"enabled": True},
+        "fields": {
+            "TIPO": {
+                "type": "string",
+                "text_source": {
+                    "regex": "AUTOMOVIL",
+                    "value": " vehículo ",
+                    "transforms": ["strip", "upper"],
+                },
+            },
+            "FILAS": {
+                "type": "array",
+                "text_source": {
+                    "row_regex": r"(?m)^(?P<nombre>[A-Z ]+)\s*\|\s*(?P<importe>[\d,.]+)$",
+                    "groups": {
+                        "NOMBRE": {"group": "nombre", "transforms": ["collapse_whitespace"]},
+                        "IMPORTE": {"group": "importe", "transforms": ["number"]},
+                    },
+                },
+                "item_fields": {
+                    "NOMBRE": {"type": "string", "required": True},
+                    "IMPORTE": {"type": "number", "required": True},
+                },
+            },
+        },
+    })
+
+    result = deterministic_text.extract(
+        [PageText(1, "AUTOMOVIL\nPRIMA   NETA | 1,234.50", "native", 0.98)], entry
+    )
+
+    assert result.entity_map["TIPO"] == "VEHÍCULO"
+    assert result.entity_map["FILAS"] == [{"NOMBRE": "PRIMA NETA", "IMPORTE": 1234.5}]
+
+
+def test_certificado_poliza_cuatro_perfiles_sin_fallback_de_ia():
+    raw = json.loads(
+        (REPO_ROOT / "catalogs/base/seguros/CERTIFICADO_POLIZA.json").read_text()
+    )["CERTIFICADO_POLIZA"]
+    entry = _parse_entry("CERTIFICADO_POLIZA", raw)
+    expected = {
+        "emp_cert.pdf": ("EMP", "Empresarial", "STDN-070-1046028"),
+        "fl_cert.pdf": ("FL", "Flotilla", "3201-035297-00"),
+        "ggm_certificado.pdf": ("GMM", "Gastos medicos mayores", "35000-5869-0"),
+        "vida_cert.pdf": ("SV", "Seguro de Vida", "12000-6375-0"),
+    }
+    fixture_dir = REPO_ROOT / "test-docs/seguros"
+    missing = [filename for filename in expected if not (fixture_dir / filename).exists()]
+    if missing:
+        pytest.skip(f"corpus local de seguros no disponible: {', '.join(missing)}")
+    from pipeline.pdf_pages import load_pages
+
+    for filename, (profile, rubro, policy) in expected.items():
+        pages = load_pages(
+            (fixture_dir / filename).read_bytes(), use_ocr=False
+        )
+        result = deterministic_text.extract(pages, entry)
+        pending = deterministic_text.unresolved_tree(
+            entry.field_tree, result.resolved_paths, "missing_fields",
+            expected_paths=result.expected_paths,
+        )
+
+        assert result.profile_status == "matched", filename
+        assert result.profile_id == profile, filename
+        assert result.entity_map["CLAVE_RUBRO"] == profile, filename
+        assert result.entity_map["RUBRO"] == rubro, filename
+        assert result.entity_map["NUMERO_POLIZA"] == policy, filename
+        assert result.entity_map["ASEGURADOS"], filename
+        assert pending == {}, filename
+
+
+def test_perfil_desconocido_restaura_schema_completo_del_modelo(monkeypatch):
+    entry = _parse_entry("PERFIL", {
+        "description": "Perfil desconocido usa modelo completo.",
+        "deterministic_extraction": {
+            "enabled": True,
+            "fallback": "missing_fields",
+            "profile_fallback": "full_model",
+            "profiles": [{
+                "id": "A", "markers": [r"FORMATO A\b"], "min_score": 1,
+                "expected_fields": ["FOLIO"],
+            }],
+        },
+        "fields": {
+            "FOLIO": {
+                "type": "string",
+                "text_source": {"regex": r"FOLIO:\s*(?P<v>\w+)", "group": "v"},
+            },
+            "OTRO": {"type": "string"},
+        },
+    })
+    seen = []
+
+    def fake_extract(_pages, _entry, **kwargs):
+        seen.append(set(kwargs["field_tree"]))
+        return text_extractor.ExtractedDoc(
+            entity_map={"FOLIO": "MODEL", "OTRO": "IA"},
+            confidences={"FOLIO": 0.9, "OTRO": 0.9},
+            row_confidences={},
+            meta={"usage": {"inputTokens": 10, "outputTokens": 2}},
+        )
+
+    monkeypatch.setattr(expediente, "get_type_entry", lambda _type: entry)
+    monkeypatch.setattr(expediente, "extract_document", fake_extract)
+    doc = expediente._extract_segment(
+        Segment("PERFIL", 1, 1, 1.0),
+        [PageText(1, "FOLIO: LOCAL pero formato ajeno", "native", 0.98)],
+        None,
+    )
+
+    assert seen == [{"FOLIO", "OTRO"}]
+    assert doc["extractionMeta"]["deterministicExtraction"]["profile"]["status"] == "unknown"
+    assert doc["extractionMeta"]["strategy"] == "model"
+    assert doc["_entities"] == {"FOLIO": "MODEL", "OTRO": "IA"}
+
+
+def test_perfil_conocido_manda_solo_el_campo_esperado_faltante(monkeypatch):
+    entry = _parse_entry("PERFIL", {
+        "description": "Perfil conocido con fallback parcial.",
+        "deterministic_extraction": {
+            "enabled": True,
+            "fallback": "missing_fields",
+            "profile_fallback": "full_model",
+            "profiles": [{
+                "id": "A", "markers": [r"FORMATO A\b"], "min_score": 1,
+                "constants": {"CLAVE": "A"},
+                "expected_fields": ["CLAVE", "FOLIO"],
+            }],
+        },
+        "fields": {
+            "CLAVE": {"type": "string", "required": True},
+            "FOLIO": {
+                "type": "string", "required": True,
+                "text_source": {"regex": r"FOLIO:\s*(?P<v>\w+)", "group": "v"},
+            },
+            "OPCIONAL": {"type": "string"},
+        },
+    })
+    seen = []
+
+    def fake_extract(_pages, _entry, **kwargs):
+        seen.append(set(kwargs["field_tree"]))
+        return text_extractor.ExtractedDoc(
+            entity_map={"FOLIO": "IA-1"},
+            confidences={"FOLIO": 0.9},
+            row_confidences={},
+            meta={"usage": {"inputTokens": 8, "outputTokens": 2}},
+        )
+
+    monkeypatch.setattr(expediente, "get_type_entry", lambda _type: entry)
+    monkeypatch.setattr(expediente, "extract_document", fake_extract)
+    doc = expediente._extract_segment(
+        Segment("PERFIL", 1, 1, 1.0),
+        [PageText(1, "FORMATO A", "native", 0.98)],
+        None,
+    )
+
+    assert seen == [{"FOLIO"}]
+    assert doc["_entities"]["CLAVE"] == "A"
+    assert doc["_entities"]["FOLIO"] == "IA-1"
+    assert doc["_entities"]["OPCIONAL"] is None
+    meta = doc["extractionMeta"]
+    assert meta["strategy"] == "hybrid"
+    assert meta["deterministicExtraction"]["fallbackFields"] == ["FOLIO"]
+
+
+def test_linter_detecta_rutas_regex_grupos_y_transforms_invalidos():
+    entry = _parse_entry("INVALIDO", {
+        "description": "Configuración inválida.",
+        "deterministic_extraction": {
+            "enabled": True,
+            "profiles": [{
+                "id": "A", "markers": ["("], "min_score": 2,
+                "expected_fields": ["NO_EXISTE"],
+                "constants": {"FILAS": "no escalar"},
+            }],
+        },
+        "fields": {
+            "FOLIO": {
+                "type": "string",
+                "text_source": {
+                    "regex": r"FOLIO: (?P<v>\w+)", "group": "otro",
+                    "transforms": ["ejecutar_codigo"],
+                },
+            },
+            "FILAS": {
+                "type": "array",
+                "text_source": {
+                    "row_regex": r"(?P<a>\w+)",
+                    "groups": {"CAMPO_INEXISTENTE": "a"},
+                },
+                "item_fields": {"NOMBRE": {"type": "string", "required": True}},
+            },
+        },
+    })
+
+    problems = deterministic_text.validate_entry(entry)
+    joined = "\n".join(problems)
+
+    assert "markers[0]" in joined
+    assert "min_score fuera de rango" in joined
+    assert "expected_fields apunta a campo inexistente" in joined
+    assert "constants apunta a campo no escalar" in joined
+    assert "transform no permitido" in joined
+    assert "grupo inexistente otro" in joined
+    assert "campos inexistentes: CAMPO_INEXISTENTE" in joined
+    assert "omite requeridos: NOMBRE" in joined
+
+
+def test_linter_exige_contrato_de_campos_por_perfil():
+    entry = _parse_entry("INVALIDO", {
+        "description": "Perfil sin contrato completo.",
+        "deterministic_extraction": {
+            "enabled": True,
+            "profiles": [{
+                "id": "A", "markers": ["FORMATO A"],
+                "constants": {"CLAVE": "A"},
+            }],
+        },
+        "fields": {"CLAVE": {"type": "string"}},
+    })
+
+    joined = "\n".join(deterministic_text.validate_entry(entry))
+    runtime = deterministic_text.extract(
+        [PageText(1, "FORMATO A", "native", 0.98)], entry
+    )
+
+    assert "expected_fields debe contener al menos un campo" in joined
+    assert "constants debe incluirse en expected_fields: CLAVE" in joined
+    assert runtime.profile_status == "invalid_config"
+    assert runtime.profile_id is None
 
 
 def test_subschema_contiene_solo_faltantes_con_fallback():

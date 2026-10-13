@@ -1,8 +1,9 @@
 # Extracción determinística e híbrida para formatos fijos
 
 Esta guía explica cómo `PEDIMENTO_ERP` pasó de enviar el schema completo a un
-modelo a mapear sus campos por código, y cómo repetir el patrón en otro formato
-fijo sin convertir el motor genérico en código específico por `TYPE_ID`.
+modelo a mapear sus campos por código, cómo `CERTIFICADO_POLIZA` maneja cuatro
+familias de formato con perfiles, y cómo repetir ambos patrones sin convertir
+el motor genérico en código específico por `TYPE_ID`.
 
 La idea central es sencilla:
 
@@ -97,6 +98,34 @@ y auditable.
 | Calculados | `Tipo_Pago`, `LIQUIDACION_NORMALIZADA` | DSL `derived` y normalizador de liquidación |
 | Verificación | URL QR y validez del depósito referenciado | `qr_recovery`, separado de las regex |
 
+### 2.5 Qué se hizo en `CERTIFICADO_POLIZA`
+
+El certificado de seguro conserva un solo contrato de salida, pero sus campos
+cambian por ramo y aseguradora. El catálogo `5.1.0` reconoce cuatro perfiles
+por **combinaciones semánticas**, no por el logo o nombre del emisor:
+
+| Perfil | `CLAVE_RUBRO` | `RUBRO` | Señales típicas |
+|---|---|---|---|
+| Empresarial | `EMP` | `Empresarial` | seguro empresarial + ramos/edificio + certificado |
+| Flotilla | `FL` | `Flotilla` | carátula de automóvil + vehículo + serie/placas + inciso |
+| Gastos médicos | `GMM` | `Gastos medicos mayores` | póliza GMM + plan + tabla de asegurados/categoría |
+| Vida | `SV` | `Seguro de Vida` | vida grupo + certificado individual + fallecimiento/beneficiarios |
+
+Los cuatro PDF de calibración en `test-docs/seguros/` tienen texto nativo. El
+camino probado es pypdf → perfiles/regex → validación: cero Textract y cero
+Bedrock de extracción. Los selectores buscan etiquetas genéricas (`Póliza`,
+`Certificado`, `Vigencia`, `Datos del contratante`, `Datos del vehículo`, etc.)
+y no codifican Banorte, Afirme o Zurich como condición para extraer.
+
+Cada perfil declara `expected_fields`: es el contrato mínimo que ese layout
+debe entregar. Si se reconoce el perfil pero falta uno de esos campos,
+`fallback: missing_fields` manda **sólo esa rama** a IA. Si el layout es nuevo,
+ningún perfil alcanza el umbral o existe empate, `profile_fallback: full_model`
+descarta las coincidencias tentativas y manda el schema completo al modelo. Así
+un cambio de aseguradora con etiquetas equivalentes sigue por código, mientras
+que un formato realmente distinto falla abierto sin publicar regex parciales
+como si fueran confiables.
+
 ## 3. Técnicas usadas en el catálogo
 
 ### 3.1 Campo escalar con transformación cerrada
@@ -119,8 +148,10 @@ los 15 dígitos:
 }
 ```
 
-Los transforms permitidos son cerrados: `strip`, `digits` y `upper`. El
-catálogo no ejecuta expresiones ni código arbitrario.
+Los transforms permitidos son cerrados: `strip`, `collapse_whitespace`,
+`digits`, `alnum`, `upper`, `lower`, `number`, `integer`, `date_iso`, `replace`,
+`regex_sub` y `map`. `transforms` permite encadenarlos. El catálogo no ejecuta
+expresiones ni código arbitrario.
 
 ### 3.2 Selectores alternativos para variantes conocidas
 
@@ -240,6 +271,39 @@ El mapper ignora campos `computed`. Se llenan después con componentes genérico
 Separar captura y cálculo evita mantener la misma fórmula dentro de varias
 regex o pedirle al modelo que calcule algo que el sistema puede demostrar.
 
+### 3.7 Perfiles para layouts conocidos
+
+Un perfil necesita varias señales independientes y un contrato explícito:
+
+```jsonc
+"deterministic_extraction": {
+  "enabled": true,
+  "fallback": "missing_fields",
+  "profile_fallback": "full_model",
+  "profiles": [{
+    "id": "FL",
+    "pages": "first",
+    "markers": [
+      "CARÁTULA\\s+DE\\s+SEGURO\\s+DE\\s+AUTOMÓVILES",
+      "DATOS\\s+DEL\\s+VEHÍCULO",
+      "Número\\s+de\\s+Serie|Placas\\s*:"
+    ],
+    "min_score": 3,
+    "constants": {"CLAVE_RUBRO": "FL", "RUBRO": "Flotilla"},
+    "expected_fields": [
+      "CLAVE_RUBRO", "RUBRO", "NUMERO_POLIZA", "ASEGURADOS",
+      "VIGENCIA_INICIO", "VIGENCIA_FIN", "BIEN_ASEGURADO.NUMERO_SERIE"
+    ]
+  }]
+}
+```
+
+No pongas todos los campos opcionales del tipo en `expected_fields`: uno que el
+layout legítimamente no imprime abriría IA en cada documento. Tampoco omitas un
+campo que el negocio sí espera de ese perfil: entonces un miss quedaría vacío
+sin fallback. `pnpm catalogs:lint` exige una lista no vacía, valida sus rutas y
+obliga a incluir ahí cualquier constante.
+
 ## 4. Cómo funciona la estrategia híbrida
 
 Con `fallback: missing_fields` el flujo es:
@@ -296,6 +360,10 @@ Incluye como mínimo:
 
 Define ground truth de valores y conteos. Un regex que funciona en un ejemplo no
 demuestra cobertura.
+
+Si el mismo `TYPE_ID` tiene varias familias, define un perfil por familia.
+Prefiere palabras del ramo y estructura del documento sobre nombres de
+aseguradora: cambiar de emisor no debería forzar IA si conserva el patrón.
 
 ### Paso 3: seleccionar páginas con anclajes positivos
 
@@ -368,7 +436,15 @@ Pruebas locales del mapper y del contrato ERP:
 .venv/bin/pytest \
   tests/unit/test_deterministic_text.py \
   tests/unit/test_pedimento_mapping.py -q
+
+pnpm catalogs:lint
 ```
+
+`test_certificado_poliza_cuatro_perfiles_sin_fallback_de_ia` carga los cuatro
+PDF locales de seguros, exige perfil/rubro/póliza correctos y comprueba que no
+quede ninguna rama esperada para fallback. Como `test-docs/**` no se versiona,
+la prueba se omite explícitamente en un clon que no tenga ese corpus; las
+pruebas sintéticas de perfiles/fallback siguen corriendo siempre.
 
 Pipeline local con la política del catálogo:
 
@@ -396,6 +472,10 @@ optimización.
 - `extractionMode.effective` muestra la política aplicable.
 - `deterministicExtraction.strategy` dice si finalmente fue `deterministic`,
   `hybrid` o `model`.
+- `deterministicExtraction.profile` publica `id`, `status` y el score por
+  perfil. El resultado profundo conserva además
+  `extractionMeta.deterministicExtraction.candidateFields` y `resolvedFields`
+  para separar coincidencias tentativas de valores realmente conservados.
 - `fallbackFields` enumera el subárbol enviado a Bedrock.
 - `aiExecuted`/`aiUsage.stages` confirman cualquier etapa generativa real.
 - `deterministicSavings` estima tokens evitados y permanece separado del usage
@@ -424,6 +504,7 @@ a `TotalCostUsd`.
 ## 9. Implementación de referencia
 
 - Catálogo piloto: `catalogs/custom/erp/PEDIMENTO_ERP.json`.
+- Catálogo con perfiles: `catalogs/base/seguros/CERTIFICADO_POLIZA.json`.
 - Motor cerrado de regex: `pipeline/deterministic_text.py`.
 - Orquestación, fallback y merge: `pipeline/expediente.py::_extract_segment`.
 - OCR/texto: `pipeline/pdf_pages.py`.
@@ -432,4 +513,5 @@ a `TotalCostUsd`.
 - Liquidación: `pipeline/liquidacion.py`.
 - Tests genéricos: `tests/unit/test_deterministic_text.py`.
 - Tests del contrato ERP: `tests/unit/test_pedimento_mapping.py`.
+- Linter previo a build/sync: `scripts/validar-mapeos-deterministas.py`.
 

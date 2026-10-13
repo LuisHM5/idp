@@ -51,7 +51,7 @@ from .normalize import (
 from . import confidence as conf_policy
 from . import deterministic_text, page_locator, page_selector, type_check
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
-from .bedrock import fallback_events, stage_degradations, used_models
+from .bedrock import explain_model_resolution, fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
 from .segmenter import CONTAINER_TYPE, Segment, segment_pages
@@ -202,8 +202,30 @@ def _extract_segment(
         if policy is not None and entry.field_tree:
             try:
                 deterministic = deterministic_text.extract(extract_pages, entry)
+                effective_fallback = policy["fallback"]
+                expected_paths = None
+                trusted_resolved_paths = set(deterministic.resolved_paths)
+                if policy.get("profiles"):
+                    if deterministic.profile_status == "matched":
+                        expected_paths = deterministic.expected_paths
+                    elif policy["fallback"] != "review":
+                        # A profile is the proof that the deterministic layout
+                        # is known. Unknown or tied layouts must not quietly
+                        # accept a partial regex result: restore the complete
+                        # model schema, as declared by the catalog policy.
+                        effective_fallback = str(
+                            policy.get("profile_fallback") or "full_model"
+                        ).strip().lower()
+                        if effective_fallback not in {"full_model", "review"}:
+                            effective_fallback = "full_model"
+                        # Regex matches made under an unknown/ambiguous layout
+                        # are useful diagnostics, not trusted output. The full
+                        # model must own every field in this branch.
+                        if effective_fallback == "full_model":
+                            trusted_resolved_paths.clear()
                 pending_tree = deterministic_text.unresolved_tree(
-                    entry.field_tree or {}, deterministic.resolved_paths, policy["fallback"]
+                    entry.field_tree or {}, trusted_resolved_paths,
+                    effective_fallback, expected_paths=expected_paths,
                 )
             except Exception:  # noqa: BLE001 - the optimization must fail open
                 logger.exception(
@@ -213,6 +235,7 @@ def _extract_segment(
                 deterministic = deterministic_text.ExtractionResult(
                     warnings=["internal deterministic extraction error; full model fallback"]
                 )
+                trusted_resolved_paths = set()
                 pending_tree = {} if requested_mode == "deterministic" else (entry.field_tree or {})
 
             if pending_tree:
@@ -243,15 +266,31 @@ def _extract_segment(
                 deterministic.entity_map,
                 model_result.entity_map,
                 entry.field_tree or {},
-                resolved_paths=deterministic.resolved_paths,
+                resolved_paths=trusted_resolved_paths,
             )
             model_result.confidences = {
                 **model_result.confidences,
-                **deterministic.confidences,
+                **{
+                    path: confidence for path, confidence in deterministic.confidences.items()
+                    if path in trusted_resolved_paths
+                },
             }
+            trusted_row_confidences: Dict[str, Dict[str, float]] = {}
+            for path in trusted_resolved_paths:
+                spec = deterministic_text.field_spec_at_path(entry, path)
+                if spec is None or spec.type != "array":
+                    continue
+                node: Any = deterministic.entity_map
+                for part in path.split("."):
+                    node = node.get(part) if isinstance(node, dict) else None
+                for row in node if isinstance(node, list) else []:
+                    if isinstance(row, dict):
+                        key = conf_policy.row_key(row)
+                        if key in deterministic.row_confidences:
+                            trusted_row_confidences[key] = deterministic.row_confidences[key]
             model_result.row_confidences = {
                 **model_result.row_confidences,
-                **deterministic.row_confidences,
+                **trusted_row_confidences,
             }
             fallback_fields = deterministic_text.path_list(pending_tree)
             try:
@@ -262,6 +301,9 @@ def _extract_segment(
                     deterministic.entity_map,
                     model_result.meta.get("usage"),
                 )
+                token_savings["counterfactualModelId"] = explain_model_resolution(
+                    "extractor", entry
+                ).get("resolved")
             except Exception as exc:  # noqa: BLE001 - telemetry must never break extraction
                 logger.exception("could not estimate deterministic token savings")
                 usage = model_result.meta.get("usage") or {}
@@ -273,7 +315,7 @@ def _extract_segment(
                     "billedOutputTokens": int(usage.get("outputTokens") or 0),
                 }
             model_result.meta["strategy"] = (
-                "hybrid" if fallback_fields and deterministic.resolved_paths
+                "hybrid" if fallback_fields and trusted_resolved_paths
                 else "model" if fallback_fields
                 else "deterministic"
             )
@@ -285,8 +327,14 @@ def _extract_segment(
             }
             model_result.meta["deterministicExtraction"] = {
                 "elapsedMs": deterministic.elapsed_ms,
+                "profile": {
+                    "status": deterministic.profile_status,
+                    "id": deterministic.profile_id,
+                    "scores": deterministic.profile_scores,
+                },
                 "attemptedFields": sorted(deterministic.attempted_paths),
-                "resolvedFields": sorted(deterministic.resolved_paths),
+                "candidateFields": sorted(deterministic.resolved_paths),
+                "resolvedFields": sorted(trusted_resolved_paths),
                 "fallbackFields": fallback_fields,
                 "warnings": deterministic.warnings,
                 "tokenSavings": token_savings,
@@ -295,7 +343,13 @@ def _extract_segment(
                 },
             }
             extracted = model_result
-            doc.setdefault("_recovered_sources", {}).update(deterministic.source_overrides)
+            doc.setdefault("_recovered_sources", {}).update({
+                path: source for path, source in deterministic.source_overrides.items()
+                if any(
+                    path == trusted or path.startswith(trusted + "[")
+                    for trusted in trusted_resolved_paths
+                )
+            })
         else:
             extracted = extract_document(extract_pages, entry, model_id=model_id)
             extracted.meta["strategy"] = "model"

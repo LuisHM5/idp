@@ -279,6 +279,11 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
             "resolvedFieldCount": len(deterministic.get("resolvedFields") or []),
             "fallbackFields": deterministic.get("fallbackFields") or [],
             "tokenSavings": token_savings,
+            **(
+                {"profile": dict(deterministic["profile"])}
+                if isinstance(deterministic.get("profile"), dict)
+                else {}
+            ),
         }
     view["fields"] = fields
     return view

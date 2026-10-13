@@ -103,8 +103,37 @@ def print_detail(item: Dict[str, Any]) -> None:
         )
     if item.get("CostPerPageUsd") is not None:
         print(f"{DIM}Costo por página: {money(item['CostPerPageUsd'])}  (pricingVersion {item.get('PricingVersion', '?')}){RESET}")
+    _print_extraction_audit(item.get("ExtractionAudit"))
     _print_page_selection(item.get("PageSelection"))
     print()
+
+
+def _print_extraction_audit(audit: Optional[Dict[str, Any]]) -> None:
+    if not audit:
+        return
+    stages = ", ".join(audit.get("AiStages") or []) or "ninguna"
+    print(f"\n{CYAN}Estrategia de extracción{RESET} — IA ejecutada: {'sí' if audit.get('AiExecuted') else 'no'}; etapas: {stages}")
+    for doc in audit.get("Documents") or []:
+        profile = (
+            f"perfil={doc.get('Profile')}/{doc.get('ProfileStatus')}"
+            if doc.get("Profile") else
+            f"perfil={doc.get('ProfileStatus')}"
+            if doc.get("ProfileStatus") else "sin perfil"
+        )
+        print(
+            f"  #{doc.get('Index')} {doc.get('DocumentType')}: "
+            f"{doc.get('RequestedMode')} → {doc.get('EffectiveMode')} "
+            f"({doc.get('Strategy')}, {profile}; "
+            f"resueltos={doc.get('ResolvedFieldCount', 0)}, fallback={doc.get('FallbackFieldCount', 0)})"
+        )
+    savings = audit.get("DeterministicSavings") or {}
+    if savings.get("EstimatedInputTokensSaved") or savings.get("EstimatedOutputTokensSaved"):
+        print(
+            f"{DIM}  Ahorro determinístico estimado: "
+            f"in={int(savings.get('EstimatedInputTokensSaved', 0)):,} "
+            f"out={int(savings.get('EstimatedOutputTokensSaved', 0)):,} "
+            f"≈ {money(savings.get('EstimatedCostAvoidedUsd', 0))}; no se suma al costo facturado.{RESET}"
+        )
 
 
 def _print_page_selection(ps: Optional[Dict[str, Any]]) -> None:

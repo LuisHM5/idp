@@ -62,6 +62,7 @@ validar es justo lo que está desplegado ahí.
 | Situación | Corre |
 |---|---|
 | Cambié código Python del pipeline o del motor | `pnpm test:unit`; si afecta extracción de pedimentos, después `pnpm comparar -- normal_pend.pdf` (con costo) |
+| Agregué o edité `deterministic_extraction`, perfiles o `text_source` | `pnpm catalogs:lint` y `pnpm test:unit`; ambos son gratis. Después compara el corpus del tipo en dev antes de sincronizar producción |
 | Edité `expected_pedimentos.json` | `pnpm test:unit` (valida nombres de campo gratis, [sección 1](#1-antes-de-gastar-dinero-valida-el-ground-truth-gratis)) |
 | Cambié el catálogo de un tipo y ya lo sincronicé | dataset E2E de ese tipo contra dev (paso 5 con `--env dev`) y revisa la sección 10 del análisis: qué cambió contra la corrida anterior |
 | Acabo de desplegar | paso 3; para todo el corpus etiquetado, `pnpm test:real -- --env dev` ([sección 8](#8-suite-seria-cobertura-e-histórico-local)) |
@@ -72,6 +73,15 @@ validar es justo lo que está desplegado ahí.
 | Quiero saber si el embedding recupera la referencia correcta antes de activar `references.search` en un tipo | `pnpm refs:eval` (~$0.01; `-- --cache <archivo>` para no volver a pagar) |
 | Quiero saber cuántos documentos reales caerían por captura física o por cada señal de integridad (guardado incremental, anotaciones, texto sobre el escaneo…) | `pnpm autenticidad -- --dir <carpeta> [--type TIPO]` (gratis, sin AWS; la integridad corre aunque el tipo no la declare, `--sin-integridad` la quita) |
 | Un documento concreto salió mal y quiero ver por qué | `pnpm comparar -- archivo.pdf` ([sección 2](#2-comparar-expected-vs-real-de-un-documento-con-costo-script-simple)) |
+
+`pnpm catalogs:lint` también corre automáticamente antes de `pnpm build`,
+`pnpm sync` y `pnpm sync:one`. Valida regex, grupos nombrados, transforms,
+regiones, rutas de campos, perfiles y sus contratos `expected_fields`; no abre
+AWS ni procesa documentos. Cuando el corpus local está presente, la prueba de `CERTIFICADO_POLIZA` carga
+`emp_cert.pdf`, `fl_cert.pdf`, `ggm_certificado.pdf` y `vida_cert.pdf`, verifica
+perfil/rubro/póliza y exige cero ramas pendientes en los cuatro formatos.
+En un clon sin `test-docs/**` se marca `skipped`; los casos sintéticos del motor
+siguen verificando siempre perfil conocido, fallback parcial y layout desconocido.
 
 ### 0.4 Paso a paso: dataset de un tipo
 

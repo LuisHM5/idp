@@ -434,6 +434,7 @@ def test_envelope_publica_ahorro_determinista_y_fallbacks_por_documento():
         "deterministicExtraction": {
             "resolvedFields": ["A", "B"],
             "fallbackFields": ["C"],
+            "profile": {"id": "FL", "status": "matched", "scores": {"FL": 4}},
             "tokenSavings": savings,
         },
     })
@@ -455,6 +456,7 @@ def test_envelope_publica_ahorro_determinista_y_fallbacks_por_documento():
     assert detail["aiExecuted"] is True
     assert detail["resolvedFieldCount"] == 2
     assert detail["fallbackFields"] == ["C"]
+    assert detail["profile"] == {"id": "FL", "status": "matched", "scores": {"FL": 4}}
 
 
 # ------------------------------------------------ DSL legado

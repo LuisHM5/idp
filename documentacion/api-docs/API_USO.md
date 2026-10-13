@@ -962,7 +962,9 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
 > por código, `deterministicSavings` es un contrafactual explícitamente
 > `estimated`: compara el schema completo contra el schema parcial realmente
 > enviado. Nunca se suma a `usage`. El detalle por documento expone
-> `deterministicExtraction.strategy` y `fallbackFields`.
+> `deterministicExtraction.strategy`, `fallbackFields` y, cuando el tipo usa
+> varios layouts, `profile`: `matched` identifica el perfil que permitió usar
+> código; `unknown`/`ambiguous` explican por qué se aplicó el fallback seguro.
 
 **Mientras procesa — `202`:**
 
@@ -1072,6 +1074,11 @@ agregan los bloques de ahorro y decisión por documento:
     "deterministicExtraction": {
       "strategy": "hybrid",
       "aiExecuted": true,
+      "profile": {
+        "id": "FL",
+        "status": "matched",
+        "scores": {"EMP": 0, "FL": 4, "GMM": 0, "SV": 0}
+      },
       "resolvedFieldCount": 18,
       "fallbackFields": ["No_Pedimento"],
       "tokenSavings": { "estimated": true, "estimatedInputTokensSaved": 2100 }
@@ -1079,6 +1086,12 @@ agregan los bloques de ahorro y decisión por documento:
   }]
 }
 ```
+
+Para `CERTIFICADO_POLIZA`, los perfiles conocidos son `EMP` (Empresarial),
+`FL` (Flotilla), `GMM` (Gastos medicos mayores) y `SV` (Seguro de Vida). Un
+perfil reconocido usa código y manda a IA sólo sus campos esperados faltantes;
+un formato desconocido o un empate usa IA completa. `aiExecuted` y
+`fallbackFields` siguen siendo la autoridad para saber qué ocurrió realmente.
 
 **Falla técnica terminal — `200`:** no confundir con una validación
 `RECHAZADO`. Aquí el pipeline no pudo producir el resultado:
