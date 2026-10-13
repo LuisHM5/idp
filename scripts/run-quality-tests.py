@@ -113,7 +113,7 @@ def main() -> int:
     py = run([
         str(REPO / ".venv" / "bin" / "python"), "-m", "pytest", "tests/unit", "-q",
         f"--junitxml={py_junit}", "--cov=src/document-processing/resources/enrichment-lambda",
-        "--cov=src/document-processing/resources/model-invoke-lambda", "--cov-branch",
+        "--cov=src/document-processing/resources/async-failure-lambda", "--cov-branch",
         f"--cov-report=json:{py_cov}", f"--cov-report=html:{py_html}", "--cov-report=term",
     ], run_dir / "logs" / "python.log", record)
     node = run([

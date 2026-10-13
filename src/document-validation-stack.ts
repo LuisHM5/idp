@@ -9,7 +9,6 @@ import * as eventTargets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
-import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
@@ -490,7 +489,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     // El enrichment Lambda escribe esas columnas (UpdateItem) al terminar.
     enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
-    documentTable.grantWriteData(enrichmentFn);
+    // Read as well as write: the idempotent claim of a duplicate S3 delivery
+    // reads the row back to tell "already finished" from "event not published".
+    documentTable.grantReadWriteData(enrichmentFn);
 
     // Direct enrichment already persists the terminal status atomically. This
     // listener preserves the established EventBridge projection for external
@@ -654,9 +655,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       })
     );
 
-    // Shared policy for the separate reference-registry Lambda. The owned
-    // pipeline grants Bedrock only to its two model-invoke functions, so the
-    // SQS ingress does not inherit model permissions it cannot use.
+    // Shared policy for the separate reference-registry Lambda.
     const bedrockPolicy = new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [

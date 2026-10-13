@@ -197,14 +197,11 @@ const APP_USAGE_TABLE = process.env.APP_USAGE_TABLE;
 const ALLOW_AI_RESPONSE_FORMAT_OVERRIDE =
   String(process.env.ALLOW_AI_RESPONSE_FORMAT_OVERRIDE || "").toLowerCase() === "true";
 const MAX_LIMIT = 100;
-// The project-owned state machine moves the raw upload to processed/{id}/{filename} on any
-// execution that completes without an exception (including a RECHAZADO
-// validation outcome — that's a business result, not an infra failure), or to
-// failed/{id}/{filename} only when the execution itself threw/timed out (see
-// AGENTS.md's architecture note and resources/sqs-consumer/index.py).
-// A result download only applies after the document has been indexed and moved
-// out of raw/. Pending GET /documents/{id} calls return status only and never
-// enter this source-object lookup.
+// The original stays where it was uploaded (source/, or raw/ for URLs issued
+// before the direct ingress) and the row's SourceKey names it exactly. These
+// prefixes are only scanned for rows without that key: historical deployments
+// moved the upload to processed/{id}/{filename}, or to failed/{id}/{filename}
+// when the execution itself threw/timed out.
 const LEGACY_SOURCE_PREFIXES = [
   { location: "source", prefix: "source/" },
   { location: "raw", prefix: "raw/" },

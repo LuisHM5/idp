@@ -896,7 +896,7 @@ def render_text(a: dict, *, color: bool = True, field_limit: int | None = None) 
         out(f"  {c(DIM)}· {text}{c(RESET)}")
 
     out(f"\n{c(BOLD)}1. Ejecución{c(RESET)}")
-    out(f"   Infra OK {ex['infraPassed']}/{ex['files']} · Step Functions SUCCEEDED {ex['stepFunctionsSucceeded']}/{ex['files']}"
+    out(f"   Infra OK {ex['infraPassed']}/{ex['files']} · Procesamiento SUCCEEDED {ex['stepFunctionsSucceeded']}/{ex['files']}"
         f" · ground truth {ex['groundTruthPassed']}/{ex['groundTruthEvaluated']} evaluados")
     e2e, pipe = ex["e2eSeconds"], ex["pipelineSeconds"]
     if e2e.get("n"):
@@ -1060,7 +1060,7 @@ def render_markdown(a: dict) -> str:
     out("## 1. Ejecución\n")
     out("| Métrica | Valor |\n|---|---|")
     out(f"| Infraestructura OK | {ex['infraPassed']}/{ex['files']} |")
-    out(f"| Step Functions SUCCEEDED | {ex['stepFunctionsSucceeded']}/{ex['files']} |")
+    out(f"| Procesamiento SUCCEEDED | {ex['stepFunctionsSucceeded']}/{ex['files']} |")
     out(f"| Ground truth | {ex['groundTruthPassed']}/{ex['groundTruthEvaluated']} evaluados |")
     for label, key in (("Tiempo E2E (s)", "e2eSeconds"), ("Tiempo pipeline (s)", "pipelineSeconds")):
         d = ex[key]

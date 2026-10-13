@@ -48,11 +48,9 @@ const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", 
 // Extensions with no vision-based auto-classification at all: the enrichment
 // pipeline's xml/tabular extractors require a declared type to even parse the
 // file (see pipeline/xml_document.py, pipeline/tabular_document.py). Rejecting
-// an undeclared upload here — rather than letting it reach Step Functions and
-// fail deep inside model-invoke-lambda — also matters for cost: Bedrock
-// Converse already treats "csv" as a natively supported document format, so
-// an undeclared .csv would otherwise reach a REAL (billed) classification
-// call before failing, unlike xml/xlsx which fail for free.
+// an undeclared upload here — rather than letting it reach enrichment and
+// fail there — gives the caller the reason at upload time, before the file
+// is stored and a document id is spent on a job that cannot succeed.
 const REQUIRES_DECLARED_TYPE = new Set(["xml", "xlsx", "csv"]);
 // How long a presigned upload URL stays valid. Generous enough for a slow
 // connection uploading a large file without leaving it usable indefinitely.

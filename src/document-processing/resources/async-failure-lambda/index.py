@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
 from urllib.parse import unquote_plus
@@ -20,8 +21,23 @@ def _document_id(record: Dict[str, Any]) -> str | None:
         key = unquote_plus(record["s3"]["object"]["key"])
     except (KeyError, TypeError):
         return None
+    # Same layout and id normalization as the enrichment handler's S3 adapter,
+    # so both always address the same DynamoDB row.
     parts = [part for part in key.split("/") if part]
-    return parts[-2] if len(parts) >= 2 else None
+    if key.endswith("/") or len(parts) < 3 or parts[0] not in {"source", "raw"}:
+        return None
+    return re.sub(r"[^a-zA-Z0-9-]", "-", parts[-2])
+
+
+def _reason(event: Dict[str, Any]) -> str:
+    """Why Lambda gave up: the function's own error when it reported one,
+    otherwise the delivery condition (RetriesExhausted, EventAgeExceeded)."""
+    payload = event.get("responsePayload")
+    message = payload.get("errorMessage") if isinstance(payload, dict) else None
+    condition = (event.get("requestContext") or {}).get("condition")
+    function_error = (event.get("responseContext") or {}).get("functionError")
+    parts = [str(part) for part in (condition, function_error, message) if part]
+    return (": ".join(parts) or "ASYNC_RETRIES_EXHAUSTED")[:300]
 
 
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
@@ -31,17 +47,12 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     events = boto3.client("events")
     now = datetime.now(timezone.utc).isoformat()
     finalized = []
+    reason = _reason(event)
 
     for record in _records(event):
         document_id = _document_id(record)
         if not document_id:
             continue
-        response_context = event.get("responseContext") or {}
-        reason = str(
-            response_context.get("functionError")
-            or response_context.get("condition")
-            or "ASYNC_RETRIES_EXHAUSTED"
-        )[:300]
         try:
             table.update_item(
                 Key={"DocumentId": document_id},

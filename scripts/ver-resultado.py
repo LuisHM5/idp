@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Consulta el resultado final de un documento procesado por el stack desplegado.
 
-Busca la ejecución en Step Functions, extrae el resultado del enrichment
-(incluido el detalle del expediente) y lo muestra en formato legible.
+Lee la fila del documento en DynamoDB, toma el resultado del enrichment
+(incluido el detalle del expediente en S3) y lo muestra en formato legible.
 Opcionalmente guarda el JSON completo.
 
 Uso:
-    pnpm resultado                          # última ejecución
+    pnpm resultado                          # último documento
     pnpm resultado -- --id e07e3e90         # por documentId (prefijo basta)
     pnpm resultado -- --id e07e3e90 --wait  # espera si aún está corriendo
     pnpm resultado -- --env prod --id e07e3e90
@@ -62,8 +62,14 @@ def aws(args: list[str], region: str) -> dict:
     return json.loads(out.stdout) if out.stdout.strip() else {}
 
 
-def find_state_machine(region: str, environment: str = "dev", stack_name: str | None = None) -> str:
-    """Resolve the workflow from its owning stack, avoiding dev/prod ambiguity."""
+DOCUMENT_TABLE_LOGICAL_ID = "BedrockDocumentProcessingDocumentProcessingTable"
+FAILURE_WORKFLOW_STATUSES = {
+    "classification-failure", "processing-failure", "enrichment-failure", "post-processing-failure",
+}
+
+
+def find_document_table(region: str, environment: str = "dev", stack_name: str | None = None) -> str:
+    """Resolve the documents table from its owning stack, avoiding dev/prod ambiguity."""
     target_stack = stack_name or (PROD_STACK if environment == "prod" else DEV_STACK)
     stack = aws(
         ["cloudformation", "describe-stack-resources", "--stack-name", target_stack],
@@ -72,40 +78,66 @@ def find_state_machine(region: str, environment: str = "dev", stack_name: str | 
     matches = [
         resource["PhysicalResourceId"]
         for resource in stack.get("StackResources", [])
-        if resource.get("ResourceType") == "AWS::StepFunctions::StateMachine"
+        if resource.get("ResourceType") == "AWS::DynamoDB::Table"
+        and resource.get("LogicalResourceId", "").startswith(DOCUMENT_TABLE_LOGICAL_ID)
     ]
     if not matches:
         raise RuntimeError(
-            f"El stack '{target_stack}' no existe o no contiene una state machine"
+            f"El stack '{target_stack}' no existe o no contiene la tabla de documentos"
         )
     return matches[0]
 
 
-def find_execution(sm_arn: str, doc_id: str | None, region: str) -> dict:
-    executions = aws(
-        ["stepfunctions", "list-executions", "--state-machine-arn", sm_arn, "--max-results", "50"],
-        region,
-    )["executions"]
-    if not executions:
-        raise RuntimeError("No hay ejecuciones registradas")
+def _plain(item: dict) -> dict:
+    """Flatten the string/bool attributes of a DynamoDB JSON item."""
+    return {
+        name: value.get("S", value.get("BOOL"))
+        for name, value in item.items()
+        if "S" in value or "BOOL" in value
+    }
+
+
+def find_job(table: str, doc_id: str | None, region: str) -> dict:
+    """The tracking row of a document: exact id, id prefix, or the most recent."""
     if doc_id:
-        for ex in executions:
-            if doc_id.lower() in ex["name"].lower():
-                return ex
-        raise RuntimeError(f"No encontré ejecución para documentId '{doc_id}' en las últimas 50")
-    return executions[0]
+        item = aws(
+            ["dynamodb", "get-item", "--table-name", table, "--consistent-read",
+             "--key", json.dumps({"DocumentId": {"S": doc_id}})],
+            region,
+        ).get("Item")
+        if item:
+            return _plain(item)
+    rows = [
+        _plain(item)
+        for item in aws(
+            ["dynamodb", "scan", "--table-name", table, "--projection-expression",
+             "DocumentId, ProcessingStatusUpdatedAt, RegisteredAt"],
+            region,
+        ).get("Items", [])
+    ]
+    if doc_id:
+        rows = [row for row in rows if row["DocumentId"].lower().startswith(doc_id.lower())]
+        if not rows:
+            raise RuntimeError(f"No encontré el documento '{doc_id}'")
+    if not rows:
+        raise RuntimeError("No hay documentos registrados")
+    latest = max(rows, key=lambda r: r.get("ProcessingStatusUpdatedAt") or r.get("RegisteredAt") or "")
+    return find_job(table, latest["DocumentId"], region)
 
 
-def enrichment_output(ex_arn: str, region: str) -> dict | None:
-    """Walk the execution history backwards for the enrichment step output."""
-    kwargs = ["stepfunctions", "get-execution-history", "--execution-arn", ex_arn,
-              "--reverse-order", "--max-results", "150"]
-    history = aws(kwargs, region)
-    for ev in history.get("events", []):
-        details = ev.get("stateExitedEventDetails") or {}
-        if "nrichment" in (details.get("name") or ""):
-            return json.loads(details["output"])
-    return None
+def job_status(job: dict) -> str:
+    """Public lifecycle of a row — same rule as query-lambda's processingStatusFor."""
+    if job.get("EnrichmentResult") or job.get("WorkflowStatus") == "complete":
+        return "FINISHED"
+    if job.get("WorkflowStatus") in FAILURE_WORKFLOW_STATUSES:
+        return "FAILED"
+    return job.get("ProcessingStatus") or "AWAITING_UPLOAD"
+
+
+def enrichment_output(job: dict) -> dict | None:
+    """The envelope enrichment stored on the row, or None while there is none."""
+    raw = job.get("EnrichmentResult")
+    return json.loads(raw) if raw else None
 
 
 def deep_find(obj, key):
@@ -154,38 +186,30 @@ def main() -> int:
     parser.add_argument("--region", default="us-east-1")
     args = parser.parse_args([a for a in sys.argv[1:] if a != "--"])
 
-    sm = find_state_machine(args.region, args.env, args.stack)
-    # S3 → SQS → workflow start takes a few seconds; with --wait, retry until
-    # the execution shows up instead of failing immediately.
-    deadline = time.time() + (300 if args.wait else 0)
-    while True:
-        try:
-            ex = find_execution(sm, args.id, args.region)
-            break
-        except RuntimeError:
-            if time.time() >= deadline:
-                raise
-            print(f"{DIM}   la ejecución aún no aparece; reintento en 10s...{RESET}")
-            time.sleep(10)
-    print(f"{DIM}Ejecución: {ex['name']}{RESET}")
+    table = find_document_table(args.region, args.env, args.stack)
+    job = find_job(table, args.id, args.region)
+    print(f"{DIM}Documento: {job['DocumentId']}{RESET}")
 
-    status = ex["status"]
-    while status == "RUNNING":
-        if not args.wait:
-            print(f"{YELLOW}⏳ Aún procesando. Reintenta en un momento o usa --wait.{RESET}")
+    # With --wait, allow for the Lambda's 15-minute cap plus its two async
+    # retries before giving up on a document that is still in flight.
+    deadline = time.time() + (1200 if args.wait else 0)
+    status = job_status(job)
+    while status not in ("FINISHED", "FAILED"):
+        if time.time() >= deadline:
+            print(f"{YELLOW}⏳ Aún en {status}. Reintenta en un momento o usa --wait.{RESET}")
             return 1
-        print(f"{DIM}   procesando... (reviso en 20s){RESET}")
-        time.sleep(20)
-        status = aws(["stepfunctions", "describe-execution", "--execution-arn",
-                      ex["executionArn"]], args.region)["status"]
+        print(f"{DIM}   {status}... (reviso en 5s){RESET}")
+        time.sleep(5)
+        job = find_job(table, job["DocumentId"], args.region)
+        status = job_status(job)
 
-    if status != "SUCCEEDED":
-        print(f"{RED}La ejecución terminó en {status}. Revisa: pnpm track --execution-arn {ex['executionArn']}{RESET}")
+    if status == "FAILED":
+        print(f"{RED}El procesamiento falló: {job.get('ProcessingError') or job.get('WorkflowStatus')}{RESET}")
         return 1
 
-    out = enrichment_output(ex["executionArn"], args.region)
+    out = enrichment_output(job)
     if out is None:
-        print(f"{RED}No encontré el paso de enrichment en el historial.{RESET}")
+        print(f"{RED}La fila terminó sin resultado de enrichment.{RESET}")
         return 1
 
     # Large expedientes: the workflow payload only carries a compact summary;
@@ -258,7 +282,7 @@ def main() -> int:
     if args.save:
         save_dir = Path(args.save)
         save_dir.mkdir(parents=True, exist_ok=True)
-        dest = save_dir / f"{ex['name']}.json"
+        dest = save_dir / f"{job['DocumentId']}.json"
         dest.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n{DIM}JSON completo → {dest}{RESET}")
     return 0

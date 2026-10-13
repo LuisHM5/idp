@@ -162,7 +162,7 @@ USAGE = """\
 
 DESCRIPTION = """\
 DESCRIPCIÓN:
-  E2E real (API → S3 → SQS → Step Functions → DynamoDB) sobre una carpeta por
+  E2E real (API → S3 → Enrichment Lambda → DynamoDB) sobre una carpeta por
   tipo de documento, con un análisis de confianza por tipo. Antes de gastar
   muestra el plan con el costo estimado y pide confirmación.
 

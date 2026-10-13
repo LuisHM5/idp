@@ -69,7 +69,7 @@ def main() -> int:
         return 2
 
     print(f"Suite REAL E2E: {len(fixtures)} archivo(s) contra {args.env}.")
-    print("Generará escrituras reales en S3, Step Functions, DynamoDB, Bedrock y Textract.")
+    print("Generará escrituras reales en S3, Lambda, DynamoDB, Bedrock y Textract.")
     estimate_low, estimate_high = len(fixtures) * 0.02, len(fixtures) * 0.35
     print(f"Costo orientativo del corpus etiquetado: ${estimate_low:.2f}–${estimate_high:.2f} USD (el uso real queda auditado).")
     if args.max_cost_usd is not None and estimate_high > args.max_cost_usd:

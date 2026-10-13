@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""E2E real: sube documentos por el API desplegado (S3 raw/ → SQS → Step
-Functions → Lambdas → DynamoDB/S3) y valida el resultado final.
+"""E2E real: sube documentos por el API desplegado (S3 source/ → Enrichment
+Lambda → DynamoDB/S3) y valida el resultado final.
 
 Dos modos:
 
@@ -16,18 +16,16 @@ Dos modos:
   muestra el costo estimado y pide confirmación.
 
 Distinto de scripts/test-pedimentos.py: ese script llama process_pdf()
-directo en Python (rápido, barato, pero NUNCA toca S3/SQS/Step
-Functions/DynamoDB). Este script sí pasa por la infraestructura real, así
+directo en Python (rápido, barato, pero NUNCA toca S3/Lambda/DynamoDB). Este script sí pasa por la infraestructura real, así
 que además de precisión de campos valida cosas que solo pueden romperse ahí:
 - que el documentId se resuelva bien desde la key de S3,
-- que la ejecución de Step Functions termine en SUCCEEDED y no en
-  ExecutionTimedOut,
-- que el archivo se mueva de raw/ a processed/ (o failed/) al terminar,
+- que el trigger directo de S3 lleve la fila a FINISHED y no a FAILED,
+- que el original se conserve en source/ y la fila lo nombre en SourceKey,
 - que el GET público, la descarga del original, la búsqueda por unique key y
   la auditoría de costo respondan.
 
 Costo: igual que procesar cada documento normalmente (Textract + Bedrock).
-Tiempo: minutos, no segundos — corre Step Functions real.
+Tiempo: el de procesar cada documento en la Lambda desplegada.
 
 Uso:
     pnpm test:e2e:pedimento -- --file normal_pend.pdf
@@ -219,7 +217,7 @@ class Target:
     region: str
     endpoint: str
     bucket: str
-    state_machine: str
+    document_table: str
     api_key: str | None
 
 
@@ -228,7 +226,7 @@ def resolve_target(env: str, stack: str | None, region: str, api_key: str | None
     return Target(
         env=env, stack=stack_name, region=region,
         endpoint=api_endpoint(stack_name, region), bucket=bucket_name(stack_name, region),
-        state_machine=vr.find_state_machine(region, env, stack), api_key=api_key,
+        document_table=vr.find_document_table(region, env, stack), api_key=api_key,
     )
 
 
@@ -265,47 +263,31 @@ def run_case(target: Target, pdf_path: Path, *, doc_type: str, wait: int, spec: 
         raise RuntimeError(f"El API no devolvió documentId: {upload_result}")
     log(f"documentId: {doc_id}  {DIM}(subida en {time.time()-t0:.1f}s){RESET}")
 
+    # The row is reserved by POST /documents, so it exists from the start; what
+    # is awaited is the direct S3 → Enrichment invocation finishing it.
     deadline = t0 + wait
-    ex = None
-    while time.time() < deadline:
-        try:
-            ex = vr.find_execution(target.state_machine, doc_id, target.region)
-            break
-        except RuntimeError:
-            log(f"{DIM}   la ejecución aún no aparece en Step Functions; reintento en 10s...{RESET}")
-            time.sleep(10)
-    if ex is None:
-        log(f"{RED}La ejecución nunca apareció en Step Functions tras {wait}s — "
-            f"revisa la SQS DLQ o los logs del consumer Lambda.{RESET}")
-        return {
-            "schemaVersion": 1, "file": pdf_path.name, "documentId": doc_id, "docType": doc_type,
-            "environment": target.env, "stack": target.stack, "executionArn": None,
-            "executionStatus": "NOT_FOUND", "infraPassed": False, "groundTruthPassed": None, "passed": False,
-            "durationSeconds": round(time.time() - t0, 3),
-            "error": f"la ejecución no apareció en Step Functions tras {wait}s",
-        }, None
+    processing_started = time.time()
+    job = vr.find_job(target.document_table, doc_id, target.region)
+    job_status = vr.job_status(job)
+    while job_status not in ("FINISHED", "FAILED") and time.time() < deadline:
+        time.sleep(3)
+        job = vr.find_job(target.document_table, doc_id, target.region)
+        job_status = vr.job_status(job)
+    elapsed_processing = time.time() - processing_started
+    # `executionStatus` keeps the vocabulary the dataset analysis already reads.
+    status = {"FINISHED": "SUCCEEDED", "FAILED": "FAILED"}.get(job_status, "TIMED_OUT")
 
-    status = ex["status"]
-    sfn_started = time.time()
-    while status == "RUNNING" and time.time() < deadline:
-        time.sleep(15)
-        status = vr.aws(
-            ["stepfunctions", "describe-execution", "--execution-arn", ex["executionArn"]],
-            target.region,
-        )["status"]
-    elapsed_sfn = time.time() - sfn_started
-
-    log(f"\nStep Functions: {(GREEN if status == 'SUCCEEDED' else RED)}{status}{RESET}  {DIM}({elapsed_sfn:.0f}s){RESET}")
+    log(f"\nProcesamiento: {(GREEN if status == 'SUCCEEDED' else RED)}{job_status}{RESET}  {DIM}({elapsed_processing:.0f}s){RESET}")
 
     infra_ok = True
     if status != "SUCCEEDED":
         infra_ok = False
-        log(f"{RED}La ejecución no terminó en SUCCEEDED. Esto es exactamente el tipo de falla de\n"
-            f"infraestructura (timeout, addCatch, SQS) que test-pedimentos.py NO puede detectar\n"
-            f"porque nunca pasa por Step Functions.{RESET}")
-        log(f"Detalle: pnpm track --execution-arn {ex['executionArn']}")
+        log(f"{RED}El documento no llegó a FINISHED. Esto es exactamente el tipo de falla de\n"
+            f"infraestructura (trigger S3, timeout, reintentos asíncronos) que test-pedimentos.py\n"
+            f"NO puede detectar porque nunca pasa por la Lambda desplegada.{RESET}")
+        log(f"Detalle: {job.get('ProcessingError') or job.get('WorkflowStatus') or 'sin error registrado'}")
 
-    out = vr.enrichment_output(ex["executionArn"], target.region) if infra_ok else None
+    out = vr.enrichment_output(job) if infra_ok else None
     documents: list = []
     exp: dict | None = None
     if out is not None:
@@ -324,29 +306,19 @@ def run_case(target: Target, pdf_path: Path, *, doc_type: str, wait: int, spec: 
             log(f"{RED}El resultado no trae 'documents' — ¿process_pdf() cambió de forma, o falló antes de extraer?{RESET}")
 
     log(f"\n{DIM}--- Infraestructura ---{RESET}")
-    # El documentId real puede llevar sufijo/prefijo distinto al de la key original;
-    # nos basta verificar que raw/ para este id específico ya no exista (se movió o falló).
-    still_in_raw = subprocess.run(
-        ["aws", "s3api", "list-objects-v2", "--bucket", target.bucket, "--prefix", f"raw/{doc_type}/",
-         "--region", target.region, "--query", f"Contents[?contains(Key, '{doc_id}')].Key", "--output", "text"],
+    # El original ya no se mueve: debe seguir exactamente donde se subió, y la
+    # fila debe nombrarlo en SourceKey (de ahí lo resuelven /file y reprocess).
+    source_key = job.get("SourceKey") or ""
+    source_exists = bool(source_key) and subprocess.run(
+        ["aws", "s3api", "head-object", "--bucket", target.bucket, "--key", source_key,
+         "--region", target.region],
         capture_output=True, text=True, timeout=20,
-    ).stdout.strip()
-    if still_in_raw and still_in_raw != "None":
+    ).returncode == 0
+    if not source_key.startswith("source/") or not source_exists:
         infra_ok = False
-        log(f"  {RED}✗ el archivo sigue en raw/: {still_in_raw}{RESET} (nunca se movió a processed/ ni failed/)")
+        log(f"  {RED}✗ el original no está en source/ (SourceKey={source_key or 'ausente'}){RESET}")
     else:
-        log(f"  {GREEN}✓{RESET} el archivo ya no está en raw/ (se movió tras procesar)")
-
-    processed_keys = subprocess.run(
-        ["aws", "s3api", "list-objects-v2", "--bucket", target.bucket, "--prefix", f"processed/{doc_id}/",
-         "--region", target.region, "--query", "Contents[].Key", "--output", "text"],
-        capture_output=True, text=True, timeout=20,
-    ).stdout.strip()
-    if not processed_keys or processed_keys == "None":
-        infra_ok = False
-        log(f"  {RED}✗ no apareció el original bajo processed/{doc_id}/{RESET}")
-    else:
-        log(f"  {GREEN}✓{RESET} original persistido en processed/")
+        log(f"  {GREEN}✓{RESET} original conservado en {source_key}")
 
     api_status, public = api_json(f"{target.endpoint}/documents/{doc_id}?full=1", target.api_key)
     if api_status != 200 or public.get("processingStatus") != "FINISHED":
@@ -472,7 +444,7 @@ def run_case(target: Target, pdf_path: Path, *, doc_type: str, wait: int, spec: 
         f"{DIM}(infra={'ok' if infra_ok else 'FALLÓ'}, ground-truth={gt_label}, total {total_elapsed:.0f}s){RESET}")
     summary = {
         "schemaVersion": 1, "file": pdf_path.name, "documentId": doc_id, "docType": doc_type,
-        "environment": target.env, "stack": target.stack, "executionArn": ex.get("executionArn"),
+        "environment": target.env, "stack": target.stack, "executionArn": None,
         "executionStatus": status, "infraPassed": infra_ok, "groundTruthPassed": file_ok,
         "groundTruthNote": ground_truth_note, "passed": overall_ok, "durationSeconds": round(total_elapsed, 3),
         "publicApiPassed": api_status == 200 and public.get("processingStatus") == "FINISHED",
@@ -751,7 +723,7 @@ def single_main(args: argparse.Namespace, api_key: str | None, expected: dict) -
 
     stack = args.stack or (PROD_STACK if args.env == "prod" else DEV_STACK)
     print(f"{CYAN}=== E2E real: {args.file} contra '{stack}' ({args.env}) ==={RESET}")
-    print(f"{DIM}Flujo: API POST /documents → S3 raw/ → SQS → Step Functions → Lambdas → DynamoDB/S3{RESET}\n")
+    print(f"{DIM}Flujo: API POST /documents → S3 source/ → Enrichment Lambda → DynamoDB/S3{RESET}\n")
     target = resolve_target(args.env, args.stack, args.region, api_key)
     print(f"API:    {target.endpoint}")
     print(f"Bucket: {target.bucket}")
@@ -797,7 +769,7 @@ USAGE = """\
 DESCRIPTION = """\
 DESCRIPCIÓN:
   E2E real contra el stack desplegado: sube documentos por POST /documents,
-  espera su ejecución de Step Functions y valida infraestructura, API pública,
+  espera su procesamiento y valida infraestructura, API pública,
   auditoría de costo y ground truth (tests/integration/expected_pedimentos.json).
 
   Con -f procesa un archivo. Sin -f procesa todos los archivos de DIR como TIPO:

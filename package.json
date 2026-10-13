@@ -79,13 +79,11 @@
     "apps:adopt": "node scripts/manage-apps.mjs adopt",
     "destroy": "npx cdk destroy",
     "destroy:full": "node scripts/destroy-full.mjs",
-    "preview-prompts": "node scripts/preview-prompts.mjs",
     "docs:api": "node documentacion/api-docs/serve.mjs",
     "backfill:index": "node scripts/backfill-index.mjs",
     "backfill:keys": "node scripts/backfill-keys.mjs",
     "test-local": "node scripts/test-local.mjs",
     "test-e2e": "node scripts/test-e2e.mjs",
-    "track": "node scripts/track-execution.mjs",
     "test:node": "node --test \"tests/unit/node/*.test.mjs\"",
     "doc:pdf": "bash scripts/doc-a-pdf.sh"
   },

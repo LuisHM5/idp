@@ -1,7 +1,7 @@
 """EnrichmentLambda handler - Config-driven validation engine.
 
 The primary ingress is now an S3 ObjectCreated event for source/. The handler
-also accepts the former Step Functions payload while deployments drain. It:
+also accepts an already-normalized event (local tools and tests). It:
 1. Claims each S3 object idempotently in DynamoDB
 2. Loads document type config from JSON file or DynamoDB (no code changes needed)
 3. Runs deterministic validation checks via the appropriate validator module
@@ -120,12 +120,11 @@ def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _upload_metadata(event: Dict[str, Any]) -> Dict[str, str]:
-    """The caller's own `metadata` from `POST /documents`, as the SQS consumer
-    read it back off the S3 object (`uploadMetadata` in the Step Functions
-    input — see resources/sqs-consumer/index.py).
+    """The caller's own `metadata` from `POST /documents`, read back off the
+    S3 object by `_apply_object_metadata` (`uploadMetadata` on the event).
 
     Already lowercased, ASCII, flat and reserved-key-free by the time it gets
-    here (upload-lambda's normalizeMetadata, then the consumer's own filter),
+    here (upload-lambda's normalizeMetadata, then that projection's filter),
     so this only guards the shape: a malformed or absent payload yields `{}`
     rather than poisoning the envelope, because nothing about this system's
     own correctness depends on caller-supplied context.
@@ -363,12 +362,10 @@ def _extract_s3_pointer(event: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 
 def _declared_file_type(event: Dict[str, Any]) -> Optional[str]:
-    """Explicit file type from `content.fileType` (set by the SQS consumer —
-    see `resources/sqs-consumer/index.py` — as the single source of
-    truth instead of every downstream Lambda re-deriving it from the S3 key's
-    extension independently). Preferred when present; the caller falls back
-    to parsing the key itself for events that predate this field (already
-    in-flight during a deploy) or arrive from a different ingestion path.
+    """Explicit file type from `content.fileType` (set by `_s3_record_to_event`
+    as the single source of truth instead of re-deriving it from the S3 key's
+    extension at every use). Preferred when present; the caller falls back to
+    parsing the key itself for a normalized event that does not carry it.
     """
     content = event.get("content") or {}
     file_type = content.get("fileType") if isinstance(content, dict) else None
@@ -656,6 +653,10 @@ process.stdout.write(JSON.stringify(result));
         ]
 
 
+class _SourceUnavailable(RuntimeError):
+    """The uploaded object could not be read on the direct S3 ingress."""
+
+
 def _run_expediente(
     event: Dict[str, Any], document_id: str, classification: str
 ) -> Optional[Dict[str, Any]]:
@@ -674,6 +675,12 @@ def _run_expediente(
         document_bytes, _, s3_metadata = _fetch_document(bucket, key)
     except Exception as e:
         logger.error("failed to fetch s3://%s/%s: %s", bucket, key, e)
+        if event.get("_directIngress"):
+            # No upstream extraction exists to fall back to: returning None
+            # would validate an empty document and finish it as if it had been
+            # read. Raising lets the async retry (or the failure finalizer)
+            # handle what is an infrastructure fault, not a document verdict.
+            raise _SourceUnavailable(f"s3://{bucket}/{key}: {e}") from e
         return None
 
     _apply_object_metadata(event, s3_metadata)
@@ -816,13 +823,19 @@ def _run_expediente(
     )
 
 
-def _s3_record_to_event(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Adapt one native S3 notification to the pipeline's stable input shape."""
+def _s3_record_to_event(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Adapt one native S3 notification to the pipeline's stable input shape.
+
+    Returns None for a key that can never be a document (a console-created
+    folder marker, or an object outside `{prefix}/[{TYPES}/]{id}/{file}`):
+    retrying it would only burn the async retries and end in a FAILED row for
+    a document id nobody registered.
+    """
     bucket = str(record["s3"]["bucket"]["name"])
     key = unquote_plus(str(record["s3"]["object"]["key"]))
     parts = [part for part in key.split("/") if part]
-    if len(parts) < 3 or parts[0] not in {"source", "raw"}:
-        raise ValueError(f"unsupported document ingress key: {key}")
+    if key.endswith("/") or len(parts) < 3 or parts[0] not in {"source", "raw"}:
+        return None
     document_id = re.sub(r"[^a-zA-Z0-9-]", "-", parts[-2])
     filename = parts[-1]
     declared_types = _declared_types_from_key(key)
@@ -878,6 +891,12 @@ def _claim_direct_event(event: Dict[str, Any], context: Any = None) -> str:
         else 15 * 60 * 1000
     )
     lease_seconds = max(30, int(remaining_ms / 1000) - 10)
+    # Lambda reuses the request id when it retries an asynchronous invocation,
+    # and only retries after the previous attempt ended. Seeing our own id on a
+    # PROCESSING row therefore means that attempt died without releasing its
+    # claim (out of memory, runtime crash): take it over instead of waiting
+    # out a lease that outlives both retries.
+    request_id = str(getattr(context, "aws_request_id", "") or "unknown")
     values = {
         ":processing": "PROCESSING",
         ":awaiting": "AWAITING_UPLOAD",
@@ -890,6 +909,7 @@ def _claim_direct_event(event: Dict[str, Any], context: Any = None) -> str:
         ":source": str(event["content"]["key"]),
         ":uploaded": str(event.get("eventTime") or now.isoformat()),
         ":workflow": "processing",
+        ":request": request_id,
     }
     try:
         _document_table().update_item(
@@ -897,11 +917,13 @@ def _claim_direct_event(event: Dict[str, Any], context: Any = None) -> str:
             UpdateExpression=(
                 "SET #status = :processing, #workflow = :workflow, "
                 "ProcessingStatusUpdatedAt = :now, UploadedAt = if_not_exists(UploadedAt, :uploaded), "
-                "SourceKey = :source, ProcessingAttempt = :attempt, ProcessingLeaseUntil = :lease"
+                "SourceKey = :source, ProcessingAttempt = :attempt, "
+                "ProcessingLeaseUntil = :lease, ProcessingRequestId = :request"
             ),
             ConditionExpression=(
                 "attribute_not_exists(#status) OR #status IN (:awaiting, :queued, :failed) "
-                "OR ProcessingLeaseUntil < :now_epoch"
+                "OR ProcessingLeaseUntil < :now_epoch "
+                "OR (#status = :processing AND ProcessingRequestId = :request)"
             ),
             ExpressionAttributeNames={
                 "#status": "ProcessingStatus",
@@ -1089,6 +1111,12 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         if not str(record.get("eventSource") or "").endswith(":s3"):
             continue
         direct_event = _s3_record_to_event(record)
+        if direct_event is None:
+            logger.warning(
+                "ignoring S3 object outside the document layout: %s",
+                ((record.get("s3") or {}).get("object") or {}).get("key"),
+            )
+            continue
         claim = _claim_direct_event(direct_event, context)
         if claim == "duplicate":
             outcomes.append(
@@ -1213,6 +1241,8 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
             result["validation"]["reextraction"] = reextraction_meta
         return result
 
+    except _SourceUnavailable:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error in enrichment handler: {e}")
         return build_canonical_result(
