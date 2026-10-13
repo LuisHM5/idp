@@ -1,7 +1,7 @@
 {
   "CERTIFICADO_POLIZA": {
     "catalog_status": "stable",
-    "schema_version": "5.1.0",
+    "schema_version": "5.2.0",
     "display_name": "Certificado de Póliza de Seguro",
     "aliases": [
       "certificado de póliza",
@@ -16,6 +16,10 @@
     "pipeline": "single_document",
     "business_destination": "CERTIFICADO_POLIZA",
     "min_confidence": 0.8,
+    "text_acquisition": {
+      "ocr_mode": "only_if_deterministic_incomplete",
+      "ocr_page_scope": "profile_pages_then_remaining"
+    },
     "deterministic_extraction": {
       "enabled": true,
       "fallback": "missing_fields",

@@ -20,6 +20,7 @@ sys.path.insert(0, str(LAMBDA))
 import document_catalog  # noqa: E402
 from document_catalog import _parse_entry  # noqa: E402
 from pipeline.deterministic_text import validate_entry  # noqa: E402
+from pipeline.text_acquisition import validate_config as validate_text_acquisition  # noqa: E402
 
 
 def active_files() -> list[Path]:
@@ -60,6 +61,12 @@ def main() -> int:
                 failures.append(
                     f"{path.relative_to(REPO)}:{type_id}: ai_response_format debe ser compact o legacy"
                 )
+            failures.extend(
+                f"{path.relative_to(REPO)}:{type_id}: {problem}"
+                for problem in validate_text_acquisition(
+                    raw.get("text_acquisition"), raw.get("deterministic_extraction")
+                )
+            )
             if not isinstance(raw.get("deterministic_extraction"), dict):
                 continue
             checked += 1

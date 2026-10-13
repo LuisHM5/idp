@@ -55,6 +55,7 @@ cp .env.example .env.production   # si no existe; revisa BEDROCK_MODEL_ID
 | `BEDROCK_MODEL_ID`                           | Modelo de clasificación/extracción del pipeline                                        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 | `BEDROCK_EXTRACTOR_MODEL_ID`                 | Modelo del pipeline de pedimentos/re-extracción (permite usar uno más fuerte solo ahí) | igual a `BEDROCK_MODEL_ID`                    |
 | `AI_RESPONSE_FORMAT`                         | Protocolo interno de salida del extractor: `compact` o rollback `legacy` | `compact` |
+| `DEFERRED_OCR_ENABLED`                       | `true` permite que tipos con `text_acquisition` omitan Textract si su perfil determinístico ya está completo; `false` restaura globalmente el OCR inmediato | `false` |
 | `MODEL_FALLBACK_MAX_RETRIES`                 | Cuántas veces puede cambiar de modelo una sola llamada Bedrock cuando el modelo pedido no está disponible, antes de rendirse (ver §5.6) | `4`                            |
 | `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION` | Cuenta/región destino                                                                  | región `us-east-1`                            |
 | `CATALOG_TABLE`                              | Nombre de la tabla DynamoDB del catálogo (**una por ambiente**)                        | `document-validation-catalog` en prod, `document-validation-catalog-dev` en dev |

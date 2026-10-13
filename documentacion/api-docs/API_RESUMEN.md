@@ -174,6 +174,7 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 | `result.aiExecuted` · `result.aiUsage` | siempre presentes: si realmente corrió IA, etapas y tokens/imágenes reportados. Textract OCR no cuenta como IA generativa |
 | `result.deterministicSavings` | solo con extracción determinística: ahorro **estimado** de input/output contra el schema completo; no se suma al usage facturado |
 | `result.documents[].deterministicExtraction` | estrategia `deterministic`/`hybrid`/`model`, si ese documento llamó IA, conteo resuelto, `fallbackFields` y `tokenSavings` |
+| `result.pages` · `result.pages.ocrOptimization` | conteos reales native/OCR/empty; el bloque opcional audita OCR bajo demanda (`effectiveMode`, motivo, intentadas/omitidas y rollback global) |
 | `result.documents[].authenticity` | solo en tipos que verifican autenticidad física (`CARTA_NOM35`): `verdict` (`AUTENTICO`·`SOSPECHOSO`·`NO_AUTENTICO`·`NO_EVALUADO`), `layers`, `reasons[{code,hard,message}]`, `referencesFound`. Resumen: el estatus lo deciden los campos (`CAPTURA_FISICA`, `FIRMA_PRESENTE`…). Mandar `metadata.proveedor` en el `POST` para comparar contra las firmas/sellos registrados de ese proveedor |
 | `result.tracking` · `result.metadata` · `result.warnings` · `result.checks` | contexto y detalle. `processingSeconds` = pipeline; `uploadToResultSeconds` = PUT→resultado; `uploadToCompletionSeconds` = PUT→FINISHED/FAILED |
 | `fullResult` | solo con `full=1`; resultado profundo desde S3 con la metadata vigente superpuesta |

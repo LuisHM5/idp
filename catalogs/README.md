@@ -185,6 +185,7 @@ como en el DSL viejo.
 | `occurrence_mode` | sí, opcional | Default del tipo cuando el POST no manda `occurrenceMode` ni `:N`/`:all`: `single` conserva la primera ocurrencia; `multiple` conserva todas. Si falta, aplica el default global: `single` con un tipo declarado, `multiple` con varios. |
 | `pipeline: "expediente"` | sí, pero opcional | Ver [`pipeline: expediente`](#pipeline-expediente-qué-controla-realmente) abajo — **ya no es requisito para que se extraigan los campos.** |
 | `deterministic_extraction` | sí, opcional | Activa el mapeo de texto antes de Bedrock para PDF/imagen field-centric. `fallback` admite `missing_fields` (modelo solo para ramas faltantes), `full_model` o `review`. Ver [Extracción determinística desde texto](#extracción-determinística-desde-texto-text_source). |
+| `text_acquisition` | sí, opcional | Controla cuándo una página PDF sin texto nativo pasa por Textract. Ausente o `ocr_mode: "all_pages_without_native_text"` conserva el OCR inmediato. `ocr_mode: "only_if_deterministic_incomplete"` permite omitirlo únicamente si un perfil determinístico resolvió todos sus `expected_fields`; requiere `DEFERRED_OCR_ENABLED=true`. Cualquier duda vuelve al OCR anterior. Ver [OCR bajo demanda](#ocr-bajo-demanda-text_acquisition). |
 | `model_id` | sí, opcional | ID de modelo Bedrock (o ARN de inference-profile) que extrae específicamente ESTE tipo — pisa `BEDROCK_EXTRACTOR_MODEL_ID`/`BEDROCK_MODEL_ID` configurados por variable de entorno. Aplica a cualquier fase que corra para este tipo (`extractor`, y `recovery` si el tipo declara `extraction_strategy`) salvo que esa fase tenga su propia entrada en `model_ids`. Ausente o `null` → hereda lo configurado. |
 | `model_ids` | sí, opcional | Igual que `model_id` pero por FASE: `{"extractor": "...", "recovery": "..."}`. Pisa a `model_id` cuando ambos nombran la misma fase — así un tipo puede fijar solo `recovery` (p. ej. porque su fallback de Textract necesita un modelo distinto al de extracción normal) sin tocar las demás. `segmenter` no aplica aquí: la segmentación de un expediente corre ANTES de saber a qué tipo pertenece cada rango de páginas, así que no hay un `type_entry` del que leer el override — solo responde a `BEDROCK_SEGMENTER_MODEL_ID` y al override de desarrollo. La fase **`vision`** (etapa de autenticidad) también se fija aquí — `{"vision": "us.amazon.nova-2-lite-v1:0"}` — y es independiente de todo lo demás: resuelve por una cadena propia y más corta, `model_ids.vision` → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5, y **nunca** hereda `model_id`, `BEDROCK_MODEL_ID` ni el override de desarrollo (son modelos de texto; el general de este despliegue no acepta imágenes). Su respaldo por indisponibilidad tampoco es la lista compartida: es `authenticity.vision.fallback_models` del propio tipo (`[]` = no cambia de modelo). El modelo debe aceptar imágenes en Converse — candidatos probados y medidos en `documentacion/MODELOS_VISION.md`; compáralos en tu tipo con `pnpm vision:comparar` antes de fijar uno. |
 | ↳ jerarquía completa | — | De mayor a menor prioridad: **(1)** override de desarrollo por request (`ALLOW_MODEL_OVERRIDE`, dev-only, ver `document-validation-stack.ts` — fuerza TODA la invocación sin importar tipo ni fase) → **(2)** `model_ids[fase]` del catálogo → **(3)** `model_id` del catálogo → **(4)** `BEDROCK_<FASE>_MODEL_ID` de entorno → **(5)** `BEDROCK_MODEL_ID` de entorno / fallback fijo. La utilidad que implementa y documenta este orden es `pipeline/bedrock.py::resolve_model` (`_model_candidates` es la única fuente de verdad del orden; `explain_model_resolution` expone los 5 candidatos y cuál ganó, útil para depurar "por qué este documento usó el modelo X"). Esto decide solo **qué modelo se intenta primero**; si ese modelo falla por indisponibilidad (no habilitado, no existe, error/timeout del proveedor), `pipeline/bedrock.py::_invoke_with_fallback` cambia al siguiente modelo de una lista ORDENADA E INDEPENDIENTE (`pipeline/model_fallback.py`, tabla DynamoDB `FALLBACK_MODELS_TABLE` opcional) — ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6. Los dos mecanismos no se mezclan: el catálogo nunca es candidato de fallback, y la tabla de fallback nunca decide qué se intenta primero. |
@@ -457,6 +458,40 @@ código y un campo esperado faltante abre sólo el fallback parcial; un formato
 desconocido o ambiguo vuelve al modelo completo. Para eliminar además la
 clasificación por modelo debe subirse declarando el `documentType`; una carga
 sin tipo todavía puede usar Bedrock para segmentar/clasificar.
+
+### OCR bajo demanda (`text_acquisition`)
+
+Un tipo con perfiles determinísticos completos puede evitar Textract en páginas
+sin texto nativo que no aportan ninguno de sus campos esperados:
+
+```jsonc
+"text_acquisition": {
+  "ocr_mode": "only_if_deterministic_incomplete",
+  "ocr_page_scope": "profile_pages_then_remaining"
+}
+```
+
+- Ausente, `ocr_mode: "all_pages_without_native_text"`, configuración inválida,
+  más de un tipo declarado, `AUTO` o `extractionMode=model`: comportamiento
+  conservador anterior; toda página sin texto útil pasa inmediatamente por
+  Textract.
+- `only_if_deterministic_incomplete`: prueba primero el mapper sobre el texto
+  nativo. Solo omite OCR si un perfil coincide y **todos** sus
+  `expected_fields` se resolvieron sin advertencias.
+- `profile_pages_then_remaining`: si falta algo, aplica OCR primero a las
+  páginas que los perfiles declaran en `pages`; si aún falta información,
+  amplía el OCR a todas las candidatas restantes.
+
+Además requiere `DEFERRED_OCR_ENABLED=true` en el despliegue. `false`, ausente
+o cualquier otro valor ignora globalmente el opt-in y restaura el OCR inmediato
+sin editar catálogos. El resultado audita la decisión en
+`pages.ocrOptimization` (`effectiveMode`, `reason`, páginas intentadas/omitidas
+y `rollbackApplied`). Las imágenes JPG/PNG no participan: como no tienen capa
+de texto nativo, conservan Textract siempre.
+
+`expected_fields` es el contrato de calidad de esta optimización: debe enumerar
+todo lo que ese perfil necesita entregar. Omitir un campo de esa lista podría
+hacer que una página relevante se considere prescindible.
 
 ### Formato compacto de respuesta de IA
 

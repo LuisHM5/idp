@@ -537,8 +537,10 @@ Entrada: `pipeline/expediente.py:process_pdf` (`:174`).
 - En PDF, `_truncate_pdf()` (`:145`) limita páginas según `MAX_PDF_PAGES`; el
   resultado queda marcado `truncated` y requiere revisión. El original S3 no se
   modifica.
-- En imagen llama `pdf_pages.load_image_page()`; en PDF llama
-  `pdf_pages.load_pages()`.
+- En imagen llama `pdf_pages.load_image_page()`. En PDF conserva
+  `pdf_pages.load_pages()` salvo que un único tipo declarado opte por
+  `text_acquisition`; entonces delega la decisión a
+  `text_acquisition.load_pdf_pages()`.
 
 ### 12.2 `pdf_pages.load_image_page()` (`pdf_pages.py:151`)
 
@@ -560,6 +562,24 @@ envoltura PDF.
    `DetectDocumentText` y convierte sus bloques.
 7. Si falla el OCR de una página, esa página queda `source=empty`; no se pierde
    el resto del expediente.
+
+### 12.3b OCR diferido por catálogo
+
+`pipeline/text_acquisition.py::load_pdf_pages()` solo se alcanza para un tipo
+único declarado que tenga `text_acquisition`. `DEFERRED_OCR_ENABLED` acepta
+únicamente el literal `true`; cualquier otro valor llama el `load_pages()`
+anterior. Con `only_if_deterministic_incomplete`, primero carga con
+`use_ocr=False` y ejecuta `deterministic_text.extract()` como preflight:
+
+1. perfil reconocido + todos los `expected_fields` resueltos → omite OCR;
+2. incompleto → `pdf_pages.apply_ocr()` sobre `profiles[].pages` y reintenta;
+3. todavía incompleto, perfil desconocido o alcance incierto → OCR de todas las
+   candidatas restantes;
+4. error interno → fallback al OCR completo, nunca a una salida parcial.
+
+El resultado del preflight se reutiliza en `_extract_segment()` cuando cubre el
+segmento completo. `pages.ocrOptimization` deja el camino, motivo, perfil y
+conteos auditables; `pages.ocrPages` sigue siendo la fuente del costo real.
 
 ### 12.4 `segmenter.segment_pages()` (`segmenter.py`)
 
@@ -1533,7 +1553,8 @@ Archivo: `pipeline/pdf_pages.py`.
 | `_ocr_page()` (`:141`) | reader + índice | envuelve página, llama `DetectDocumentText`, convierte bloques | `PageText(source=textract)` → `load_pages` | `_single_page_pdf`, Textract, `_blocks_to_page` |
 | `load_image_page()` (`:151`) | JPG/JPEG/PNG bytes | manda bytes directos a Textract | lista de un `PageText` → `process_pdf` | `DetectDocumentText`, `_blocks_to_page` |
 | `load_pages()` (`:165`) | PDF bytes + flag OCR | abre PDF, intenta texto nativo; páginas pobres van en paralelo a `_ocr_page`; reordena por número | `PageText[]` → segmenter/extractor | pypdf, `ThreadPoolExecutor`, `TEXTRACT_WORKERS` |
-| `pages_summary()` (`:197`) | páginas | cuenta native/textract/empty y medias | dict → DeepResult/tracking/cost | agregación local |
+| `apply_ocr()` | PDF + `PageText[]` + páginas opcionales | completa solo placeholders `empty`, conservando nativas y orden | `PageText[]` → política de adquisición | pypdf, `_ocr_page`, `TEXTRACT_WORKERS` |
+| `pages_summary()` | páginas | cuenta native/textract/empty y medias | dict → DeepResult/tracking/cost | agregación local |
 
 El texto nunca se escribe a S3 como artefacto separado: viaja en memoria como
 `PageText[]` y termina indirectamente en prompts, evidencias/campos y tracking.
@@ -2114,9 +2135,10 @@ legacy y las cuatro persistencias explícitas: S3 full, DDB index, DDB cost y DD
 | `handler.py` | catalog, extractors, indexing, cost, pipeline | boto3 S3, Python stdlib, Node runtime solo legacy | tablas/bucket/model flags vía env |
 | `document_catalog.py` | dataclasses de contrato | boto3 DynamoDB, hashlib/json | bundle `config/catalogs.json`, `CATALOG_TABLE` opcional |
 | `pipeline.pdf_pages` | `PageText` local | pypdf, boto3 Textract | `TEXTRACT_WORKERS`, región/credenciales |
+| `pipeline.text_acquisition` | catalog, deterministic_text, pdf_pages | ninguno directo | `DEFERRED_OCR_ENABLED`, `text_acquisition` del catálogo |
 | `pipeline.segmenter` | catalog, bedrock, PageText | Bedrock vía helper | modelos stage/base, catálogo expediente |
 | `pipeline.text_extractor` | catalog, bedrock, PageText | concurrent futures | `MAX_OUTPUT_TOKENS`, `CHUNK_WORKERS` |
-| `pipeline.expediente` | todos los módulos pipeline + engine | pypdf/concurrency indirectos | `MAX_PAGES`, `EXTRACT_WORKERS`, QR config |
+| `pipeline.expediente` | todos los módulos pipeline + engine | pypdf/concurrency indirectos | `MAX_PAGES`, `EXTRACT_WORKERS`, `DEFERRED_OCR_ENABLED`, QR config |
 | `pipeline.qr_recovery` | normalize | pypdf, pypdfium2, numpy output, zxing-cpp | `QR_RECOVERY_ENABLED`, spec catálogo |
 | `pipeline.xml_document` | catalog, engine, result common | `xml.etree.ElementTree` | namespaces/xpath del catálogo |
 | `pipeline.tabular_document` | catalog, engine, normalize | openpyxl, csv stdlib | cell/column/sheet config del catálogo |

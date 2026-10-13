@@ -49,7 +49,7 @@ from .normalize import (
     pedimento_consecutivo,
 )
 from . import confidence as conf_policy
-from . import deterministic_text, page_locator, page_selector, type_check
+from . import deterministic_text, page_locator, page_selector, text_acquisition, type_check
 from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import explain_model_resolution, fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
@@ -140,6 +140,7 @@ def _extract_segment(
     source_name: str = "",
     extraction_mode: str = "catalog",
     ai_response_format: Optional[str] = None,
+    deterministic_preflight: Optional[deterministic_text.ExtractionResult] = None,
 ) -> Dict[str, Any]:
     """Extract one segment into a document dict. Runs in a worker thread.
 
@@ -203,7 +204,11 @@ def _extract_segment(
     try:
         if policy is not None and entry.field_tree:
             try:
-                deterministic = deterministic_text.extract(extract_pages, entry)
+                deterministic = (
+                    deterministic_preflight
+                    if deterministic_preflight is not None and selection is None
+                    else deterministic_text.extract(extract_pages, entry)
+                )
                 effective_fallback = policy["fallback"]
                 expected_paths = None
                 trusted_resolved_paths = set(deterministic.resolved_paths)
@@ -670,6 +675,9 @@ def process_pdf(
     page_cap = _MAX_PAGES
     selection_drives_cap = False
     qr_reader = None
+    ocr_optimization: Optional[Dict[str, Any]] = None
+    deterministic_preflight: Optional[deterministic_text.ExtractionResult] = None
+    deterministic_preflight_type: Optional[str] = None
 
     original_bytes = pdf_bytes
     if is_image:
@@ -690,7 +698,21 @@ def process_pdf(
         original_bytes = pdf_bytes
         pdf_bytes, original_page_count = _truncate_pdf(pdf_bytes, page_cap)
         try:
-            pages = load_pages(pdf_bytes)
+            acquisition_entry = (
+                get_type_entry(types[0])
+                if len(types) == 1 and types[0] != CONTAINER_TYPE
+                else None
+            )
+            if acquisition_entry is not None and acquisition_entry.text_acquisition is not None:
+                acquisition = text_acquisition.load_pdf_pages(
+                    pdf_bytes, acquisition_entry, extraction_mode
+                )
+                pages = acquisition.pages
+                ocr_optimization = acquisition.optimization
+                deterministic_preflight = acquisition.deterministic
+                deterministic_preflight_type = acquisition_entry.type_id
+            else:
+                pages = load_pages(pdf_bytes)
         except Exception as e:
             logger.exception("failed to read PDF")
             return _fail(f"unreadable PDF: {e}", stage="page_load", exception=e)
@@ -734,6 +756,14 @@ def process_pdf(
                 lambda seg: _extract_segment(
                     seg, pages, model_id, qr_reader, source_name, extraction_mode,
                     ai_response_format,
+                    (
+                        deterministic_preflight
+                        if deterministic_preflight_type == seg.doc_type
+                        and pages
+                        and seg.page_start == pages[0].number
+                        and seg.page_end == pages[-1].number
+                        else None
+                    ),
                 ),
                 segments,
             )
@@ -938,6 +968,10 @@ def process_pdf(
         **({"embeddings": {"modelId": embedding_model, "images": embedding_images}}
            if embedding_images else {}),
     }
+    page_summary = pages_summary(pages)
+    if ocr_optimization is not None:
+        page_summary["ocrOptimization"] = ocr_optimization
+
     return {
         "processingId": processing_id,
         "sourceFile": source_name,
@@ -960,7 +994,7 @@ def process_pdf(
         "segmentationDegraded": segmentation_degraded,
         "usage": usage_summary,
         "sourceFormat": source_format,
-        "pages": pages_summary(pages),
+        "pages": page_summary,
         "status": overall,
         "reviewRequired": (
             bool(missing_documents) or truncated

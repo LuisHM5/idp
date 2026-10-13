@@ -1966,7 +1966,14 @@ components:
             warnings: { type: array, items: { type: string } }
             sourceFile: { type: string }
             sourceFormat: { type: string }
-            pages: { type: object, additionalProperties: true }
+            pages:
+              type: object
+              description: >
+                Conteos reales de páginas nativas/OCR/vacías. En tipos que
+                declaran OCR bajo demanda agrega `ocrOptimization`, con el
+                modo efectivo (`eager`, `deferred`, `eager_fallback`), motivo,
+                candidatos/intentos/omisiones y si se aplicó el rollback global.
+              additionalProperties: true
             usage: { type: object, additionalProperties: true }
             omitted:
               type: object

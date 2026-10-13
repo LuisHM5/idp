@@ -1340,6 +1340,35 @@ opcionales importantes del envelope:
 
 </details>
 
+Cuando un tipo declara OCR bajo demanda, `pages` agrega
+`ocrOptimization`. Ejemplo de un PDF de dos páginas donde el texto nativo de
+la primera resolvió el perfil y la segunda no necesitó Textract:
+
+```json
+{
+  "totalPages": 2,
+  "nativePages": 1,
+  "ocrPages": 0,
+  "emptyPages": 1,
+  "ocrOptimization": {
+    "globalEnabled": true,
+    "catalogMode": "only_if_deterministic_incomplete",
+    "catalogPageScope": "profile_pages_then_remaining",
+    "effectiveMode": "deferred",
+    "rollbackApplied": false,
+    "reason": "deterministic_complete",
+    "ocrCandidatePages": 1,
+    "ocrPagesAttempted": 0,
+    "ocrPagesSkipped": 1
+  }
+}
+```
+
+`effectiveMode` puede ser `eager`, `deferred` o `eager_fallback`.
+`rollbackApplied: true` confirma que el interruptor global restauró el OCR
+inmediato. Una página `empty` junto con `ocrPagesSkipped > 0` es una omisión
+deliberada y auditable, no necesariamente un fallo de lectura.
+
 ### Un campo que no aparece
 
 **Se omite un campo solo cuando el documento no lo traía Y no era obligatorio.**

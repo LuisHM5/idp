@@ -151,16 +151,17 @@ camino es 100 % determinístico y nunca gasta esta llamada.
 
 Tres advertencias para no leer de más estos números:
 
-1. **Es ahorro de Bedrock, no de Textract.** El filtro corre *después* de
-   `load_pages`, así que hoy el OCR se sigue pagando por cada página
-   escaneada. Eso es la Fase 2 (OCR bajo demanda).
+1. **El selector de páginas por sí solo ahorra Bedrock, no Textract.** Corre
+   después de `load_pages`. El OCR bajo demanda es un control distinto:
+   únicamente tipos que declaren `text_acquisition` pueden omitir Textract, y
+   solo con `DEFERRED_OCR_ENABLED=true` y un perfil determinístico completo.
 2. **El ahorro es del caso "tipo declarado"**, que es el común en producción
    (`raw/{TIPO}/{uuid}/`): ahí el archivo entero es UN segmento y el filtro
    descarta todo lo que no es del tipo. Con auto-clasificación el segmenter ya
    partió el archivo por documento, así que cada segmento es casi todo
    relevante y la selección suele salir en fail-open — correcto, pero sin
    ahorro.
-3. **Un PDF 100 % escaneado no ahorra nada todavía**, porque el selector
+3. **Un PDF 100 % escaneado no ahorra por selección**, porque el selector
    necesita texto. Verificado contra texto de Textract real (guardado en un
    `_prompt_input.json` de una corrida previa): los marcadores **sí** aciertan
    sobre OCR (scores 7 y 3 sobre un umbral de 3), aun cuando el ruido de OCR
@@ -173,9 +174,14 @@ Tres advertencias para no leer de más estos números:
 pypdf/Textract antes de Bedrock. Si todos los campos esperados quedan resueltos,
 la línea `usage.extraction` lleva cero tokens; si hay huecos, sólo el sub-schema
 faltante se factura. En certificados, un perfil desconocido o ambiguo restaura
-el schema completo para no confiar en coincidencias parciales. Esto no elimina
-el costo de Textract de una página escaneada ni una clasificación automática:
-para evitar esta última la carga debe declarar `documentType`.
+el schema completo para no confiar en coincidencias parciales. Además,
+`CERTIFICADO_POLIZA` declara `text_acquisition`: con
+`DEFERRED_OCR_ENABLED=true`, un perfil completo sobre texto nativo puede omitir
+Textract en las páginas restantes. El costo usa el conteo real
+`pages.ocrPages`; si se omitió una candidata queda en cero y
+`Services.TextractOcr` cuesta $0. Con el switch apagado/ausente vuelve el OCR
+inmediato anterior. Esto no elimina una clasificación automática: para evitarla
+la carga debe declarar `documentType`.
 
 El envelope publica dos números deliberadamente separados:
 

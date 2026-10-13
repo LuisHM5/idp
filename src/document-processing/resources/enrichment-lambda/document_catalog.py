@@ -186,6 +186,12 @@ class TypeRegistryEntry:
     # selectors leave gaps (missing_fields | full_model | review). Detection is
     # by catalog shape, never TYPE_ID; see pipeline/deterministic_text.py.
     deterministic_extraction: Optional[Dict[str, Any]] = None
+    # Optional policy for acquiring PDF text before extraction.  The default
+    # remains eager native-text + Textract fallback.  A type may opt in to
+    # deferred OCR only when its deterministic profile can prove that the
+    # document is already complete; the deployment-wide kill switch still has
+    # precedence.  See pipeline/text_acquisition.py and catalogs/README.md.
+    text_acquisition: Optional[Dict[str, Any]] = None
     # Optional declarative QR-code recovery (pipeline/qr_recovery.py): when
     # set, the pipeline rasterizes the first page of a matched segment,
     # decodes any QR code found, and maps its URL query params onto fields
@@ -538,6 +544,11 @@ def _parse_entry(
                 if isinstance(data.get("deterministic_extraction"), dict)
                 else None
             ),
+            text_acquisition=(
+                data.get("text_acquisition")
+                if isinstance(data.get("text_acquisition"), dict)
+                else None
+            ),
             unique_keys=_parse_unique_keys(data),
             qr_recovery=data.get("qr_recovery"),
             page_selection=data.get("page_selection"),
@@ -586,6 +597,11 @@ def _parse_entry(
         ai_response_format=(
             str(data.get("ai_response_format")).strip().lower()
             if data.get("ai_response_format") is not None else None
+        ),
+        text_acquisition=(
+            data.get("text_acquisition")
+            if isinstance(data.get("text_acquisition"), dict)
+            else None
         ),
         qr_recovery=data.get("qr_recovery"),
         page_selection=data.get("page_selection"),

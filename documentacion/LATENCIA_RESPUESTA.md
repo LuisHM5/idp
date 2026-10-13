@@ -1,7 +1,9 @@
 # Latencia de respuesta y OCR bajo demanda
 
-**Estado:** propuesta documentada, todavía no implementada  
-**Fecha del análisis:** 2026-10-13  
+**Estado:** implementada y verificada localmente; medición desplegada pendiente
+
+**Fecha del análisis:** 2026-10-13
+
 **Primer tipo candidato:** `CERTIFICADO_POLIZA`
 
 ## Resumen
@@ -11,7 +13,7 @@ de texto utilizable **antes** de saber si el mapeo determinístico ya resolvió 
 documento. Esto conserva un comportamiento fail-open, pero desperdicia tiempo y
 costo en páginas que no aportan campos.
 
-La mejora propuesta es hacer la adquisición de texto en dos pasadas:
+La mejora implementada hace la adquisición de texto en dos pasadas:
 
 1. leer gratuitamente el texto nativo de todas las páginas;
 2. intentar el perfil y el mapeo determinístico;
@@ -19,7 +21,7 @@ La mejora propuesta es hacer la adquisición de texto en dos pasadas:
 4. después del OCR, volver a intentar código y mandar a IA compacta solamente
    lo que aún falte.
 
-La estrategia será opt-in por catálogo. Los tipos que no la declaren
+La estrategia es opt-in por catálogo. Los tipos que no la declaren
 conservarán exactamente el OCR actual.
 
 ## Caso medido: `emp_cert.pdf`
@@ -162,7 +164,7 @@ En B, Textract representa aproximadamente 93% del costo registrado. La pequeña
 diferencia total entre A y B es cómputo Lambda causado por la mayor latencia del
 mismo OCR.
 
-## Configuración propuesta
+## Configuración implementada
 
 La intención debe ser obvia en el catálogo:
 
@@ -181,10 +183,66 @@ La intención debe ser obvia en el catálogo:
 | `only_if_deterministic_incomplete` | Primero intenta código con texto nativo. No usa Textract si el perfil coincide y todos sus `expected_fields` quedaron resueltos. |
 | `profile_pages_then_remaining` | Si falta información, aplica OCR primero a las páginas declaradas por el perfil; solo amplía al resto si la extracción continúa incompleta. |
 
-`CERTIFICADO_POLIZA` usaría el segundo modo. Ningún otro tipo cambia de
-comportamiento por omisión.
+`CERTIFICADO_POLIZA` versión `5.2.0` usa el segundo modo. Ningún otro tipo
+cambia de comportamiento por omisión.
 
-## Flujo propuesto
+### Interruptor global de retorno inmediato
+
+La optimización tiene un kill switch global con precedencia sobre todos los
+catálogos:
+
+```dotenv
+DEFERRED_OCR_ENABLED=true
+```
+
+| Valor | Comportamiento efectivo |
+|---|---|
+| `true` | Permite OCR bajo demanda únicamente en tipos que lo soliciten mediante `text_acquisition.ocr_mode`. Los demás tipos conservan el flujo anterior. |
+| `false` | Ignora globalmente toda configuración de OCR diferido y restaura el flujo anterior: toda página sin texto nativo utilizable pasa inmediatamente por Textract. |
+| ausente o inválido | Se interpreta como `false`; ante una configuración dudosa gana el comportamiento conocido y más conservador. |
+
+La precedencia será:
+
+```text
+DEFERRED_OCR_ENABLED=false
+  └─ OCR anterior para todos los tipos, sin evaluar el modo del catálogo
+
+DEFERRED_OCR_ENABLED=true
+  └─ tipo sin configuración → OCR anterior
+  └─ tipo con only_if_deterministic_incomplete → OCR bajo demanda
+```
+
+Este interruptor no desactiva Textract. Solo desactiva la optimización y hace
+que Textract vuelva a ejecutarse en el mismo punto y con las mismas reglas que
+antes. `TEXTRACT_WORKERS` permanece independiente y conserva su valor actual;
+quitar esa variable únicamente reduciría la concurrencia al default interno y
+no serviría como rollback.
+
+El cambio se administrará por ambiente en `.env.dev` y `.env.production` y se
+aplicará mediante el despliegue normal. No habrá override por documento o por
+API: una petición individual no debe poder relajar una decisión global de
+calidad.
+
+La respuesta hará visible qué camino se tomó:
+
+```json
+{
+  "pages": {
+    "ocrOptimization": {
+      "globalEnabled": true,
+      "catalogMode": "only_if_deterministic_incomplete",
+      "effectiveMode": "deferred",
+      "rollbackApplied": false
+    }
+  }
+}
+```
+
+Con el interruptor apagado, `effectiveMode` será `eager` y
+`rollbackApplied: true`. Esto permitirá confirmar el rollback desde el propio
+resultado, sin inferirlo por la duración.
+
+## Flujo implementado
 
 ```text
 PDF
@@ -208,38 +266,33 @@ cualquier condición incierta. La página omitida del OCR sigue perteneciendo al
 documento y los bytes originales siguen disponibles para integridad y
 autenticidad.
 
-## Cambios técnicos previstos
+## Cambios técnicos implementados
 
-1. Separar en `pdf_pages.py` la lectura nativa y la aplicación posterior de OCR,
-   sin duplicar el ordenamiento de bloques de Textract.
-2. Añadir en `expediente.py` un preflight determinístico solo para tipos opt-in;
-   reutilizar el resultado en la extracción definitiva para no mapear dos veces.
-3. Resolver páginas iniciales desde `profiles[].pages`; si el preflight falla,
-   expandir de forma fail-open.
-4. Mantener `pageLoad` para compatibilidad y agregar métricas desglosadas:
+1. `pdf_pages.py` conserva `load_pages` sin cambios para el camino anterior y
+   añade `apply_ocr`, que completa después únicamente las páginas vacías
+   seleccionadas, reutilizando el mismo parser y ordenamiento de Textract.
+2. `pipeline/text_acquisition.py` concentra la política genérica, el preflight,
+   el alcance por `profiles[].pages`, el fallback y su telemetría; no contiene
+   ningún `TYPE_ID` especial.
+3. `expediente.py` solo entra a ese módulo cuando hay un tipo único declarado y
+   el catálogo tiene `text_acquisition`. Reutiliza el resultado del preflight en
+   la extracción definitiva cuando cubre exactamente el segmento completo.
+4. `pageLoad` se mantiene compatible. El desglose de la decisión queda en
+   `pages.ocrOptimization`: candidatos, intentados, omitidos, motivo y resumen
+   del perfil determinístico.
+5. `ocrPages: 0` alimenta el cálculo de costos existente, por lo que una omisión
+   real registra cero páginas y costo cero de Textract sin una regla especial.
+6. El stack publica `DEFERRED_OCR_ENABLED`, con default `false`; solo el literal
+   exacto `true` activa la optimización. Cualquier otro valor restaura OCR
+   inmediato.
+7. JPG/JPEG/PNG quedan fuera del atajo y continúan usando Textract siempre,
+   porque no existe una capa de texto nativo que evaluar.
 
-   ```json
-   {
-     "timings": {
-       "pageLoad": 120.0,
-       "pdfParse": 35.0,
-       "nativeText": 70.0,
-       "textractOcr": 0.0
-     },
-     "pages": {
-       "ocrPages": 0,
-       "ocrPagesSkipped": 1,
-       "ocrSkipReason": "deterministic_expected_fields_complete"
-     }
-   }
-   ```
+## Resultado verificado localmente para el ejemplo
 
-5. Registrar `TextractOcr.pages = 0` y costo cero cuando el OCR se difiera y
-   finalmente no sea necesario.
-
-## Resultado esperado para el ejemplo
-
-Para `emp_cert.pdf`, sin prometer la latencia de un servicio externo:
+Con `DEFERRED_OCR_ENABLED=true`, se ejecutaron 10 repeticiones locales de
+`emp_cert.pdf` sin llamadas pagadas. El resultado fue **14.07 ms de mediana** y
+**46.70 ms de p95** (rango 13.13-46.70 ms), y produjo:
 
 - conservar los mismos nueve campos determinísticos y estado `APROBADO`;
 - mantener `aiExecuted: false` y cero tokens;
@@ -247,7 +300,13 @@ Para `emp_cert.pdf`, sin prometer la latencia de un servicio externo:
 - eliminar USD 0.001500 de Textract;
 - bajar `pageLoad` de 2-3.25 segundos a decenas o pocos cientos de
   milisegundos;
-- llevar `processingSeconds` cerca de 0.1-0.4 segundos en condiciones normales.
+- `pages.ocrOptimization.reason: deterministic_complete`;
+- perfil `EMP` con 9/9 campos esperados resueltos;
+- `ocrPagesSkipped: 1`, `ocrPagesAttempted: 0`;
+- `processingMs` máximo de 46.70 ms en esas 10 corridas locales.
+
+La cifra desplegada debe medirse después del redeploy y sobre varias corridas;
+el valor local solo demuestra que el camino rápido no espera a Textract.
 
 Esto no garantiza `uploadToResultSeconds <= 0.5 s`: en B, la cola por sí sola
 consumió 1.85 segundos y la orquestación previa 2.62 segundos. Lograr 0.5
@@ -256,20 +315,26 @@ Functions, cold starts ni Textract; no forma parte de esta mejora.
 
 ## Verificación y criterios de aceptación
 
-1. Prueba unitaria: perfil completo con una segunda página sin texto; Textract
-   no debe ser invocado.
-2. Prueba unitaria: falta un `expected_field`; Textract debe ejecutarse y el
-   campo recuperado debe combinarse con los valores determinísticos.
-3. Prueba unitaria: perfil no reconocido; debe conservarse el fallback completo.
-4. Regresión sobre los cuatro formatos `EMP`, `FL`, `GMM` y `SV`: mismos campos,
-   fuentes, validación y estado que antes.
-5. E2E desplegado: `emp_cert.pdf` debe reportar `ocrPages: 0`, cero costo
-   Textract y cero IA.
-6. Benchmark mínimo de 10 repeticiones: comparar mediana y p95 de
-   `processingSeconds`, `pageLoad` y `uploadToResultSeconds`; una sola corrida
-   no sirve para evaluar la variación de Textract.
-7. Meta inicial para este fixture: mediana de `processingSeconds <= 0.5 s`, sin
-   convertirla en promesa de latencia extremo a extremo.
+1. ✅ Prueba unitaria: perfil completo con una segunda página sin texto;
+   Textract no se invoca.
+2. ✅ Prueba unitaria: si falta un `expected_field`, el flujo amplía a OCR y
+   recupera el campo.
+3. ✅ Configuración desconocida o preflight fallido conserva el fallback
+   completo.
+4. ✅ Regresión local de los perfiles `EMP`, `FL`, `GMM` y `SV`: el mapper
+   determinístico continúa completo.
+5. ⏳ E2E desplegado pendiente del redeploy: `emp_cert.pdf` debe reportar
+   `ocrPages: 0`, costo Textract cero e IA cero.
+6. ✅ Benchmark local de 10 repeticiones: mediana 14.07 ms y p95 46.70 ms de
+   `processingMs`. Falta repetirlo desplegado para comparar `pageLoad` y
+   `uploadToResultSeconds`, donde sí intervienen Lambda, cola y orquestación.
+7. ✅ La corrida local supera la meta inicial de mediana
+   `processingSeconds <= 0.5 s`; no es una promesa extremo a extremo.
+8. ✅ Prueba del kill switch: `false` o ausencia vuelve a `effectiveMode:
+   eager` con `rollbackApplied: true`; la comprobación desplegada de
+   `ocrPages: 1` queda pendiente porque implica una llamada Textract real.
+9. ✅ Valores `TRUE`, `1` e inválidos activan el mismo rollback conservador;
+   nunca omiten OCR.
 
 ## Fuera de alcance
 

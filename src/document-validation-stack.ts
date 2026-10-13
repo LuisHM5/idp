@@ -384,6 +384,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         // is why these are env vars and not constants.
         TEXTRACT_WORKERS: process.env.TEXTRACT_WORKERS || "8",
         CHUNK_WORKERS: process.env.CHUNK_WORKERS || "4",
+        // Global rollback for catalog-driven deferred OCR. Only the literal
+        // "true" enables native-first evaluation; false/absent keeps the
+        // historical eager Textract fallback for every page without usable
+        // native text.
+        DEFERRED_OCR_ENABLED: process.env.DEFERRED_OCR_ENABLED || "false",
         // Internal Bedrock tool-response protocol. Compact is the product
         // default; legacy is a deployment-wide rollback with no code change.
         AI_RESPONSE_FORMAT: process.env.AI_RESPONSE_FORMAT || "compact",

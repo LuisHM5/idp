@@ -194,6 +194,40 @@ def load_pages(pdf_bytes: bytes, use_ocr: bool = True) -> List[PageText]:
     return [p for p in pages if p is not None]
 
 
+def apply_ocr(
+    pdf_bytes: bytes,
+    pages: List[PageText],
+    page_numbers: Optional[List[int]] = None,
+) -> List[PageText]:
+    """OCR selected pages that did not yield a usable native text layer.
+
+    ``load_pages(..., use_ocr=False)`` deliberately represents those pages as
+    ``source="empty"``.  This function is the second half of deferred OCR: it
+    replaces only those empty entries, preserving native pages and their
+    ordering.  Invalid/non-empty page numbers are ignored, which keeps the
+    optimization fail-open when a catalog page scope is stale.
+    """
+    from pypdf import PdfReader
+
+    wanted = set(page_numbers) if page_numbers is not None else None
+    indices = [
+        page.number - 1
+        for page in pages
+        if page.source == "empty" and (wanted is None or page.number in wanted)
+    ]
+    if not indices:
+        return list(pages)
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    logger.info("deferred OCR fallback for %d/%d pages", len(indices), len(reader.pages))
+    replacements: Dict[int, PageText] = {}
+    with ThreadPoolExecutor(max_workers=_OCR_WORKERS) as pool:
+        for idx, result in zip(indices, pool.map(lambda i: _ocr_page(reader, i), indices)):
+            replacements[idx + 1] = result
+
+    return [replacements.get(page.number, page) for page in pages]
+
+
 def pages_summary(pages: List[PageText]) -> Dict[str, Any]:
     return {
         "totalPages": len(pages),
