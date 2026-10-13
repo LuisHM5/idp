@@ -299,7 +299,9 @@ como en el DSL viejo.
 Un PDF digital ya tiene texto por `pypdf`; una página escaneada ya tiene texto
 después de `Textract DetectDocumentText`. Si el formato es suficientemente
 estable, el catálogo puede mapear ese texto con regex antes de pedirle a
-Bedrock que lo estructure:
+Bedrock que lo estructure. La guía de implementación, calibración y rollout —con
+el caso real de `PEDIMENTO_ERP`— está en
+[`documentacion/EXTRACCION_DETERMINISTICA_E_HIBRIDA.md`](../documentacion/EXTRACCION_DETERMINISTICA_E_HIBRIDA.md):
 
 ```jsonc
 "deterministic_extraction": {

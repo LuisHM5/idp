@@ -317,3 +317,7 @@ mapper incompleto en los otros 22 tipos. Cada nuevo mapper debe contrastarse
 contra ground truth y observarse primero en `hybrid` antes de cambiar su
 fallback de catálogo a `review`.
 
+La anatomía completa del mapper de `PEDIMENTO_ERP` y la receta para implementar
+otro formato fijo están en
+[EXTRACCION_DETERMINISTICA_E_HIBRIDA.md](EXTRACCION_DETERMINISTICA_E_HIBRIDA.md).
+
