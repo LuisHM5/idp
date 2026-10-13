@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
+import aws_clients
 from document_catalog import get_type_entry
 from pipeline.envelope import index_type_of
 
@@ -227,9 +228,7 @@ def write_index_attributes(
     expression = "SET " + ", ".join(f"#a{i} = :a{i}" for i in range(len(attributes)))
 
     try:
-        import boto3  # deferred: the Lambda runtime provides it
-
-        boto3.resource("dynamodb").Table(_DOCUMENT_TABLE).update_item(
+        aws_clients.table(_DOCUMENT_TABLE).update_item(
             Key={"DocumentId": document_id},
             UpdateExpression=expression,
             ExpressionAttributeNames=names,

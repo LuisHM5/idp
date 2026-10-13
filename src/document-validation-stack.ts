@@ -246,11 +246,23 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       __dirname,
       "document-processing/resources/enrichment-lambda"
     );
+    // Ship bytecode with the code: Lambda's filesystem is read-only, so
+    // without it every cold start recompiles each module it imports.
+    // `unchecked-hash` because CDK normalizes file timestamps in the zip, and
+    // the default timestamp check would then reject every .pyc as stale. It
+    // also keeps the output byte-identical between builds (stable asset hash).
+    // Never fatal: a vendored file that does not compile is simply imported
+    // from source, as before.
+    const precompileBytecode = (python: string, dir: string) =>
+      `(${python} -m compileall -q --invalidation-mode unchecked-hash ${dir} >/dev/null 2>&1 || true)`;
     // One asset, two functions: the references API (below) needs the same
     // numpy/Pillow wheels and the pipeline's own fingerprint code, and sharing
     // the `Code` object means it is bundled and uploaded once.
     const enrichmentCode = lambda.Code.fromAsset(enrichmentDir, {
-      exclude: ["__pycache__", "**/__pycache__", "*.pyc"],
+      // No `exclude` for bytecode here: with OUTPUT hashing it would hide the
+      // .pyc files from the asset hash while they are still zipped, so a
+      // bundle with different bytecode would reuse a stale cdk.out directory.
+      // The bundling commands below discard foreign __pycache__ themselves.
       // CDK's default AssetHashType.SOURCE hashes only enrichmentDir's own
       // files, not the bundling command/environment that turns
       // requirements.txt into installed packages. That silently bit us: a
@@ -267,7 +279,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         command: [
           "bash",
           "-c",
-          "pip install -r requirements.txt -t /asset-output --no-cache-dir --quiet && cp -au . /asset-output",
+          "pip install -r requirements.txt -t /asset-output --no-cache-dir --quiet && cp -au . /asset-output" +
+            // Drop whatever bytecode came along (the developer's own
+            // interpreter, pip's timestamp-checked files) before compiling.
+            " && find /asset-output -name __pycache__ -type d -prune -exec rm -rf {} +" +
+            ` && ${precompileBytecode("python", "/asset-output")}`,
         ],
         local: {
           tryBundle(outputDir: string): boolean {
@@ -291,7 +307,15 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
                   ` --no-cache-dir --quiet --only-binary=:all:` +
                   ` --platform manylinux2014_x86_64 --python-version 3.12 --implementation cp --abi cp312` +
                   ` && cp -r "${enrichmentDir}/." "${outputDir}/"` +
-                  ` && find "${outputDir}" -name __pycache__ -type d -exec rm -rf {} +`,
+                  ` && find "${outputDir}" -name __pycache__ -type d -exec rm -rf {} +` +
+                  // Only with the Lambda's own interpreter: bytecode from any
+                  // other minor version is ignored at import and just bloats
+                  // the zip. Without it the asset is still correct, only
+                  // slower to cold-start.
+                  ` && if command -v python3.12 >/dev/null; then ${precompileBytecode(
+                    "python3.12",
+                    `"${outputDir}"`
+                  )}; fi`,
                 { stdio: "pipe", shell: "/bin/bash" }
               );
               return true;

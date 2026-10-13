@@ -58,6 +58,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import aws_clients
 from document_catalog import get_type_entry
 from pipeline.envelope import index_type_of
 
@@ -258,9 +259,7 @@ def write_unique_keys(
         return []
 
     try:
-        import boto3  # deferred: the Lambda runtime provides it
-
-        table = boto3.resource("dynamodb").Table(_UNIQUE_KEY_TABLE)
+        table = aws_clients.table(_UNIQUE_KEY_TABLE)
         with table.batch_writer(overwrite_by_pkeys=["UniqueKey", "DocumentId"]) as batch:
             for row in rows:
                 batch.put_item(Item=row)

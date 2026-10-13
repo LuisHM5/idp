@@ -380,6 +380,30 @@ Purga: se eliminaron `resources/sqs-consumer/`, `resources/model-invoke-lambda/`
 `pnpm resultado` y `pnpm test:e2e:pedimento` leen ahora la fila de DynamoDB en
 vez de la ejecución de Step Functions; no se han corrido contra AWS.
 
+### 9.2 Latencia del ingreso directo (2026-10-13)
+
+La primera corrida por `direct-s3-lambda` tardó 4.32 s y fue un arranque en
+frío (`Init Duration` 325 ms, `Duration` 2,329 ms en CloudWatch). Unos 2 s
+fueron entrega de S3 + creación del sandbox; el resto, trabajo de primera vez
+dentro de la Lambda. Cambios hechos, **sin desplegar ni medir en AWS**:
+
+- `aws_clients.py`: un cliente boto3 por servicio durante la vida del
+  contenedor (antes se creaban ~8 por documento, cada uno con TLS nuevo). Solo
+  reutiliza dentro de Lambda; en tests y scripts locales construye siempre.
+- `handler._warm_container`: importa el stack de PDF, crea los clientes y carga
+  el catálogo durante el init, no en el primer documento.
+- El bundle incluye bytecode de Python 3.12 (`compileall` con
+  `unchecked-hash`); se quitó el `exclude` de `.pyc`, que los ocultaba del hash
+  del asset y hacía reutilizar un directorio viejo de `cdk.out`.
+- `handlerStartedAt` se toma en la primera línea del handler: antes
+  `ingressToHandler` incluía la carga del catálogo. Nuevo
+  `tracking.orchestration.coldStart`.
+
+No se hizo: refresco del catálogo en segundo plano (el primer documento tras un
+`pnpm sync` usaría el catálogo anterior) ni fusionar las escrituras finales.
+Pendiente de decidir con mediciones: SnapStart o concurrencia aprovisionada
+(~17 USD/mes por instancia de 1536 MB) si el frío sigue importando.
+
 ## 10. Riesgos y decisiones que no deben perderse
 
 - S3 → Lambda sigue siendo asíncrono y at-least-once. Eliminar la cola reduce

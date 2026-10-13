@@ -62,9 +62,9 @@ def _load_from_dynamodb() -> List[str]:
     if not table_name:
         return []
     try:
-        import boto3  # deferred: keep this module importable without boto3 in unit tests
+        import aws_clients  # deferred: keep this module importable without boto3 in unit tests
 
-        table = boto3.resource("dynamodb").Table(table_name)
+        table = aws_clients.table(table_name)
         response = table.scan()
         items = list(response.get("Items", []))
         while "LastEvaluatedKey" in response:

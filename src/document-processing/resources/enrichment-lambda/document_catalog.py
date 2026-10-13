@@ -728,9 +728,9 @@ def _load_from_dynamodb() -> Dict[str, TypeRegistryEntry]:
         return {}
 
     try:
-        import boto3
-        dynamodb = boto3.resource("dynamodb")
-        table = dynamodb.Table(_CATALOG_TABLE)
+        import aws_clients  # deferred: keeps this module importable without AWS
+
+        table = aws_clients.table(_CATALOG_TABLE)
         response = table.scan()
         items = response.get("Items", [])
 

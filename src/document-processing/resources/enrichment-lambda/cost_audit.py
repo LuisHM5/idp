@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
+import aws_clients
 from indexing import display_name_for
 from pipeline.envelope import index_type_of
 from pipeline.pricing import PRICING_VERSION, bedrock_cost, embedding_cost, lambda_cost, textract_cost
@@ -319,9 +320,7 @@ def write_cost_record(
         item["CostPerPageUsd"] = Decimal(str(breakdown["costPerPageUsd"]))
 
     try:
-        import boto3  # deferred: the Lambda runtime provides it
-
-        boto3.resource("dynamodb").Table(_COST_TABLE).put_item(Item=item)
+        aws_clients.table(_COST_TABLE).put_item(Item=item)
         return item
     except Exception as e:  # noqa: BLE001 - cost audit must never fail validation
         logger.error("failed to write cost record for %s: %s", document_id, e)

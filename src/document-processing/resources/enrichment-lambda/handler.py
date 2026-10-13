@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote_plus
 
+import aws_clients
 from document_catalog import (
     CheckResult,
     TypeRegistryEntry,
@@ -62,6 +63,8 @@ logger = logging.getLogger(__name__)
 _CUSTOM_VALIDATORS_DIR = Path(__file__).parent / "custom_validators"
 _FORCE_RELOAD = os.environ.get("CATALOG_FORCE_RELOAD", "false").lower() == "true"
 _STRUCTURAL_RULES = frozenset({"regex", "presence"})
+# True until the first invocation of this container has been served.
+_COLD_START = True
 _SYSTEM_OBJECT_METADATA = frozenset(
     {"app-origin", "model-id", "extraction-mode", "ai-response-format", "document-counts"}
 )
@@ -231,6 +234,10 @@ def _add_upload_to_result_tracking(
     route = event.get("pipelineRoute")
     if route in {"standard", "enrichment-only", "direct-s3-lambda"}:
         tracking["orchestration"] = {"route": route}
+        # Whether this container had to initialize for the document: the one
+        # fact that explains a slow `ingressToHandler` without opening the logs.
+        if isinstance(event.get("coldStart"), bool):
+            tracking["orchestration"]["coldStart"] = event["coldStart"]
 
 
 def build_canonical_result(
@@ -416,9 +423,7 @@ def _fetch_document(bucket: str, key: str) -> Tuple[bytes, str, Dict[str, str]]:
     `_declared_counts_from_metadata`). They are stripped from the caller's own
     `metadata` at upload time, so they cannot be forged through that bag.
     """
-    import boto3  # defer boto3 import; Lambda runtime provides it
-
-    response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+    response = aws_clients.client("s3").get_object(Bucket=bucket, Key=key)
     body = response["Body"].read()
     content_type = response.get("ContentType") or mimetypes.guess_type(key)[0] or ""
     s3_metadata = response.get("Metadata") or {}
@@ -778,9 +783,7 @@ def _run_expediente(
     result_key = f"results/{document_id}.json"
     result_location: Optional[Dict[str, str]] = None
     try:
-        import boto3
-
-        boto3.client("s3").put_object(
+        aws_clients.client("s3").put_object(
             Bucket=bucket,
             Key=result_key,
             Body=json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"),
@@ -823,7 +826,9 @@ def _run_expediente(
     )
 
 
-def _s3_record_to_event(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _s3_record_to_event(
+    record: Dict[str, Any], handler_started_at: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """Adapt one native S3 notification to the pipeline's stable input shape.
 
     Returns None for a key that can never be a document (a console-created
@@ -859,7 +864,7 @@ def _s3_record_to_event(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "source": "s3-direct",
         "requestedDocumentType": requested,
         "pipelineRoute": "direct-s3-lambda",
-        "handlerStartedAt": datetime.now(timezone.utc).isoformat(),
+        "handlerStartedAt": handler_started_at or datetime.now(timezone.utc).isoformat(),
         "processingAttempt": attempt,
         "classificationResult": {"documentClassification": classification},
         "processingResult": {"result": {"entities": []}},
@@ -871,9 +876,7 @@ def _s3_record_to_event(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _document_table():
-    import boto3
-
-    return boto3.resource("dynamodb").Table(os.environ["DOCUMENT_TABLE"])
+    return aws_clients.table(os.environ["DOCUMENT_TABLE"])
 
 
 def _claim_direct_event(event: Dict[str, Any], context: Any = None) -> str:
@@ -1011,9 +1014,7 @@ def _persist_direct_result(result: Dict[str, Any], event: Dict[str, Any]) -> Non
 
 
 def _publish_terminal_event(result: Dict[str, Any], event: Dict[str, Any]) -> None:
-    import boto3
-
-    response = boto3.client("events").put_events(
+    response = aws_clients.client("events").put_events(
         Entries=[
             {
                 "EventBusName": os.environ["EVENT_BUS_NAME"],
@@ -1102,6 +1103,12 @@ def _handle_one(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
 
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     """Accept native S3 notifications and legacy normalized invocations."""
+    global _COLD_START
+    # Stamped before anything else: adapting the record resolves the declared
+    # types against the catalog, and on a cold container that load would
+    # otherwise be reported as time S3 took to deliver the event.
+    handler_started_at = datetime.now(timezone.utc).isoformat()
+    cold_start, _COLD_START = _COLD_START, False
     records = event.get("Records") if isinstance(event, dict) else None
     if not isinstance(records, list):
         return _handle_one(event, context)
@@ -1110,13 +1117,14 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     for record in records:
         if not str(record.get("eventSource") or "").endswith(":s3"):
             continue
-        direct_event = _s3_record_to_event(record)
+        direct_event = _s3_record_to_event(record, handler_started_at)
         if direct_event is None:
             logger.warning(
                 "ignoring S3 object outside the document layout: %s",
                 ((record.get("s3") or {}).get("object") or {}).get("key"),
             )
             continue
+        direct_event["coldStart"] = cold_start
         claim = _claim_direct_event(direct_event, context)
         if claim == "duplicate":
             outcomes.append(
@@ -1261,3 +1269,30 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
             app_origin=event.get("appOrigin"),
             upload_metadata=_upload_metadata(event),
         )
+
+
+def _warm_container() -> None:
+    """Pay the first-request costs during init instead of on a document.
+
+    Init runs once per container, before the event is handed over, so the
+    PDF stack import, the AWS clients and the first catalog load stop landing
+    on whichever upload happens to open the container. Strictly best-effort:
+    anything that fails here is simply done lazily, as before.
+    """
+    try:
+        import pipeline.expediente  # noqa: F401 - pulls pypdf and the rule engine
+
+        aws_clients.warm(
+            (
+                os.environ.get("DOCUMENT_TABLE", ""),
+                os.environ.get("UNIQUE_KEY_TABLE", ""),
+                os.environ.get("COST_TABLE", ""),
+            )
+        )
+        get_type_entry("OTRO")
+    except Exception as exc:  # noqa: BLE001 - never fail the init phase
+        logger.warning("container warm-up skipped: %s", exc)
+
+
+if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    _warm_container()

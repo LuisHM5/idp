@@ -82,15 +82,15 @@ def read_only() -> bool:
 
 
 def _table():
-    import boto3  # deferred: the Lambda runtime provides it
+    import aws_clients  # deferred: the Lambda runtime provides boto3
 
-    return boto3.resource("dynamodb").Table(table_name())
+    return aws_clients.table(table_name())
 
 
 def _s3():
-    import boto3
+    import aws_clients
 
-    return boto3.client("s3")
+    return aws_clients.client("s3")
 
 
 def _now() -> str:

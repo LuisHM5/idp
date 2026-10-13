@@ -277,3 +277,67 @@ def test_finalizer_ignores_objects_that_are_not_documents(finalizer_aws):
     assert finalizer.handler(destination_event(key="raw/file.pdf")) == {"finalized": []}
     assert set(fake_table.items) == {"doc-1"}
     assert events.entries == []
+
+
+# --- container reuse and honest timings --------------------------------------
+
+
+def test_handler_start_is_stamped_before_the_catalog_is_consulted():
+    # Adapting the record resolves declared types against the catalog; on a
+    # cold container that load must not be reported as S3 delivery time.
+    event = handler._s3_record_to_event(s3_record(), "2026-10-13T20:01:56.400+00:00")
+    assert event["handlerStartedAt"] == "2026-10-13T20:01:56.400+00:00"
+
+
+def test_only_the_first_invocation_of_a_container_reports_a_cold_start(table, monkeypatch):
+    seen = []
+
+    def record_event(event, context=None):
+        seen.append(event["coldStart"])
+        return {"validation": {"status": "APROBADO"}}
+
+    monkeypatch.setattr(handler, "_handle_one", record_event)
+    monkeypatch.setattr(handler, "_COLD_START", True)
+    handler.handler({"Records": [s3_record()]}, Context("req-1"))
+    table.items["doc-1"] = {"DocumentId": "doc-1", "ProcessingStatus": "AWAITING_UPLOAD"}
+    handler.handler({"Records": [s3_record()]}, Context("req-2"))
+    assert seen == [True, False]
+
+
+def test_cold_start_flag_reaches_the_tracking_block():
+    result = {"tracking": {"processingCompletedAt": "2026-10-13T20:01:59.076+00:00"}}
+    handler._add_upload_to_result_tracking(
+        result,
+        {
+            "eventTime": "2026-10-13T20:01:58.900Z",
+            "pipelineRoute": "direct-s3-lambda",
+            "coldStart": True,
+        },
+    )
+    assert result["tracking"]["orchestration"] == {
+        "route": "direct-s3-lambda",
+        "coldStart": True,
+    }
+
+
+def test_aws_clients_are_reused_only_inside_the_lambda_runtime(monkeypatch):
+    import aws_clients
+
+    built = []
+    fake = types.SimpleNamespace(
+        client=lambda service: built.append(service) or object(),
+        resource=lambda service: types.SimpleNamespace(Table=lambda name: (service, name)),
+    )
+    monkeypatch.setitem(sys.modules, "boto3", fake)
+    monkeypatch.setattr(aws_clients, "_CACHE", {})
+
+    # Outside Lambda every call builds, so a test's fake never leaks into another.
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    assert aws_clients.client("s3") is not aws_clients.client("s3")
+
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "enrichment")
+    first = aws_clients.client("s3")
+    assert aws_clients.client("s3") is first
+    assert aws_clients.client("events") is not first
+    assert built == ["s3", "s3", "s3", "events"]
+    assert aws_clients.table("documents") is aws_clients.table("documents")
