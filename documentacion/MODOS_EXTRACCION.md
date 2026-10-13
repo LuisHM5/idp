@@ -13,6 +13,23 @@ los campos. Hoy `PEDIMENTO_ERP` usa código determinístico estricto,
 XML usan XPath y los demás PDF/imágenes siguen usando el modelo hasta que
 tengan un mapper confiable.
 
+## Control independiente: formato de respuesta de IA
+
+`aiResponseFormat` no es otro modo de extracción. Cuando el árbol anterior sí
+necesita IA, decide cuánto JSON debe generar el modelo:
+
+| Valor | Efecto |
+|---|---|
+| `compact` | **Default.** La IA devuelve únicamente rutas con `[valor, confianza]` y matrices posicionales; Python arma el resultado final. |
+| `legacy` | Restaura el JSON anidado `{value, confidence}` anterior. Útil para A/B y rollback. |
+
+Precedencia: request autorizado → `ai_response_format` del catálogo →
+`AI_RESPONSE_FORMAT` global → `compact`. En producción el request necesita el
+permiso por app `AllowAiResponseFormatOverride`. Un payload compacto roto
+reintenta una sola vez en legacy; campos ausentes o inválidos semánticamente no
+se regeneran. `documents[].aiResponseFormat` explica qué pasó y
+`aiResponseSavings` separa el contrafactual de los tokens reales de `aiUsage`.
+
 ## 1. Nombre y efecto de cada modo
 
 `extractionMode` es un override de la carga, no una afirmación de lo que
@@ -308,6 +325,21 @@ En dev, el mismo archivo se puede medir contra las tres estrategias efectivas:
 pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode model
 pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode hybrid
 pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode deterministic
+```
+
+Para aislar el efecto del protocolo de respuesta sin cambiar archivo, tipo,
+modelo ni estrategia, el comparador ejecuta una carga `compact` y otra
+`legacy`, espera ambas y contrasta latencia, tokens y valores:
+
+```bash
+pnpm comparar:formato -- pedimento.pdf PEDIMENTO_ERP --extraction-mode model
+```
+
+Son dos procesamientos reales con costo. El override individual también queda
+disponible para una sola prueba:
+
+```bash
+pnpm enviar pedimento.pdf PEDIMENTO_ERP --ai-response-format legacy
 ```
 
 Para comparar correctamente hay que conservar el mismo archivo, tipo, modelo y

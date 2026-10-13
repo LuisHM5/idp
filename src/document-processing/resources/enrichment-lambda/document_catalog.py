@@ -156,6 +156,13 @@ class TypeRegistryEntry:
     # through to whatever's configured for the deployment.
     model_id: Optional[str] = None
     model_ids: Dict[str, str] = field(default_factory=dict)
+    # Internal shape requested from the extraction model. ``compact`` emits
+    # sparse scalar pairs and positional table rows; ``legacy`` preserves the
+    # original nested {value, confidence} response.  None inherits the
+    # deployment-wide AI_RESPONSE_FORMAT setting (whose safe default is
+    # compact).  This changes only the model/tool protocol, never the public
+    # result envelope.
+    ai_response_format: Optional[str] = None
     # Target shapes for derived/structured outputs (e.g. LIQUIDACION_NORMALIZADA
     # defaults). Consumed by post-extraction normalizers.
     structured_fields: Dict[str, Any] = field(default_factory=dict)
@@ -519,6 +526,10 @@ def _parse_entry(
             pipeline=data.get("pipeline"),
             model_id=data.get("model_id") or None,
             model_ids=data.get("model_ids", {}) or {},
+            ai_response_format=(
+                str(data.get("ai_response_format")).strip().lower()
+                if data.get("ai_response_format") is not None else None
+            ),
             field_tree=_parse_field_tree(data["fields"], common_item_fields or {}, presets=True),
             deterministic_extraction=(
                 data.get("deterministic_extraction")
@@ -570,6 +581,10 @@ def _parse_entry(
         pipeline=data.get("pipeline"),
         model_id=data.get("model_id") or None,
         model_ids=data.get("model_ids", {}) or {},
+        ai_response_format=(
+            str(data.get("ai_response_format")).strip().lower()
+            if data.get("ai_response_format") is not None else None
+        ),
         qr_recovery=data.get("qr_recovery"),
         page_selection=data.get("page_selection"),
         authenticity=data.get("authenticity"),

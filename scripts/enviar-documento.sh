@@ -5,7 +5,7 @@
 # cliente HTTP externo sin credenciales AWS.
 #
 # Uso:
-#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
+#   scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--ai-response-format compact|legacy] [--occurrence-mode single|multiple] [--env dev|prod] [--stack NOMBRE] [--model MODEL_ID]
 #
 #   TIPO_DOCUMENTO admite varios tipos separados por coma
 #   (PEDIMENTO_ADUANAL,FACTURA_HONORARIOS): el archivo se segmenta y cada
@@ -43,6 +43,10 @@
 #                     Cardinalidad de los tipos sin sufijo para ESTE POST.
 #                     Si se omite: catálogo; después single con un tipo o
 #                     multiple con varios.
+#   --ai-response-format compact|legacy
+#                     Protocolo interno de respuesta de IA. compact es el
+#                     default; legacy reproduce el JSON anidado anterior.
+#                     En prod requiere permiso explícito de la API key.
 #
 # Requisitos:
 #   - AWS CLI autenticado (aws sts get-caller-identity debe funcionar) — solo
@@ -98,6 +102,7 @@ FILE=""
 DOC_TYPE=""
 MODEL_ID=""
 EXTRACTION_MODE="catalog"
+AI_RESPONSE_FORMAT=""
 OCCURRENCE_MODE=""
 META_JSON=""
 while [[ $# -gt 0 ]]; do
@@ -126,6 +131,12 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       EXTRACTION_MODE="${2,,}"; shift 2 ;;
+    --ai-response-format)
+      if [[ $# -lt 2 ]]; then
+        echo "Falta el valor de --ai-response-format (compact o legacy)." >&2
+        exit 2
+      fi
+      AI_RESPONSE_FORMAT="${2,,}"; shift 2 ;;
     --env)
       if [[ $# -lt 2 ]]; then
         echo "Falta el valor de --env (dev o prod)." >&2
@@ -172,6 +183,10 @@ fi
 
 if [[ "$EXTRACTION_MODE" != "catalog" && "$EXTRACTION_MODE" != "model" && "$EXTRACTION_MODE" != "hybrid" && "$EXTRACTION_MODE" != "deterministic" ]]; then
   echo "Modo de extracción inválido: $EXTRACTION_MODE (usa catalog, model, hybrid o deterministic)." >&2
+  exit 2
+fi
+if [[ -n "$AI_RESPONSE_FORMAT" && "$AI_RESPONSE_FORMAT" != "compact" && "$AI_RESPONSE_FORMAT" != "legacy" ]]; then
+  echo "Formato de respuesta IA inválido: $AI_RESPONSE_FORMAT (usa compact o legacy)." >&2
   exit 2
 fi
 
@@ -315,6 +330,7 @@ trap 'rm -f "$REQ_BODY_FILE"' EXIT
   [[ -n "$OCCURRENCE_MODE" ]] && printf ',"occurrenceMode":"%s"' "$OCCURRENCE_MODE"
   [[ -n "$MODEL_ID" ]] && printf ',"modelId":"%s"' "$MODEL_ID"
   [[ "$EXTRACTION_MODE" != "catalog" ]] && printf ',"extractionMode":"%s"' "$EXTRACTION_MODE"
+  [[ -n "$AI_RESPONSE_FORMAT" ]] && printf ',"aiResponseFormat":"%s"' "$AI_RESPONSE_FORMAT"
   [[ -n "$META_JSON" ]] && printf ',"metadata":{%s}' "$META_JSON"
   printf '}'
 } > "$REQ_BODY_FILE"

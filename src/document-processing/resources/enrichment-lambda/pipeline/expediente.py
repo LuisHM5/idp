@@ -60,6 +60,7 @@ from .text_extractor import (
     _chunk_pages as chunk_pages,
     estimate_deterministic_token_savings,
     extract_document,
+    resolve_ai_response_format,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ def _extract_segment(
     reader: Optional[Any] = None,
     source_name: str = "",
     extraction_mode: str = "catalog",
+    ai_response_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract one segment into a document dict. Runs in a worker thread.
 
@@ -240,7 +242,8 @@ def _extract_segment(
 
             if pending_tree:
                 model_result = extract_document(
-                    extract_pages, entry, model_id=model_id, field_tree=pending_tree
+                    extract_pages, entry, model_id=model_id, field_tree=pending_tree,
+                    ai_response_format=ai_response_format,
                 )
             else:
                 usable = [
@@ -259,6 +262,13 @@ def _extract_segment(
                         "usage": {},
                         "segmentConfidence": round(sum(usable) / len(usable), 4) if usable else 0.0,
                         "typeSignal": None,
+                        "aiResponseFormat": {
+                            **resolve_ai_response_format(entry, ai_response_format),
+                            "effective": "not_executed",
+                            "fallbackExecuted": False,
+                            "compactCalls": 0,
+                            "legacyCalls": 0,
+                        },
                     },
                 )
 
@@ -351,7 +361,10 @@ def _extract_segment(
                 )
             })
         else:
-            extracted = extract_document(extract_pages, entry, model_id=model_id)
+            extracted = extract_document(
+                extract_pages, entry, model_id=model_id,
+                ai_response_format=ai_response_format,
+            )
             extracted.meta["strategy"] = "model"
             extracted.meta["extractionMode"] = {
                 "requested": requested_mode,
@@ -606,6 +619,7 @@ def process_pdf(
     declared_counts: Optional[Dict[str, Any]] = None,
     context: Optional[Dict[str, Any]] = None,
     extraction_mode: str = "catalog",
+    ai_response_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Process a (possibly multi-document) PDF — or, when `source_format` is
     an image type ("jpg"/"jpeg"/"png"), a single standalone photographed/
@@ -718,7 +732,8 @@ def process_pdf(
         documents: List[Dict[str, Any]] = list(
             pool.map(
                 lambda seg: _extract_segment(
-                    seg, pages, model_id, qr_reader, source_name, extraction_mode
+                    seg, pages, model_id, qr_reader, source_name, extraction_mode,
+                    ai_response_format,
                 ),
                 segments,
             )

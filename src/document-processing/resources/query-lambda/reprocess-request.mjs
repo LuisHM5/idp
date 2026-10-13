@@ -18,8 +18,24 @@ const SYSTEM_OBJECT_METADATA = new Set([
   "app-origin",
   "model-id",
   "extraction-mode",
+  "ai-response-format",
   "document-counts",
 ]);
+
+export function aiResponseFormatOf(body) {
+  const value = body?.aiResponseFormat;
+  if (value === undefined || value === null || value === "") return { format: null };
+  const format = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!new Set(["compact", "legacy"]).has(format)) {
+    return {
+      error: {
+        code: "INVALID_AI_RESPONSE_FORMAT",
+        message: "Field 'aiResponseFormat' must be 'compact' or 'legacy'",
+      },
+    };
+  }
+  return { format };
+}
 
 export function parseBody(event) {
   const raw = event.body;

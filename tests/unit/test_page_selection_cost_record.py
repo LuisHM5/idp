@@ -194,10 +194,19 @@ def test_extraction_audit_is_written_to_the_dedicated_cost_table(monkeypatch):
         "documentClassification": "CERTIFICADO_POLIZA",
         "aiExecuted": False,
         "aiUsage": {"stages": []},
+        "aiResponseSavings": {
+            "estimatedInputTokensSaved": 10,
+            "estimatedOutputTokensSaved": 20,
+        },
         "documents": [{
             "index": 1,
             "documentType": "CERTIFICADO_POLIZA",
             "extractionMode": {"requested": "catalog", "effective": "hybrid"},
+            "aiResponseFormat": {
+                "selected": "compact", "effective": "not_executed",
+                "source": "default", "fallbackExecuted": False,
+                "compactCalls": 0, "legacyCalls": 0,
+            },
             "deterministicExtraction": {
                 "strategy": "deterministic",
                 "resolvedFieldCount": 12,
@@ -216,4 +225,6 @@ def test_extraction_audit_is_written_to_the_dedicated_cost_table(monkeypatch):
     assert captured["item"] is item
     assert item["ExtractionAudit"]["AiExecuted"] is False
     assert item["ExtractionAudit"]["Documents"][0]["Profile"] == "SV"
+    assert item["ExtractionAudit"]["Documents"][0]["AiResponseSelected"] == "compact"
+    assert item["ExtractionAudit"]["AiResponseSavings"]["EstimatedCostAvoidedUsd"] >= 0
     assert item["Services"]["BedrockExtraction"]["costUsd"] == Decimal("0.0")

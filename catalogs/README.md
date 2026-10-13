@@ -188,6 +188,7 @@ como en el DSL viejo.
 | `model_id` | sí, opcional | ID de modelo Bedrock (o ARN de inference-profile) que extrae específicamente ESTE tipo — pisa `BEDROCK_EXTRACTOR_MODEL_ID`/`BEDROCK_MODEL_ID` configurados por variable de entorno. Aplica a cualquier fase que corra para este tipo (`extractor`, y `recovery` si el tipo declara `extraction_strategy`) salvo que esa fase tenga su propia entrada en `model_ids`. Ausente o `null` → hereda lo configurado. |
 | `model_ids` | sí, opcional | Igual que `model_id` pero por FASE: `{"extractor": "...", "recovery": "..."}`. Pisa a `model_id` cuando ambos nombran la misma fase — así un tipo puede fijar solo `recovery` (p. ej. porque su fallback de Textract necesita un modelo distinto al de extracción normal) sin tocar las demás. `segmenter` no aplica aquí: la segmentación de un expediente corre ANTES de saber a qué tipo pertenece cada rango de páginas, así que no hay un `type_entry` del que leer el override — solo responde a `BEDROCK_SEGMENTER_MODEL_ID` y al override de desarrollo. La fase **`vision`** (etapa de autenticidad) también se fija aquí — `{"vision": "us.amazon.nova-2-lite-v1:0"}` — y es independiente de todo lo demás: resuelve por una cadena propia y más corta, `model_ids.vision` → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5, y **nunca** hereda `model_id`, `BEDROCK_MODEL_ID` ni el override de desarrollo (son modelos de texto; el general de este despliegue no acepta imágenes). Su respaldo por indisponibilidad tampoco es la lista compartida: es `authenticity.vision.fallback_models` del propio tipo (`[]` = no cambia de modelo). El modelo debe aceptar imágenes en Converse — candidatos probados y medidos en `documentacion/MODELOS_VISION.md`; compáralos en tu tipo con `pnpm vision:comparar` antes de fijar uno. |
 | ↳ jerarquía completa | — | De mayor a menor prioridad: **(1)** override de desarrollo por request (`ALLOW_MODEL_OVERRIDE`, dev-only, ver `document-validation-stack.ts` — fuerza TODA la invocación sin importar tipo ni fase) → **(2)** `model_ids[fase]` del catálogo → **(3)** `model_id` del catálogo → **(4)** `BEDROCK_<FASE>_MODEL_ID` de entorno → **(5)** `BEDROCK_MODEL_ID` de entorno / fallback fijo. La utilidad que implementa y documenta este orden es `pipeline/bedrock.py::resolve_model` (`_model_candidates` es la única fuente de verdad del orden; `explain_model_resolution` expone los 5 candidatos y cuál ganó, útil para depurar "por qué este documento usó el modelo X"). Esto decide solo **qué modelo se intenta primero**; si ese modelo falla por indisponibilidad (no habilitado, no existe, error/timeout del proveedor), `pipeline/bedrock.py::_invoke_with_fallback` cambia al siguiente modelo de una lista ORDENADA E INDEPENDIENTE (`pipeline/model_fallback.py`, tabla DynamoDB `FALLBACK_MODELS_TABLE` opcional) — ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6. Los dos mecanismos no se mezclan: el catálogo nunca es candidato de fallback, y la tabla de fallback nunca decide qué se intenta primero. |
+| `ai_response_format` | sí, opcional | Protocolo **interno** de la extracción por IA: `compact` (default global) devuelve escalares dispersos `[valor, confianza]` y filas posicionales con una confianza por fila; Python arma el árbol público completo. `legacy` restaura el `{value, confidence}` anidado anterior para este tipo. No cambia quién extrae, el estado ni el shape final. Precedencia: override autorizado del API → catálogo → `AI_RESPONSE_FORMAT` → `compact`. |
 | `validator_module` | sí, **solo en el flujo estándar** | Ver [Custom con scripts](#custom-con-scripts). |
 | `custom_validator` | sí, **solo en el flujo estándar** | Ídem. |
 | `business_destination` | sí | Metadato de ruteo de negocio; aparece como `businessDestination` en cada documento del expediente. Puramente informativo para el consumidor. |
@@ -456,6 +457,29 @@ código y un campo esperado faltante abre sólo el fallback parcial; un formato
 desconocido o ambiguo vuelve al modelo completo. Para eliminar además la
 clasificación por modelo debe subirse declarando el `documentType`; una carga
 sin tipo todavía puede usar Bedrock para segmentar/clasificar.
+
+### Formato compacto de respuesta de IA
+
+`extractionMode` decide **quién obtiene el dato**; `ai_response_format` decide
+únicamente **cómo devuelve la IA lo que encontró**. Son controles separados:
+
+- `compact` (default): escalares como `"RUTA": [valor, confianza]`; tablas como
+  matrices posicionales cuya última celda es la confianza de la fila. Los
+  nombres y el orden vienen del catálogo y Python ensambla el JSON público.
+- `legacy`: respuesta anidada anterior, con `{value, confidence}` por escalar.
+
+Los campos ausentes se omiten. Una regla inválida se resuelve después en el
+motor de validación y **no** provoca otra extracción. Solo un payload compacto
+estructuralmente ilegible hace un reintento legacy de esa partición; su consumo
+también cuenta como facturado. El resultado lo muestra en
+`documents[].aiResponseFormat`, y `aiResponseSavings` compara los tokens
+facturados con el contrafactual legacy estimado.
+
+Precedencia: `aiResponseFormat` autorizado en el API → `ai_response_format`
+del tipo → `AI_RESPONSE_FORMAT` del despliegue → `compact`. Para reproducir
+todo el camino anterior usa `extractionMode=model` y
+`aiResponseFormat=legacy`. XML, tabular y una extracción enteramente por código
+reportan `effective: not_executed` porque no hubo respuesta de IA.
 
 ### Presets de campos (`$presets`): pedir una verificación con una línea
 

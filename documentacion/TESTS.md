@@ -295,6 +295,7 @@ funcionando.
 | `pnpm test:real -- --env dev`             | Primero la suite gratuita y después cada fixture etiquetado por API/S3/SQS/SFN/Lambdas/DynamoDB, contra ground truth | Sí | Muestra rango antes de confirmar |
 | `pnpm test:encryption`                    | Sintetiza ambos stacks y exige 0 CMK en dev / 1 CMK compartida en prod | No (sí requiere Docker para bundling) | $0 |
 | `pnpm comparar -- normal_pend.pdf`        | **Un solo documento**: valores esperados vs extraídos, campo por campo — ver [2](#2-comparar-expected-vs-real-de-un-documento-con-costo-script-simple) | Sí (Textract + Bedrock) | ~$0.02–0.35  |
+| `pnpm comparar:formato -- archivo.pdf TIPO` | **A/B desplegado `compact` vs `legacy`**: procesa el mismo archivo dos veces y contrasta latencia, tokens, fallback y valores | Sí (stack desplegado; dos ejecuciones) | 2× el costo del documento |
 | `pnpm test:pedimentos`                    | Pipeline directo contra todos los PDFs locales; compara los que están declarados en el ground truth | Sí (Textract + Bedrock) | Depende del corpus |
 | `pnpm test:pedimentos -- --file B2401416` | Igual a `pnpm comparar` pero sin el prompt de confirmación (útil en CI/scripts) | Sí                      | ~$0.02–0.35  |
 | `pnpm test:pedimentos -- --save /tmp/res` | Corre todo + guarda los JSON completos de resultado                            | Sí                      | —            |
@@ -428,6 +429,19 @@ Con esa salida ya se puede decidir sin adivinar: si el `✗` es un valor de
 otro campo (confusión del modelo), si es un formato (ceros, mayúsculas,
 concatenación), o si el campo en sí pasó pero una regla cruzada sigue
 fallando.
+
+### 2.1 Comparar el formato compacto contra el anterior
+
+```bash
+pnpm comparar:formato -- archivo.pdf PEDIMENTO_ERP --extraction-mode model
+```
+
+Usa el API y stack desplegados, fuerza primero `aiResponseFormat=compact` y
+después `legacy`, espera ambos resultados y muestra `processingMs`, el tramo de
+extracción, tokens reales, formato efectivo/fallback y diferencias de valores.
+Mantén tipo, modo y modelo iguales para que la comparación sea útil. Confirma
+antes de gastar; `--yes` omite la confirmación para automatización. En
+producción la API key necesita `AllowAiResponseFormatOverride`.
 
 ## 3. Agregar un documento de prueba nuevo
 

@@ -267,6 +267,8 @@ def document_view(doc: Dict[str, Any], index: int) -> Dict[str, Any]:
     extraction_meta = doc.get("extractionMeta") or {}
     if isinstance(extraction_meta.get("extractionMode"), dict):
         view["extractionMode"] = dict(extraction_meta["extractionMode"])
+    if isinstance(extraction_meta.get("aiResponseFormat"), dict):
+        view["aiResponseFormat"] = dict(extraction_meta["aiResponseFormat"])
     deterministic = extraction_meta.get("deterministicExtraction")
     if isinstance(deterministic, dict):
         token_savings = deterministic.get("tokenSavings") or {}
@@ -381,6 +383,33 @@ def deterministic_savings_view(documents: List[Dict[str, Any]]) -> Optional[Dict
         "estimatedOutputTokensWithoutDeterministic": without_output,
         "estimatedInputSavingPct": round(saved_input / without_input * 100, 1) if without_input else 0.0,
         "estimatedOutputSavingPct": round(saved_output / without_output * 100, 1) if without_output else 0.0,
+    }
+
+
+def ai_response_savings_view(documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Aggregate compact-vs-legacy estimates without mixing them with billing."""
+    blocks = []
+    for doc in documents:
+        response = ((doc.get("extractionMeta") or {}).get("aiResponseFormat") or {})
+        savings = response.get("tokenSavings")
+        if isinstance(savings, dict):
+            blocks.append(savings)
+    if not blocks:
+        return None
+
+    def total(name: str) -> int:
+        return sum(int(block.get(name) or 0) for block in blocks)
+
+    return {
+        "estimated": True,
+        "method": "serialized_counterfactual_v1",
+        "documentsMeasured": len(blocks),
+        "billedInputTokens": total("billedInputTokens"),
+        "billedOutputTokens": total("billedOutputTokens"),
+        "estimatedLegacyInputTokens": total("estimatedLegacyInputTokens"),
+        "estimatedLegacyOutputTokens": total("estimatedLegacyOutputTokens"),
+        "estimatedInputTokensSaved": total("estimatedInputTokensSaved"),
+        "estimatedOutputTokensSaved": total("estimatedOutputTokensSaved"),
     }
 
 
@@ -568,6 +597,9 @@ def build(
     deterministic_savings = deterministic_savings_view(documents)
     if deterministic_savings is not None:
         env["deterministicSavings"] = deterministic_savings
+    ai_response_savings = ai_response_savings_view(documents)
+    if ai_response_savings is not None:
+        env["aiResponseSavings"] = ai_response_savings
     # Solo las verificaciones que REALMENTE corrieron. Una regla `skipped` es
     # la ausencia de información, no información: en un archivo de facturas
     # extranjeras, 4 de las 5 reglas cruzadas del catálogo aduanal salían

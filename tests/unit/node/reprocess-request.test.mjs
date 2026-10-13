@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   classificationModeFor,
+  aiResponseFormatOf,
   deserializeDocumentCounts,
   inheritedDocumentType,
   occurrenceModeOf,
@@ -99,6 +100,12 @@ test("request body supports JSON, form and occurrence_mode alias", () => {
     occurrenceModeOf({ occurrenceMode: "single", occurrence_mode: "multiple" }).error.code,
     "INVALID_OCCURRENCE_MODE"
   );
+});
+
+test("reprocess valida el mismo override compacto o legacy", () => {
+  assert.deepEqual(aiResponseFormatOf({}), { format: null });
+  assert.deepEqual(aiResponseFormatOf({ aiResponseFormat: "COMPACT" }), { format: "compact" });
+  assert.equal(aiResponseFormatOf({ aiResponseFormat: "otro" }).error.code, "INVALID_AI_RESPONSE_FORMAT");
 });
 
 test("current DynamoDB metadata wins and an authoritative empty map preserves deletions", () => {

@@ -29,6 +29,7 @@ import {
   parseBody,
   normalizeMetadata,
   parseExtractionMode,
+  parseAiResponseFormat,
   parseDocumentTypes,
   classificationModeFor,
   rawKeyFor,
@@ -41,6 +42,8 @@ const BUCKET = process.env.DOCUMENT_BUCKET;
 const APPS_TABLE = process.env.APPS_TABLE;
 const APP_USAGE_TABLE = process.env.APP_USAGE_TABLE;
 const DOCUMENT_TABLE = process.env.DOCUMENT_TABLE;
+const ALLOW_AI_RESPONSE_FORMAT_OVERRIDE =
+  String(process.env.ALLOW_AI_RESPONSE_FORMAT_OVERRIDE || "").toLowerCase() === "true";
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "pdf", "xml", "xlsx", "csv"]);
 // Extensions with no vision-based auto-classification at all: the enrichment
 // pipeline's xml/tabular extractors require a declared type to even parse the
@@ -150,7 +153,9 @@ function validateCommon(fileName, documentType, occurrenceMode) {
  * ("unregistered", e.g. the legacy idp-default key before `pnpm apps:adopt`).
  */
 async function resolveApp(apiKeyId) {
-  if (!apiKeyId || !APPS_TABLE) return { appOrigin: null, maxDocsPerDay: null };
+  if (!apiKeyId || !APPS_TABLE) return {
+    appOrigin: null, maxDocsPerDay: null, allowAiResponseFormatOverride: false,
+  };
   try {
     const { Item } = await ddb.send(
       new GetItemCommand({
@@ -161,10 +166,14 @@ async function resolveApp(apiKeyId) {
     return {
       appOrigin: Item?.AppName?.S || "unregistered",
       maxDocsPerDay: Item?.MaxDocsPerDay?.N ?? null,
+      allowAiResponseFormatOverride: Item?.AllowAiResponseFormatOverride?.BOOL === true,
     };
   } catch (err) {
     console.error("Failed to resolve appOrigin:", err);
-    return { appOrigin: "unregistered", maxDocsPerDay: null };
+    return {
+      appOrigin: "unregistered", maxDocsPerDay: null,
+      allowAiResponseFormatOverride: false,
+    };
   }
 }
 
@@ -197,6 +206,10 @@ export async function handler(event) {
   if (extraction.error) {
     return errorResponse(400, extraction.error.code, extraction.error.message);
   }
+  const aiResponse = parseAiResponseFormat(body.aiResponseFormat);
+  if (aiResponse.error) {
+    return errorResponse(400, aiResponse.error.code, aiResponse.error.message);
+  }
 
   if (!fileName) {
     return errorResponse(400, "MISSING_FIELD", "Field 'fileName' is required");
@@ -220,7 +233,18 @@ export async function handler(event) {
   // Which app made this request, resolved from its x-api-key (present only
   // when the method requires one — see resolveApp above).
   const apiKeyId = event.requestContext?.identity?.apiKeyId;
-  const { appOrigin, maxDocsPerDay } = await resolveApp(apiKeyId);
+  const { appOrigin, maxDocsPerDay, allowAiResponseFormatOverride } = await resolveApp(apiKeyId);
+  if (
+    aiResponse.format &&
+    !ALLOW_AI_RESPONSE_FORMAT_OVERRIDE &&
+    !allowAiResponseFormatOverride
+  ) {
+    return errorResponse(
+      403,
+      "AI_RESPONSE_FORMAT_OVERRIDE_FORBIDDEN",
+      "This API key is not allowed to override aiResponseFormat"
+    );
+  }
 
   // The caller's own `metadata` rides along as S3 object metadata, normalized
   // to what S3 can actually hold (see normalizeMetadata) — that is also what
@@ -242,6 +266,9 @@ export async function handler(event) {
   }
   if (extraction.mode !== "catalog") {
     objectMetadata["extraction-mode"] = extraction.mode;
+  }
+  if (aiResponse.format) {
+    objectMetadata["ai-response-format"] = aiResponse.format;
   }
   if (appOrigin) {
     objectMetadata["app-origin"] = appOrigin;

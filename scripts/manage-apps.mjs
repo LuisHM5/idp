@@ -87,6 +87,10 @@
  *                             registrar una referencia decide qué sello es
  *                             "válido". AllowReferenceWrite en AppsTable.
  *   --reference-write         (grant/deny) otorga/quita ese mismo permiso.
+ *   --allow-ai-response-format-override /
+ *   --disallow-ai-response-format-override (register/reconfigure) permite o
+ *                             quita el override compact|legacy en producción.
+ *   --ai-response-format-override (grant/deny) otorga/quita el permiso.
  *
  * Opciones comunes:
  *   --env dev|prod     Ambiente (default: dev, igual que el deploy)
@@ -252,6 +256,8 @@ function parsePermissionFlags(args) {
   if (args["disallow-metadata-write"]) setAttrs.AllowMetadataWrite = { BOOL: false };
   if (args["allow-reference-write"]) setAttrs.AllowReferenceWrite = { BOOL: true };
   if (args["disallow-reference-write"]) setAttrs.AllowReferenceWrite = { BOOL: false };
+  if (args["allow-ai-response-format-override"]) setAttrs.AllowAiResponseFormatOverride = { BOOL: true };
+  if (args["disallow-ai-response-format-override"]) setAttrs.AllowAiResponseFormatOverride = { BOOL: false };
   return { setAttrs, removeAttrs };
 }
 
@@ -575,6 +581,7 @@ async function cmdRegister(args) {
       AllowFieldSearch: perms.setAttrs.AllowFieldSearch || { BOOL: false },
       AllowMetadataWrite: perms.setAttrs.AllowMetadataWrite || { BOOL: false },
       AllowReferenceWrite: perms.setAttrs.AllowReferenceWrite || { BOOL: false },
+      AllowAiResponseFormatOverride: perms.setAttrs.AllowAiResponseFormatOverride || { BOOL: false },
       ...(perms.setAttrs.AllowedDocTypes ? { AllowedDocTypes: perms.setAttrs.AllowedDocTypes } : {}),
     },
     region
@@ -586,6 +593,7 @@ async function cmdRegister(args) {
   console.log(`   Permisos: accessScope=${scope}, allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? false}, ` +
     `allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? false}` +
     ` allowReferenceWrite=${perms.setAttrs.AllowReferenceWrite?.BOOL ?? false}` +
+    ` allowAiResponseFormatOverride=${perms.setAttrs.AllowAiResponseFormatOverride?.BOOL ?? false}` +
     (perms.setAttrs.AllowedDocTypes ? `, allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : ""));
 }
 
@@ -666,6 +674,7 @@ async function cmdRotate(args) {
       AllowFieldSearch: { BOOL: old.AllowFieldSearch ?? false },
       AllowMetadataWrite: { BOOL: old.AllowMetadataWrite ?? false },
       AllowReferenceWrite: { BOOL: old.AllowReferenceWrite ?? false },
+      AllowAiResponseFormatOverride: { BOOL: old.AllowAiResponseFormatOverride ?? false },
       ...(old.AllowedDocTypes ? { AllowedDocTypes: { SS: old.AllowedDocTypes } } : {}),
     },
     region
@@ -888,6 +897,7 @@ async function cmdReconfigure(args) {
         `allowFieldSearch=${perms.setAttrs.AllowFieldSearch?.BOOL ?? app.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${perms.setAttrs.AllowMetadataWrite?.BOOL ?? app.AllowMetadataWrite ?? false}` +
         ` allowReferenceWrite=${perms.setAttrs.AllowReferenceWrite?.BOOL ?? app.AllowReferenceWrite ?? false}` +
+        ` allowAiResponseFormatOverride=${perms.setAttrs.AllowAiResponseFormatOverride?.BOOL ?? app.AllowAiResponseFormatOverride ?? false}` +
         (perms.setAttrs.AllowedDocTypes ? ` allowedDocTypes=${perms.setAttrs.AllowedDocTypes.SS.join(",")}` : "") +
         (perms.removeAttrs.includes("AllowedDocTypes") ? " allowedDocTypes=(quitado, ve todos los tipos permitidos por su scope)" : "")
     );
@@ -939,6 +949,7 @@ async function promptGrantDeny(args, verb) {
         `allowFieldSearch=${app.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${app.AllowMetadataWrite ?? false}` +
         ` allowReferenceWrite=${app.AllowReferenceWrite ?? false}` +
+        ` allowAiResponseFormatOverride=${app.AllowAiResponseFormatOverride ?? false}` +
         (app.AllowedDocTypes ? ` allowedDocTypes=${app.AllowedDocTypes.join(",")}` : "")
     );
     return { args, app };
@@ -995,8 +1006,12 @@ async function cmdGrant(args) {
     updates.AllowReferenceWrite = { BOOL: true };
     notes.push("allowReferenceWrite=true");
   }
+  if (args["ai-response-format-override"]) {
+    updates.AllowAiResponseFormatOverride = { BOOL: true };
+    notes.push("allowAiResponseFormatOverride=true");
+  }
   if (!notes.length) {
-    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, --field-search, --metadata-write y/o --reference-write.");
+    fail("Nada que otorgar — pasa --doctype A,B, --access-scope all, --field-search, --metadata-write, --reference-write y/o --ai-response-format-override.");
   }
 
   await confirmGrantDeny(args, "grant", notes);
@@ -1044,8 +1059,12 @@ async function cmdDeny(args) {
     updates.AllowReferenceWrite = { BOOL: false };
     notes.push("allowReferenceWrite=false");
   }
+  if (args["ai-response-format-override"]) {
+    updates.AllowAiResponseFormatOverride = { BOOL: false };
+    notes.push("allowAiResponseFormatOverride=false");
+  }
   if (!notes.length) {
-    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, --field-search, --metadata-write y/o --reference-write.");
+    fail("Nada que quitar — pasa --doctype A,B, --access-scope own, --field-search, --metadata-write, --reference-write y/o --ai-response-format-override.");
   }
 
   await confirmGrantDeny(args, "deny", notes);
@@ -1078,6 +1097,7 @@ function cmdList(args) {
       `     accessScope=${it.AccessScope ?? "own"} allowFieldSearch=${it.AllowFieldSearch ?? false}` +
         ` allowMetadataWrite=${it.AllowMetadataWrite ?? false}` +
         ` allowReferenceWrite=${it.AllowReferenceWrite ?? false}` +
+        ` allowAiResponseFormatOverride=${it.AllowAiResponseFormatOverride ?? false}` +
         (it.AllowedDocTypes ? ` allowedDocTypes=${it.AllowedDocTypes.join(",")}` : "")
     );
     // RevokedAt no se borra al hacer `enable` (queda como historial de
@@ -1317,6 +1337,7 @@ async function cmdAdopt(args) {
       AllowFieldSearch: { BOOL: false },
       AllowMetadataWrite: { BOOL: false },
       AllowReferenceWrite: { BOOL: false },
+      AllowAiResponseFormatOverride: { BOOL: false },
     },
     region
   );
@@ -1436,16 +1457,17 @@ Uso: pnpm apps:<comando> -- [opciones]
 Comandos (todos interactivos en una terminal real si falta algo — siempre
 piden confirmación S/n antes de tocar AWS, salvo --yes o sin TTY):
   register     --name X [LÍMITES] [--force]
-               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search] [--allow-metadata-write] [--allow-reference-write]
+               [--access-scope own|all] [--allowed-doctypes A,B] [--allow-field-search] [--allow-metadata-write] [--allow-reference-write] [--allow-ai-response-format-override]
   rotate       --name X [LÍMITES]                (sin flags conserva los límites de la key vieja)
   reconfigure  --name X [LÍMITES]
                [--access-scope own|all] [--allowed-doctypes A,B|none]
                [--allow-field-search] [--disallow-field-search]
                [--allow-metadata-write] [--disallow-metadata-write]
                [--allow-reference-write] [--disallow-reference-write]
-  grant        --name X [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write] [--reference-write]
+               [--allow-ai-response-format-override] [--disallow-ai-response-format-override]
+  grant        --name X [--doctype A,B] [--access-scope all] [--field-search] [--metadata-write] [--reference-write] [--ai-response-format-override]
                (agrega/otorga SIN pisar lo que ya tenía — ver reconfigure para reemplazar todo)
-  deny         --name X [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write] [--reference-write]
+  deny         --name X [--doctype A,B] [--access-scope own] [--field-search] [--metadata-write] [--reference-write] [--ai-response-format-override]
                (quita SOLO lo pedido — inverso de grant)
   disable      --name X                          (deshabilita la key, no la borra)
   enable       --name X                          (reactiva una app deshabilitada)

@@ -500,7 +500,7 @@ def test_schema_parcial_del_model_solo_contiene_el_faltante(monkeypatch):
 
     def fake_converse(prompt, **kwargs):
         seen.append(kwargs["tool_schema"])
-        return {"NOTA": {"value": "modelo", "confidence": 0.9}}, {"usage": {"outputTokens": 3}}
+        return {"s": {"NOTA": ["modelo", 0.9]}, "t": {}}, {"usage": {"outputTokens": 3}}
 
     monkeypatch.setattr(text_extractor, "converse_structured", fake_converse)
     monkeypatch.setattr(text_extractor, "resolve_model", lambda *a, **k: "modelo-prueba")
@@ -511,7 +511,8 @@ def test_schema_parcial_del_model_solo_contiene_el_faltante(monkeypatch):
     )
 
     assert len(seen) == 1
-    assert set(seen[0]["properties"]) == {"NOTA", "_DOCUMENTO"}
+    assert set(seen[0]["properties"]) == {"s", "t", "d"}
+    assert set(seen[0]["properties"]["s"]["properties"]) == {"NOTA"}
     assert merged["FOLIO"] == "A-123"
     assert merged["NOTA"] == "modelo"
 

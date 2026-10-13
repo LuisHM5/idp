@@ -382,6 +382,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         // is why these are env vars and not constants.
         TEXTRACT_WORKERS: process.env.TEXTRACT_WORKERS || "8",
         CHUNK_WORKERS: process.env.CHUNK_WORKERS || "4",
+        // Internal Bedrock tool-response protocol. Compact is the product
+        // default; legacy is a deployment-wide rollback with no code change.
+        AI_RESPONSE_FORMAT: process.env.AI_RESPONSE_FORMAT || "compact",
         ...(process.env.EXTRACT_WORKERS && {
           EXTRACT_WORKERS: process.env.EXTRACT_WORKERS,
         }),
@@ -937,6 +940,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         APPS_TABLE: appsTable.tableName,
         APP_USAGE_TABLE: appUsageTable.tableName,
         DOCUMENT_TABLE: documentTable.tableName,
+        // Dev remains convenient for A/B measurements. Prod requires the
+        // per-key AllowAiResponseFormatOverride flag from AppsTable.
+        ...(isProd ? {} : { ALLOW_AI_RESPONSE_FORMAT_OVERRIDE: "true" }),
       },
     });
     documentBucket.grantPut(uploadFn);
@@ -964,6 +970,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         // Resuelve nombres/alias de tipo ("pedimento aduanal") al TYPE_ID
         // canónico usando el catálogo hot-reload cuando está habilitado.
         ...(catalogTable && { CATALOG_TABLE: catalogTable.tableName }),
+        ...(isProd ? {} : { ALLOW_AI_RESPONSE_FORMAT_OVERRIDE: "true" }),
       },
     });
     // GetItem + Query/Scan on the tracking table and its GSI (and KMS decrypt

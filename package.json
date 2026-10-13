@@ -20,6 +20,7 @@
     "test:real": ".venv/bin/python scripts/run-real-tests.py",
     "test:pedimentos": ".venv/bin/python scripts/test-pedimentos.py",
     "comparar": "bash scripts/comparar-documento.sh",
+    "comparar:formato": ".venv/bin/python scripts/comparar-formato-respuesta.py",
     "test:e2e:pedimento": ".venv/bin/python scripts/test-e2e-pedimento.py",
     "test:e2e:suite": ".venv/bin/python scripts/test-e2e-suite.py",
     "test:e2e:init": ".venv/bin/python scripts/test-e2e-suite.py --init",

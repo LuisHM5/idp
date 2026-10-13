@@ -158,6 +158,7 @@ import {
   classificationModeFor,
   deserializeDocumentCounts,
   inheritedDocumentType,
+  aiResponseFormatOf,
   occurrenceModeOf,
   parseBody as parseReprocessBody,
   parseDocumentTypes,
@@ -191,6 +192,8 @@ const UNIQUE_KEY_TABLE = process.env.UNIQUE_KEY_TABLE;
 const CATALOG_TABLE = process.env.CATALOG_TABLE;
 const APPS_TABLE = process.env.APPS_TABLE;
 const APP_USAGE_TABLE = process.env.APP_USAGE_TABLE;
+const ALLOW_AI_RESPONSE_FORMAT_OVERRIDE =
+  String(process.env.ALLOW_AI_RESPONSE_FORMAT_OVERRIDE || "").toLowerCase() === "true";
 const MAX_LIMIT = 100;
 // The blueprint moves the raw upload to processed/{id}/{filename} on any
 // execution that completes without an exception (including a RECHAZADO
@@ -270,10 +273,16 @@ const UNRESTRICTED = {
   allowReprocess: true,
   apiKeyId: null,
   maxDocsPerDay: null,
+  allowAiResponseFormatOverride: true,
 };
 
 /** Grandfathered read access is not authority to mutate stored data. */
-const UNREGISTERED = { ...UNRESTRICTED, allowMetadataWrite: false, allowReprocess: false };
+const UNREGISTERED = {
+  ...UNRESTRICTED,
+  allowMetadataWrite: false,
+  allowReprocess: false,
+  allowAiResponseFormatOverride: false,
+};
 
 /**
  * Resolve the caller's own app + permissions from its x-api-key, mirroring
@@ -299,6 +308,7 @@ async function resolveCallerApp(event) {
       // same billed operation with the transport optimized away, so no second
       // per-app grant is required; an unregistered key is still read-only.
       allowReprocess: true,
+      allowAiResponseFormatOverride: !!Item.AllowAiResponseFormatOverride,
       // Reprocess spends the same documents-per-day budget as an upload.
       apiKeyId,
       maxDocsPerDay: Item.MaxDocsPerDay ?? null,
@@ -907,6 +917,20 @@ async function reprocessById(id, event, caller) {
   if (occurrence.error) {
     return json(400, { error: occurrence.error.code, message: occurrence.error.message });
   }
+  const aiResponse = aiResponseFormatOf(body);
+  if (aiResponse.error) {
+    return json(400, { error: aiResponse.error.code, message: aiResponse.error.message });
+  }
+  if (
+    aiResponse.format &&
+    !ALLOW_AI_RESPONSE_FORMAT_OVERRIDE &&
+    !caller.allowAiResponseFormatOverride
+  ) {
+    return json(403, {
+      error: "AI_RESPONSE_FORMAT_OVERRIDE_FORBIDDEN",
+      message: "This API key is not allowed to override aiResponseFormat",
+    });
+  }
 
   const item = await resolveItemById(id);
   if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
@@ -996,6 +1020,7 @@ async function reprocessById(id, event, caller) {
   if (typeof body.modelId === "string" && body.modelId.trim()) {
     objectMetadata["model-id"] = body.modelId.trim();
   }
+  if (aiResponse.format) objectMetadata["ai-response-format"] = aiResponse.format;
 
   let effectiveCounts = parsedTypes.counts;
   // When neither target types nor mode were overridden, preserve an explicit

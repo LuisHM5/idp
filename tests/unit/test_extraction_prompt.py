@@ -50,7 +50,7 @@ def llamadas(monkeypatch):
 
     def fake_converse(prompt, **kwargs):
         capturadas.append({"prompt": prompt, **kwargs})
-        return {}, {"usage": {}}
+        return {"s": {}, "t": {}}, {"usage": {}}
 
     monkeypatch.setattr(text_extractor, "converse_structured", fake_converse)
     monkeypatch.setattr(text_extractor, "resolve_model", lambda *a, **k: "modelo-de-prueba")

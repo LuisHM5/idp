@@ -435,7 +435,7 @@ pnpm apps:reconfigure -- --name ERP --env prod --allow-metadata-write
 pnpm apps:reconfigure -- --name Portal --env prod --allow-reference-write
 pnpm apps:reconfigure -- --name Portal --env prod --disallow-reference-write   # quitarlo
 ```
-Cinco controles, todos atributos en DynamoDB (no en API Gateway — no requieren
+Seis controles, todos atributos en DynamoDB (no en API Gateway — no requieren
 redeploy ni tocan la key). Los cuatro primeros los aplica `query-lambda` en cada
 `GET /documents/{id}`, `GET /documents/{id}/file`, `GET /documents?...` y
 `PATCH /documents/{id}/metadata`, además de
@@ -449,6 +449,7 @@ redeploy ni tocan la key). Los cuatro primeros los aplica `query-lambda` en cada
 | `--allow-field-search` | `false` | Si puede usar `GET /documents?field=&value=` (el Scan-based, el más caro y abusable — ver "Cómo funciona en el backend" abajo). Sin esto, solo `docType=`/`{id}` — y `system=`/`meta.<clave>=`, que **no** están detrás de este permiso: leen una sola clave conocida del envelope en vez de recorrerlo entero, y no amplían lo que la app ya puede ver (con `AccessScope: own`, `system=` solo puede acotar más). |
 | `--allow-metadata-write` | `false` | Si puede usar `PATCH /documents/{id}/metadata` para estados transitorios/marcas propios. No permite cambiar `validation.status`; sigue limitado por scope y tipos. |
 | `--allow-reference-write` / `--disallow-reference-write` | `false` | Si puede usar la API de referencias de autenticidad (`/references/...`): registrar, listar, ver y dar de baja las firmas, sellos y logos válidos de una entidad. Cubre **todas** las rutas, también los `GET` — listar referencias expone firmas de personas. Atributo `AllowReferenceWrite`. Es independiente de `AccessScope`/`AllowedDocTypes`: las referencias son de la entidad (`scope` + `key`), no de un documento ni de un tipo. `rotate` lo conserva. |
+| `--allow-ai-response-format-override` / `--disallow-ai-response-format-override` | `false` | Permite usar `aiResponseFormat=compact|legacy` en upload o reproceso de producción. Controla costo/compatibilidad del protocolo interno, no acceso a documentos. Atributo `AllowAiResponseFormatOverride`; `rotate` lo conserva. En dev el stack permite el override para benchmarks. |
 
 **Por qué 404, no 403, en un documento fuera de alcance**: `GET /documents/{id}`
 y `.../file` —y la búsqueda del original para `.../reprocess`— devuelven `404 NOT_FOUND` cuando el documento existe pero la app

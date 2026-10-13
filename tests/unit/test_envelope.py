@@ -459,6 +459,28 @@ def test_envelope_publica_ahorro_determinista_y_fallbacks_por_documento():
     assert detail["profile"] == {"id": "FL", "status": "matched", "scores": {"FL": 4}}
 
 
+def test_envelope_publica_formato_compacto_y_su_contrafactual():
+    response = {
+        "requested": "inherit", "source": "default", "selected": "compact",
+        "effective": "compact", "fallbackExecuted": False,
+        "compactCalls": 1, "legacyCalls": 0,
+        "tokenSavings": {
+            "estimated": True, "method": "serialized_counterfactual_v1",
+            "billedInputTokens": 100, "billedOutputTokens": 30,
+            "estimatedLegacyInputTokens": 110, "estimatedLegacyOutputTokens": 60,
+            "estimatedInputTokensSaved": 10, "estimatedOutputTokensSaved": 30,
+        },
+    }
+    doc = _doc(extractionMeta={"strategy": "model", "aiResponseFormat": response})
+    env = _build(_result([doc], usage={"extraction": {"usage": {
+        "inputTokens": 100, "outputTokens": 30,
+    }}}))
+
+    assert env["documents"][0]["aiResponseFormat"]["effective"] == "compact"
+    assert env["aiResponseSavings"]["estimatedOutputTokensSaved"] == 30
+    assert env["aiResponseSavings"]["estimatedLegacyOutputTokens"] == 60
+
+
 # ------------------------------------------------ DSL legado
 
 def test_un_documento_del_dsl_legado_se_ve_igual_que_uno_field_centric():

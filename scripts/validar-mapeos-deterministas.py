@@ -53,7 +53,14 @@ def main() -> int:
             continue
         entries = [(name, raw) for name, raw in data.items() if not name.startswith("_")]
         for type_id, raw in entries:
-            if not isinstance(raw, dict) or not isinstance(raw.get("deterministic_extraction"), dict):
+            if not isinstance(raw, dict):
+                continue
+            response_format = raw.get("ai_response_format")
+            if response_format is not None and response_format not in {"compact", "legacy"}:
+                failures.append(
+                    f"{path.relative_to(REPO)}:{type_id}: ai_response_format debe ser compact o legacy"
+                )
+            if not isinstance(raw.get("deterministic_extraction"), dict):
                 continue
             checked += 1
             try:

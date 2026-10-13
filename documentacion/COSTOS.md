@@ -185,6 +185,10 @@ El envelope publica dos números deliberadamente separados:
   schema completo. La entrada usa la densidad tokens/caracteres de la llamada
   parcial real cuando existe; la salida serializa los valores determinísticos
   con la forma que habría generado el modelo y aplica 4 caracteres/token.
+- `aiResponseSavings`: contrafactual **estimado** del protocolo compacto contra
+  el JSON legacy. `billed*` sigue siendo consumo real; `estimatedLegacy*` y
+  `estimated*Saved` nunca se agregan a la factura. Un ahorro negativo indica
+  que hubo fallback y se pagaron la llamada compacta fallida más legacy.
 
 `documents[].deterministicExtraction` conserva `strategy`, `profile`,
 `fallbackFields` y el cálculo por documento. El estimado nunca se suma a
@@ -711,9 +715,12 @@ sin inferirlo por el `TYPE_ID` ni por la duración:
 | `ResolvedFieldCount` / `FallbackFieldCount` | cuánto resolvió código y cuánto fue a IA |
 | `Profile` / `ProfileStatus` | layout reconocido y estado de la decisión, cuando aplica |
 | `DeterministicSavings.*` | input/output estimados evitados y costo contrafactual según el modelo que habría corrido |
+| `Documents[].AiResponse*` | formato seleccionado/efectivo, fuente, fallback y número de llamadas compact/legacy |
+| `AiResponseSavings.*` | tokens compactos facturados, contrafactual legacy y costo evitado estimado; puede ser negativo tras fallback |
 
 Los costos de Bedrock realmente ejecutado siguen en `Services` y alimentan
-`TotalCostUsd`. `ExtractionAudit.DeterministicSavings` vive aparte y **nunca se
+`TotalCostUsd`. `ExtractionAudit.DeterministicSavings` y
+`ExtractionAudit.AiResponseSavings` viven aparte y **nunca se
 suma** al total: puro código tiene costo Bedrock $0; híbrido factura sólo el
 fallback; modelo completo factura su usage completo. Textract conserva su costo
 independiente en `Services.TextractOcr`, incluso cuando no hubo IA generativa.

@@ -272,15 +272,16 @@ def modelo_falso(monkeypatch):
 
 def test_la_senal_viaja_en_el_mismo_tool_call(modelo_falso):
     modelo_falso["respuestas"] = [{
-        "_DOCUMENTO": NO_CORRESPONDE,
-        "BANCO": {"value": "SAT", "confidence": 0.5},
+        "d": [False, 0.95, "Constancia fiscal del SAT"],
+        "s": {"BANCO": ["SAT", 0.5]},
+        "t": {},
     }]
 
     result = text_extractor.extract_document(PAGINAS, entry_con())
 
     assert len(modelo_falso["llamadas"]) == 1, "cero llamadas extra"
     llamada = modelo_falso["llamadas"][0]
-    assert "_DOCUMENTO" in llamada["tool_schema"]["properties"]
+    assert "d" in llamada["tool_schema"]["properties"]
     assert "_DOCUMENTO" not in result.entity_map, "la señal no es un campo"
     assert result.entity_map["BANCO"] == "SAT"
     assert result.meta["typeSignal"]["corresponde"] is False
@@ -297,14 +298,17 @@ def test_el_prompt_pide_confirmar_el_tipo_declarado():
 
 def test_la_particion_de_arrays_no_pide_la_senal(monkeypatch, modelo_falso):
     monkeypatch.setattr(text_extractor, "_FIELD_TREE_SPLIT_SCHEMA_CHARS", 1)
-    modelo_falso["respuestas"] = [{"_DOCUMENTO": CORRESPONDE}, {"MOVIMIENTOS": []}]
+    modelo_falso["respuestas"] = [
+        {"d": [True, 0.99, None], "s": {}, "t": {}},
+        {"s": {}, "t": {"MOVIMIENTOS": []}},
+    ]
 
     result = text_extractor.extract_document(PAGINAS, entry_con())
 
     assert len(modelo_falso["llamadas"]) == 2
-    con_senal = [c for c in modelo_falso["llamadas"] if "_DOCUMENTO" in c["tool_schema"]["properties"]]
+    con_senal = [c for c in modelo_falso["llamadas"] if "d" in c["tool_schema"]["properties"]]
     assert len(con_senal) == 1
-    assert "MOVIMIENTOS" not in con_senal[0]["tool_schema"]["properties"]
+    assert "MOVIMIENTOS" not in con_senal[0]["tool_schema"]["properties"]["t"]["properties"]
     sin_senal = next(c for c in modelo_falso["llamadas"] if c is not con_senal[0])
     assert '"_DOCUMENTO"' not in (sin_senal.get("system") or "") + (sin_senal.get("cache_system") or "")
     assert result.meta["typeSignal"]["corresponde"] is True
@@ -315,7 +319,10 @@ def test_varios_chunks_se_combinan_fail_open(monkeypatch, modelo_falso):
     # así que se sustituye la función y no la constante.
     monkeypatch.setattr(text_extractor, "_chunk_pages", lambda pages, *a, **k: [[p] for p in pages])
     paginas = [PageText(1, "ESTADO DE CUENTA", "native", 1.0), PageText(2, "Terminos y condiciones", "native", 1.0)]
-    modelo_falso["respuestas"] = [{"_DOCUMENTO": CORRESPONDE}, {"_DOCUMENTO": NO_CORRESPONDE}]
+    modelo_falso["respuestas"] = [
+        {"d": [True, 0.99, None], "s": {}, "t": {}},
+        {"d": [False, 0.95, "Otro"], "s": {}, "t": {}},
+    ]
 
     result = text_extractor.extract_document(paginas, entry_con())
 
@@ -325,5 +332,6 @@ def test_varios_chunks_se_combinan_fail_open(monkeypatch, modelo_falso):
 
 
 def test_sin_respuesta_del_modelo_no_hay_senal(modelo_falso):
+    modelo_falso["respuestas"] = [{"s": {}, "t": {}}]
     result = text_extractor.extract_document(PAGINAS, entry_con())
     assert result.meta["typeSignal"] is None

@@ -52,9 +52,10 @@ Auth: `x-api-key` · Body: `application/json` o `application/x-www-form-urlencod
 | `fileName` | **requerido** | `pdf` `jpg` `jpeg` `png` `xml` `xlsx` `csv` |
 | `documentType` | opcional | TYPE_ID, nombre o alias. **Varios separados por coma** = salida cerrada sólo a esos tipos. Admite overrides por tipo `:N`/`:all`. Los faltantes salen con rango `null` y revisión, sin contar como documentos. Máx. 8 tipos / 200 chars. **Requerido** en `xml` `xlsx` `csv`, y ahí sólo se acepta uno |
 | `occurrenceMode` | opcional | Sobrescribe los defaults de catálogo para todos los tipos sin sufijo: `single` conserva la primera; `multiple`, todas. También se acepta el alias `occurrence_mode`. `:N`/`:all` prevalece por tipo |
-| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. `app-origin`, `model-id`, `extraction-mode` y `document-counts` están reservadas. Editable (§5) y filtrable con `meta.<clave>` (§7). En form, JSON en string |
+| `metadata` | opcional | objeto plano: claves `[a-z0-9][a-z0-9._-]*`, valores US-ASCII sin anidar, 2 KB en total. `app-origin`, `model-id`, `extraction-mode`, `ai-response-format` y `document-counts` están reservadas. Editable (§5) y filtrable con `meta.<clave>` (§7). En form, JSON en string |
 | `modelId` | opcional | solo dev |
 | `extractionMode` | opcional | solo dev: `catalog` (**default**) = usa mapper si el tipo lo configuró; sin mapper, IA completa. `model` = IA completa; `hybrid` = código + IA para faltantes; `deterministic` = sólo código, faltantes a revisión |
+| `aiResponseFormat` | opcional | `compact` = pares/filas mínimos y ensamblado por código; `legacy` = JSON anidado anterior. En prod requiere permiso de la API key |
 
 ### Cardinalidad: `single` o `multiple`
 

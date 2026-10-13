@@ -501,9 +501,11 @@ documento. No se investigó la causa; mientras no se resuelva, no son candidatos
 
 ## 11. Mejoras cuantificadas (2026-10-07)
 
-Estimadas sobre las salidas reales del benchmark (`_prompt_output.json`), sin
-implementar nada. Los porcentajes de formato son por caracteres del JSON, no por
-tokens medidos.
+La tabla conserva la medición original sobre `_prompt_output.json`; los
+porcentajes son por caracteres del JSON, no por tokens medidos. Desde
+`compact_sparse_v1` esta optimización está implementada: `s` contiene pares
+`[valor, confianza]`, `t` matrices posicionales y Python reconstruye el mismo
+envelope. `AI_RESPONSE_FORMAT=legacy` es el rollback global.
 
 ### 11.1 Formato de salida
 
@@ -523,6 +525,11 @@ tokens medidos.
 - Como el tiempo es proporcional a los tokens de salida, en el expediente de 139
   páginas la mitad del JSON equivale a cerca de 7s menos con Haiku y cerca de
   40s menos con MiniMax.
+- Cada ejecución publica `documents[].aiResponseFormat` y el agregado
+  `aiResponseSavings`. Este último es un contrafactual estimado a partir de la
+  serialización compacta/legacy; la cifra facturada sigue siendo `aiUsage`.
+  Un payload compacto estructuralmente inválido hace un solo fallback legacy y
+  contabiliza ambas llamadas. Un valor que falla validación no se regenera.
 
 ### 11.2 Lo que no apareció en esta ronda
 

@@ -70,19 +70,10 @@ def test_schema_grande_extrae_escalares_y_arrays_en_dos_llamadas(monkeypatch):
     def fake_converse(prompt, **kwargs):
         props = kwargs["tool_schema"]["properties"]
         calls.append({"props": props, **kwargs})
-        cabecera = props.get("CABECERA", {}).get("properties", {})
-        if "CONCEPTOS" in cabecera:
-            return {
-                "CABECERA": {
-                    "CONCEPTOS": [
-                        {"DESCRIPCION": "Flete", "IMPORTE": 125.0, "confidence": 0.9}
-                    ]
-                }
-            }, {"usage": {"outputTokens": 20}}
-        return {
-            "CABECERA": {"FOLIO": {"value": "A-1", "confidence": 0.95}},
-            "SUBTOTAL": {"value": 125.0, "confidence": 0.95},
-        }, {"usage": {"outputTokens": 10}}
+        tables = props["t"]["properties"]
+        if "CABECERA.CONCEPTOS" in tables:
+            return {"s": {}, "t": {"CABECERA.CONCEPTOS": [["Flete", 125.0, 0.9]]}}, {"usage": {"outputTokens": 20}}
+        return {"s": {"CABECERA.FOLIO": ["A-1", 0.95], "SUBTOTAL": [125.0, 0.95]}, "t": {}}, {"usage": {"outputTokens": 10}}
 
     monkeypatch.setattr(text_extractor, "converse_structured", fake_converse)
     monkeypatch.setattr(text_extractor, "resolve_model", lambda *a, **k: "modelo-prueba")
@@ -105,7 +96,7 @@ def test_schema_pequeno_conserva_una_sola_llamada(monkeypatch):
 
     def fake_converse(prompt, **kwargs):
         calls.append(kwargs)
-        return {}, {"usage": {}}
+        return {"s": {}, "t": {}}, {"usage": {}}
 
     monkeypatch.setattr(text_extractor, "converse_structured", fake_converse)
     monkeypatch.setattr(text_extractor, "resolve_model", lambda *a, **k: "modelo-prueba")

@@ -75,10 +75,12 @@ const RESERVED_METADATA_KEYS = new Set([
   "app-origin",
   "model-id",
   "extraction-mode",
+  "ai-response-format",
   "document-counts",
 ]);
 
 export const EXTRACTION_MODES = new Set(["catalog", "model", "hybrid", "deterministic"]);
+export const AI_RESPONSE_FORMATS = new Set(["compact", "legacy"]);
 
 /** Validate the per-upload extraction strategy without coupling it to HTTP. */
 export function parseExtractionMode(value) {
@@ -93,6 +95,20 @@ export function parseExtractionMode(value) {
     };
   }
   return { mode: value.trim().toLowerCase() };
+}
+
+/** Validate the internal model-response protocol override. */
+export function parseAiResponseFormat(value) {
+  if (value === undefined || value === null || value === "") return { format: null };
+  if (typeof value !== "string" || !AI_RESPONSE_FORMATS.has(value.trim().toLowerCase())) {
+    return {
+      error: {
+        code: "INVALID_AI_RESPONSE_FORMAT",
+        message: "Field 'aiResponseFormat' must be 'compact' or 'legacy'",
+      },
+    };
+  }
+  return { format: value.trim().toLowerCase() };
 }
 
 /** S3's ceiling for all user metadata on one object (keys + values together). */

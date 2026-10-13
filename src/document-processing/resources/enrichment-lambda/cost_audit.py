@@ -124,6 +124,9 @@ def _extraction_audit(result: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(doc.get("deterministicExtraction"), dict)
             else {}
         )
+        response_format = (
+            doc.get("aiResponseFormat") if isinstance(doc.get("aiResponseFormat"), dict) else {}
+        )
         savings = deterministic.get("tokenSavings") if isinstance(deterministic.get("tokenSavings"), dict) else {}
         saved_input = int(savings.get("estimatedInputTokensSaved") or 0)
         saved_output = int(savings.get("estimatedOutputTokensSaved") or 0)
@@ -135,7 +138,7 @@ def _extraction_audit(result: Dict[str, Any]) -> Dict[str, Any]:
                 {"inputTokens": saved_input, "outputTokens": saved_output},
                 counterfactual_model,
             )["costUsd"]
-        if mode or deterministic:
+        if mode or deterministic or response_format:
             profile = deterministic.get("profile") if isinstance(deterministic.get("profile"), dict) else {}
             documents.append({
                 "Index": int(doc.get("index") or len(documents) + 1),
@@ -145,8 +148,26 @@ def _extraction_audit(result: Dict[str, Any]) -> Dict[str, Any]:
                 "Strategy": deterministic.get("strategy") or "model",
                 "ResolvedFieldCount": int(deterministic.get("resolvedFieldCount") or 0),
                 "FallbackFieldCount": len(deterministic.get("fallbackFields") or []),
+                **({
+                    "AiResponseSelected": response_format.get("selected"),
+                    "AiResponseEffective": response_format.get("effective"),
+                    "AiResponseSource": response_format.get("source"),
+                    "AiResponseFallback": bool(response_format.get("fallbackExecuted")),
+                    "CompactCalls": int(response_format.get("compactCalls") or 0),
+                    "LegacyCalls": int(response_format.get("legacyCalls") or 0),
+                } if response_format else {}),
                 **({"Profile": profile.get("id"), "ProfileStatus": profile.get("status")} if profile else {}),
             })
+    ai_response_savings = dict(result.get("aiResponseSavings")) if isinstance(result.get("aiResponseSavings"), dict) else {}
+    if ai_response_savings:
+        response_model = ((result.get("tracking") or {}).get("modelIds") or {}).get("extraction")
+        ai_response_savings["EstimatedCostAvoidedUsd"] = bedrock_cost(
+            {
+                "inputTokens": int(ai_response_savings.get("estimatedInputTokensSaved") or 0),
+                "outputTokens": int(ai_response_savings.get("estimatedOutputTokensSaved") or 0),
+            },
+            response_model,
+        )["costUsd"]
     return {
         "AiExecuted": bool(result.get("aiExecuted")),
         "AiStages": list(ai.get("stages") or []),
@@ -157,6 +178,7 @@ def _extraction_audit(result: Dict[str, Any]) -> Dict[str, Any]:
             "EstimatedOutputTokensSaved": estimated_output,
             "EstimatedCostAvoidedUsd": round(estimated_cost, 6),
         },
+        "AiResponseSavings": dict(ai_response_savings),
     }
 
 

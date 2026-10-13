@@ -129,7 +129,7 @@ def handler(event, context):
                         # Execution knobs are not caller-owned document context.
                         upload_metadata = {
                             k: v for k, v in object_metadata.items()
-                            if k not in ('app-origin', 'model-id', 'extraction-mode')
+                            if k not in ('app-origin', 'model-id', 'extraction-mode', 'ai-response-format')
                             and v not in (None, '')
                         }
                     except Exception as e:

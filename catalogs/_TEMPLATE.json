@@ -21,6 +21,8 @@
     "model_id": null,
     "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase. La fase `vision` (etapa de autenticidad) también va aquí y es independiente: su cadena es model_ids.vision -> BEDROCK_VISION_MODEL_ID -> Haiku 4.5, nunca hereda model_id ni el modelo general, y su respaldo es `authenticity.vision.fallback_models`.",
     "model_ids": {},
+    "__COMENTARIO_ai_response_format__": "Opcional: compact (default global) hace que la IA devuelva pares [valor, confianza] y filas posicionales; Python arma el envelope final. legacy restaura el JSON anidado anterior para este tipo. No cambia extractionMode ni el JSON público.",
+    "ai_response_format": null,
 
     "__COMENTARIO_deterministic_extraction__": "Opcional para PDF/imagen. Primero aplica los `text_source` sobre texto pypdf/Textract. fallback=missing_fields manda a Bedrock sólo las ramas faltantes; full_model manda el schema completo; review no llama al modelo. Para varios layouts del mismo TYPE_ID agrega profiles: cada perfil se reconoce por varias regex semánticas, fija constants y declara el contrato exacto expected_fields; sólo esos faltantes abren IA. Si no hay ganador único, profile_fallback=full_model descarta los matches tentativos y usa IA completa. pnpm catalogs:lint valida todo antes de build/sync. Ver catalogs/README.md -> Extracción determinística desde texto.",
     "deterministic_extraction": {

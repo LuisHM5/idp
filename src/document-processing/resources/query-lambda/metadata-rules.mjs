@@ -24,6 +24,7 @@ export const RESERVED_METADATA_KEYS = new Set([
   "app-origin",
   "model-id",
   "extraction-mode",
+  "ai-response-format",
   "document-counts",
 ]);
 

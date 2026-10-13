@@ -13,6 +13,7 @@ import test from "node:test";
 import {
   normalizeMetadata,
   parseExtractionMode,
+  parseAiResponseFormat,
   parseBody,
 } from "../../../src/document-processing/resources/upload-lambda/body-parser.mjs";
 
@@ -138,6 +139,13 @@ test("extractionMode admite los cuatro modos y default por catálogo", () => {
     assert.deepEqual(parseExtractionMode(mode.toUpperCase()), { mode });
   }
   assert.equal(parseExtractionMode("rapido").error.code, "INVALID_EXTRACTION_MODE");
+});
+
+test("aiResponseFormat hereda por omisión y acepta compact o legacy", () => {
+  assert.deepEqual(parseAiResponseFormat(undefined), { format: null });
+  assert.deepEqual(parseAiResponseFormat("COMPACT"), { format: "compact" });
+  assert.deepEqual(parseAiResponseFormat("legacy"), { format: "legacy" });
+  assert.equal(parseAiResponseFormat("json").error.code, "INVALID_AI_RESPONSE_FORMAT");
 });
 
 // --- normalizeMetadata ----------------------------------------------------

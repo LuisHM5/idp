@@ -881,6 +881,22 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
   generar un mapper. En `PEDIMENTO_ERP` el catálogo declara mapper + `review`,
   por lo que el default es código sin IA de extracción.
 
+- **`aiResponseFormat`:** controla sólo el protocolo interno de la IA; no
+  cambia `extractionMode` ni el JSON final. `compact` (default global) devuelve
+  escalares como `[valor, confianza]` y tablas posicionales, y el backend arma
+  el árbol completo. `legacy` reproduce la respuesta anidada anterior. La
+  precedencia es request autorizado → catálogo → ambiente → `compact`. En
+  producción el override requiere `AllowAiResponseFormatOverride` para la API
+  key; sin permiso responde `403 AI_RESPONSE_FORMAT_OVERRIDE_FORBIDDEN`.
+  También se acepta al reprocesar. Con el CLI:
+  `pnpm enviar documento.pdf TIPO --ai-response-format compact|legacy`.
+
+  Una respuesta compacta estructuralmente ilegible se reintenta una sola vez
+  en legacy y ambos consumos son facturados. Un campo ausente o un valor que no
+  pasa validación **no** provoca reintento. La auditoría aparece en
+  `documents[i].aiResponseFormat`; `aiResponseSavings` muestra el contrafactual
+  estimado, separado de `aiUsage`, que siempre contiene tokens reales.
+
   En la respuesta, `requested` dice **qué pidió el cliente**, `effective` dice
   **qué política pudo aplicar el tipo**, y `strategy` dice **qué ocurrió en ese
   documento**. Si no se configura nada en request ni schema: `requested` es
@@ -888,7 +904,7 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
 - **Fallback automático de modelo (siempre activo, no es un flag de request):** si el modelo que le tocaba a una fase (`extractor`/`recovery`) falla porque no está disponible (no habilitado, no existe, error/timeout/cuota del proveedor — nunca por un request mal formado, eso propaga tal cual), el pipeline cambia solo al siguiente modelo de una lista ordenada y reintenta, hasta 4 veces por default. `tracking.modelIds` ya refleja el modelo que **realmente** corrió (no el configurado) cuando esto pasa; además, solo para las fases donde hubo cambio, `tracking.modelFallbacks` reporta el detalle: modelo esperado vs. el que finalmente corrió, cuántos reintentos tomó, y el error de cada intento fallido. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.
 - **Segmentación degradada (clasificación de un expediente con 2+ tipos declarados):** distinto del punto anterior, aquí Bedrock responde 200 OK pero con texto vacío o truncado (`stopReason: "max_tokens"`) — el pipeline lo detecta, sube el presupuesto de salida y reintenta una vez con el modelo más confiable antes de rendirse; para expedientes grandes, la clasificación se reparte en ventanas de páginas que luego se fusionan. Si pese a eso un rango de páginas queda sin clasificar (marcado `OTRO`), `tracking.segmentationDegraded` reporta cuáles, por qué y con qué intentos, `reviewRequired` se fuerza a `true` y se agrega un `warnings[]` legible — en vez del `documentCount: 0` mudo de antes. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.1.
 - **`tracking.appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `tracking.appOrigin` con el nombre de esa app — buscable después vía `GET /documents?system=<app>` (§6). Sale de la **key**, no del body: un `metadata: {"app-origin": "..."}` se descarta, así que ninguna app puede declararse otra. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece dentro de `tracking`.
-- **`metadata` (contexto tuyo, editable y filtrable):** lo que mandes en `metadata` viaja con el documento hasta su resultado (queda en `metadata` del envelope y en la columna `Metadata` del item) y se puede filtrar con `GET /documents?meta.<clave>=<valor>` (§6). Después de procesarlo puede modificarse con `PATCH /documents/{id}/metadata` (§4), incluso para agregar metadata a documentos antiguos. Las claves se normalizan a minúsculas y deben cumplir `[a-z0-9][a-z0-9._-]*`; los valores son planos, US-ASCII y el mapa completo tiene 2 KB de tope. Lo que no cumpla se rechaza con `400 INVALID_METADATA`. `app-origin`, `model-id`, `extraction-mode` y `document-counts` son claves reservadas del sistema.
+- **`metadata` (contexto tuyo, editable y filtrable):** lo que mandes en `metadata` viaja con el documento hasta su resultado (queda en `metadata` del envelope y en la columna `Metadata` del item) y se puede filtrar con `GET /documents?meta.<clave>=<valor>` (§6). Después de procesarlo puede modificarse con `PATCH /documents/{id}/metadata` (§4), incluso para agregar metadata a documentos antiguos. Las claves se normalizan a minúsculas y deben cumplir `[a-z0-9][a-z0-9._-]*`; los valores son planos, US-ASCII y el mapa completo tiene 2 KB de tope. Lo que no cumpla se rechaza con `400 INVALID_METADATA`. `app-origin`, `model-id`, `extraction-mode`, `ai-response-format` y `document-counts` son claves reservadas del sistema.
 - **Tope de páginas (pipeline de expedientes/pedimentos):** depende de si el tipo declarado **selecciona sus propias páginas** (`page_selection` en su catálogo). Si las selecciona, el documento **no se trunca**: el costo ya lo acota el selector, que solo manda al modelo las páginas con los campos del tipo, y solo aplica un tope muy superior (`max_source_pages`, 500 por defecto) como salvaguarda contra un archivo capaz de agotar la Lambda. Si **no** las selecciona —tipo sin `page_selection`, con `enabled: false`, `PAGE_SELECTION_ENABLED=false`, o una subida **sin tipo declarado** (no se sabe qué selector aplica hasta clasificar, y clasificar exige leer las páginas)— un PDF de más de 50 páginas (`MAX_PAGES`, configurable) se **trunca a las primeras 50** antes de correr Textract/Bedrock, para acotar el costo de un documento inesperadamente grande. El PDF original completo **no se toca** — sigue intacto en S3 — pero el resultado solo cubre las páginas procesadas, queda marcado `reviewRequired: true` con un warning explícito, y un campo `truncated: {originalPages, processedPages}`. Si necesitas las páginas restantes, hay que reprocesar manualmente.
 - El resultado final se publica en **EventBridge** (broker `idp-broker`, source `document-validation-pipeline`) y se persiste (ver GET abajo).
 
@@ -1568,7 +1584,7 @@ Semántica:
 - clave ausente → conserva el valor anterior;
 - el body debe ser un objeto plano; claves `[a-z0-9][a-z0-9._-]*`, valores
   US-ASCII, máximo 2 KB para **todo el mapa resultante**;
-- `app-origin`, `model-id`, `extraction-mode` y `document-counts` son reservadas y no se pueden modificar.
+- `app-origin`, `model-id`, `extraction-mode`, `ai-response-format` y `document-counts` son reservadas y no se pueden modificar.
 
 ```bash
 curl -sS -X PATCH "$API/documents/$DOC_ID/metadata" \

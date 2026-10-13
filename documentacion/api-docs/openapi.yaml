@@ -481,7 +481,7 @@ paths:
         - Claves en minúsculas tras normalizar, con forma
           `[a-z0-9][a-z0-9._-]*`; valores planos US-ASCII; 2 KB para el mapa
           resultante completo.
-        - `app-origin`, `model-id`, `extraction-mode` y `document-counts` son reservadas y no se pueden modificar.
+        - `app-origin`, `model-id`, `extraction-mode`, `ai-response-format` y `document-counts` son reservadas y no se pueden modificar.
 
         Las apps registradas necesitan `AllowMetadataWrite=true` (se otorga
         con `pnpm apps:grant -- --name APP --metadata-write`) y solo pueden
@@ -1529,6 +1529,16 @@ components:
             extraen por código. `deterministic` no impide que clasificación,
             segmentación, localización o autenticidad usen IA; `aiExecuted`
             confirma la ejecución completa. Prod ignora el override.
+        aiResponseFormat:
+          type: string
+          enum: [compact, legacy]
+          description: >
+            Protocolo interno de la respuesta de extracción por IA. `compact`
+            devuelve únicamente pares campo/valor/confianza y filas
+            posicionales; el backend arma el mismo JSON público final.
+            `legacy` restaura el JSON anidado anterior. No cambia quién extrae
+            ni dispara IA si extractionMode resolvió todo por código. En prod
+            requiere AllowAiResponseFormatOverride en la API key.
         metadata:
           type: object
           description: |
@@ -1551,7 +1561,7 @@ components:
               INVALID_METADATA`.
             - **2 KB en total** entre claves y valores (tope de S3) → `400
               INVALID_METADATA`.
-            - `app-origin`, `model-id`, `extraction-mode` y `document-counts` son claves **del sistema** y se
+            - `app-origin`, `model-id`, `extraction-mode`, `ai-response-format` y `document-counts` son claves **del sistema** y se
               descartan en silencio: la primera es la trazabilidad que
               `?system=` filtra y sale de tu API key, no del body.
 
@@ -1584,6 +1594,10 @@ components:
         modelId:
           type: string
           description: Override de modelo para la ejecución nueva; sólo se honra en dev.
+        aiResponseFormat:
+          type: string
+          enum: [compact, legacy]
+          description: Override para la ejecución nueva; en prod requiere permiso explícito de la API key.
     ReprocessResponse:
       type: object
       required:
@@ -1866,6 +1880,22 @@ components:
                 estimatedOutputTokensWithoutDeterministic: { type: integer, minimum: 0 }
                 estimatedInputSavingPct: { type: number, minimum: 0, maximum: 100 }
                 estimatedOutputSavingPct: { type: number, minimum: 0, maximum: 100 }
+            aiResponseSavings:
+              type: object
+              description: >
+                Contrafactual ESTIMADO de compact contra legacy. Los ahorros
+                pueden ser negativos cuando hubo un fallback; no forman parte
+                del usage facturado.
+              properties:
+                estimated: { type: boolean, const: true }
+                method: { type: string, enum: [serialized_counterfactual_v1] }
+                documentsMeasured: { type: integer, minimum: 1 }
+                billedInputTokens: { type: integer, minimum: 0 }
+                billedOutputTokens: { type: integer, minimum: 0 }
+                estimatedLegacyInputTokens: { type: integer, minimum: 0 }
+                estimatedLegacyOutputTokens: { type: integer, minimum: 0 }
+                estimatedInputTokensSaved: { type: integer }
+                estimatedOutputTokensSaved: { type: integer }
             documentCount:
               type: integer
               description: >
@@ -2020,6 +2050,18 @@ components:
               type: string
               enum: [type_has_no_deterministic_mapping]
               description: Presente cuando se protegió la salida usando `model` porque el tipo no tiene mapper.
+        aiResponseFormat:
+          type: object
+          description: Protocolo interno seleccionado y realmente usado por la extracción de este documento.
+          properties:
+            requested: { type: string, enum: [inherit, compact, legacy] }
+            source: { type: string, enum: [api, catalog, environment, default] }
+            selected: { type: string, enum: [compact, legacy] }
+            effective: { type: string, enum: [compact, legacy, mixed, not_executed] }
+            fallbackExecuted: { type: boolean }
+            compactCalls: { type: integer, minimum: 0 }
+            legacyCalls: { type: integer, minimum: 0 }
+            tokenSavings: { type: object, additionalProperties: true }
         authenticity:
           $ref: "#/components/schemas/AuthenticitySummary"
         fields:

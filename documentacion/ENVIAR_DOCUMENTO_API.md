@@ -10,7 +10,7 @@ pnpm enviar 2607-0823-6001630_P.pdf PEDIMENTO_ERP --env prod
 pnpm enviar invoices-flete.pdf FACTURA_FLETE_EXTRANJERO --occurrence-mode multiple
 pnpm enviar pedimento.pdf PEDIMENTO_ERP --extraction-mode deterministic
 pnpm enviar carta.pdf CARTA_NOM35 --meta proveedor=10021   # metadata de carga (repetible); ver CARTA_NOM35.md
-# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod]
+# o: bash scripts/enviar-documento.sh archivo.pdf [TIPO_DOCUMENTO] [--extraction-mode catalog|model|hybrid|deterministic] [--ai-response-format compact|legacy] [--occurrence-mode single|multiple] [--meta clave=valor]... [--env dev|prod]
 ```
 
 Para probar de una vez la subida, la espera eficiente por `202`/`Retry-After`
@@ -73,6 +73,17 @@ pnpm enviar invoices-flete.pdf \
 Aplica a todas las fases del pipeline y gana sobre `BEDROCK_*_MODEL_ID`. El
 resultado registra qué modelo corrió en cada fase (`tracking.modelIds`), así
 que puedes mandar el mismo archivo con dos modelos y comparar.
+
+Para medir específicamente el protocolo compacto contra el JSON anterior con
+el mismo archivo, tipo y modo de extracción:
+
+```bash
+pnpm comparar:formato -- archivo.pdf PEDIMENTO_ERP --extraction-mode hybrid
+```
+
+El comando advierte antes de hacer las dos ejecuciones con costo real y muestra
+latencia total/de extracción, tokens facturados, formato efectivo, fallback y
+diferencias de valores. Agrega `--yes` únicamente en automatización.
 
 **Los overrides `--model` y `--extraction-mode` solo funcionan en dev.** El
 stack de prod no define `ALLOW_MODEL_OVERRIDE`, así que los ignora a propósito:

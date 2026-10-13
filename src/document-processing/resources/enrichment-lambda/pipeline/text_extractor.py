@@ -23,7 +23,7 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from document_catalog import FieldSpec, TypeRegistryEntry
 
@@ -60,6 +60,38 @@ _CHUNK_WORKERS = int(os.environ.get("CHUNK_WORKERS", "2"))
 # the same bounded pool as page chunks, so one-page documents run both calls
 # concurrently without multiplying the existing concurrency ceiling.
 _FIELD_TREE_SPLIT_SCHEMA_CHARS = int(os.environ.get("FIELD_TREE_SPLIT_SCHEMA_CHARS", "10000"))
+
+AI_RESPONSE_COMPACT = "compact"
+AI_RESPONSE_LEGACY = "legacy"
+_AI_RESPONSE_FORMATS = {AI_RESPONSE_COMPACT, AI_RESPONSE_LEGACY}
+
+
+class CompactResponseError(ValueError):
+    """The compact tool payload cannot be decoded without guessing data."""
+
+    def __init__(self, message: str, usage: Optional[Dict[str, int]] = None):
+        super().__init__(message)
+        self.usage = dict(usage or {})
+
+
+def resolve_ai_response_format(
+    type_entry: TypeRegistryEntry, requested: Optional[str] = None
+) -> Dict[str, str]:
+    """Resolve request -> catalog -> environment -> compact.
+
+    The caller already authorizes request overrides.  Keeping resolution here
+    makes local runs and direct unit calls obey the same catalog/global policy.
+    """
+    request_value = str(requested or "").strip().lower()
+    if request_value in _AI_RESPONSE_FORMATS:
+        return {"selected": request_value, "source": "api", "requested": request_value}
+    catalog_value = str(getattr(type_entry, "ai_response_format", None) or "").strip().lower()
+    if catalog_value in _AI_RESPONSE_FORMATS:
+        return {"selected": catalog_value, "source": "catalog", "requested": "inherit"}
+    env_value = str(os.environ.get("AI_RESPONSE_FORMAT") or "").strip().lower()
+    if env_value in _AI_RESPONSE_FORMATS:
+        return {"selected": env_value, "source": "environment", "requested": "inherit"}
+    return {"selected": AI_RESPONSE_COMPACT, "source": "default", "requested": "inherit"}
 
 
 @dataclass
@@ -308,9 +340,12 @@ def _merge_arrays(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]
         if not isinstance(items, list):
             continue
         existing = merged.setdefault(name, [])
+        seen = {row_key(item) if isinstance(item, dict) else json.dumps(item, sort_keys=True, default=str) for item in existing}
         for item in items:
-            if item not in existing:  # drop exact duplicates across chunks
+            identity = row_key(item) if isinstance(item, dict) else json.dumps(item, sort_keys=True, default=str)
+            if identity not in seen:  # O(1) average, not a growing list scan
                 existing.append(item)
+                seen.add(identity)
     return merged
 
 
@@ -445,6 +480,134 @@ def _field_tree_tool_schema(field_tree: Dict[str, FieldSpec], scope: str = "all"
     if scope != "arrays":
         props = {type_check.SIGNAL_KEY: type_check.tool_property(), **props}
     return {"type": "object", "properties": props}
+
+
+def _compact_manifest(
+    tree: Dict[str, FieldSpec], prefix: str = ""
+) -> Tuple[Dict[str, FieldSpec], Dict[str, FieldSpec]]:
+    """Flat scalar/array indexes used by both compact schema and parser."""
+    scalars: Dict[str, FieldSpec] = {}
+    tables: Dict[str, FieldSpec] = {}
+    for name, spec in tree.items():
+        if spec.computed:
+            continue
+        path = f"{prefix}.{name}" if prefix else name
+        if spec.type == "object":
+            child_scalars, child_tables = _compact_manifest(spec.fields, path)
+            scalars.update(child_scalars)
+            tables.update(child_tables)
+        elif spec.type == "array":
+            tables[path] = spec
+        else:
+            scalars[path] = spec
+    return scalars, tables
+
+
+def _compact_scalar_pair_schema(spec: FieldSpec) -> Dict[str, Any]:
+    value_type = _JSON_TYPE_MAP.get(spec.type, "string")
+    return {
+        "type": "array",
+        "items": {"type": [value_type, "number", "boolean", "null"]},
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "[valor, confianza_0_a_1]",
+    }
+
+
+def _compact_table_schema(spec: FieldSpec) -> Dict[str, Any]:
+    # Rows are positional and are validated against the catalog by Python.
+    # Keeping this generic avoids repeating every column name in every row;
+    # the static prompt below states their exact order.
+    return {
+        "type": "array",
+        "items": {"type": "array", "items": {}},
+    }
+
+
+def _compact_tool_schema(field_tree: Dict[str, FieldSpec], scope: str = "all") -> Dict[str, Any]:
+    scalars, tables = _compact_manifest(field_tree)
+    props: Dict[str, Any] = {
+        "s": {
+            "type": "object",
+            "properties": {path: _compact_scalar_pair_schema(spec) for path, spec in scalars.items()},
+            "additionalProperties": False,
+        },
+        "t": {
+            "type": "object",
+            "properties": {path: _compact_table_schema(spec) for path, spec in tables.items()},
+            "additionalProperties": False,
+        },
+    }
+    if scope != "arrays":
+        props["d"] = {
+            "type": "array",
+            "items": {},
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[corresponde, confianza, descripcion_opcional]",
+        }
+    return {
+        "type": "object",
+        "properties": props,
+        "required": ["s", "t"],
+        "additionalProperties": False,
+    }
+
+
+def _compact_column_description(spec: FieldSpec) -> str:
+    if spec.type == "array":
+        if spec.item_fields:
+            columns = [
+                f"{name}{'<' + _compact_column_description(child) + '>' if child.type in {'array', 'object'} else ''}"
+                for name, child in spec.item_fields.items() if not child.computed
+            ]
+            return "filas(" + ", ".join(columns) + ", confidence)"
+        return "filas(valor, confidence)"
+    if spec.type == "object":
+        return "objeto(" + ", ".join(
+            f"{name}{'<' + _compact_column_description(child) + '>' if child.type in {'array', 'object'} else ''}"
+            for name, child in spec.fields.items() if not child.computed
+        ) + ")"
+    return spec.type
+
+
+def _build_compact_field_tree_prompts(
+    type_entry: TypeRegistryEntry,
+    pages: List[PageText],
+    field_tree: Dict[str, FieldSpec],
+    scope: str,
+) -> Tuple[str, str]:
+    base, user_text = _build_field_tree_prompts(type_entry, pages, field_tree, scope)
+    if scope != "arrays":
+        base = base.replace(
+            type_check.PROMPT_RULE,
+            "- Antes de extraer decide si el texto ES el documento declarado. "
+            "En d responde [corresponde, confianza, descripcion]: false SOLO para "
+            "un documento de otra naturaleza; una variante del mismo documento sí "
+            "corresponde. Extrae los campos de todos modos.\n",
+        )
+    # The shared prompt ends with the legacy nested-output instructions.
+    # Keeping both shapes in one prompt makes the model choose unpredictably;
+    # compact replaces that final section while retaining all extraction hints
+    # and anti-hallucination rules above it.
+    base = base.split("\n\nFORMATO DE RESPUESTA", 1)[0]
+    scalars, tables = _compact_manifest(field_tree)
+    scalar_lines = "\n".join(f"- {path}: [valor, confidence]" for path in scalars)
+    table_lines = "\n".join(
+        f"- {path}: {_compact_column_description(spec)}" for path, spec in tables.items()
+    )
+    compact = (
+        "\n\nPROTOCOLO COMPACTO OBLIGATORIO:\n"
+        "- Responde solamente con las llaves s, t y, cuando el schema la admita, d.\n"
+        "- s es un objeto disperso: omite campos no encontrados; cada valor es [valor, confidence].\n"
+        "- t es un objeto de tablas: cada fila usa EXACTAMENTE el orden indicado y termina en confidence.\n"
+        "- Para una lista anidada, su celda contiene sus filas posicionales con la misma regla.\n"
+        "- No repitas nombres de columnas dentro de cada fila y no emitas nulls para escalares ausentes.\n"
+        "- d, si se solicita, es [corresponde, confianza, descripcion_opcional].\n"
+        f"ESCALARES:\n{scalar_lines or '(ninguno)'}\n"
+        f"TABLAS:\n{table_lines or '(ninguna)'}"
+    )
+    return base + compact, user_text
 
 
 def _build_field_tree_prompts(
@@ -698,6 +861,292 @@ def _row_confidence(declared: Any, seg_conf: float) -> Optional[float]:
     return round(max(0.0, min(1.0, value)) * seg_conf, 4)
 
 
+def _compact_confidence(value: Any, seg_conf: float, where: str) -> float:
+    confidence = _row_confidence(value, seg_conf)
+    if confidence is None:
+        raise CompactResponseError(f"confidence inválida en {where}")
+    return confidence
+
+
+def _compact_scalar_value(value: Any, spec: FieldSpec, where: str) -> Any:
+    if value is None:
+        return None
+    if spec.type in ("string", "date"):
+        if isinstance(value, (dict, list)):
+            raise CompactResponseError(f"valor no escalar en {where}")
+        return str(value).strip()
+    if spec.type == "number":
+        if isinstance(value, bool) or isinstance(value, (dict, list)):
+            raise CompactResponseError(f"número inválido en {where}")
+        if isinstance(value, (int, float)):
+            if not math.isfinite(float(value)):
+                raise CompactResponseError(f"número no finito en {where}")
+            return value
+        try:
+            number = float(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            raise CompactResponseError(f"número inválido en {where}") from None
+        if not math.isfinite(number):
+            raise CompactResponseError(f"número no finito en {where}")
+        return number
+    if spec.type == "boolean":
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "1", "si", "sí"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+        raise CompactResponseError(f"boolean inválido en {where}")
+    return value
+
+
+def _set_compact_path(target: Dict[str, Any], path: str, value: Any) -> None:
+    node = target
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = node.get(part)
+        if child is None:
+            child = {}
+            node[part] = child
+        if not isinstance(child, dict):
+            raise CompactResponseError(f"colisión de ruta en {path}")
+        node = child
+    if parts[-1] in node and node[parts[-1]] != value:
+        raise CompactResponseError(f"valor duplicado contradictorio en {path}")
+    node[parts[-1]] = value
+
+
+def _decode_compact_object(value: Any, spec: FieldSpec, seg_conf: float, where: str) -> Dict[str, Any]:
+    fields = [(name, child) for name, child in spec.fields.items() if not child.computed]
+    if not isinstance(value, list) or len(value) != len(fields):
+        raise CompactResponseError(f"objeto posicional inválido en {where}")
+    decoded: Dict[str, Any] = {}
+    for index, (name, child) in enumerate(fields):
+        cell = value[index]
+        if cell is None:
+            continue
+        decoded[name] = _decode_compact_cell(cell, child, seg_conf, f"{where}.{name}")
+    return decoded
+
+
+def _decode_compact_cell(value: Any, spec: FieldSpec, seg_conf: float, where: str) -> Any:
+    if spec.type == "array":
+        rows, _aggregate, _row_conf = _decode_compact_array(value, spec, seg_conf, where)
+        return rows
+    if spec.type == "object":
+        return _decode_compact_object(value, spec, seg_conf, where)
+    return _compact_scalar_value(value, spec, where)
+
+
+def _decode_compact_array(
+    raw: Any, spec: FieldSpec, seg_conf: float, path: str
+) -> Tuple[List[Any], Optional[float], Dict[str, Dict[str, float]]]:
+    if not isinstance(raw, list):
+        raise CompactResponseError(f"tabla inválida en {path}")
+    rows: List[Any] = []
+    row_confidences: Dict[str, Dict[str, float]] = {}
+    confidences: List[float] = []
+    if spec.item_fields:
+        columns = [(name, child) for name, child in spec.item_fields.items() if not child.computed]
+        expected = len(columns) + 1
+        for row_index, raw_row in enumerate(raw):
+            where = f"{path}[{row_index}]"
+            if not isinstance(raw_row, list) or len(raw_row) != expected:
+                raise CompactResponseError(f"fila desalineada en {where}: esperaba {expected} celdas")
+            confidence = _compact_confidence(raw_row[-1], seg_conf, where)
+            row: Dict[str, Any] = {}
+            for index, (name, child) in enumerate(columns):
+                cell = raw_row[index]
+                if cell is None:
+                    continue
+                if child.type == "array":
+                    nested, _nested_aggregate, nested_conf = _decode_compact_array(
+                        cell, child, seg_conf, f"{where}.{name}"
+                    )
+                    row[name] = nested
+                    row_confidences.update(nested_conf)
+                else:
+                    row[name] = _decode_compact_cell(cell, child, seg_conf, f"{where}.{name}")
+            rows.append(row)
+            confidences.append(confidence)
+            if row:
+                row_confidences[row_key(row)] = {name: confidence for name in row}
+    else:
+        item_spec = FieldSpec(name="$item", type=spec.item_type or "string")
+        for row_index, raw_row in enumerate(raw):
+            where = f"{path}[{row_index}]"
+            if not isinstance(raw_row, list) or len(raw_row) != 2:
+                raise CompactResponseError(f"fila escalar inválida en {where}")
+            value = _compact_scalar_value(raw_row[0], item_spec, where)
+            if value is None:
+                continue
+            rows.append(value)
+            confidences.append(_compact_confidence(raw_row[1], seg_conf, where))
+    aggregate = min(confidences) if confidences else None
+    return rows, aggregate, row_confidences
+
+
+def _compact_type_signal(raw: Any) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) not in {2, 3} or not isinstance(raw[0], bool):
+        raise CompactResponseError("señal d inválida")
+    try:
+        confidence = float(raw[1])
+    except (TypeError, ValueError):
+        raise CompactResponseError("confianza inválida en d") from None
+    if not math.isfinite(confidence):
+        raise CompactResponseError("confianza no finita en d")
+    return {
+        "corresponde": raw[0],
+        "confianza": max(0.0, min(1.0, confidence)),
+        "descripcion": str(raw[2]).strip() if len(raw) == 3 and raw[2] not in (None, "") else None,
+    }
+
+
+def _parse_compact_response(
+    raw: Any, tree: Dict[str, FieldSpec], seg_conf: float
+) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Optional[Dict[str, Any]]]:
+    if not isinstance(raw, dict) or not ({"s", "t"} <= set(raw)):
+        raise CompactResponseError("faltan contenedores compactos s/t")
+    if set(raw) - {"s", "t", "d"}:
+        raise CompactResponseError("llaves desconocidas en payload compacto")
+    scalar_raw, table_raw = raw.get("s"), raw.get("t")
+    if not isinstance(scalar_raw, dict) or not isinstance(table_raw, dict):
+        raise CompactResponseError("s/t deben ser objetos")
+    scalar_specs, table_specs = _compact_manifest(tree)
+    unknown = (set(scalar_raw) - set(scalar_specs)) | (set(table_raw) - set(table_specs))
+    if unknown:
+        raise CompactResponseError(f"rutas desconocidas: {', '.join(sorted(unknown))}")
+
+    entity: Dict[str, Any] = {}
+    confidences: Dict[str, float] = {}
+    row_confidences: Dict[str, Dict[str, float]] = {}
+    for path, pair in scalar_raw.items():
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise CompactResponseError(f"par escalar inválido en {path}")
+        value = _compact_scalar_value(pair[0], scalar_specs[path], path)
+        if value is None:
+            continue
+        _set_compact_path(entity, path, value)
+        confidences[path] = _compact_confidence(pair[1], seg_conf, path)
+    for path, raw_rows in table_raw.items():
+        rows, aggregate, nested_conf = _decode_compact_array(raw_rows, table_specs[path], seg_conf, path)
+        _set_compact_path(entity, path, rows)
+        if rows and aggregate is not None:
+            confidences[path] = round(aggregate, 4)
+        row_confidences.update(nested_conf)
+    return entity, confidences, row_confidences, _compact_type_signal(raw.get("d"))
+
+
+def _value_at_path(entity: Dict[str, Any], path: str) -> Any:
+    value: Any = entity
+    for part in path.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def _legacy_counterfactual_node(
+    tree: Dict[str, FieldSpec], entity: Dict[str, Any], confidences: Dict[str, float],
+    row_confidences: Dict[str, Dict[str, float]], prefix: str = "", in_row: bool = False,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for name, spec in tree.items():
+        if spec.computed:
+            continue
+        path = f"{prefix}.{name}" if prefix else name
+        value = entity.get(name) if isinstance(entity, dict) else None
+        if value in (None, "", []):
+            continue
+        if spec.type == "object":
+            nested = _legacy_counterfactual_node(
+                spec.fields, value if isinstance(value, dict) else {}, confidences,
+                row_confidences, path, in_row,
+            )
+            if nested:
+                payload[name] = nested
+        elif spec.type == "array":
+            if spec.item_fields:
+                rows = []
+                for row in value if isinstance(value, list) else []:
+                    if not isinstance(row, dict):
+                        continue
+                    encoded = _legacy_counterfactual_node(
+                        spec.item_fields, row, confidences, row_confidences, "", True
+                    )
+                    row_values = row_confidences.get(row_key(row)) or {}
+                    if row_values:
+                        encoded[ROW_CONFIDENCE_KEY] = min(row_values.values())
+                    rows.append(encoded)
+                payload[name] = rows
+            else:
+                payload[name] = value
+        elif in_row:
+            payload[name] = value
+        else:
+            payload[name] = {"value": value, "confidence": confidences.get(path, 0.0)}
+    return payload
+
+
+def _compact_savings_estimate(
+    *, usage: Dict[str, int], compact_raw: Dict[str, Any], tree: Dict[str, FieldSpec],
+    entity: Dict[str, Any], confidences: Dict[str, float],
+    row_confidences: Dict[str, Dict[str, float]], signal: Optional[Dict[str, Any]],
+    compact_prefix: str, legacy_prefix: str, user_text: str,
+    compact_schema: Dict[str, Any], legacy_schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    compact_chars = max(1, len(compact_prefix) + len(user_text) + len(json.dumps(compact_schema, default=str)))
+    legacy_chars = len(legacy_prefix) + len(user_text) + len(json.dumps(legacy_schema, default=str))
+    input_tokens = int(usage.get("inputTokens") or 0)
+    output_tokens = int(usage.get("outputTokens") or 0)
+    estimated_legacy_input = round(input_tokens * legacy_chars / compact_chars) if input_tokens else 0
+
+    legacy_payload = _legacy_counterfactual_node(tree, entity, confidences, row_confidences)
+    if signal:
+        legacy_payload[type_check.SIGNAL_KEY] = signal
+    compact_output_chars = max(1, len(json.dumps(compact_raw, ensure_ascii=False, default=str)))
+    legacy_output_chars = len(json.dumps(legacy_payload, ensure_ascii=False, default=str))
+    estimated_legacy_output = round(output_tokens * legacy_output_chars / compact_output_chars) if output_tokens else 0
+    return {
+        "estimated": True,
+        "method": "serialized_counterfactual_v1",
+        "billedInputTokens": input_tokens,
+        "billedOutputTokens": output_tokens,
+        "estimatedLegacyInputTokens": estimated_legacy_input,
+        "estimatedLegacyOutputTokens": estimated_legacy_output,
+        "estimatedInputTokensSaved": estimated_legacy_input - input_tokens,
+        "estimatedOutputTokensSaved": estimated_legacy_output - output_tokens,
+    }
+
+
+def _merge_format_savings(
+    left_audit: Dict[str, Any], right_audit: Dict[str, Any],
+    initial_usage: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    blocks = [
+        audit.get("tokenSavings") for audit in (left_audit, right_audit)
+        if isinstance(audit.get("tokenSavings"), dict)
+    ]
+    initial_usage = initial_usage or {}
+    billed_input = int(initial_usage.get("inputTokens") or 0) + sum(
+        int(block.get("billedInputTokens") or 0) for block in blocks
+    )
+    billed_output = int(initial_usage.get("outputTokens") or 0) + sum(
+        int(block.get("billedOutputTokens") or 0) for block in blocks
+    )
+    return {
+        "estimated": True,
+        "method": "serialized_counterfactual_v1",
+        "billedInputTokens": billed_input,
+        "billedOutputTokens": billed_output,
+        "estimatedLegacyInputTokens": sum(int(block.get("estimatedLegacyInputTokens") or 0) for block in blocks),
+        "estimatedLegacyOutputTokens": sum(int(block.get("estimatedLegacyOutputTokens") or 0) for block in blocks),
+        "estimatedInputTokensSaved": sum(int(block.get("estimatedInputTokensSaved") or 0) for block in blocks) - int(initial_usage.get("inputTokens") or 0),
+        "estimatedOutputTokensSaved": sum(int(block.get("estimatedOutputTokensSaved") or 0) for block in blocks) - int(initial_usage.get("outputTokens") or 0),
+    }
+
+
 def _merge_field_tree_entities(
     base: Dict[str, Any], extra: Dict[str, Any], tree: Dict[str, FieldSpec]
 ) -> Dict[str, Any]:
@@ -711,9 +1160,15 @@ def _merge_field_tree_entities(
             merged[name] = _merge_field_tree_entities(b or {}, e or {}, spec.fields)
         elif spec.type == "array":
             combined = list(b) if isinstance(b, list) else []
+            seen: Set[str] = {
+                row_key(item) if isinstance(item, dict) else json.dumps(item, sort_keys=True, default=str)
+                for item in combined
+            }
             for item in (e if isinstance(e, list) else []):
-                if item not in combined:
+                identity = row_key(item) if isinstance(item, dict) else json.dumps(item, sort_keys=True, default=str)
+                if identity not in seen:
                     combined.append(item)
+                    seen.add(identity)
             merged[name] = combined
         else:
             if b in (None, "") and e not in (None, ""):
@@ -723,7 +1178,7 @@ def _merge_field_tree_entities(
     return merged
 
 
-def _call_model_field_tree(
+def _call_model_field_tree_legacy(
     type_entry: TypeRegistryEntry,
     pages: List[PageText],
     model_id: Optional[str],
@@ -731,7 +1186,7 @@ def _call_model_field_tree(
     field_tree: Optional[Dict[str, FieldSpec]] = None,
     scope: str = "all",
 ) -> Tuple[
-    Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int], Optional[Dict[str, Any]]
+    Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int], Optional[Dict[str, Any]], Dict[str, Any]
 ]:
     """Field-tree equivalent of `_call_model` — same overflow split-in-half
     retry on `max_tokens`, same caching rule, but a genuinely nested response
@@ -763,10 +1218,10 @@ def _call_model_field_tree(
 
     if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
         mid = len(pages) // 2
-        left_e, left_c, left_r, left_u, left_s = _call_model_field_tree(
+        left_e, left_c, left_r, left_u, left_s, left_a = _call_model_field_tree_legacy(
             type_entry, pages[:mid], model_id, cache=True, field_tree=selected_tree, scope=scope
         )
-        right_e, right_c, right_r, right_u, right_s = _call_model_field_tree(
+        right_e, right_c, right_r, right_u, right_s, right_a = _call_model_field_tree_legacy(
             type_entry, pages[mid:], model_id, cache=True, field_tree=selected_tree, scope=scope
         )
         merged_entity = _merge_field_tree_entities(left_e, right_e, selected_tree)
@@ -779,6 +1234,22 @@ def _call_model_field_tree(
             merged_entity, merged_conf, merged_rows,
             _merge_usage(_merge_usage(usage, left_u), right_u),
             type_check.merge_signals([left_s, right_s]),
+            {
+                "compactCalls": 0,
+                "legacyCalls": 1 + int(left_a.get("legacyCalls") or 0) + int(right_a.get("legacyCalls") or 0),
+                "effective": "legacy",
+                "fallbackExecuted": False,
+                "tokenSavings": {
+                    "estimated": True,
+                    "method": "legacy_baseline_v1",
+                    "billedInputTokens": int(usage.get("inputTokens") or 0) + int(left_u.get("inputTokens") or 0) + int(right_u.get("inputTokens") or 0),
+                    "billedOutputTokens": int(usage.get("outputTokens") or 0) + int(left_u.get("outputTokens") or 0) + int(right_u.get("outputTokens") or 0),
+                    "estimatedLegacyInputTokens": int(usage.get("inputTokens") or 0) + int(left_u.get("inputTokens") or 0) + int(right_u.get("inputTokens") or 0),
+                    "estimatedLegacyOutputTokens": int(usage.get("outputTokens") or 0) + int(left_u.get("outputTokens") or 0) + int(right_u.get("outputTokens") or 0),
+                    "estimatedInputTokensSaved": 0,
+                    "estimatedOutputTokensSaved": 0,
+                },
+            },
         )
 
     seg_conf = _segment_confidence(pages)
@@ -788,17 +1259,187 @@ def _call_model_field_tree(
     entity, confidences, row_confidences = _parse_field_tree_response(
         parsed or {}, selected_tree, seg_conf
     )
-    return entity, confidences, row_confidences, usage, signal
+    return entity, confidences, row_confidences, usage, signal, {
+        "compactCalls": 0,
+        "legacyCalls": 1,
+        "effective": "legacy",
+        "fallbackExecuted": False,
+        "tokenSavings": {
+            "estimated": True,
+            "method": "legacy_baseline_v1",
+            "billedInputTokens": int(usage.get("inputTokens") or 0),
+            "billedOutputTokens": int(usage.get("outputTokens") or 0),
+            "estimatedLegacyInputTokens": int(usage.get("inputTokens") or 0),
+            "estimatedLegacyOutputTokens": int(usage.get("outputTokens") or 0),
+            "estimatedInputTokensSaved": 0,
+            "estimatedOutputTokensSaved": 0,
+        },
+    }
+
+
+def _call_model_field_tree_compact(
+    type_entry: TypeRegistryEntry,
+    pages: List[PageText],
+    model_id: Optional[str],
+    cache: bool = False,
+    field_tree: Optional[Dict[str, FieldSpec]] = None,
+    scope: str = "all",
+) -> Tuple[
+    Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int], Optional[Dict[str, Any]], Dict[str, Any]
+]:
+    selected_tree = type_entry.field_tree if field_tree is None else field_tree
+    cache_prefix, user_text = _build_compact_field_tree_prompts(
+        type_entry, pages, selected_tree, scope
+    )
+    parsed, meta = converse_structured(
+        user_text,
+        tool_schema=_compact_tool_schema(selected_tree, scope),
+        tool_name="extract_document_fields_compact",
+        tool_description=(
+            f"Extrae {type_entry.type_id} en pares escalares y filas posicionales compactas."
+        ),
+        model_id=model_id or resolve_model("extractor", type_entry),
+        max_tokens=_MAX_OUTPUT_TOKENS,
+        system=None if cache else cache_prefix,
+        cache_system=cache_prefix if cache else None,
+        stage="extractor",
+    )
+    usage: Dict[str, int] = {
+        k: v for k, v in (meta.get("usage") or {}).items() if isinstance(v, int)
+    }
+    if meta.get("stopReason") == "max_tokens" and len(pages) > 1:
+        mid = len(pages) // 2
+        left = _call_model_field_tree_compact(
+            type_entry, pages[:mid], model_id, True, selected_tree, scope
+        )
+        right = _call_model_field_tree_compact(
+            type_entry, pages[mid:], model_id, True, selected_tree, scope
+        )
+        merged_entity = _merge_field_tree_entities(left[0], right[0], selected_tree)
+        return (
+            merged_entity,
+            {**left[1], **right[1]},
+            {**left[2], **right[2]},
+            _merge_usage(_merge_usage(usage, left[3]), right[3]),
+            type_check.merge_signals([left[4], right[4]]),
+            {
+                "compactCalls": 1 + int(left[5].get("compactCalls") or 0) + int(right[5].get("compactCalls") or 0),
+                "legacyCalls": int(left[5].get("legacyCalls") or 0) + int(right[5].get("legacyCalls") or 0),
+                "effective": "mixed" if left[5].get("effective") != right[5].get("effective") else left[5].get("effective", "compact"),
+                "fallbackExecuted": bool(left[5].get("fallbackExecuted") or right[5].get("fallbackExecuted")),
+                "tokenSavings": _merge_format_savings(left[5], right[5], usage),
+            },
+        )
+
+    seg_conf = _segment_confidence(pages)
+    # Compatibility bridge for models that ignore the new tool schema but do
+    # return a valid old response. It avoids paying a duplicate call while the
+    # strict parser still rejects arbitrary or partially compact structures.
+    if isinstance(parsed, dict) and not ({"s", "t"} <= set(parsed)) and any(
+        key in parsed for key in selected_tree
+    ):
+        signal = type_check.read_signal(parsed)
+        entity, confidences, row_confidences = _parse_field_tree_response(
+            parsed, selected_tree, seg_conf
+        )
+        return entity, confidences, row_confidences, usage, signal, {
+            "compactCalls": 1,
+            "legacyCalls": 0,
+            "effective": "legacy",
+            "fallbackExecuted": False,
+            "compatibilityResponse": True,
+        }
+    try:
+        entity, confidences, row_confidences, signal = _parse_compact_response(
+            parsed, selected_tree, seg_conf
+        )
+    except CompactResponseError as exc:
+        exc.usage = usage
+        raise
+    legacy_prefix, _legacy_user = _build_field_tree_prompts(
+        type_entry, pages, selected_tree, scope
+    )
+    savings = _compact_savings_estimate(
+        usage=usage,
+        compact_raw=parsed,
+        tree=selected_tree,
+        entity=entity,
+        confidences=confidences,
+        row_confidences=row_confidences,
+        signal=signal,
+        compact_prefix=cache_prefix,
+        legacy_prefix=legacy_prefix,
+        user_text=user_text,
+        compact_schema=_compact_tool_schema(selected_tree, scope),
+        legacy_schema=_field_tree_tool_schema(selected_tree, scope),
+    )
+    return entity, confidences, row_confidences, usage, signal, {
+        "compactCalls": 1,
+        "legacyCalls": 0,
+        "effective": "compact",
+        "fallbackExecuted": False,
+        "tokenSavings": savings,
+    }
+
+
+def _call_model_field_tree(
+    type_entry: TypeRegistryEntry,
+    pages: List[PageText],
+    model_id: Optional[str],
+    cache: bool = False,
+    field_tree: Optional[Dict[str, FieldSpec]] = None,
+    scope: str = "all",
+    response_format: str = AI_RESPONSE_COMPACT,
+) -> Tuple[
+    Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Dict[str, int], Optional[Dict[str, Any]], Dict[str, Any]
+]:
+    if response_format == AI_RESPONSE_LEGACY:
+        return _call_model_field_tree_legacy(
+            type_entry, pages, model_id, cache, field_tree, scope
+        )
+    try:
+        return _call_model_field_tree_compact(
+            type_entry, pages, model_id, cache, field_tree, scope
+        )
+    except CompactResponseError as exc:
+        logger.warning(
+            "compact response invalid for %s/%s; retrying legacy once: %s",
+            type_entry.type_id, scope, exc,
+        )
+        compact_usage = dict(exc.usage)
+        legacy = _call_model_field_tree_legacy(
+            type_entry, pages, model_id, cache, field_tree, scope
+        )
+        audit = dict(legacy[5])
+        audit.update({
+            "compactCalls": 1,
+            "effective": "legacy",
+            "fallbackExecuted": True,
+            "fallbackReason": str(exc)[:240],
+            "tokenSavings": {
+                "estimated": True,
+                "method": "fallback_vs_legacy_v1",
+                "billedInputTokens": int(compact_usage.get("inputTokens") or 0) + int(legacy[3].get("inputTokens") or 0),
+                "billedOutputTokens": int(compact_usage.get("outputTokens") or 0) + int(legacy[3].get("outputTokens") or 0),
+                "estimatedLegacyInputTokens": int(legacy[3].get("inputTokens") or 0),
+                "estimatedLegacyOutputTokens": int(legacy[3].get("outputTokens") or 0),
+                "estimatedInputTokensSaved": -int(compact_usage.get("inputTokens") or 0),
+                "estimatedOutputTokensSaved": -int(compact_usage.get("outputTokens") or 0),
+            },
+        })
+        return legacy[0], legacy[1], legacy[2], _merge_usage(compact_usage, legacy[3]), legacy[4], audit
 
 
 def _extract_document_field_tree(
     pages: List[PageText], type_entry: TypeRegistryEntry, model_id: Optional[str] = None,
     field_tree: Optional[Dict[str, FieldSpec]] = None,
+    ai_response_format: Optional[str] = None,
 ) -> ExtractedDoc:
     selected_tree = type_entry.field_tree if field_tree is None else field_tree
     selected_tree = selected_tree or {}
     chunks = _chunk_pages(pages)
     partitions = _field_tree_call_partitions(selected_tree)
+    format_resolution = resolve_ai_response_format(type_entry, ai_response_format)
     use_cache = len(chunks) > 1
     calls = [(chunk, scope, tree) for chunk in chunks for scope, tree in partitions]
     workers = min(_CHUNK_WORKERS, len(calls)) or 1
@@ -811,6 +1452,7 @@ def _extract_document_field_tree(
                 cache=use_cache,
                 field_tree=call[2],
                 scope=call[1],
+                response_format=format_resolution["selected"],
             ),
             calls,
         ))
@@ -820,14 +1462,46 @@ def _extract_document_field_tree(
     confidences: Dict[str, float] = {}
     row_confidences: Dict[str, Dict[str, float]] = {}
     signals: List[Optional[Dict[str, Any]]] = []
-    for entity, conf, row_conf, chunk_usage, signal in results:
+    format_audits: List[Dict[str, Any]] = []
+    for entity, conf, row_conf, chunk_usage, signal, response_audit in results:
         entity_map = _merge_field_tree_entities(entity_map, entity, selected_tree)
         confidences.update(conf)
         row_confidences.update(row_conf)
         usage = _merge_usage(usage, chunk_usage)
         signals.append(signal)
+        format_audits.append(response_audit)
 
     seg_conf = _segment_confidence(pages)
+    effective_values = {str(item.get("effective") or "") for item in format_audits}
+    effective_values.discard("")
+    effective = next(iter(effective_values)) if len(effective_values) == 1 else "mixed"
+    response_audit = {
+        "requested": format_resolution["requested"],
+        "source": format_resolution["source"],
+        "selected": format_resolution["selected"],
+        "effective": effective or format_resolution["selected"],
+        "fallbackExecuted": any(bool(item.get("fallbackExecuted")) for item in format_audits),
+        "compactCalls": sum(int(item.get("compactCalls") or 0) for item in format_audits),
+        "legacyCalls": sum(int(item.get("legacyCalls") or 0) for item in format_audits),
+    }
+    fallback_reasons = [str(item["fallbackReason"]) for item in format_audits if item.get("fallbackReason")]
+    if fallback_reasons:
+        response_audit["fallbackReasons"] = fallback_reasons
+    saving_blocks = [
+        item.get("tokenSavings") for item in format_audits
+        if isinstance(item.get("tokenSavings"), dict)
+    ]
+    if saving_blocks:
+        response_audit["tokenSavings"] = {
+            "estimated": True,
+            "method": "serialized_counterfactual_v1",
+            "billedInputTokens": int(usage.get("inputTokens") or 0),
+            "billedOutputTokens": int(usage.get("outputTokens") or 0),
+            "estimatedLegacyInputTokens": sum(int(block.get("estimatedLegacyInputTokens") or 0) for block in saving_blocks),
+            "estimatedLegacyOutputTokens": sum(int(block.get("estimatedLegacyOutputTokens") or 0) for block in saving_blocks),
+            "estimatedInputTokensSaved": sum(int(block.get("estimatedInputTokensSaved") or 0) for block in saving_blocks),
+            "estimatedOutputTokensSaved": sum(int(block.get("estimatedOutputTokensSaved") or 0) for block in saving_blocks),
+        }
     return ExtractedDoc(
         entity_map=entity_map,
         confidences=confidences,
@@ -841,6 +1515,7 @@ def _extract_document_field_tree(
             # One answer per document, fail-open across chunks — see
             # type_check.merge_signals. None when no call answered it.
             "typeSignal": type_check.merge_signals(signals),
+            "aiResponseFormat": response_audit,
         },
     )
 
@@ -850,10 +1525,13 @@ def extract_document(
     type_entry: TypeRegistryEntry,
     model_id: Optional[str] = None,
     field_tree: Optional[Dict[str, FieldSpec]] = None,
+    ai_response_format: Optional[str] = None,
 ) -> ExtractedDoc:
     """Extract the catalog schema from a document's pages."""
     if type_entry.field_tree:
-        return _extract_document_field_tree(pages, type_entry, model_id, field_tree)
+        return _extract_document_field_tree(
+            pages, type_entry, model_id, field_tree, ai_response_format
+        )
 
     chunks = _chunk_pages(pages)
 

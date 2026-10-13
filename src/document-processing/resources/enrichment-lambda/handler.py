@@ -380,6 +380,22 @@ def _extraction_mode_from_metadata(s3_metadata: Dict[str, str]) -> str:
     return raw
 
 
+def _ai_response_format_from_metadata(s3_metadata: Dict[str, str]) -> Optional[str]:
+    """Authorized per-upload override transported by the Upload API.
+
+    Authorization happens before the presigned upload is created. Invalid
+    object metadata fails open to catalog/environment/default compact rather
+    than accidentally selecting the more verbose protocol.
+    """
+    raw = str((s3_metadata or {}).get("ai-response-format") or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in {"compact", "legacy"}:
+        logger.warning("ai-response-format inválido %r; usando configuración heredada", raw)
+        return None
+    return raw
+
+
 def _apply_model_override(s3_metadata: Dict[str, str]) -> None:
     """Honour a `model-id` uploaded alongside the document, in dev only.
 
@@ -574,6 +590,7 @@ def _run_expediente(
     # segmenter run — restricted to `declared_types` — instead of short-circuiting.
     declared_counts = _declared_counts_from_metadata(s3_metadata)
     extraction_mode = _extraction_mode_from_metadata(s3_metadata)
+    ai_response_format = _ai_response_format_from_metadata(s3_metadata)
     declared_types = _declared_types_from_key(key)
     declared_type = declared_types[0] if len(declared_types) == 1 else None
     if declared_type:
@@ -628,6 +645,7 @@ def _run_expediente(
             declared_types=declared_types,
             declared_counts=declared_counts,
             extraction_mode=extraction_mode,
+            ai_response_format=ai_response_format,
             # What we know ABOUT the upload (not what's in it). Generic: a
             # catalog can name an upload-metadata key it needs, e.g. the
             # supplier whose registered signatures to compare against.
