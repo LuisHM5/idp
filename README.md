@@ -20,7 +20,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | Documento | Para qué |
 |---|---|
 | [`documentacion/COMO_FUNCIONA.md`](documentacion/COMO_FUNCIONA.md) | 🧭 Explicación general con diagramas — el mejor punto de partida. |
-| [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Diagrama de arquitectura AWS + diagrama de flujo de ejecución, y qué modelo de Bedrock se usa. |
+| [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Arquitectura: el único diagrama del repo, el recorrido de un documento, componentes y modelos. |
 | [`documentacion/RESUMEN_EJECUTIVO.md`](documentacion/RESUMEN_EJECUTIVO.md) | 👔 Versión para directivos: el proceso explicado en una imagen, sin nombres de servicios ni tecnicismos. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
 | [`documentacion/api-docs/`](documentacion/api-docs/README.md) | 📦 **Paquete de documentación del API para compartir** con quien conoce 0 el proyecto: guía de uso, contrato OpenAPI y ejemplos de código listos para copiar. |
@@ -38,8 +38,6 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | [`documentacion/EXTRACCION_DETERMINISTICA_E_HIBRIDA.md`](documentacion/EXTRACCION_DETERMINISTICA_E_HIBRIDA.md) | Cómo se mapeó `PEDIMENTO_ERP` por código y receta para formatos fijos o migraciones híbridas. |
 | [`documentacion/CARTA_NOM35.md`](documentacion/CARTA_NOM35.md) | **Guía práctica de la carta NOM-035**: cómo probarla en 3 pasos (gratis → local → stack), qué debe salir con las cartas de ejemplo, qué extrae y valida, alta de sellos/firmas por proveedor, paso de observación a rechazo y qué hacer si algo sale raro. |
 | [`documentacion/AUTENTICIDAD_Y_REFERENCIAS.md`](documentacion/AUTENTICIDAD_Y_REFERENCIAS.md) | Verificación de autenticidad física (¿hoja impresa, firmada y sellada, o un Word con la firma pegada?): qué detecta, **cómo dar de alta las firmas, sellos y logos válidos de cada proveedor**, campos y motivos del resultado, arranque en observación, límites. Primer tipo: `CARTA_NOM35`. |
-| [`documentacion/FLUJO_EJECUCION.md`](documentacion/FLUJO_EJECUCION.md) | Recorrido general del pipeline y su dataflow. |
-| [`documentacion/TRAZA_CODIGO_COMPLETA.md`](documentacion/TRAZA_CODIGO_COMPLETA.md) | Traza técnica independiente, función por función y línea por línea, con payloads, bifurcaciones y llamadas AWS. |
 | [`documentacion/ENVIAR_DOCUMENTO_API.md`](documentacion/ENVIAR_DOCUMENTO_API.md) | Cómo mandar un documento y leer su resultado (script o curl). |
 | [`documentacion/mejoras-futuras/`](documentacion/mejoras-futuras/MEJORAS_FUTURAS.md) | 🔭 Mejoras planeadas sin implementar: un resumen de todas y un plan por mejora. |
 | [`catalogs/README.md`](catalogs/README.md) | El DSL del catálogo: shape de cada campo, todas las `rule_type`, cómo crear un tipo nuevo. |
@@ -49,7 +47,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 
 ## Modelo y arquitectura
 
-El pipeline usa **Amazon Bedrock** (Claude Haiku 4.5, `us.anthropic.claude-haiku-4-5-20251001-v1:0`) para clasificar y extraer, sobre una arquitectura 100% serverless en AWS. Diagrama de arquitectura AWS completo + diagrama de flujo de ejecución (los dos caminos de `handler.py`, con referencias a los módulos reales): **[`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md)**.
+El pipeline usa **Amazon Bedrock** (Claude Haiku 4.5, `us.anthropic.claude-haiku-4-5-20251001-v1:0`) para clasificar y extraer, sobre una arquitectura 100% serverless en AWS. Arquitectura y recorrido de un documento: **[`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md)**.
 
 Características clave del pipeline de expedientes:
 
@@ -163,8 +161,6 @@ idp/
 ├── bin/app.ts                              # entrypoint CDK (env dev|prod)
 ├── src/
 │   ├── document-validation-stack.ts        # stack CDK (infraestructura)
-│   ├── document-catalog.ts                 # lee catalogs/ (DSL legacy) para generar prompts
-│   ├── prompt-generator.ts                 # genera prompts Bedrock del flujo estándar
 │   └── document-processing/resources/
 │       ├── enrichment-lambda/
 │       │   ├── handler.py                  # motor de validación (NO modificar a la ligera)

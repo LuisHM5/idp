@@ -412,9 +412,7 @@ vector en DynamoDB y `pnpm refs:reindex` reconstruye el índice desde la tabla.
 | Amazon S3 | Externa | Saliente | Alta — almacenamiento de todo el pipeline | `ARQUITECTURA.md` |
 | Amazon S3 Vectors | Externa | Saliente | Baja — índice derivado, reconstruible con `pnpm refs:reindex`; solo lo usa la búsqueda de referencias por similitud | `AUTENTICIDAD_Y_REFERENCIAS.md` |
 | Amazon DynamoDB | Externa | Saliente | Alta — catálogo y tracking | `ARQUITECTURA.md`, `catalogs/README.md` |
-| AWS Step Functions | Externa | Saliente (construct propio) | Media — orquestación | `FLUJO_EJECUCION.md` |
 | Amazon EventBridge | Externa | Saliente (construct propio) | Media — notificación, un consumidor externo depende de esto | `api-docs/API_USO.md` §1 |
-| Amazon SQS | Externa | Entrante (consumo propio) | Baja — desacople interno | `FLUJO_EJECUCION.md` |
 | AWS ACM | Externa | Operación manual | Baja — solo prod, renovación de cert | `AMBIENTES_Y_SEGURIDAD.md` |
 
 ---

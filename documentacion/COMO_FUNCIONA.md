@@ -12,46 +12,10 @@ Documento para entender el sistema completo sin leer código: qué hace, cómo f
 
 ## 2. Arquitectura general
 
-Todo es serverless en AWS. No hay servidores que administrar.
-
-```mermaid
-flowchart LR
-    subgraph Cliente["Tu aplicación"]
-        A[PDF]
-    end
-
-    subgraph AWS["AWS (stack DocumentValidationStack)"]
-        B["API Gateway<br/>POST /documents"]
-        C[("S3<br/>raw/")]
-        D["SQS"]
-        E["Step Functions<br/>(orquestador)"]
-        F["Lambda<br/>Clasificación<br/>(Bedrock)"]
-        G["Lambda<br/>Extracción<br/>(Bedrock)"]
-        H["Lambda Enrichment<br/>⭐ Pipeline de expedientes<br/>+ Motor de reglas"]
-        I[("S3<br/>results/")]
-        J["EventBridge<br/>(resultado final)"]
-        K[("DynamoDB<br/>catálogo hot-reload")]
-    end
-
-    A -->|"1. registrar"| B
-    A -->|"2. PUT directo (cualquier tamaño)"| C
-    C --> D --> E
-    E --> F --> G --> H
-    H -->|detalle completo| I
-    H -->|resumen| J
-    K -.->|reglas y tipos| H
-```
-
-**Piezas clave:**
-
-| Pieza | Qué hace |
-|---|---|
-| **S3 `raw/`** | Recibir un archivo aquí dispara todo el pipeline automáticamente |
-| **Clasificación** | Identifica el tipo de documento (se puede saltar declarando el tipo) |
-| **Lambda Enrichment** | El cerebro: para documentos aduanales ejecuta el pipeline de expedientes completo |
-| **DynamoDB catálogo** | Tipos y reglas editables **sin redeploy** (hot-reload) |
-| **S3 `results/`** | El resultado detallado completo de cada documento |
-| **EventBridge** | Donde tu aplicación escucha el resultado final |
+Todo es serverless en AWS, sin servidores que administrar: el archivo se sube a
+S3 y eso invoca directamente a la Lambda que lo procesa; el resultado queda en
+DynamoDB/S3 y se avisa por EventBridge. El diagrama y el detalle de cada pieza
+viven en un solo lugar: [`ARQUITECTURA.md`](ARQUITECTURA.md).
 
 ---
 
@@ -173,7 +137,7 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
     actor U as Tú
-    participant S3 as S3 raw/
+    participant S3 as S3 source/
     participant P as Pipeline
     participant R as Resultado
 

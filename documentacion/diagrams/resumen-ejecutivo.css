@@ -1,7 +1,0 @@
-.node rect, .node polygon, .node circle, .node ellipse, .node path {
-  filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.20));
-}
-.edgeLabel .label text, .edgeLabel span {
-  font-weight: 700;
-  color: #333 !important;
-}

@@ -334,7 +334,7 @@ correr `pnpm test:e2e:suite` y el ground truth de
 | 5 | `additionalModelRequestFields` para bajar reasoning | proporcional a los tokens de salida | bajo | `pipeline/bedrock.py` |
 | 6 | Caché de prompt también con 1 chunk | TTFT y tokens de entrada | bajo | `text_extractor.py:775` |
 | 7 | `TEXTRACT_WORKERS` 8 → 12-16 | -5 a -10s en escaneados | bajo: techo de throttling | `document-validation-stack.ts:383` (ya es env var) |
-| 8 | `page_selection` en más tipos | hasta -81% de páginas a extracción | bajo | catálogos, ver `ARQUITECTURA.md:130` |
+| 8 | `page_selection` en más tipos | hasta -81% de páginas a extracción | bajo | catálogos, ver `ARQUITECTURA.md` |
 | 9 | [OCR bajo demanda](LATENCIA_RESPUESTA.md) | el grueso de `pageLoad`; en `emp_cert.pdf`, 1 llamada y USD 0.0015 evitables | medio: opt-in por catálogo y expansión fail-open | `pdf_pages.py` + `expediente.py` |
 
 Las palancas ya implementadas se fijan en

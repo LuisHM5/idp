@@ -1,155 +1,175 @@
 <!--
-  MANTENIMIENTO: Diagrama de referencia de arquitectura AWS y flujo de
-  ejecución. Las imágenes de abajo se generan a partir de las fuentes en
-  diagrams/*.mmd — si cambias un componente de infraestructura en
-  `src/document-validation-stack.ts` (Lambdas, colas, tablas, buckets,
-  EventBridge) o el enrutamiento en `handler.py`, edita el .mmd
-  correspondiente y regenera el PNG en el mismo cambio:
+  MANTENIMIENTO: este archivo es la ÚNICA descripción de la arquitectura y el
+  diagrama de abajo es el ÚNICO diagrama del repositorio. Es Mermaid en línea:
+  se edita aquí mismo y GitHub/VS Code lo renderizan, sin PNG que regenerar.
 
-    npx @mermaid-js/mermaid-cli -i documentacion/diagrams/arquitectura-aws.mmd \
-      -o documentacion/diagrams/arquitectura-aws.png -b white -s 2
-    npx @mermaid-js/mermaid-cli -i documentacion/diagrams/flujo-ejecucion.mmd \
-      -o documentacion/diagrams/flujo-ejecucion.png -b white -s 2
-
-  Ver AGENTS.md.
+  Si cambias infraestructura (`src/document-validation-stack.ts`,
+  `src/document-processing/multi-model-document-processing.ts`) o el
+  enrutamiento de `handler.py`, actualiza ESTE archivo en el mismo cambio. Los
+  demás documentos enlazan aquí en vez de repetir el flujo: no agregues otro
+  diagrama de arquitectura en otro lugar.
 -->
 
-# Arquitectura AWS y Flujo de Ejecución
+# Arquitectura
 
-Diagrama de referencia de la infraestructura y del recorrido de un documento, de principio a fin. Para la explicación conceptual (qué hace el sistema, sin código) ver [`COMO_FUNCIONA.md`](COMO_FUNCIONA.md); para el recorrido exacto con referencias a archivo:línea, ver [`TRAZA_CODIGO_COMPLETA.md`](TRAZA_CODIGO_COMPLETA.md).
+Qué infraestructura existe, por dónde pasa un documento y qué decide cada
+pieza. Para la explicación conceptual sin código ver
+[`COMO_FUNCIONA.md`](COMO_FUNCIONA.md).
 
-> Versión PDF de este documento (mismos diagramas, para imprimir o compartir sin depender de un visor de Markdown): [`ARQUITECTURA.pdf`](ARQUITECTURA.pdf).
+## Diagrama
 
----
+```mermaid
+flowchart TB
+    client(["Cliente / app"])
 
-## Modelo
+    subgraph api["API Gateway — un solo canal público"]
+        upload["Upload Lambda<br/>POST /documents"]
+        query["Query Lambda<br/>GET /documents* · PATCH metadata<br/>POST reprocess"]
+        refs["References Lambda<br/>/references/*"]
+    end
 
-El pipeline usa **Amazon Bedrock** con el perfil de inferencia cross-region `us.anthropic.claude-haiku-4-5-20251001-v1:0` (**Claude Haiku 4.5**) como modelo base — el desplegado hoy en dev y prod, verificado contra AWS Cost Explorer (ver [`COSTOS.md`](COSTOS.md)).
+    subgraph store["S3 — bucket de documentos"]
+        source[("source/<br/>original, no se mueve")]
+        results[("results/<br/>resultado completo")]
+        refimg[("references/<br/>firmas · sellos · logos")]
+    end
 
-**Cualquier modelo de Bedrock sirve, no solo Anthropic**: todas las llamadas pasan por la API **Converse**, que es agnóstica del proveedor (mismo request para cualquier modelo alojado en Bedrock). Cada paso puede además usar un modelo distinto, para bajar costo donde no hace falta precisión o subirla donde sí. Todo configurable sin tocar código vía `.env.dev`/`.env.production`:
+    enrich["Enrichment Lambda — handler.py<br/>1 claim idempotente de la fila<br/>2 adquirir texto: pypdf, Textract solo si falta<br/>3 código declarativo → IA solo para faltantes<br/>4 reglas y armado del envelope"]
+    finalizer["AsyncFailureFinalizer"]
+    status["Status Lambda"]
 
-| Variable                          | Paso                                                    | ¿Visión? | Default                                       |
-| --------------------------------- | ------------------------------------------------------- | -------- | --------------------------------------------- |
-| `BEDROCK_MODEL_ID`                | Modelo base de todos los pasos                          | —        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
-| `BEDROCK_CLASSIFICATION_MODEL_ID` | Clasificación (flujo estándar)                          | **Sí**   | modelo base                                   |
-| `BEDROCK_PROCESSING_MODEL_ID`     | Extracción single-shot (flujo estándar)                 | **Sí**   | modelo base                                   |
-| `BEDROCK_SEGMENTER_MODEL_ID`      | Segmentación del expediente                             | No       | modelo base                                   |
-| `BEDROCK_EXTRACTOR_MODEL_ID`      | Extracción por documento (la mayor parte de los tokens) | No       | modelo base                                   |
-| `BEDROCK_RECOVERY_MODEL_ID`       | Re-extracción Textract + modelo                         | No       | modelo base                                   |
-| `BEDROCK_VISION_MODEL_ID`         | Etapa de autenticidad física (ve la página y recortes)  | **Sí**   | **Haiku 4.5, NO el modelo base** (ver abajo)  |
+    subgraph ml["Servicios de IA — solo cuando hacen falta"]
+        textract["Textract OCR"]
+        bedrock["Bedrock Converse"]
+        vectors[("S3 Vectors<br/>índice de referencias")]
+    end
 
-Los pasos de **extracción** del expediente son de **solo texto** (corren sobre OCR de Textract o texto nativo del PDF, nunca sobre imágenes), así que ahí funciona un modelo sin visión. La única excepción dentro del expediente es la **etapa de autenticidad física** (`pipeline/authenticity.py`, solo en tipos que declaran el bloque `authenticity` — hoy `CARTA_NOM35`): manda la página y recortes de firma/sello/logo a un modelo multimodal para verificar que el documento es una hoja impresa, firmada, sellada y escaneada. Precisamente porque el modelo base puede ser de solo texto (en dev lo es), esa etapa resuelve su modelo por una cadena propia — `model_ids.vision` del catálogo → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5 — y **nunca** hereda `BEDROCK_MODEL_ID` ni la lista de fallback. Guía: [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md).
+    subgraph ddb["DynamoDB"]
+        docs[("Documentos<br/>estado + envelope compacto")]
+        catalog[("Catálogo<br/>tipos y reglas, hot-reload")]
+        aux[("Costos · llaves únicas<br/>huellas · apps y uso")]
+    end
 
-Aparte de eso, los dos pasos del flujo estándar sí reciben el documento como imagen/PDF y requieren un modelo multimodal.
+    bus{{"EventBridge idp-broker"}}
 
-Antes de mover un paso a otro modelo, confirmar que ese modelo soporte lo que el paso usa — Bedrock no garantiza paridad entre los modelos que aloja:
+    client -->|"1 registrar"| upload
+    upload -->|"reserva AWAITING_UPLOAD"| docs
+    upload -.->|"URL prefirmada"| client
+    client -->|"2 PUT del archivo"| source
+    source ==>|"ObjectCreated<br/>invoke asíncrono, 2 reintentos"| enrich
+    catalog -.-> enrich
+    enrich <-->|"bajo demanda"| textract
+    enrich <-->|"bajo demanda"| bedrock
+    enrich -.->|"consulta"| vectors
+    enrich --> results
+    enrich -->|"FINISHED + envelope"| docs
+    enrich --> aux
+    enrich -->|"document-processed-successful"| bus
+    enrich -. "reintentos agotados" .-> finalizer
+    finalizer -->|"FAILED"| docs
+    finalizer -->|"document-processing-failed"| bus
+    bus --> status --> docs
+    client -->|"3 consultar"| query
+    query --> docs
+    query --> results
+    query -->|"reprocess: copia a una llave nueva"| source
+    refs --> refimg
+    refs --> vectors
+```
 
-| Capacidad                       | La usa                                              | Si no la soporta                                                                                   |
-| ------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Converse                        | Todos los pasos                                     | Falla la llamada                                                                                   |
-| Tool use forzado (`toolChoice`) | Extracción por documento (catálogos de 100+ campos) | Se degrada a JSON libre, menos confiable                                                           |
-| Prompt caching (`cachePoint`)   | Extracción por documento                            | El pipeline lo detecta y reintenta sin caché (ver nota abajo). Funciona, pero pierdes el descuento |
-| Visión                          | Clasificación y extracción del flujo estándar; etapa de autenticidad del expediente | No aplica a modelos de solo texto. La etapa de autenticidad nunca cambia a uno: si su modelo falla, el documento va a revisión |
-| Ventana de contexto             | Flujo estándar                                      | Retunear `MAX_MODEL_DOC_BYTES` (default 3.5 MB, calibrado para ~200K tokens)                       |
+No hay cola SQS, Step Functions ni Lambdas de clasificación/extracción previas:
+S3 invoca a la Enrichment Lambda directamente.
 
-Cambiar el modelo requiere **redeploy** del ambiente correspondiente (la variable se hornea en la Lambda al desplegar), y habilitar antes el **"Model access"** de esa familia de modelo en la consola de Bedrock — paso manual por cuenta/región que no se automatiza desde CDK ni IAM.
+## Recorrido de un documento
 
----
+1. **Registrar.** `POST /documents` valida el request, reserva el `documentId`
+   en DynamoDB (`ProcessingStatus=AWAITING_UPLOAD`, `SourceKey`) y devuelve una
+   URL prefirmada. El archivo nunca pasa por API Gateway, sea del tamaño que sea.
+2. **Subir.** El cliente hace `PUT` a `source/{TIPOS?}/{documentId}/{archivo}`.
+   Los tipos declarados viajan como un solo segmento de la llave
+   (`source/{A,B}/…`); sin segmento de tipo, la clasificación es automática.
+3. **Disparo.** El `ObjectCreated` de `source/` invoca a la Enrichment Lambda.
+   `raw/` sigue aceptado solo por URLs prefirmadas emitidas antes del ingreso
+   directo. `results/` y `references/` no tienen notificación: escribir un
+   resultado no puede disparar otro procesamiento.
+4. **Claim.** S3 entrega al menos una vez, así que la Lambda toma la fila con
+   una escritura condicional (`handler._claim_direct_event`): un documento
+   terminado no se reprocesa, una entrega duplicada se ignora mientras la lease
+   siga viva, y un reintento asíncrono (mismo request id de Lambda) retoma el
+   claim de un intento que murió sin liberarlo.
+5. **Extracción.** Según el archivo: PDF/imagen → `pipeline/expediente.py`;
+   XML → `pipeline/xml_document.py`; XLSX/CSV → `pipeline/tabular_document.py`.
+   La regla de producto es *texto barato → código declarativo → IA solo para lo
+   que falte → envelope armado y validado por código* (detalle abajo).
+6. **Persistencia.** Resultado completo en `results/{documentId}.json`;
+   envelope compacto, `FINISHED` e índices en DynamoDB; costo y llaves únicas en
+   sus tablas (las tres escrituras auxiliares van en paralelo).
+7. **Evento.** `document-processed-successful` en EventBridge. Si el resultado
+   se guardó pero el evento falló, el siguiente intento solo republica.
+8. **Falla técnica.** Una excepción o timeout se reintenta dos veces; agotados
+   los reintentos, `AsyncFailureFinalizer` marca `FAILED` (nunca sobre un
+   documento ya completo) y publica `document-processing-failed`.
+9. **Consulta.** `GET /documents/{id}` devuelve estado y resultado;
+   `GET /documents/{id}/file` resuelve el original por `SourceKey`.
 
-## Métodos de extracción: cuándo es solo IA, Textract, "OCR de Python" (pypdf) o código puro
+Un `RECHAZADO` es un resultado de negocio, no una falla: la ejecución termina
+`FINISHED` con `validation.status=RECHAZADO`.
 
-Seis mecanismos distintos conviven en el repo para sacarle datos a un documento. No son intercambiables ni mutuamente excluyentes — un mismo documento suele pasar por dos de ellos en secuencia (p. ej. pypdf o Textract **adquieren** el texto y luego regex o Bedrock lo **estructuran**). Esta tabla es la vista unificada; el detalle de cada fila vive en el archivo referenciado.
+## Dentro de la Enrichment Lambda (PDF/imagen)
 
-| # | Mecanismo | Qué hace | Dónde vive | Cuesta |
-| - | --- | --- | --- | --- |
-| 1 | **Solo IA** (visión) | Bedrock lee el PDF/imagen directamente como imagen — sin pasar antes por ningún OCR. | `ClassificationStep`/`ProcessingStep` del construct propio (flujo estándar, Camino B) | Bedrock (tokens de imagen) |
-| 2 | **Textract** (solo, sin IA) | Textract `AnalyzeID` devuelve campos ya estructurados (taxonomía fija: `LAST_NAME`, `DATE_OF_BIRTH`, ...); se mapean 1:1 a campos del catálogo vía `field_aliases`. Ningún LLM interviene. | `extractors/textract_analyze_id.py` | Solo Textract |
-| 3 | **Textract + IA** (híbrido) | Textract `DetectDocumentText` saca las líneas OCR; Bedrock las interpreta y arma el JSON contra el schema del catálogo. | `extractors/textract_bedrock.py` | Textract + Bedrock (texto) |
-| 4 | **"OCR de Python"** (pypdf, sin servicio externo) | `pypdf` lee la capa de texto nativa del PDF (modo `layout`) — gratis, exacto, sin llamar a nada. Es la primera opción siempre que el PDF sea digital (no un escaneo). | `pipeline/pdf_pages.py::_native_text` | $0 |
-| 5 | **Texto + código determinístico** | Regex declaradas por campo convierten el texto que ya produjo pypdf/Textract en el árbol del catálogo. Si quedan huecos, sólo esas ramas van a Bedrock; sin huecos no hay llamada de extracción. | `pipeline/deterministic_text.py`, `fields[].text_source`; [guía y caso `PEDIMENTO_ERP`](EXTRACCION_DETERMINISTICA_E_HIBRIDA.md) | $0 adicional sobre la adquisición del texto |
-| 6 | **Código puro** (sin IA, sin OCR) | Parseo determinístico: `ElementTree` sobre XML, `openpyxl`/`csv` sobre tablas, decodificación de QR, regex de normalización. Nunca hay incertidumbre de modelo. | `pipeline/xml_document.py`, `pipeline/tabular_document.py`, `pipeline/qr_recovery.py`, `pipeline/normalize.py` | $0 |
+| Paso | Módulo | Qué hace |
+| --- | --- | --- |
+| Texto | `pdf_pages.py`, `text_acquisition.py` | Texto nativo con pypdf (gratis); Textract OCR solo en páginas sin capa de texto. Un tipo puede diferir el OCR hasta saber que el código no bastó (`text_acquisition.ocr_mode`, kill switch `DEFERRED_OCR_ENABLED`). |
+| Segmentación | `segmenter.py` | Con un tipo declarado, un solo segmento sin llamar al modelo; si no, Bedrock clasifica rangos de páginas. |
+| Selección de páginas | `page_selector.py` | Opt-in por tipo (`page_selection`): recorta a las páginas con los marcadores del tipo antes de extraer; fail-open si nada califica. |
+| Extracción | `deterministic_text.py`, `text_extractor.py` | Patrones declarados en el catálogo resuelven lo que pueden; solo las ramas faltantes van a Bedrock, con respuesta compacta. Modos y rollback: [`MODOS_EXTRACCION.md`](MODOS_EXTRACCION.md), [`EXTRACCION_DETERMINISTICA_E_HIBRIDA.md`](EXTRACCION_DETERMINISTICA_E_HIBRIDA.md). |
+| Autenticidad | `authenticity.py` | Opt-in por tipo: integridad del archivo, estructura del PDF, pixeles, visión y memoria. Guía: [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md). |
+| Normalización y reglas | `normalize.py`, `qr_recovery.py`, `derived.py`, `validators/engine.py` | Recuperación por regex/QR, campos derivados, y el motor de reglas que decide el estado de cada campo y documento. |
+| Reglas entre documentos | `expediente.py` | Mismo pedimento, RFC, UUIDs únicos, conciliación de importes. |
+| Envelope | `envelope.py` | `documents[]` siempre presente, recortado a presupuesto; el detalle completo vive en `results/`. |
 
-**Por camino de ejecución** (ver diagrama de flujo más abajo):
+XML y tabulares son código puro: cero Bedrock, cero Textract.
 
-- **Camino A — Expediente** (cualquier tipo `fields`): Bedrock **nunca ve una imagen**. Cada página primero pasa por **(4) pypdf** si tiene capa de texto nativa; si no (escaneo) o el texto se ve corrupto, cae a Textract OCR (`DetectDocumentText`, no `AnalyzeID`) **en paralelo** por página (`pdf_pages.py`). Un tipo determinístico puede declarar `text_acquisition.ocr_mode: only_if_deterministic_incomplete`: con el kill switch global `DEFERRED_OCR_ENABLED=true`, `pipeline/text_acquisition.py` prueba primero el texto nativo y omite Textract solo si el perfil resolvió todos sus `expected_fields`; cualquier duda vuelve al OCR inmediato anterior. El texto resultante se estructura normalmente con Bedrock, salvo tipos que activen **(5) mapeo determinístico**: éstos resuelven primero sus `text_source`; el `fallback` del catálogo decide si las ramas faltantes van al modelo o a revisión. `PEDIMENTO_ERP` usa código estricto; `CERTIFICADO_POLIZA` reconoce perfiles `EMP`/`FL`/`GMM`/`SV`, usa código para un layout conocido y abre IA parcial o completa sólo según el fallback. En dev, `extractionMode=model|hybrid|deterministic` permite comparar una carga sin cambiar el catálogo. El default global es `catalog`, para que cada tipo conserve su política; semántica, inventario y observabilidad en [MODOS_EXTRACCION.md](MODOS_EXTRACCION.md). Una imagen suelta (JPG/PNG, `load_image_page`) salta pypdf y va directo a Textract. Encima, QR, derivados y normalización usan **(6) código puro**.
-- **Camino B — Flujo estándar** (tipos legacy DSL, hoy aparcados en `catalogs/save/` — ningún tipo activo lo usa): **(1) Solo IA** por defecto — Bedrock recibe el documento como imagen/PDF y clasifica + extrae en un solo paso, sin OCR de ningún tipo. Si el tipo declara `extraction_strategy` en su catálogo y la extracción inicial falla checks estructurales, se reintenta con **(2) Textract solo** (`textract_analyze_id`, JPEG/PNG únicamente) o **(3) Textract + IA** (`textract_bedrock`, cualquier formato) — ver `handler.py::_try_reextract`. Ningún catálogo activo hoy configura `extraction_strategy`, así que las filas 2 y 3 existen en código pero están dormidas en producción.
-- **Tipos con fuente XML** (`_XML`, `xpath` en vez de `hint`) y **tipos con fuente tabular** (`_XLSX`/`_CSV`, `cell`/`column`): siempre **(6) código puro** — cero Bedrock, cero Textract, `source: "XML_EXTRACTION"` en la salida en vez de `"MODEL_EXTRACTION"`. Detalle completo: [`../catalogs/README.md`](../catalogs/README.md#tipos-con-fuente-xml-xpath-item_xpath-namespaces).
+## Componentes
 
-En resumen, para los tipos field-centric activos, **nunca es "solo IA"**: todo
-PDF/imagen pasa primero por pypdf o Textract antes de estructurarse con código o
-Bedrock. "Solo IA" (fila 1) y "Textract solo" (fila 2) son caminos reales del
-código, verificados y probados, pero sólo se activan si se revive un tipo legacy
-en `catalogs/` o si un tipo declara `extraction_strategy`.
+| Pieza | Rol |
+| --- | --- |
+| **Upload Lambda** | `POST /documents`: valida, aplica el tope diario por app, reserva el id y firma el `PUT`. |
+| **Enrichment Lambda** | Todo el procesamiento (`handler.py` + `pipeline/` + `validators/`). 15 min, 1536 MB. |
+| **AsyncFailureFinalizer** | Destino de falla del invoke asíncrono: `FAILED` + evento. |
+| **Status Lambda** | Proyecta los eventos terminales al ciclo público `FINISHED`/`FAILED`; Enrichment ya escribe el estado, esto mantiene el contrato para otros productores. |
+| **Query Lambda** | Lectura, búsqueda, `PATCH` de metadata y reprocess (copia el original a una llave `source/` nueva con id nuevo). Aplica el alcance por app. |
+| **References Lambda** | Mismo asset que Enrichment con otro handler; registra y consulta firmas/sellos/logos de referencia. |
+| **S3 documentos** | `source/` (originales), `results/` (resultados completos), `references/` (imágenes de referencia). `raw/`, `processed/` y `failed/` son históricos: Query los usa como fallback para filas sin `SourceKey`. |
+| **DynamoDB documentos** | Ciclo `AWAITING_UPLOAD → PROCESSING → FINISHED`/`FAILED`, envelope compacto, `Metadata` mutable, columnas indexadas por tipo. |
+| **DynamoDB catálogo** | Tipos y reglas editables en caliente (`pnpm sync`), `RETAIN`; gana sobre el JSON empaquetado. |
+| **DynamoDB auxiliares** | Costos por documento, llaves únicas, huellas de autenticidad, apps y uso diario. |
+| **S3 Vectors** | Índice derivado de referencias (Titan Multimodal, 1024 dim); `pnpm refs:reindex` lo reconstruye. |
+| **EventBridge `idp-broker`** | Notificación terminal con el id; el resultado se consulta por id. |
+| **KMS** | En prod un CMK compartido cifra todo el pipeline; dev usa cifrado administrado por cada servicio. |
 
----
+Dev y prod son dos stacks completos y aislados; WAF, dominio propio y API keys
+obligatorias solo en prod. Detalle en
+[`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md). Los logical IDs del
+bucket y la tabla están fijados por `scripts/check-infra-migration.mjs`, que
+bloquea un deploy que intentara reemplazarlos.
 
-## Arquitectura AWS
+## Modelos
 
-Todo el stack es serverless (`DocumentValidationStack-Dev` en dev,
-`DocumentValidationStack` en prod — dos stacks aislados y completos, ver
-[`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md)). Bucket, SQS/DLQ,
-consumidor, tabla de tracking y Step Function viven en el construct propio
-`multi-model-document-processing.ts`; ya no se parchea ni se importa
-`@cdklabs/cdk-appmod-catalog-blueprints`. Los logical IDs históricos están
-fijados por `scripts/check-infra-migration.mjs`, que bloquea un deploy si un
-refactor intentara reemplazar los recursos stateful.
+Todas las llamadas usan Bedrock **Converse**, agnóstica del proveedor; cada
+etapa puede usar un modelo distinto vía `.env.dev`/`.env.production` (requiere
+redeploy y tener habilitado el "Model access" de esa familia).
 
-Los colores de los nodos siguen la paleta oficial por categoría de servicio de AWS (la misma de los AWS Architecture Icons), para que cada pieza se identifique de un vistazo:
+| Variable | Etapa | ¿Visión? |
+| --- | --- | --- |
+| `BEDROCK_MODEL_ID` | Modelo base de todas las etapas | — |
+| `BEDROCK_SEGMENTER_MODEL_ID` | Segmentación | No |
+| `BEDROCK_EXTRACTOR_MODEL_ID` | Extracción (la mayor parte de los tokens) | No |
+| `BEDROCK_RECOVERY_MODEL_ID` | Re-extracción Textract + modelo | No |
+| `BEDROCK_VISION_MODEL_ID` | Autenticidad física | **Sí** — nunca hereda el modelo base |
 
-🟠 Compute (Lambda) · 🟢 Storage (S3) · 🔵 Database (DynamoDB) · 🩷 App Integration (SQS, EventBridge, Step Functions) · 🟣 Networking (API Gateway) · 🔴 Security (KMS) · 🩵 Machine Learning (Bedrock, Textract) · ⚫ Cliente / externo
-
-![Diagrama de arquitectura AWS: Cliente registra el documento por API Gateway, sube directo a S3 raw/ con URL prefirmada, dispara SQS y Step Functions; la Enrichment Lambda escribe resultados y la Query Lambda atiende consultas, PATCH de metadata y reprocesos que copian el original de vuelta a raw/.](diagrams/arquitectura-aws.png)
-
-_Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mmd)._
-
-**Piezas clave:**
-
-| Pieza                          | Rol                                                                                                                                                                                                                                                              |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Upload Lambda**              | Valida el request, reserva el id con `ProcessingStatus=AWAITING_UPLOAD` y devuelve una URL prefirmada; el cliente siempre escribe directo a `S3 raw/`, para cualquier tamaño. El prefijo `raw/{TIPO}/` es cómo se "fuerza" la clasificación. |
-| **S3 `raw/`**                  | Recibir un objeto aquí dispara todo el pipeline (trigger vía SQS → Step Functions).                                                                                                                                                                              |
-| **Step Functions**             | Orquestador propio con una sola entrada. `pipelineRoute=enrichment-only` salta clasificación/procesamiento upstream para un tipo field-centric declarado; `standard` conserva clasificación y extracción legacy. Cualquier duda al consultar catálogo cae a `standard`. |
-| **Enrichment Lambda** ⭐       | El cerebro: aquí vive `handler.py` y todo `pipeline/`. Ver diagrama de flujo abajo.                                                                                                                                                                              |
-| **Textract**                   | OCR **solo** en páginas de PDF sin capa de texto (el resto usa pypdf, gratis).                                                                                                                                                                                   |
-| **DynamoDB catálogo**          | Tipos y reglas editables en caliente (`pnpm sync`), `RETAIN` — sobrevive a un `destroy` del stack. Gana siempre sobre el JSON empaquetado en runtime.                                                                                                            |
-| **DynamoDB huellas**           | `document-validation-fingerprints[-dev]`, `RETAIN`. Memoria de la etapa de autenticidad física: huella de tinta de cada firma/sello visto, hash de imágenes incrustadas bajo ellos e identidad de cada carta (para detectar la MISMA firma en la carta de otro empleado), más las **referencias registradas por proveedor** (`pnpm refs:*`; sus imágenes viven en `S3 references/`). Solo la tocan los tipos que declaran `authenticity`. Las reservas `PENDING` de la API de referencias llevan TTL (`ExpiresAt`, 24 h); una referencia activa nunca. |
-| **References Lambda**          | `ReferencesLambda`: Python 3.12, el **mismo asset** que la Enrichment Lambda con otro handler (`references_api.handler`), 29 s, 1024 MB. Atiende `/references/{scope}/{key}…` (reservar, confirmar, listar, ver, dar de baja las firmas/sellos/logos válidos de una entidad) con el mismo código que `pnpm refs:*` (`pipeline/reference_registry.py`). Exige `AllowReferenceWrite` de la app en todas sus rutas y falla cerrado. Mínimo privilegio: tabla de huellas, prefijos `references/` y `references-pending/` del bucket (este último con lifecycle de 1 día), `InvokeModel` de Bedrock y el índice vectorial — nunca un documento. **No aparece en el diagrama de arriba** (pendiente de agregar al `.mmd` y regenerar el PNG). |
-| **S3 Vectors (índice de referencias)** | Bucket vectorial `document-validation-references[-dev]`, índice `references-titan-multimodal-1024` (1024 dimensiones, coseno): un vector por referencia activa, embebido con Amazon Titan Multimodal Embeddings G1 (`amazon.titan-embed-image-v1`). Responde «¿de quién es este sello?» cuando la carga no trae proveedor (`authenticity.references.search`). **Derivado**: cada fila de referencia guarda su propio vector y `pnpm refs:reindex` reconstruye el índice. La References Lambda escribe; la Enrichment Lambda solo consulta. Cifrado por default (SSE-S3) en ambos ambientes. Tampoco está en el diagrama. |
-| **DynamoDB apps + uso**        | `document-validation-apps[-dev]` (registro de apps: nombre, permisos y `MaxDocsPerDay`, escrito solo por `pnpm apps:*`) y `document-validation-app-usage[-dev]` (contador de documentos por app y día UTC, TTL 90 días). Upload Lambda y Query Lambda leen la app de cada `x-api-key`; en `POST /documents` y reprocess suman al contador y responden `429 DAILY_DOCUMENT_LIMIT` al llegar al tope. Los `GET` nunca lo tocan. Ver "Límites por app" en [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md). |
-| **DynamoDB tracking**          | Desde el registro guarda el ciclo público `AWAITING_UPLOAD → QUEUED → PROCESSING → FINISHED` (`FAILED` en falla técnica); después contiene el envelope **compacto** y la columna mutable `Metadata`. `PATCH /documents/{id}/metadata` no altera la validación ni el snapshot de S3. |
-| **S3 `results/`**              | Resultado **completo**: todos los campos, arrays completos, checks y confianzas.                                                                                                                                                                                 |
-| **EventBridge (`idp-broker`)** | Publica la notificación terminal (`document-processed-successful` o `document-processing-failed`) con el id y datos de origen. El resultado enriquecido se consulta por id en DynamoDB/S3.                                                                         |
-| **Status Lambda**              | Consume ambos eventos terminales y proyecta el detalle interno del workflow al contrato público `FINISHED`/`FAILED`, después del movimiento del archivo. |
-| **Query Lambda**               | Atiende `GET /documents*`, `PATCH /documents/{id}/metadata` y `POST /documents/{id}/reprocess`: aplica alcance por app, lee DynamoDB/S3 y, al reprocesar, reserva un id nuevo y copia el original server-side de `processed/`/`failed/` a `raw/`.                                                                          |
-| **KMS**                        | En prod, un CMK compartido cifra los recursos del pipeline, incluido S3. Dev usa cifrado administrado por cada servicio y no crea CMKs propios. Ver `COSTOS.md`.                                                                                                  |
-
-Seguridad por ambiente: WAFv2, dominio propio y API keys obligatorias solo en **prod**, gateados por `environment === "prod"`; dev exige keys solo con `DEV_API_KEY_REQUIRED=true` y siempre tiene un throttle de stage compartido. Los límites por app (throttle de escritura, throttle de `GET`, documentos/día y techo de requests) aplican en ambos — detalle completo en [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md).
-
----
-
-## Flujo de ejecución
-
-El `handler.py` de la Enrichment Lambda bifurca en dos caminos según el tipo de documento clasificado. Mismos colores por servicio que el diagrama de arquitectura: 🟠 Compute (Lambda/lógica propia) · 🟢 Storage (S3) · 🔵 Database (DynamoDB) · 🩷 App Integration (EventBridge/Step Functions) · 🩵 Machine Learning (Bedrock/Textract).
-
-![Diagrama de flujo de ejecución: un documento en S3 raw/ pasa por Step Functions, la Enrichment Lambda decide entre el Camino A (pipeline de expediente: pdf_pages, segmenter, text_extractor, normalize+engine, reglas cross-documento) o el Camino B (flujo estándar: reutiliza extracción, validator_module, fallback Textract, custom_validator); ambos producen un envelope para DynamoDB y el Camino A también persiste el resultado profundo en S3 results/.](diagrams/flujo-ejecucion.png)
-
-_Fuente editable: [`diagrams/flujo-ejecucion.mmd`](diagrams/flujo-ejecucion.mmd)._
-
-**Notas de enrutamiento y detalle por paso** (recortado del diagrama para que quepa en una vista — la traza completa está en `TRAZA_CODIGO_COMPLETA.md`):
-
-- La condición de la izquierda decide el **camino de extracción**; `pipeline: "expediente"` en el catálogo controla además, por separado, la **candidatura a auto-segmentación** (solo tipos con ese flag se consideran cuando el PDF se sube sin declarar tipo) y la **elegibilidad para reglas cross-documento**. Detalle: [`../catalogs/README.md`](../catalogs/README.md#pipeline-expediente-qué-controla-realmente).
-- Antes de enrichment, un tipo field-centric declarado toma el atajo de la
-  state machine y evita por completo las dos invocaciones upstream. AUTO,
-  múltiples tipos, tipos legacy o una falla de catálogo toman el flujo
-  estándar; en clasificación automática sí existe una llamada upstream.
-- **Camino A, paso 1**: `pdf_pages.load_pages` — texto nativo (pypdf, layout) + Textract OCR **en paralelo** solo en páginas escaneadas; para tipos opt-in, `text_acquisition.load_pdf_pages` puede diferirlo y `pdf_pages.apply_ocr` lo recupera bajo demanda.
-- **Camino A, paso 2**: `segmenter.segment_pages` — si el uploader declaró el tipo (`declared_type`), 1 solo segmento sin llamar al modelo; si no, Bedrock clasifica los rangos de página.
-- **Camino A, paso 2.5 — selección de páginas de interés** (`page_selector.py`, opt-in por tipo): antes de extraer, cada segmento se recorta a las páginas cuyo texto cumple los marcadores que el tipo declara en `page_selection`. Es puro regex sobre texto que ya se tenía: $0 de AWS, y el ahorro cae entero del lado de Bedrock — medido, un expediente de 86 páginas subido con el tipo declarado pasa de mandar 86 páginas a mandar 16 (**81 % menos**). Solo la llamada de extracción ve las páginas filtradas; `_text` (reglas cross-documento) y la búsqueda del QR conservan el segmento completo, porque son gratis y recortarlas solo podría perder información. Si ninguna página alcanza el umbral, o la selección resulta demasiado amplia para ser creíble, se procesan **todas** (fail-open) — nunca se recorta una selección para que quepa en un número. Un tipo sin `page_selection` no pasa por aquí. Spec: `catalogs/README.md`.
-- **Camino A, paso 3**: extracción por segmento **paralela** (`ThreadPoolExecutor`, env var `EXTRACT_WORKERS`) vía `text_extractor.extract_document`, con el schema del catálogo.
-- **Camino A, paso 3.5 — autenticidad e integridad** (`authenticity.py`, opt-in por tipo con campos `authenticity_source` — normalmente `"$presets": ["INTEGRIDAD_PDF"]` — y un bloque `authenticity` opcional): pasada propia entre extracción y validación, cronometrada en `tracking.timings.authenticity`. Las capas corren **bajo demanda**: solo las que algún campo del tipo lee. Capa 0, **integridad del archivo** (`pdf_integrity.py`, gratis, determinista): lee los bytes ORIGINALES de la carga — `process_pdf` los guarda antes de `_truncate_pdf`, porque el recorte reescribe el PDF y borraría la evidencia — para saber si el archivo fue tocado después de generarse (guardados incrementales, fechas, editor en los metadatos, anotaciones, formularios, texto sobre el escaneo, imagen sobre el texto, firma digital que ya no cubre el archivo, EXIF). Luego las cuatro de captura física: **estructura del PDF** (pypdf: texto visible vs invisible, cobertura de cada imagen — determinista y gratis, detecta un Word con la firma pegada), **pixeles** (numpy: ruido del papel), **visión** (Bedrock con imagen: ubica firma/sello/logo y examina recortes contra las referencias registradas del proveedor) y **memoria** (DynamoDB: la misma firma bajo la carta de otro empleado). Escribe campos `computed` que el motor califica en el paso 4-5 — qué rechaza y qué manda a revisión es `on_fail` en el catálogo. Un tipo sin el bloque no pasa por aquí. Si la etapa no puede correr, el documento va a revisión: nunca aprueba callado.
-- **Camino A, paso 4-5**: `normalize._recover_references` (regex) + `liquidacion.build_liquidacion_normalizada` + `qr_recovery` (si `QR_RECOVERY_ENABLED`), luego `engine.run_rules`/`resolve_fields`/`document_status`.
-- **Camino A, paso 6**: `_run_cross_document_rules` — mismo pedimento, RFC importador, UUIDs únicos, conciliación de gastos/valores.
-- El Camino B (`custom_validators/*.mjs`, `validator_module`) **no corre** para tipos field-centric como `PEDIMENTO_ADUANAL`; solo aplica a entradas que aún usan el DSL legacy.
-- Tiempos medidos: 1 página ≈ 30 s · 27 páginas escaneadas ≈ 4 min · 86 páginas ≈ 6-8 min (límite duro de la Lambda: 15 min).
-
-Recorrido con referencias exactas a archivo:línea, payloads y llamadas externas: **[`TRAZA_CODIGO_COMPLETA.md`](TRAZA_CODIGO_COMPLETA.md)**.
+La extracción corre siempre sobre texto, así que admite modelos sin visión. Qué
+exige cada etapa de un modelo (tool use forzado, prompt caching, visión) y qué
+se probó: [`MODELOS_TEXTO.md`](MODELOS_TEXTO.md),
+[`MODELOS_VISION.md`](MODELOS_VISION.md). Costos: [`COSTOS.md`](COSTOS.md).
+Latencia medida por tramo: [`LATENCIA.md`](LATENCIA.md).

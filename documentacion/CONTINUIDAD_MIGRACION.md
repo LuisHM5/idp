@@ -297,9 +297,7 @@ EventBridge. Esto evita sumar serialmente tres round trips independientes.
 | `scripts/check-infra-migration.mjs` | Gate nuevo: bucket/tabla/bus estables, sin SQS/SFN, triggers sólo source/raw, retries + destino de falla. |
 | `tests/unit/...` | Contratos de keys `source/`, prefijo legacy, adaptador S3 y métricas directas. |
 
-No se hizo commit, por petición expresa del usuario. No se actualizaron los
-diagramas ni la documentación arquitectónica extensa en esta fase, también por
-petición expresa; quedan deliberadamente pendientes.
+No se hizo commit, por petición expresa del usuario.
 
 ## 8. Verificación realizada
 
@@ -344,9 +342,43 @@ Resultados relevantes:
    `source/` como para una fila histórica `processed/failed/`.
 7. Forzar una excepción de Enrichment en dev y comprobar dos retries +
    `AsyncFailureFinalizer` + estado `FAILED`.
-8. Actualizar después, en un cambio separado, `ARQUITECTURA.md`,
-   `TRAZA_CODIGO_COMPLETA.md`, `LATENCIA.md`, `LATENCIA_RESPUESTA.md`, diagramas
-   Mermaid/PNG y las referencias `raw/processed/failed` de las API docs.
+8. `ARQUITECTURA.md` ya describe el flujo directo y es el único documento y
+   diagrama de arquitectura (ver 9.1). Siguen con texto del pipeline anterior
+   `LATENCIA.md`, `LATENCIA_RESPUESTA.md`, `COSTOS.md`, `APIS_INTEGRACION.md`,
+   `catalogs/README.md` y las referencias `raw/processed/failed` de las API docs.
+9. Tras el deploy, quitar de `iam-policy.json` los permisos `states:*`/`sqs:*`:
+   hoy siguen ahí a propósito, porque CloudFormation los necesita para BORRAR
+   la state machine y las colas en ese mismo deploy.
+
+### 9.1 Revisión del 2026-10-13 (segunda pasada)
+
+Correcciones sobre lo descrito en las secciones 6 y 7:
+
+- **Permiso faltante.** La Enrichment Lambda solo tenía escritura sobre la
+  tabla de documentos, pero el claim lee la fila cuando llega una entrega
+  duplicada: habría fallado con `AccessDenied`. Ahora `grantReadWriteData`.
+- **Documento atorado en `PROCESSING`.** Un intento que muere sin liberar su
+  claim (falta de memoria, crash del runtime) dejaba una lease de ~15 min; los
+  dos reintentos de Lambda llegan a 1 y 2 min, se veían como duplicados y
+  terminaban "bien", así que el finalizador nunca corría. El claim guarda ahora
+  `ProcessingRequestId`: Lambda reutiliza el request id al reintentar, y ese
+  reintento retoma su propio claim.
+- **Llaves que no son documentos** (marcador de carpeta, `raw/archivo.pdf`):
+  antes lanzaban excepción, gastaban los reintentos y el finalizador creaba una
+  fila `FAILED` con un id inventado. Ahora se ignoran en ambos lados.
+- **Original ilegible en el ingreso directo:** antes caía al flujo legacy y
+  terminaba `FINISHED` validando un documento vacío. Ahora lanza
+  `_SourceUnavailable` y se reintenta.
+- El finalizador reporta la causa real (`condition` + error de la función).
+- Tests nuevos: `tests/unit/test_direct_ingress.py` (claim, lease, reintento,
+  republicación, finalizador) evaluando las expresiones reales de DynamoDB.
+
+Purga: se eliminaron `resources/sqs-consumer/`, `resources/model-invoke-lambda/`,
+`src/prompt-generator.ts`, `src/document-catalog.ts`, `pnpm preview-prompts`,
+`pnpm track`, sus tests, la carpeta `documentacion/diagrams/`, `arquitectura/`,
+`ARQUITECTURA.pdf`, `FLUJO_EJECUCION.md` y `TRAZA_CODIGO_COMPLETA.md`.
+`pnpm resultado` y `pnpm test:e2e:pedimento` leen ahora la fila de DynamoDB en
+vez de la ejecución de Step Functions; no se han corrido contra AWS.
 
 ## 10. Riesgos y decisiones que no deben perderse
 
