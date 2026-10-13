@@ -18,11 +18,6 @@ import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
 import { DocumentEventBroker } from "./document-processing/event-broker";
 import { MultiModelDocumentProcessing } from "./document-processing/multi-model-document-processing";
-import {
-  assertPromptFitsLambdaEnv,
-  generateClassificationPrompt,
-  generateProcessingPrompt,
-} from "./prompt-generator";
 
 /**
  * GSI que indexa el tipo de documento (PK DocumentType, SK ProcessedAt).
@@ -165,7 +160,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     const enableDynamo = props?.enableDynamoCatalog ?? false;
     const forceReload = props?.forceReloadCatalog ?? false;
     const enableFallbackModels = props?.enableFallbackModels ?? false;
-    // Base model for every step. Each step below can be pointed at a different
+    // Base model for every AI-capable enrichment stage. Each stage can use a different
     // Bedrock model — any model, not just Anthropic — to trade cost against
     // accuracy per step. Unset overrides fall back to this one, so
     // BEDROCK_MODEL_ID alone still configures the whole pipeline.
@@ -174,14 +169,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // a step, check the model offers: Converse; forced tool use (the enrichment
     // extractor relies on it for 100+ field catalogs); prompt caching (ignored
     // silently when unsupported — no error, but the cache discount is lost);
-    // and vision, which only the classification/extraction steps here need.
+    // and vision when the authenticity stage needs it.
     const bedrockModel =
       process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-    // Vision-capable steps (they receive the document image/PDF itself).
-    const classificationModel =
-      process.env.BEDROCK_CLASSIFICATION_MODEL_ID || bedrockModel;
-    const processingModel =
-      process.env.BEDROCK_PROCESSING_MODEL_ID || bedrockModel;
 
     // Environment gate: prod hardens the API (keys + WAF + custom domain);
     // dev stays open on the random execute-api URL.
@@ -212,12 +202,6 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       name: `idp-broker${envSuffix}`,
       kmsKey: encryptionKey,
     });
-
-    // Generate prompts dynamically from the JSON config catalog
-    const classificationPrompt = generateClassificationPrompt();
-    const processingPrompt = generateProcessingPrompt();
-    assertPromptFitsLambdaEnv("clasificacion", classificationPrompt);
-    assertPromptFitsLambdaEnv("extraccion", processingPrompt);
 
     // Optional: DynamoDB catalog table for runtime hot-reload
     // Uses existing table if it already exists (RETAIN policy = never deleted on stack destroy)
@@ -460,30 +444,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     // Main document processing pipeline
     const pipeline = new MultiModelDocumentProcessing(this, "BedrockDocumentProcessing", {
-      classificationBedrockModel: {
-        useCrossRegionInference: false,
-        customModelId: classificationModel,
-      },
-      processingBedrockModel: {
-        useCrossRegionInference: false,
-        customModelId: processingModel,
-      },
       eventBus: broker.eventbus,
       eventSource: "document-validation-pipeline",
       enableObservability: true,
       metricNamespace: "bedrock-document-processing",
       metricServiceName: "extraction-workflow",
-      // Must exceed the enrichment Lambda's own 15-minute timeout (below):
-      // It must not equal the Lambda's 15-minute cap. When both are equal, a genuine
-      // Lambda timeout and the state machine's own ExecutionTimedOut race —
-      // ExecutionTimedOut usually wins, killing the whole execution before
-      // the enrichment step's addCatch can run, so the file never moves out
-      // of raw/ into failed/ and the item is never marked enrichment-failure.
-      // The extra minute gives the Lambda's timeout time to surface as a
-      // catchable task failure instead.
-      workflowTimeout: cdk.Duration.minutes(16),
-      classificationPrompt,
-      processingPrompt,
       enrichmentLambdaFunction: enrichmentFn,
       catalogTable,
       // Prod shares one CMK across the whole construct. Dev uses service-owned
@@ -494,8 +459,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     // Tipo de documento como COLUMNA INDEXADA.
     //
-    // El workflow solo guarda `EnrichmentResult` (el envelope entero como JSON
-    // string), así que filtrar por tipo obligaba a un Scan completo de la tabla
+    // Enrichment guarda `EnrichmentResult` (el envelope entero como JSON
+    // string), así que filtrar por tipo obligaría a un Scan completo de la tabla
     // + parseo en la Lambda. El enrichment Lambda promueve ahora el tipo final
     // (el que dictamina el segmentador, no la clasificación de visión de
     // upstream) a atributos de primer nivel — ver `enrichment-lambda/indexing.py` —
@@ -527,9 +492,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
     documentTable.grantWriteData(enrichmentFn);
 
-    // The state machine owns WorkflowStatus and exposes implementation-specific
-    // values. This projection creates the small, stable lifecycle clients use
-    // and marks the terminal state only after the file move and final event.
+    // Direct enrichment already persists the terminal status atomically. This
+    // listener preserves the established EventBridge projection for external
+    // producers and deployments that still have an old execution draining.
     const statusEventFn = new lambda.Function(this, "ProcessingStatusEventLambda", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
@@ -952,7 +917,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // PATCH updates metadata; POST /documents/{id}/reprocess reserves a new
     // job row and marks it FAILED if its internal S3 copy cannot be created.
     documentTable.grant(queryFn, "dynamodb:PutItem", "dynamodb:UpdateItem");
-    // Reprocess reads processed/failed and writes a server-side copy to raw/.
+    // Reprocess reads the stable source object (or historical locations) and
+    // writes a server-side copy to a new source/ key.
     // Keep DeleteObject out of this Lambda: CopyObject only needs source read
     // + destination put. The two grants also carry matching KMS permissions.
     documentBucket.grantRead(queryFn);
@@ -1229,7 +1195,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // registered reference images of the authenticity stage are stored.
     new cdk.CfnOutput(this, "DocumentBucketName", {
       value: documentBucket.bucketName,
-      description: "Bucket de documentos (raw/, processed/, results/, references/)",
+      description: "Bucket de documentos (source/, results/, references/; raw/ histórico)",
     });
     new cdk.CfnOutput(this, "FingerprintTableName", {
       value: fingerprintTable.tableName,

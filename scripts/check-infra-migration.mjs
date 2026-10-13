@@ -1,11 +1,5 @@
 #!/usr/bin/env node
-/**
- * Deployment gate for the catalog-blueprints removal.
- *
- * These logical ids identify resources that already hold data or sit on the
- * live ingestion path. A refactor that changes one must be handled as an
- * explicit CloudFormation import/migration, never as an ordinary deploy.
- */
+/** Deployment gate for the direct S3 -> Enrichment migration. */
 import fs from "node:fs";
 import path from "node:path";
 
@@ -18,93 +12,66 @@ if (!fs.existsSync(templatePath)) {
   throw new Error(`No existe ${templatePath}; ejecuta synth antes de esta verificación`);
 }
 const template = JSON.parse(fs.readFileSync(templatePath, "utf8"));
+const resources = template.Resources || {};
+
 const expected = {
   IDPBrokerEventBus3145175C: "AWS::Events::EventBus",
   BedrockDocumentProcessingDocumentProcessingBucket32BD72F9: "AWS::S3::Bucket",
-  BedrockDocumentProcessingDocumentProcessingDLQ21393F89: "AWS::SQS::Queue",
-  BedrockDocumentProcessingDocumentProcessingQueue7C8A9064: "AWS::SQS::Queue",
   BedrockDocumentProcessingDocumentProcessingTableD87A7B20: "AWS::DynamoDB::Table",
-  BedrockDocumentProcessingbedrockdocumentprocessingworkflow1851BBD2:
-    "AWS::StepFunctions::StateMachine",
 };
-
 for (const [logicalId, type] of Object.entries(expected)) {
-  const resource = template.Resources?.[logicalId];
-  if (!resource || resource.Type !== type) {
-    throw new Error(
-      `Migración insegura: falta ${logicalId} (${type}). ` +
-        "Detén el deploy y prepara retain/import explícito."
-    );
+  if (resources[logicalId]?.Type !== type) {
+    throw new Error(`Migración insegura: falta ${logicalId} (${type})`);
   }
 }
 
-const mappings = Object.values(template.Resources).filter(
-  (resource) => resource.Type === "AWS::Lambda::EventSourceMapping"
-);
-if (
-  mappings.length !== 1 ||
-  mappings[0].Properties?.MaximumBatchingWindowInSeconds !== 0 ||
-  mappings[0].Properties?.FunctionResponseTypes?.[0] !== "ReportBatchItemFailures"
-) {
-  throw new Error(
-    "El ingress debe tener una sola fuente SQS, ventana 0 y fallas parciales habilitadas"
-  );
-}
-
-const stateMachine =
-  template.Resources[
-    "BedrockDocumentProcessingbedrockdocumentprocessingworkflow1851BBD2"
-  ];
-const definition = JSON.stringify(stateMachine.Properties);
-for (const state of [
-  "SelectCatalogPipelineRoute",
-  "PrepareDeclaredClassification",
-  "EnrichmentStep-0",
-  "EnrichmentStep-1",
+for (const forbidden of [
+  "AWS::SQS::Queue",
+  "AWS::Lambda::EventSourceMapping",
+  "AWS::StepFunctions::StateMachine",
 ]) {
-  if (!definition.includes(state)) {
-    throw new Error(`La state machine sintetizada perdió el estado requerido ${state}`);
-  }
-}
-for (const state of ["EnrichmentStep-0", "EnrichmentStep-1"]) {
-  const start = definition.indexOf(state);
-  const taskFragment = definition.slice(start, start + 1000);
-  if (taskFragment.includes("states:::lambda:invoke")) {
-    throw new Error(
-      `${state} perdió payloadResponseOnly: DynamoDB recibiría el envelope de Lambda`
-    );
+  const found = Object.entries(resources).filter(([, resource]) => resource.Type === forbidden);
+  if (found.length) {
+    throw new Error(`El ingress directo no debe sintetizar ${forbidden}: ${found.map(([id]) => id).join(", ")}`);
   }
 }
 
-function actionsFor(logicalId) {
-  const statements =
-    template.Resources?.[logicalId]?.Properties?.PolicyDocument?.Statement ?? [];
-  return statements.flatMap((statement) =>
-    Array.isArray(statement.Action) ? statement.Action : [statement.Action]
-  );
+const bucketNotifications = Object.values(resources).find(
+  (resource) => resource.Type === "Custom::S3BucketNotifications"
+);
+const lambdaConfigurations =
+  bucketNotifications?.Properties?.NotificationConfiguration?.LambdaFunctionConfigurations || [];
+const prefixes = lambdaConfigurations.flatMap((entry) =>
+  (entry.Filter?.Key?.FilterRules || [])
+    .filter((rule) => rule.Name === "prefix")
+    .map((rule) => rule.Value)
+);
+for (const required of ["source/", "raw/"]) {
+  if (!prefixes.includes(required)) throw new Error(`Falta trigger S3 directo para ${required}`);
+}
+for (const forbiddenPrefix of ["results/", "processed/", "failed/", "references/"]) {
+  if (prefixes.includes(forbiddenPrefix)) {
+    throw new Error(`El prefijo ${forbiddenPrefix} causaría un bucle de procesamiento`);
+  }
 }
 
-const workflowActions = actionsFor(
-  "BedrockDocumentProcessingbedrockdocumentprocessingworkflowRoleDefaultPolicy246F38EB"
+const asyncConfig = Object.values(resources).find(
+  (resource) => resource.Type === "AWS::Lambda::EventInvokeConfig"
 );
 if (
-  !workflowActions.some((action) => action?.startsWith("s3:GetObject")) ||
-  !workflowActions.includes("s3:PutObject") ||
-  !workflowActions.some((action) => action?.startsWith("s3:DeleteObject"))
+  !asyncConfig ||
+  asyncConfig.Properties?.MaximumRetryAttempts !== 2 ||
+  !asyncConfig.Properties?.DestinationConfig?.OnFailure
 ) {
-  throw new Error(
-    "La Step Function no tiene los permisos S3 completos para mover raw → processed/failed"
-  );
+  throw new Error("El invoke asíncrono debe conservar 2 reintentos y destino de falla");
 }
 
-const consumerActions = actionsFor(
-  "BedrockDocumentProcessingSQSConsumerServiceRoleDefaultPolicyBE69D1F6"
-);
-if (consumerActions.some((action) => action?.startsWith("bedrock:"))) {
-  throw new Error("El ingress SQS no debe tener permisos para invocar modelos Bedrock");
+const serialized = JSON.stringify(template);
+for (const removed of ["InitMetadataEntry", "StartExecution", "CopyToProcessed", "DeleteFromRawSuccess"]) {
+  if (serialized.includes(removed)) throw new Error(`Persistió el componente eliminado ${removed}`);
 }
 
 console.log(
-  `Infra migration contract OK (${stackName}): recursos stateful conservados, ` +
-    "un solo ingress, batching=0, rutas presentes y permisos mínimos verificados"
+  `Infra migration contract OK (${stackName}): bucket/tabla conservados, ` +
+    "S3 directo limitado a source/raw, sin SQS ni Step Functions y con recuperación asíncrona"
 );

@@ -71,3 +71,25 @@ def test_queue_and_orchestration_timings_expose_selected_route():
     assert result["tracking"]["timings"]["orchestrationBeforeExtraction"] == 1100.0
     assert result["tracking"]["timings"]["pageLoad"] == 100.0
     assert result["tracking"]["orchestration"] == {"route": "enrichment-only"}
+
+
+def test_direct_ingress_reports_only_real_direct_overhead():
+    result = {
+        "tracking": {
+            "processingStartedAt": "2026-10-13T20:01:59.020+00:00",
+            "processingCompletedAt": "2026-10-13T20:01:59.076+00:00",
+            "timings": {"pageLoad": 52.4},
+        }
+    }
+    handler._add_upload_to_result_tracking(
+        result,
+        {
+            "eventTime": "2026-10-13T20:01:58.900Z",
+            "handlerStartedAt": "2026-10-13T20:01:58.980Z",
+            "pipelineRoute": "direct-s3-lambda",
+        },
+    )
+    assert result["tracking"]["timings"]["ingressToHandler"] == 80.0
+    assert result["tracking"]["timings"]["preprocessing"] == 40.0
+    assert "queue" not in result["tracking"]["timings"]
+    assert result["tracking"]["orchestration"] == {"route": "direct-s3-lambda"}

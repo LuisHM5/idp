@@ -102,19 +102,19 @@ test("classificationMode: varios tipos es 'guided'", () => {
 test("la llave de un solo tipo es idéntica a la de siempre", () => {
   assert.equal(
     rawKeyFor(["PEDIMENTO_ADUANAL"], "uuid-1234", "pedimento.pdf"),
-    "raw/PEDIMENTO_ADUANAL/uuid-1234/pedimento.pdf"
+    "source/PEDIMENTO_ADUANAL/uuid-1234/pedimento.pdf"
   );
 });
 
 test("sin tipo declarado la llave no lleva segmento de tipo", () => {
-  assert.equal(rawKeyFor([], "uuid-1234", "pedimento.pdf"), "raw/uuid-1234/pedimento.pdf");
+  assert.equal(rawKeyFor([], "uuid-1234", "pedimento.pdf"), "source/uuid-1234/pedimento.pdf");
 });
 
 test("varios tipos van unidos por coma en UN solo segmento", () => {
   // Un segmento y no varios: el consumidor de SQS ancla el documentId en
   // `key_parts[-2]`, así que un segmento extra le cambiaría el id al documento.
   const key = rawKeyFor(["PEDIMENTO_ADUANAL", "FACTURA_HONORARIOS"], "uuid-1234", "exp.pdf");
-  assert.equal(key, "raw/PEDIMENTO_ADUANAL,FACTURA_HONORARIOS/uuid-1234/exp.pdf");
+  assert.equal(key, "source/PEDIMENTO_ADUANAL,FACTURA_HONORARIOS/uuid-1234/exp.pdf");
   assert.equal(key.split("/").length, 4);
 });
 
@@ -160,7 +160,7 @@ test("los tipos salen limpios: la cuenta no contamina la llave de S3", () => {
   assert.deepEqual(types, ["PEDIMENTO_ADUANAL", "FACTURA_HONORARIOS"]);
   assert.equal(
     rawKeyFor(types, "uuid-1", "e.pdf"),
-    "raw/PEDIMENTO_ADUANAL,FACTURA_HONORARIOS/uuid-1/e.pdf"
+    "source/PEDIMENTO_ADUANAL,FACTURA_HONORARIOS/uuid-1/e.pdf"
   );
 });
 

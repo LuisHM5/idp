@@ -48,6 +48,10 @@ test("omitting documentType inherits it from the old job row", () => {
     inheritedDocumentType({ UploadKey: "raw/PEDIMENTO_ERP/old-id/file.pdf" }),
     "PEDIMENTO_ERP"
   );
+  assert.equal(
+    inheritedDocumentType({ SourceKey: "source/PEDIMENTO_ERP/old-id/file.pdf" }),
+    "PEDIMENTO_ERP"
+  );
   assert.equal(inheritedDocumentType({ UploadKey: "raw/old-id/file.pdf" }), "");
   assert.equal(inheritedDocumentType({ RequestedDocumentType: "AUTO" }), "");
 });
@@ -55,7 +59,7 @@ test("omitting documentType inherits it from the old job row", () => {
 test("an explicit null documentType requests auto classification", () => {
   assert.deepEqual(parseReprocessTypes(null).types, []);
   assert.equal(classificationModeFor([]), "auto");
-  assert.equal(rawKeyFor([], "new-id", "file.pdf"), "raw/new-id/file.pdf");
+  assert.equal(rawKeyFor([], "new-id", "file.pdf"), "source/new-id/file.pdf");
 });
 
 test("multiple applies to all target types and counts travel as S3 metadata", () => {

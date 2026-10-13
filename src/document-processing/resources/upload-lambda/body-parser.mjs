@@ -220,7 +220,7 @@ const DOCUMENT_TYPE_SHAPE = /^[A-Z][A-Z0-9_]{0,63}$/;
 /**
  * How many types one upload may declare, and how long the joined string may
  * get. Both exist for the same reason: the declared types travel as ONE S3 key
- * segment (`raw/{A,B,C}/{uuid}/{file}`), and an S3 key is capped at 1024 bytes
+ * segment (`source/{A,B,C}/{uuid}/{file}`), and an S3 key is capped at 1024 bytes
  * for the whole path — uuid and filename included. 8 types is already far more
  * than any real expediente needs, and 200 chars leaves the rest of the key
  * plenty of room.
@@ -434,14 +434,14 @@ export function classificationModeFor(types) {
  * The S3 key the document is uploaded to.
  *
  * The declared types travel as ONE path segment, comma-joined — this key is
- * their only carrier, read back independently by the SQS consumer, the
- * model-invoke Lambda and the enrichment Lambda. With none declared the type
- * segment is absent entirely, which is exactly how those three readers tell
- * "auto-classify" from "the uploader said so".
+ * their only carrier, read directly by the enrichment Lambda. With none
+ * declared the type segment is absent entirely, which is how it tells
+ * "auto-classify" from "the uploader said so". The exported function name is
+ * retained for source compatibility.
  */
 export function rawKeyFor(types, documentId, fileName) {
   const declared = types.join(",");
   return declared
-    ? `raw/${declared}/${documentId}/${fileName}`
-    : `raw/${documentId}/${fileName}`;
+    ? `source/${declared}/${documentId}/${fileName}`
+    : `source/${documentId}/${fileName}`;
 }

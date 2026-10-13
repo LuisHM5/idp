@@ -1,7 +1,7 @@
 """Tests for handler.py's file-source routing helpers.
 
-`_declared_file_type` reads the explicit `content.fileType` the SQS consumer
-now sets (patches/default-sqs-consumer-index.py) — the single source of
+`_declared_file_type` reads the explicit `content.fileType` the direct S3
+adapter sets — the single source of
 truth for which pipeline (xml/tabular/pdf) a document routes to, preferred
 over re-parsing the S3 key's extension independently in every consumer.
 """
@@ -65,6 +65,12 @@ def test_declared_types_reads_one_type():
     ) == ["PEDIMENTO_ADUANAL"]
 
 
+def test_declared_types_reads_new_source_prefix():
+    assert handler._declared_types_from_key(
+        "source/PEDIMENTO_ADUANAL/uuid-1/file.pdf"
+    ) == ["PEDIMENTO_ADUANAL"]
+
+
 def test_declared_types_reads_a_comma_separated_list():
     assert handler._declared_types_from_key(
         "raw/PEDIMENTO_ADUANAL,FACTURA_HONORARIOS/uuid-1/file.pdf"
@@ -89,12 +95,34 @@ def test_declared_types_drops_types_the_catalog_does_not_know():
 
 
 def test_declared_types_is_empty_for_an_auto_classified_upload():
-    # raw/{uuid}/file — sin segmento de tipo. El uuid resuelve a OTRO.
+    # source/{uuid}/file — sin segmento de tipo. El uuid resuelve a OTRO.
     assert handler._declared_types_from_key(
         "raw/9f8e7d6c-1234-4321-abcd-000000000000/file.pdf"
     ) == []
     assert handler._declared_types_from_key("raw/file.pdf") == []
     assert handler._declared_types_from_key("") == []
+
+
+def test_native_s3_record_is_adapted_without_step_functions():
+    record = {
+        "eventSource": "aws:s3",
+        "eventName": "ObjectCreated:Put",
+        "eventTime": "2026-10-13T20:01:56.298Z",
+        "s3": {
+            "bucket": {"name": "docs"},
+            "object": {
+                "key": "source/CERTIFICADO_POLIZA/doc-1/emp_cert.pdf",
+                "sequencer": "ABC123",
+            },
+        },
+    }
+    event = handler._s3_record_to_event(record)
+    assert event["documentId"] == "doc-1"
+    assert event["classificationResult"]["documentClassification"] == "CERTIFICADO_POLIZA"
+    assert event["content"]["fileType"] == "pdf"
+    assert event["pipelineRoute"] == "direct-s3-lambda"
+    assert event["processingAttempt"] == "ABC123"
+    assert event["expediente"] is True
 
 
 # --- cuántos documentos de cada tipo buscar -----------------------------------

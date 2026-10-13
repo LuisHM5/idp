@@ -1,8 +1,8 @@
 """EnrichmentLambda handler - Config-driven validation engine.
 
-This handler is invoked by the Step Functions workflow after classification
-and extraction. It:
-1. Reads classificationResult and processingResult from the event
+The primary ingress is now an S3 ObjectCreated event for source/. The handler
+also accepts the former Step Functions payload while deployments drain. It:
+1. Claims each S3 object idempotently in DynamoDB
 2. Loads document type config from JSON file or DynamoDB (no code changes needed)
 3. Runs deterministic validation checks via the appropriate validator module
 4. Optionally re-extracts from the raw S3 object using a stronger
@@ -11,7 +11,7 @@ and extraction. It:
    fields or regex mismatches). Recovers CURP/RFC/Clave de Elector
    errors caused by weak vision OCR on photos.
 5. Optionally runs custom Node.js validators for advanced logic
-6. Returns a Canonical_Result with status and detailed checks
+6. Persists the result and publishes the existing terminal EventBridge event
 
 EXTENSIBILITY:
 - Add new document types under catalogs/base/** or catalogs/custom/**, then
@@ -27,11 +27,14 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote_plus
 
 from document_catalog import (
     CheckResult,
@@ -59,6 +62,9 @@ logger = logging.getLogger(__name__)
 _CUSTOM_VALIDATORS_DIR = Path(__file__).parent / "custom_validators"
 _FORCE_RELOAD = os.environ.get("CATALOG_FORCE_RELOAD", "false").lower() == "true"
 _STRUCTURAL_RULES = frozenset({"regex", "presence"})
+_SYSTEM_OBJECT_METADATA = frozenset(
+    {"app-origin", "model-id", "extraction-mode", "ai-response-format", "document-counts"}
+)
 
 
 def entities_to_map(entities: List[Dict[str, str]]) -> Dict[str, str]:
@@ -134,6 +140,24 @@ def _upload_metadata(event: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _apply_object_metadata(event: Dict[str, Any], metadata: Dict[str, str]) -> None:
+    """Restore upload context directly from the source object's metadata.
+
+    The removed SQS adapter used to perform this projection. Keeping it here
+    makes S3 the single source of truth and preserves the public envelope.
+    """
+    if not isinstance(metadata, dict):
+        return
+    app_origin = metadata.get("app-origin")
+    if app_origin and not event.get("appOrigin"):
+        event["appOrigin"] = str(app_origin)
+    event["uploadMetadata"] = {
+        str(key): str(value)
+        for key, value in metadata.items()
+        if key not in _SYSTEM_OBJECT_METADATA and value not in (None, "")
+    }
+
+
 def _parse_tracking_timestamp(value: Any) -> Optional[datetime]:
     """Parse an ISO timestamp carried by S3/Step Functions, normalized to UTC."""
     if not isinstance(value, str) or not value.strip():
@@ -154,8 +178,7 @@ def _add_upload_to_result_tracking(
 
     ``processingSeconds`` remains the pipeline-only duration. S3's ObjectCreated
     ``eventTime`` is the first trustworthy instant after the PUT completed, so
-    this metric additionally includes queueing, Step Functions/upstream stages
-    and enrichment. ``registeredAt`` is intentionally not used: requesting the
+    this metric additionally includes ingress and enrichment. ``registeredAt`` is intentionally not used: requesting the
     presigned URL can precede the real upload by many minutes.
     """
     tracking = result.get("tracking")
@@ -193,8 +216,21 @@ def _add_upload_to_result_tracking(
                 2,
             )
 
+        handler_started = _parse_tracking_timestamp(event.get("handlerStartedAt"))
+        if handler_started is not None:
+            timings["ingressToHandler"] = round(
+                max(0.0, (handler_started - uploaded).total_seconds()) * 1000,
+                2,
+            )
+        if handler_started is not None and processing_started is not None:
+            timings["preprocessing"] = round(
+                max(0.0, (processing_started - handler_started).total_seconds())
+                * 1000,
+                2,
+            )
+
     route = event.get("pipelineRoute")
-    if route in {"standard", "enrichment-only"}:
+    if route in {"standard", "enrichment-only", "direct-s3-lambda"}:
         tracking["orchestration"] = {"route": route}
 
 
@@ -342,12 +378,13 @@ def _declared_file_type(event: Dict[str, Any]) -> Optional[str]:
 def _declared_types_from_key(key: str) -> List[str]:
     """The document types the uploader declared, in order, from the S3 layout.
 
-    Manual classification places the object under `raw/{TYPE}/{uuid}/file`, so
+    Manual classification places the object under `source/{TYPE}/{uuid}/file`, so
     the second path segment names the type the uploader chose explicitly. When
     SEVERAL types were declared (`POST /documents` accepts them comma-separated
     so the pipeline searches for exactly those), that same segment holds them
-    all: `raw/{A,B}/{uuid}/file`. An auto-classified object is under
-    `raw/{uuid}/file`, with no type segment at all.
+    all: `source/{A,B}/{uuid}/file`. An auto-classified object is under
+    `source/{uuid}/file`, with no type segment at all. The former `raw/` prefix
+    remains accepted so presigned URLs issued immediately before a deploy work.
 
     Only types the catalog actually knows are kept — a bare UUID, or a name
     nobody registered, resolves to OTRO and is dropped, which degrades to
@@ -356,7 +393,7 @@ def _declared_types_from_key(key: str) -> List[str]:
     just falls back to auto-classification instead of failing.
     """
     parts = (key or "").split("/")
-    if len(parts) < 3 or parts[0] != "raw":
+    if len(parts) < 3 or parts[0] not in {"source", "raw"}:
         return []
     declared: List[str] = []
     for part in parts[1].split(","):
@@ -639,6 +676,8 @@ def _run_expediente(
         logger.error("failed to fetch s3://%s/%s: %s", bucket, key, e)
         return None
 
+    _apply_object_metadata(event, s3_metadata)
+
     expected_values = event.get("expectedValues") or {}
     # Honor an EXPLICIT user classification. When the uploader declares a type,
     # the file is stored under raw/{TYPE}/{uuid}/... — that user intent wins and
@@ -777,8 +816,220 @@ def _run_expediente(
     )
 
 
-def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
-    """Lambda handler entry point.
+def _s3_record_to_event(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapt one native S3 notification to the pipeline's stable input shape."""
+    bucket = str(record["s3"]["bucket"]["name"])
+    key = unquote_plus(str(record["s3"]["object"]["key"]))
+    parts = [part for part in key.split("/") if part]
+    if len(parts) < 3 or parts[0] not in {"source", "raw"}:
+        raise ValueError(f"unsupported document ingress key: {key}")
+    document_id = re.sub(r"[^a-zA-Z0-9-]", "-", parts[-2])
+    filename = parts[-1]
+    declared_types = _declared_types_from_key(key)
+    requested = ",".join(declared_types) if declared_types else "AUTO"
+    classification = declared_types[0] if len(declared_types) == 1 else "OTRO"
+    event_time = str(record.get("eventTime") or datetime.now(timezone.utc).isoformat())
+    sequencer = str((record.get("s3", {}).get("object", {}) or {}).get("sequencer") or "")
+    attempt = sequencer or f"{event_time}:{key}"
+    return {
+        "documentId": document_id,
+        "contentType": "file",
+        "content": {
+            "location": "s3",
+            "bucket": bucket,
+            "key": key,
+            "filename": filename,
+            "fileType": filename.rsplit(".", 1)[-1].lower() if "." in filename else "",
+        },
+        "eventTime": event_time,
+        "eventName": record.get("eventName"),
+        "source": "s3-direct",
+        "requestedDocumentType": requested,
+        "pipelineRoute": "direct-s3-lambda",
+        "handlerStartedAt": datetime.now(timezone.utc).isoformat(),
+        "processingAttempt": attempt,
+        "classificationResult": {"documentClassification": classification},
+        "processingResult": {"result": {"entities": []}},
+        # AUTO and guided uploads must reach the page segmenter. A single
+        # declared field-centric type also follows this same generic route.
+        "expediente": True,
+        "_directIngress": True,
+    }
+
+
+def _document_table():
+    import boto3
+
+    return boto3.resource("dynamodb").Table(os.environ["DOCUMENT_TABLE"])
+
+
+def _claim_direct_event(event: Dict[str, Any], context: Any = None) -> str:
+    """Claim an at-least-once S3 notification without reprocessing successes.
+
+    A lease protects against concurrent duplicate notifications. It expires a
+    few seconds before the Lambda timeout so an AWS async retry can recover a
+    forced timeout instead of leaving the document permanently PROCESSING.
+    """
+    now = datetime.now(timezone.utc)
+    now_epoch = int(now.timestamp())
+    remaining_ms = (
+        context.get_remaining_time_in_millis()
+        if context is not None and hasattr(context, "get_remaining_time_in_millis")
+        else 15 * 60 * 1000
+    )
+    lease_seconds = max(30, int(remaining_ms / 1000) - 10)
+    values = {
+        ":processing": "PROCESSING",
+        ":awaiting": "AWAITING_UPLOAD",
+        ":queued": "QUEUED",
+        ":failed": "FAILED",
+        ":now": now.isoformat(),
+        ":now_epoch": now_epoch,
+        ":lease": now_epoch + lease_seconds,
+        ":attempt": str(event["processingAttempt"]),
+        ":source": str(event["content"]["key"]),
+        ":uploaded": str(event.get("eventTime") or now.isoformat()),
+        ":workflow": "processing",
+    }
+    try:
+        _document_table().update_item(
+            Key={"DocumentId": event["documentId"]},
+            UpdateExpression=(
+                "SET #status = :processing, #workflow = :workflow, "
+                "ProcessingStatusUpdatedAt = :now, UploadedAt = if_not_exists(UploadedAt, :uploaded), "
+                "SourceKey = :source, ProcessingAttempt = :attempt, ProcessingLeaseUntil = :lease"
+            ),
+            ConditionExpression=(
+                "attribute_not_exists(#status) OR #status IN (:awaiting, :queued, :failed) "
+                "OR ProcessingLeaseUntil < :now_epoch"
+            ),
+            ExpressionAttributeNames={
+                "#status": "ProcessingStatus",
+                "#workflow": "WorkflowStatus",
+            },
+            ExpressionAttributeValues=values,
+        )
+        return "claimed"
+    except Exception as exc:  # boto3's generated exception class is client-specific
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        if code != "ConditionalCheckFailedException":
+            raise
+        item = _document_table().get_item(
+            Key={"DocumentId": event["documentId"]}, ConsistentRead=True
+        ).get("Item") or {}
+        if item.get("WorkflowStatus") == "complete" and not item.get(
+            "TerminalEventPublished", False
+        ):
+            return "publish-only"
+        return "duplicate"
+
+
+def _release_direct_claim(event: Dict[str, Any], error: Exception) -> None:
+    """Make a failed, non-timeout attempt immediately retryable."""
+    try:
+        _document_table().update_item(
+            Key={"DocumentId": event["documentId"]},
+            UpdateExpression=(
+                "SET #status = :queued, #workflow = :workflow, "
+                "ProcessingStatusUpdatedAt = :updated, ProcessingError = :error "
+                "REMOVE ProcessingLeaseUntil"
+            ),
+            ConditionExpression="ProcessingAttempt = :attempt AND #workflow <> :complete",
+            ExpressionAttributeNames={
+                "#status": "ProcessingStatus",
+                "#workflow": "WorkflowStatus",
+            },
+            ExpressionAttributeValues={
+                ":queued": "QUEUED",
+                ":workflow": "retry-pending",
+                ":complete": "complete",
+                ":updated": datetime.now(timezone.utc).isoformat(),
+                ":error": str(error)[:500],
+                ":attempt": str(event["processingAttempt"]),
+            },
+        )
+    except Exception as release_error:
+        logger.error("failed to release direct claim for %s: %s", event["documentId"], release_error)
+
+
+def _persist_direct_result(result: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Atomically expose the terminal envelope to the existing Query API."""
+    now = datetime.now(timezone.utc).isoformat()
+    values: Dict[str, Any] = {
+        ":complete": "complete",
+        ":finished": "FINISHED",
+        ":updated": now,
+        ":result": json.dumps(result, ensure_ascii=False, default=str),
+        ":source": str(event["content"]["key"]),
+        ":content": json.dumps(event["content"], ensure_ascii=False),
+        ":content_type": str(event.get("contentType") or "file"),
+        ":attempt": str(event["processingAttempt"]),
+        ":not_published": False,
+    }
+    update = (
+        "SET #workflow = :complete, #status = :finished, "
+        "ProcessingStatusUpdatedAt = :updated, ProcessingCompletedAt = :updated, "
+        "EnrichmentResult = :result, SourceKey = :source, Content = :content, "
+        "ContentType = :content_type, TerminalEventPublished = :not_published"
+    )
+    if event.get("appOrigin"):
+        update += ", JobOwner = :owner"
+        values[":owner"] = str(event["appOrigin"])
+    update += " REMOVE ProcessingLeaseUntil, ProcessingError"
+    _document_table().update_item(
+        Key={"DocumentId": event["documentId"]},
+        UpdateExpression=update,
+        ConditionExpression="ProcessingAttempt = :attempt",
+        ExpressionAttributeNames={
+            "#workflow": "WorkflowStatus",
+            "#status": "ProcessingStatus",
+        },
+        ExpressionAttributeValues=values,
+    )
+
+
+def _publish_terminal_event(result: Dict[str, Any], event: Dict[str, Any]) -> None:
+    import boto3
+
+    response = boto3.client("events").put_events(
+        Entries=[
+            {
+                "EventBusName": os.environ["EVENT_BUS_NAME"],
+                "Source": os.environ.get("EVENT_SOURCE", "document-validation-pipeline"),
+                "DetailType": "document-processed-successful",
+                "Detail": json.dumps(
+                    {
+                        "documentId": event["documentId"],
+                        "contentType": event.get("contentType", "file"),
+                        "content": json.dumps(event.get("content") or {}, ensure_ascii=False),
+                        "classification": result.get("documentClassification", "OTRO"),
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ]
+    )
+    if response.get("FailedEntryCount"):
+        raise RuntimeError(f"EventBridge rejected terminal event: {response.get('Entries')}")
+    _document_table().update_item(
+        Key={"DocumentId": event["documentId"]},
+        UpdateExpression="SET TerminalEventPublished = :published",
+        ExpressionAttributeValues={":published": True},
+    )
+
+
+def _republish_terminal_event(event: Dict[str, Any]) -> None:
+    item = _document_table().get_item(
+        Key={"DocumentId": event["documentId"]}, ConsistentRead=True
+    ).get("Item") or {}
+    raw = item.get("EnrichmentResult")
+    if not raw:
+        raise RuntimeError("terminal result is missing while its event is pending")
+    _publish_terminal_event(json.loads(raw), event)
+
+
+def _handle_one(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
+    """Run one normalized pipeline event and persist its auxiliary records.
 
     Runs the validation flow (`_process`) and then promotes the document type
     and friends to indexed DynamoDB columns (see `indexing.py`) so the query
@@ -805,10 +1056,64 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     duration_ms = (time.time() - started) * 1000
     pointer = _extract_s3_pointer(event)
     source_key = pointer[1] if pointer else None
-    write_index_attributes(result, source_key=source_key)
-    write_unique_keys(result, source_key=source_key)
-    write_cost_record(result, event=event, duration_ms=duration_ms, source_key=source_key)
+    # These independent writes used to add their latencies serially. Running
+    # them together keeps the direct path bounded by the slowest audit write.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(write_index_attributes, result, source_key=source_key),
+            executor.submit(write_unique_keys, result, source_key=source_key),
+            executor.submit(
+                write_cost_record,
+                result,
+                event=event,
+                duration_ms=duration_ms,
+                source_key=source_key,
+            ),
+        ]
+        for future in futures:
+            future.result()
+    if event.get("_directIngress"):
+        _persist_direct_result(result, event)
+        _publish_terminal_event(result, event)
     return result
+
+
+def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
+    """Accept native S3 notifications and legacy normalized invocations."""
+    records = event.get("Records") if isinstance(event, dict) else None
+    if not isinstance(records, list):
+        return _handle_one(event, context)
+
+    outcomes = []
+    for record in records:
+        if not str(record.get("eventSource") or "").endswith(":s3"):
+            continue
+        direct_event = _s3_record_to_event(record)
+        claim = _claim_direct_event(direct_event, context)
+        if claim == "duplicate":
+            outcomes.append(
+                {"documentId": direct_event["documentId"], "status": "duplicate-skipped"}
+            )
+            continue
+        if claim == "publish-only":
+            _republish_terminal_event(direct_event)
+            outcomes.append(
+                {"documentId": direct_event["documentId"], "status": "event-republished"}
+            )
+            continue
+        try:
+            result = _handle_one(direct_event, context)
+            outcomes.append(
+                {
+                    "documentId": direct_event["documentId"],
+                    "status": "finished",
+                    "validationStatus": (result.get("validation") or {}).get("status"),
+                }
+            )
+        except Exception as exc:
+            _release_direct_claim(direct_event, exc)
+            raise
+    return {"processed": outcomes}
 
 
 def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:

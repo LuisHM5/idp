@@ -20,7 +20,7 @@
  *
  *   POST /documents/{id}/reprocess
  *       Creates a new document id and copies the original object internally
- *       from processed/ or failed/ back to raw/. The optional documentType,
+ *       to a new immutable source/ key. The optional documentType,
  *       occurrenceMode and modelId body fields override the new run only;
  *       the old result is never changed. Counts against the app's
  *       documents-per-day cap like an upload (429 DAILY_DOCUMENT_LIMIT).
@@ -205,7 +205,9 @@ const MAX_LIMIT = 100;
 // A result download only applies after the document has been indexed and moved
 // out of raw/. Pending GET /documents/{id} calls return status only and never
 // enter this source-object lookup.
-const SOURCE_PREFIXES = [
+const LEGACY_SOURCE_PREFIXES = [
+  { location: "source", prefix: "source/" },
+  { location: "raw", prefix: "raw/" },
   { location: "processed", prefix: "processed/" },
   { location: "failed", prefix: "failed/" },
 ];
@@ -228,6 +230,8 @@ const ITEM_PROJECTION = [
   "RegisteredAt",
   "UploadExpiresAt",
   "RequestedDocumentType",
+  "SourceKey",
+  "UploadKey",
   "JobOwner",
   "EnrichmentResult",
   "#md",
@@ -845,15 +849,26 @@ async function patchMetadataById(id, event, caller) {
 // ------------------------------------------------------- GET file by id
 
 /**
- * Find the original uploaded object for `documentId` under processed/ (tried
- * first — the common case) then failed/. Each folder is
- * `{prefix}{documentId}/{originalFileName}` and holds exactly that one
- * object, so a 1-key listing is enough to both confirm existence and recover
- * the exact filename without trusting the `DocumentName` DynamoDB column
- * (which is best-effort/derived, not authoritative — see indexing.py).
+ * Resolve the stable source key in O(1) from DynamoDB. Prefix scans remain
+ * only for rows created by historical deployments that moved raw objects.
  */
-async function findSourceObject(documentId) {
-  for (const { location, prefix } of SOURCE_PREFIXES) {
+async function findSourceObject(documentId, item = {}) {
+  const exactKeys = [...new Set([item.SourceKey, item.UploadKey].filter(Boolean))];
+  for (const key of exactKeys) {
+    try {
+      const head = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+      return {
+        key,
+        location: String(key).split("/", 1)[0] || "source",
+        size: head.ContentLength,
+      };
+    } catch (err) {
+      if (!["NotFound", "NoSuchKey"].includes(err?.name)) {
+        console.warn(`Could not resolve exact source key '${key}':`, err);
+      }
+    }
+  }
+  for (const { location, prefix } of LEGACY_SOURCE_PREFIXES) {
     const listed = await s3.send(
       new ListObjectsV2Command({
         Bucket: BUCKET,
@@ -888,7 +903,7 @@ async function getFileById(id, params, caller) {
   }
   const documentId = item.DocumentId;
 
-  const source = await findSourceObject(documentId);
+  const source = await findSourceObject(documentId, item);
   if (!source) {
     return json(404, {
       error: "FILE_NOT_FOUND",
@@ -917,7 +932,7 @@ async function getFileById(id, params, caller) {
     documentId,
     fileName: source.key.split("/").pop(),
     fileSizeBytes: source.size,
-    location: source.location, // "processed" | "failed"
+    location: source.location,
     downloadUrl,
     downloadMethod: "GET",
     expiresInSeconds: expiresIn,
@@ -985,7 +1000,7 @@ async function reprocessById(id, event, caller) {
   }
 
   const oldDocumentId = item.DocumentId;
-  const source = await findSourceObject(oldDocumentId);
+  const source = await findSourceObject(oldDocumentId, item);
   if (!source) {
     const processingStatus = processingStatusFor(item, !!envelope);
     if (isPendingProcessingStatus(processingStatus)) {
@@ -997,7 +1012,7 @@ async function reprocessById(id, event, caller) {
     }
     return json(404, {
       error: "FILE_NOT_FOUND",
-      message: `No original file found for document '${oldDocumentId}' in processed/ or failed/`,
+      message: `No original file found for document '${oldDocumentId}'`,
     });
   }
 
@@ -1106,6 +1121,7 @@ async function reprocessById(id, event, caller) {
           ProcessingStatusUpdatedAt: registeredAt,
           RegisteredAt: registeredAt,
           UploadKey: key,
+          SourceKey: key,
           JobOwner: appOrigin || "dev-unrestricted",
           ReprocessedFrom: oldDocumentId,
           ReprocessRequestedAt: registeredAt,

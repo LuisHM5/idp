@@ -222,8 +222,8 @@ export function classificationModeFor(types) {
 export function rawKeyFor(types, documentId, fileName) {
   const declared = types.join(",");
   return declared
-    ? `raw/${declared}/${documentId}/${fileName}`
-    : `raw/${documentId}/${fileName}`;
+    ? `source/${declared}/${documentId}/${fileName}`
+    : `source/${documentId}/${fileName}`;
 }
 
 /** Recover the caller declaration from the pending row created at upload. */
@@ -231,10 +231,10 @@ export function inheritedDocumentType(item) {
   const stored = String(item?.RequestedDocumentType || "").trim();
   if (stored && stored !== "AUTO") return stored;
 
-  // Older pending rows may only carry UploadKey. raw/{TYPE[,TYPE]}/{id}/file
-  // has four path parts; raw/{id}/file (automatic) has three.
-  const parts = String(item?.UploadKey || "").split("/").filter(Boolean);
-  return parts.length >= 4 && parts[0] === "raw" ? parts.at(-3) : "";
+  // Older rows may only carry UploadKey. Both source/ and the former raw/
+  // layout put an explicit TYPE[,TYPE] directly before the document id.
+  const parts = String(item?.SourceKey || item?.UploadKey || "").split("/").filter(Boolean);
+  return parts.length >= 4 && ["source", "raw"].includes(parts[0]) ? parts.at(-3) : "";
 }
 
 export function validateSourceFile(fileName, types) {

@@ -221,12 +221,10 @@ export async function handler(event) {
 
   // Optional manual classification via documentType. The declared types travel
   // as ONE segment of the S3 key — that key is the only carrier of this signal,
-  // read independently by the SQS consumer, the model-invoke Lambda and the
-  // enrichment Lambda, so joining them here reaches all three with no new
-  // channel.
-  //   raw/{TYPE}/{uuid}/file        one type   -> honoured as-is, never re-segmented
-  //   raw/{A,B}/{uuid}/file         several    -> segmented, but classified ONLY among A and B
-  //   raw/{uuid}/file               none       -> Bedrock auto-classifies from content
+  // read directly by the enrichment Lambda.
+  //   source/{TYPE}/{uuid}/file    one type -> honoured as-is
+  //   source/{A,B}/{uuid}/file     several  -> classified only among A and B
+  //   source/{uuid}/file           none     -> catalog-wide classification
   const documentId = randomUUID();
   const key = rawKeyFor(manualTypes, documentId, fileName);
 
@@ -248,8 +246,8 @@ export async function handler(event) {
 
   // The caller's own `metadata` rides along as S3 object metadata, normalized
   // to what S3 can actually hold (see normalizeMetadata) — that is also what
-  // makes it searchable later: the SQS consumer reads it back off the object
-  // and it ends up on the result envelope as `metadata`, filterable with
+  // makes it searchable later: enrichment reads it back off the object and it
+  // ends up on the result envelope as `metadata`, filterable with
   // `GET /documents?meta.<clave>=<valor>`.
   const normalizedMetadata = normalizeMetadata(metadata);
   if (normalizedMetadata.error) {
@@ -359,8 +357,8 @@ async function handlePresigned(
 
   // Reserve the id before returning it. This closes the old ambiguity where
   // GET /documents/{id} returned 404 both for an unknown id and for a valid
-  // upload that had not reached Step Functions yet. The workflow later
-  // replaces this lightweight row with its normal tracking row.
+  // upload that had not reached processing yet. Direct enrichment updates
+  // this same lightweight row in place.
   try {
     if (!DOCUMENT_TABLE) throw new Error("DOCUMENT_TABLE is not configured");
     await ddb.send(
@@ -373,6 +371,7 @@ async function handlePresigned(
           RegisteredAt: { S: registeredAt },
           UploadExpiresAt: { S: uploadExpiresAt },
           UploadKey: { S: key },
+          SourceKey: { S: key },
           JobOwner: { S: appOrigin || "dev-unrestricted" },
           ...(declaredTypes ? { RequestedDocumentType: { S: declaredTypes } } : {}),
         },
