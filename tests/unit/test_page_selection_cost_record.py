@@ -219,7 +219,9 @@ def test_extraction_audit_is_written_to_the_dedicated_cost_table(monkeypatch):
         "pages": {"totalPages": 3, "nativePages": 3, "ocrPages": 0, "emptyPages": 0},
     }
 
-    item = cost_audit.write_cost_record(result, {}, 1200.0)
+    item = cost_audit.write_cost_record(
+        result, {"pipelineRoute": "enrichment-only"}, 1200.0
+    )
 
     assert captured["table"] == "document-validation-costs-dev"
     assert captured["item"] is item
@@ -228,3 +230,4 @@ def test_extraction_audit_is_written_to_the_dedicated_cost_table(monkeypatch):
     assert item["ExtractionAudit"]["Documents"][0]["AiResponseSelected"] == "compact"
     assert item["ExtractionAudit"]["AiResponseSavings"]["EstimatedCostAvoidedUsd"] >= 0
     assert item["Services"]["BedrockExtraction"]["costUsd"] == Decimal("0.0")
+    assert item["PipelineRoute"] == "enrichment-only"

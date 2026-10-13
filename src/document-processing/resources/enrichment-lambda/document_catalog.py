@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -283,6 +284,7 @@ _CONFIG_DIR = Path(__file__).parent / "config"
 _CONFIG_FILE = _CONFIG_DIR / "catalogs.json"
 _CATALOG_TABLE = os.environ.get("CATALOG_TABLE")  # DynamoDB table name (optional)
 _CATALOG_CACHE: Optional[Dict[str, TypeRegistryEntry]] = None
+_CATALOG_CACHE_LOADED_AT: Optional[float] = None
 # Version of each loaded catalog file: declared `_schema_version` if present,
 # else a short content hash so the identifier is always deterministic and
 # changes whenever the schema does. Keyed by file stem (e.g. "catalogs").
@@ -746,9 +748,21 @@ def _load_catalog() -> Dict[str, TypeRegistryEntry]:
     DynamoDB entries override JSON entries with the same type_id.
     This allows hot-adding types without redeployment.
     """
-    global _CATALOG_CACHE
+    global _CATALOG_CACHE, _CATALOG_CACHE_LOADED_AT
 
-    if _CATALOG_CACHE is not None:
+    try:
+        ttl = max(0.0, float(os.environ.get("CATALOG_CACHE_TTL_SECONDS", "30")))
+    except ValueError:
+        ttl = 30.0
+    now = time.monotonic()
+    if _CATALOG_CACHE is not None and (
+        # Tests and local tools intentionally inject a prepared catalog by
+        # assigning only _CATALOG_CACHE.  Preserve that supported seam instead
+        # of unexpectedly replacing it with DynamoDB on the next read.
+        _CATALOG_CACHE_LOADED_AT is None
+        or ttl <= 0
+        or now - _CATALOG_CACHE_LOADED_AT < ttl
+    ):
         return _CATALOG_CACHE
 
     # Base: local JSON config (always available, deployed with Lambda)
@@ -759,13 +773,15 @@ def _load_catalog() -> Dict[str, TypeRegistryEntry]:
     catalog.update(db_catalog)
 
     _CATALOG_CACHE = catalog
+    _CATALOG_CACHE_LOADED_AT = now
     return catalog
 
 
 def reload_catalog() -> None:
     """Force reload of the catalog (useful for testing or after DB updates)."""
-    global _CATALOG_CACHE
+    global _CATALOG_CACHE, _CATALOG_CACHE_LOADED_AT
     _CATALOG_CACHE = None
+    _CATALOG_CACHE_LOADED_AT = None
     _CROSS_DOC_RULES.clear()
     _SCHEMA_VERSIONS.clear()
     _COMMON_ITEM_FIELDS.clear()

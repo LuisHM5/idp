@@ -311,20 +311,23 @@ put.EnsureSuccessStatusCode();
 
 ### Paso 3 — `GET /documents/{id}`
 
-El estado y, al terminar, el resultado. Mientras el pipeline corre responde
-`202 Accepted`, trae `processingStatus` y recomienda la siguiente consulta con
-`Retry-After`. `404` vuelve a significar solamente que el id no existe o no es
-visible para la app.
+El estado y, al terminar, el resultado. `waitSeconds=0..20` activa long polling
+en esta misma ruta: espera hasta ese límite y retorna en cuanto el trabajo sea
+terminal; no existe un segundo canal `/fast`. Sin el parámetro el GET sigue
+siendo inmediato. Mientras el pipeline corre responde `202 Accepted`, trae
+`processingStatus` y recomienda la siguiente consulta con `Retry-After: 1`.
+`404` vuelve a significar solamente que el id no existe o no es visible para la
+app.
 
 <details open>
 <summary><b>curl</b></summary>
 
 ```bash
 # 202 = trabajo conocido pero todavía no terminal.
-delay=5
+delay=1
 while :; do
   code=$(curl -sS -o result.json -w '%{http_code}' \
-    "$API/documents/$DOC_ID" -H "x-api-key: $KEY")
+    "$API/documents/$DOC_ID?waitSeconds=20" -H "x-api-key: $KEY")
   [ "$code" = 200 ] && break
   # 429 "Too Many Requests" = throttle: se espera igual que un 202.
   # 429 "Limit Exceeded" = cuota diaria agotada: reintentar no sirve.
@@ -346,9 +349,9 @@ jq '.result.documents[] | {index, documentType, pageStart, pageEnd, fields}' res
 ```javascript
 // 202 = trabajo conocido pero todavía no terminal.
 let doc;
-let delayMs = 5000;
+let delayMs = 1000;
 for (let i = 0; i < 60; i++) {
-  const r = await fetch(`${API}/documents/${documentId}`, {
+  const r = await fetch(`${API}/documents/${documentId}?waitSeconds=20`, {
     headers: { "x-api-key": KEY },
   });
   const body = await r.json();
@@ -362,7 +365,7 @@ for (let i = 0; i < 60; i++) {
   if (r.status !== 202 && !throttled)
     throw new Error(`GET → ${r.status}: ${JSON.stringify(body)}`);
   const minimum =
-    Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 5) * 1000;
+    Number(r.headers.get("retry-after") ?? body.retryAfterSeconds ?? 1) * 1000;
   await new Promise((s) =>
     setTimeout(s, Math.max(delayMs, minimum) + Math.random() * 1000),
   );
@@ -405,9 +408,9 @@ import time
 
 # 202 = trabajo conocido pero todavía no terminal.
 doc = None
-delay = 5
+delay = 1
 for _ in range(60):
-    r = requests.get(f"{API}/documents/{document_id}",
+    r = requests.get(f"{API}/documents/{document_id}?waitSeconds=20",
                      headers={"x-api-key": KEY}, timeout=30)
     body = r.json()
     if r.status_code == 200:
@@ -418,7 +421,7 @@ for _ in range(60):
     throttled = r.status_code == 429 and body.get("message") != "Limit Exceeded"
     if r.status_code != 202 and not throttled:
         r.raise_for_status()
-    minimum = int(r.headers.get("Retry-After", body.get("retryAfterSeconds", 5)))
+    minimum = int(r.headers.get("Retry-After", body.get("retryAfterSeconds", 1)))
     time.sleep(max(delay, minimum) + random.random())
     delay = min(delay * 2, 30)
 
@@ -446,10 +449,11 @@ using System.Net;
 
 // 202 = trabajo conocido pero todavía no terminal.
 JsonElement doc = default;
-var delay = TimeSpan.FromSeconds(5);
+var delay = TimeSpan.FromSeconds(1);
 for (var i = 0; i < 60; i++)
 {
-    var r = await http.GetAsync($"{api}/documents/{documentId}");
+    var r = await http.GetAsync(
+        $"{api}/documents/{documentId}?waitSeconds=20");
     var body = await r.Content.ReadFromJsonAsync<JsonElement>();
     if (r.StatusCode == HttpStatusCode.OK)
     {
@@ -730,7 +734,7 @@ El body va como `application/json` **o** `application/x-www-form-urlencoded`.
   "registeredAt": "2026-07-27T13:18:19.000Z",
   "processingStatus": "AWAITING_UPLOAD",
   "statusUrl": "/documents/e18d014a-...",
-  "retryAfterSeconds": 5
+  "retryAfterSeconds": 1
 }
 ```
 
@@ -991,7 +995,7 @@ Devuelve el resultado **completo** de un documento. `{id}` puede ser el id compl
   "workflowStatus": "pending",
   "documentType": "FACTURA_FLETE_EXTRANJERO",
   "result": null,
-  "retryAfterSeconds": 5
+  "retryAfterSeconds": 1
 }
 ```
 
@@ -1558,7 +1562,7 @@ curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
   "classificationMode": "guided",
   "processingStatus": "QUEUED",
   "statusUrl": "/documents/8aa31cde-...",
-  "retryAfterSeconds": 5
+  "retryAfterSeconds": 1
 }
 ```
 
@@ -1655,7 +1659,7 @@ Devuelve una **URL prefirmada de S3** (no los bytes) para descargar el archivo t
 
 **Por qué una URL prefirmada y no los bytes directamente:** los expedientes de este sistema llegan a decenas de MB (un expediente digital real de referencia tiene 86 páginas) y **API Gateway topa cualquier respuesta a 10 MB** — límite duro de AWS, no configurable — sin contar el límite de invocación síncrona de Lambda (6 MB). Proxyear el archivo por la Lambda simplemente no es viable para el rango de tamaños real de este sistema. En vez de eso, el endpoint firma una URL de `GetObjectCommand` (mismo mecanismo `@aws-sdk/s3-request-presigner` que ya usa `POST /documents` en modo prefirmado — ver §1b) y el cliente descarga **directo de S3**, sin pasar por Lambda ni por API Gateway. Sin tope de tamaño real.
 
-**Cómo se localiza el archivo:** el key de S3 del original **no es estático** — mientras se procesa vive en `raw/{TIPO?}/{documentId}/{archivo}`, pero al terminar la ejecución el blueprint lo mueve a `processed/{documentId}/{archivo}` (caso normal, incluida una validación RECHAZADA) o a `failed/{documentId}/{archivo}` (solo si la propia ejecución de Step Functions revienta). Como este endpoint solo responde para documentos que `GET /documents/{id}` ya puede resolver (es decir, ya salieron de `raw/`), el handler busca primero en `processed/{documentId}/` y si no hay nada, en `failed/{documentId}/` — un `ListObjectsV2` de una sola key por prefijo, no una reconstrucción a ciegas del nombre de archivo.
+**Cómo se localiza el archivo:** el key de S3 del original **no es estático** — mientras se procesa vive en `raw/{TIPO?}/{documentId}/{archivo}`, pero al terminar la ejecución la Step Function propia lo mueve a `processed/{documentId}/{archivo}` (caso normal, incluida una validación RECHAZADA) o a `failed/{documentId}/{archivo}` (solo si la propia ejecución revienta). Como este endpoint solo responde para documentos que `GET /documents/{id}` ya puede resolver (es decir, ya salieron de `raw/`), el handler busca primero en `processed/{documentId}/` y si no hay nada, en `failed/{documentId}/` — un `ListObjectsV2` de una sola key por prefijo, no una reconstrucción a ciegas del nombre de archivo.
 
 **Respuesta `200`:**
 

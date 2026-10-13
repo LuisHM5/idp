@@ -116,7 +116,7 @@ def _model_ids(event: Dict[str, Any]) -> Dict[str, str]:
 def _upload_metadata(event: Dict[str, Any]) -> Dict[str, str]:
     """The caller's own `metadata` from `POST /documents`, as the SQS consumer
     read it back off the S3 object (`uploadMetadata` in the Step Functions
-    input — see patches/default-sqs-consumer-index.py).
+    input — see resources/sqs-consumer/index.py).
 
     Already lowercased, ASCII, flat and reserved-key-free by the time it gets
     here (upload-lambda's normalizeMetadata, then the consumer's own filter),
@@ -173,6 +173,29 @@ def _add_upload_to_result_tracking(
     tracking["uploadedAt"] = uploaded.isoformat()
     tracking["uploadToResultSeconds"] = round(elapsed, 2)
     tracking["uploadToResultMs"] = round(elapsed * 1000, 2)
+
+    timings = tracking.setdefault("timings", {})
+    if isinstance(timings, dict):
+        consumer_started = _parse_tracking_timestamp(event.get("consumerStartedAt"))
+        workflow_requested = _parse_tracking_timestamp(event.get("workflowRequestedAt"))
+        processing_started = _parse_tracking_timestamp(
+            tracking.get("processingStartedAt")
+        )
+        if consumer_started is not None:
+            timings["queue"] = round(
+                max(0.0, (consumer_started - uploaded).total_seconds()) * 1000,
+                2,
+            )
+        if workflow_requested is not None and processing_started is not None:
+            timings["orchestrationBeforeExtraction"] = round(
+                max(0.0, (processing_started - workflow_requested).total_seconds())
+                * 1000,
+                2,
+            )
+
+    route = event.get("pipelineRoute")
+    if route in {"standard", "enrichment-only"}:
+        tracking["orchestration"] = {"route": route}
 
 
 def build_canonical_result(
@@ -305,7 +328,7 @@ def _extract_s3_pointer(event: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 def _declared_file_type(event: Dict[str, Any]) -> Optional[str]:
     """Explicit file type from `content.fileType` (set by the SQS consumer —
-    see `patches/default-sqs-consumer-index.py` — as the single source of
+    see `resources/sqs-consumer/index.py` — as the single source of
     truth instead of every downstream Lambda re-deriving it from the S3 key's
     extension independently). Preferred when present; the caller falls back
     to parsing the key itself for events that predate this field (already
@@ -827,7 +850,7 @@ def _process(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         #   cross-document rules) via `"pipeline": "expediente"`.
         # - `type_entry.field_tree is not None`: the type's catalog entry uses
         #   the field-centric DSL (top-level `"fields"` key). The upstream
-        #   Bedrock-native blueprint prompt (generated at CDK synth time,
+        #   Bedrock-native standard-flow prompt (generated at CDK synth time,
         #   src/document-catalog.ts) only understands the legacy
         #   extraction_fields/extraction_hints DSL, so it never emits a
         #   prompt for field-centric types — without this branch they would

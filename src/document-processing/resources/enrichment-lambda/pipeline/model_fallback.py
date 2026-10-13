@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ DEFAULT_FALLBACK_MODELS: List[str] = [
 DEFAULT_MAX_FALLBACK_RETRIES = 4
 
 _FALLBACK_CACHE: Optional[List[str]] = None
+_FALLBACK_CACHE_LOADED_AT: Optional[float] = None
 
 
 def _load_from_dynamodb() -> List[str]:
@@ -86,18 +88,35 @@ def get_fallback_models() -> List[str]:
     `reload_fallback_models()` after editing the table to pick up changes
     without a redeploy (mirrors `document_catalog.reload_catalog`).
     """
-    global _FALLBACK_CACHE
-    if _FALLBACK_CACHE is not None:
+    global _FALLBACK_CACHE, _FALLBACK_CACHE_LOADED_AT
+    try:
+        ttl = max(
+            0.0,
+            float(os.environ.get("FALLBACK_MODELS_CACHE_TTL_SECONDS", "30")),
+        )
+    except ValueError:
+        ttl = 30.0
+    now = time.monotonic()
+    if _FALLBACK_CACHE is not None and (
+        # Keep the same injection seam as document_catalog: unit tests and
+        # local tools may install an explicit in-memory value without a
+        # timestamp and expect it to remain authoritative.
+        _FALLBACK_CACHE_LOADED_AT is None
+        or ttl <= 0
+        or now - _FALLBACK_CACHE_LOADED_AT < ttl
+    ):
         return _FALLBACK_CACHE
     models = _load_from_dynamodb() or list(DEFAULT_FALLBACK_MODELS)
     _FALLBACK_CACHE = models
+    _FALLBACK_CACHE_LOADED_AT = now
     return models
 
 
 def reload_fallback_models() -> None:
     """Force the next `get_fallback_models()` call to re-read DynamoDB."""
-    global _FALLBACK_CACHE
+    global _FALLBACK_CACHE, _FALLBACK_CACHE_LOADED_AT
     _FALLBACK_CACHE = None
+    _FALLBACK_CACHE_LOADED_AT = None
 
 
 def get_max_fallback_retries() -> int:

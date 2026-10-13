@@ -33,7 +33,7 @@ export interface DocumentTypeEntry {
   extractionHints?: Record<string, string>;
   /**
    * True for types the enrichment Lambda's Python pipeline extracts itself
-   * instead of the Bedrock-native blueprint prompt — either customs types
+   * instead of the Bedrock-native standard-flow prompt — either customs types
    * (`pipeline: "expediente"`) or any type using the field-centric DSL
    * (top-level `fields` key, schema_version 4.x+). Both carry no
    * extractionFields here on purpose: the Bedrock extraction prompt

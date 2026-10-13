@@ -555,8 +555,9 @@ Corrida real verificada (2026-07-28, `normal_pend.pdf`, stack
 `DocumentValidationStack-Dev`): Step Functions `SUCCEEDED` en 64s, archivo
 movido correctamente a `processed/{documentId}-.../normal_pend.pdf`
 (el `documentId` de esa corrida incluía el nombre de archivo concatenado —
-bug arreglado después en `patches/default-sqs-consumer-index.py`; hoy la
-forma es `processed/{documentId}/normal_pend.pdf`, sin el nombre duplicado
+bug arreglado después en el consumer propio
+`src/document-processing/resources/sqs-consumer/index.py`; hoy la forma es
+`processed/{documentId}/normal_pend.pdf`, sin el nombre duplicado
 dentro del `documentId` ni el anidado extra que causaba), y el
 mismo resultado campo por campo que la corrida en proceso — confirma que el
 Lambda desplegado y el código local están en sync (sin drift de deploy).

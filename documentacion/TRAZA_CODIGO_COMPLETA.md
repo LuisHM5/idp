@@ -8,12 +8,10 @@ el camino.
 La fuente de verdad de la orquestación es una combinación de:
 
 - `src/document-validation-stack.ts`, que conecta la infraestructura propia;
-- `src/document-processing/multi-model-document-processing.ts`, que reemplaza
-  únicamente los pasos de clasificación y extracción del blueprint;
-- `@cdklabs/cdk-appmod-catalog-blueprints`, que genera la máquina de estados,
-  el bucket, la cola y la tabla de seguimiento;
-- `patches/default-sqs-consumer-index.py`, que modifica el consumidor SQS del
-  blueprint durante `pnpm build`;
+- `src/document-processing/multi-model-document-processing.ts`, construct
+  propio que crea bucket, SQS/DLQ, tabla, Lambdas y máquina de estados;
+- `src/document-processing/resources/sqs-consumer/index.py`, consumidor propio
+  e idempotente que selecciona la ruta desde el catálogo;
 - `src/document-processing/resources/enrichment-lambda/`, donde vive la lógica
   de extracción, validación y persistencia propia.
 
@@ -126,7 +124,7 @@ operación rename en S3.
 
 ### 3.3 Evento que crea el consumidor SQS
 
-`patches/default-sqs-consumer-index.py:handler` construye:
+`resources/sqs-consumer/index.py::_process_s3_record` construye:
 
 ```json
 {
@@ -164,30 +162,30 @@ Las partes que afectan directamente el recorrido son:
 3. Importa opcionalmente las tablas compartidas de catálogo y fallback de
    modelos.
 4. Crea `EnrichmentLambda` (`handler.handler`, Python 3.12, 15 minutos,
-   1024 MB) en `document-validation-stack.ts:209`.
-5. Instancia `MultiModelDocumentProcessing` en
-   `document-validation-stack.ts:357`. El blueprint conserva la máquina de
-   estados, el bucket, SQS, la tabla de documentos y los pasos de movimiento.
-6. Añade el GSI `DocumentTypeIndex` a la tabla del blueprint en
-   `document-validation-stack.ts:407`.
+   1024 MB) en `document-validation-stack.ts:322`.
+5. Instancia `MultiModelDocumentProcessing`, dueño de máquina de estados,
+   bucket, SQS/DLQ, tabla de documentos y movimientos.
+6. Añade el GSI `DocumentTypeIndex` a la tabla del pipeline en
+   `document-validation-stack.ts:505`.
 7. Crea `CostTable`, `AppsTable`, `UploadLambda` y `QueryLambda`.
-8. Publica las rutas REST en `document-validation-stack.ts:702-717`.
+8. Publica las rutas REST desde `document-validation-stack.ts:1019`.
 
 ### 4.2 `MultiModelDocumentProcessing`
 
 Archivo: `src/document-processing/multi-model-document-processing.ts`.
 
-- `invokeFunction()` (`:118`) crea una Lambda Python para cada fase y configura
+- `invokeFunction()` (`:462`) crea una Lambda Python para cada fase y configura
   `MODEL_ID`, `PROMPT` e `INVOKE_TYPE`.
-- `classificationStep()` (`:227`) reemplaza la tarea de clasificación y guarda
+- `classificationStep()` (`:567`) crea la tarea de clasificación y guarda
   su salida en `$.classificationResult`.
-- `processingStep()` (`:257`) reemplaza la tarea de extracción upstream y
+- `processingStep()` (`:593`) crea la tarea de extracción upstream y
   guarda su salida en `$.processingResult`.
 - Las dos Lambdas hablan con Bedrock mediante Converse, por lo que el request no
   depende del formato nativo de Anthropic.
 
-El resto de la orquestación sigue perteneciendo al blueprint. El template
-sintetizado confirma los nombres y transiciones descritos en la sección 7.
+El mismo construct declara ingress, persistencia, movimientos y eventos. El
+template sintetizado se valida con `scripts/check-infra-migration.mjs`: los
+logical IDs stateful históricos no pueden cambiar en un deploy ordinario.
 
 ## 5. Entrada REST y escritura inicial en S3
 
@@ -259,12 +257,12 @@ cuando el cliente hace el PUT real y S3 emite `ObjectCreated`.
 
 ## 6. S3 → SQS → `StartExecution`
 
-La implementación ejecutada se genera desde
-`patches/default-sqs-consumer-index.py` durante `pnpm build`.
+La implementación vive directamente en
+`src/document-processing/resources/sqs-consumer/index.py`.
 
 ### 6.1 `handler(event, context)` del consumidor
 
-Archivo: `patches/default-sqs-consumer-index.py:31`.
+Archivo: `resources/sqs-consumer/index.py`.
 
 Por cada mensaje y cada registro S3:
 
@@ -286,28 +284,35 @@ SQS entrega al menos una vez. Si llega de nuevo el mismo objeto:
 
 - mientras la ejecución original sigue activa, Standard Step Functions trata
   el mismo nombre+input de forma idempotente;
-- si ya terminó, AWS lanza `ExecutionAlreadyExists`; el patch lo atrapa y lo
+- si ya terminó, AWS lanza `ExecutionAlreadyExists`; el consumidor lo atrapa y lo
   registra como `duplicate: true` sin reintentar ni enviarlo al DLQ.
 
-Cualquier otro error del registro sí se relanza para activar los reintentos de
-SQS y, al agotarlos, la DLQ.
+Cualquier otro error se devuelve en `batchItemFailures`; SQS reintenta sólo ese
+mensaje y lo manda a DLQ al agotar intentos, sin repetir los registros exitosos
+del mismo lote.
 
 ## 7. Máquina de estados, estado por estado
 
-La definición la genera el blueprint. Esta es la secuencia sintetizada actual:
+La definición la genera el construct propio. Primero elige ruta:
 
 ```mermaid
 flowchart TD
-    I[InitMetadataEntry] --> C[MultiModelClassificationStep-0]
+    I[InitMetadataEntry] --> R{SelectCatalogPipelineRoute}
+    R -->|enrichment-only| PE[PrepareDeclaredClassification]
+    PE --> ED[EnrichmentStep-1]
+    R -->|standard| C[MultiModelClassificationStep-0]
     C -->|ok| CU[ClassificationSuccessUpdate]
     C -->|error| CF[ClassificationFailDDBUpdate]
     CU --> P[MultiModelProcessingStep-0]
     P -->|ok| PU[ProcessingSuccessUpdate]
     P -->|error| PF[ProcessingFailDDBUpdate]
-    PU --> E[EnrichmentStep-0]
+    PU --> E[StandardEnrichmentStep]
     E -->|ok| EU[EnrichmentSuccessUpdate]
     E -->|error| EF[EnrichmentFailDDBUpdate]
-    EU --> CP[CopyToProcessed]
+    ED --> EU2[EnrichmentOnlySuccessStatus]
+    EU2 --> CP2[EnrichmentOnlyCopyToProcessed]
+    CP2 --> OK
+    EU --> CP[StandardCopyToProcessed]
     CP --> DR1[DeleteFromRawSuccess]
     DR1 --> OK[EventBridge document-processed-successful]
     CF --> FF[CopyToFailed]
@@ -320,7 +325,9 @@ flowchart TD
 | Estado | Efecto |
 | --- | --- |
 | `InitMetadataEntry` | Reemplaza la fila ligera con `DocumentId`, contenido, `WorkflowStatus=pending`, `ProcessingStatus=PROCESSING`, propietario/tipo solicitado y `StateMachineExecId`. |
-| `MultiModelClassificationStep-0` | Invoca la Lambda Converse y guarda `documentClassification`/`modelId` en `classificationResult`. |
+| `SelectCatalogPipelineRoute` | `enrichment-only` para un field-centric/expediente declarado; todo caso incierto usa `standard`. |
+| `PrepareDeclaredClassification` | Construye el contrato mínimo de clasificación sin invocar Lambda/Bedrock. |
+| `MultiModelClassificationStep-0` | Invoca la Lambda Converse y guarda clasificación, modelo y `usage`. |
 | `ClassificationSuccessUpdate` | Escribe `WorkflowStatus=classification-complete` y serializa `ClassificationResult`. |
 | `MultiModelProcessingStep-0` | Invoca la extracción upstream y guarda clasificación, `result.entities` y `modelId`. |
 | `ProcessingSuccessUpdate` | Escribe `WorkflowStatus=processing-complete` y `ProcessingResult`. |
@@ -336,11 +343,10 @@ flowchart TD
 Una regla del mismo bus entrega ambos eventos terminales a
 `status-event-lambda/index.py`: el exitoso escribe `FINISHED` y el fallido
 `FAILED`, junto con `ProcessingCompletedAt`. Este ciclo es el contrato público;
-los valores de `WorkflowStatus` siguen siendo detalle interno del blueprint y
+los valores de `WorkflowStatus` siguen siendo detalle interno de orquestación y
 `validation.status` sigue siendo el dictamen de negocio.
 
-Las tareas Lambda tienen retry de errores de servicio/SDK con backoff, hasta seis
-intentos. El workflow dura como máximo 16 minutos; la Lambda de enrichment dura
+El workflow dura como máximo 16 minutos; la Lambda de enrichment dura
 como máximo 15, dejando un minuto para que su timeout sea atrapable por la ruta
 de error.
 
@@ -993,7 +999,7 @@ Con la escritura DynamoDB completa:
 3. EventBridge publica detail type `document-processed-successful`, source
    `document-validation-pipeline`.
 
-El evento del blueprint contiene `documentId`, content y clasificación upstream;
+El evento de la state machine contiene `documentId`, content y clasificación upstream;
 el envelope completo permanece en DynamoDB/S3. Los consumidores deben consultar
 por id si necesitan el resultado enriquecido.
 
@@ -1125,7 +1131,7 @@ PROCESSING_ERROR   → REQUIERE_REVISION
 | --- | --- | --- | --- |
 | 1 | `handler` upload | `upload-lambda/index.mjs:141` | body, key y modo |
 | 2 | `handlePresigned` | `upload-lambda/index.mjs:200` | URL prefirmada (metadata incluida en el query string) |
-| 3 | `handler` SQS consumer | `patches/default-sqs-consumer-index.py:31` | documentId y execution name |
+| 3 | `handler` SQS consumer | `resources/sqs-consumer/index.py` | documentId y execution name |
 | 4 | `handler` model invoke | `model-invoke-lambda/index.py:256` | bypass vs Converse |
 | 5 | `handler` enrichment | `enrichment-lambda/handler.py:715` | escrituras auxiliares |
 | 6 | `_process` | `handler.py:743` | decisión de pipeline |
@@ -1165,7 +1171,7 @@ Para un `documentId`:
 
 - Cambiar carga/API: `upload-lambda` + `api-docs/API_USO.md`.
 - Cambiar estados, recursos o permisos: `document-validation-stack.ts`, el
-  subclass del blueprint y `ARQUITECTURA.md`/diagramas.
+  construct propio y `ARQUITECTURA.md`/diagramas.
 - Cambiar formato del evento inicial: patch del consumidor SQS.
 - Cambiar clasificación/extracción visual upstream: `model-invoke-lambda` y
   generadores de prompts.
@@ -1194,15 +1200,16 @@ la línea puntual puede desplazarse cuando se edite el archivo.
 | Identidad de app | DynamoDB `GetItem` | `upload-lambda/index.mjs:122-136` | `AppsTable`, PK `ApiKeyId` | `AppName`; una falla degrada a origen desconocido |
 | Carga inline | S3 `PutObject` | `upload-lambda/index.mjs:252-298` | bucket, key `raw/...`, bytes, MIME y metadata | solo confirma éxito; el error devuelve HTTP 500 |
 | Carga grande | firma local para S3 `PutObject` | `upload-lambda/index.mjs:203-246` | mismo bucket/key/metadata, expiración de 15 min | URL; el `PUT` real lo hace el cliente directamente contra S3 |
-| Disparo | S3 notifica SQS | configuración del blueprint | evento `ObjectCreated` limitado a `raw/` | el consumidor recibe el evento dentro de un mensaje SQS |
-| Trazabilidad inicial y contexto del cliente | S3 `HeadObject` | `patches/default-sqs-consumer-index.py` (lectura de metadata) | bucket y key recibidos | `app-origin` → `appOrigin`, y el resto de la metadata del objeto → `uploadMetadata`, ambos en el input de Step Functions; es best-effort, un fallo aquí solo cuesta trazabilidad |
-| Orquestación | Step Functions `StartExecution` | `patches/default-sqs-consumer-index.py:148-179` | ARN, `name={documentId}-execution`, input JSON | ARN/fecha de ejecución; `ExecutionAlreadyExists` se descarta |
+| Disparo | S3 notifica SQS | `MultiModelDocumentProcessing.addS3Notification` | evento `ObjectCreated` limitado a `raw/` | el consumidor recibe el evento dentro de un mensaje SQS |
+| Trazabilidad inicial y contexto del cliente | S3 `HeadObject` | `resources/sqs-consumer/index.py::_metadata` | bucket y key recibidos | `app-origin` → `appOrigin`, resto → `uploadMetadata`; best-effort |
+| Selección de ruta | DynamoDB `GetItem` consistente | `resources/sqs-consumer/index.py::_pipeline_route` | `type_id` declarado | `enrichment-only` sólo si la forma del catálogo lo prueba; error → `standard` |
+| Orquestación | Step Functions `StartExecution` | `resources/sqs-consumer/index.py::_process_s3_record` | ARN, `name={documentId}-execution`, input JSON | ARN; `ExecutionAlreadyExists` se descarta |
 | Inicialización | DynamoDB `PutItem` | estado `InitMetadataEntry` de la máquina sintetizada | `DocumentId`, contenido y `WorkflowStatus=pending` | no regresa datos de negocio |
 | Tasks upstream | Lambda `Invoke` | tasks creadas por `multi-model-document-processing.ts:118-219` | estado completo + fase + prompt/modelo | payload de clasificación o procesamiento |
 | Bytes upstream | S3 `DownloadFile` | `model-invoke-lambda/index.py:313-330` | bucket/key de `content` | archivo temporal `/tmp`; se omite en bypass manual/field-centric |
 | IA upstream | Bedrock Runtime `Converse` | `model-invoke-lambda/index.py:211-223` | modelo, system prompt, mensaje multimodal y `maxTokens` | texto/tool output, stop reason y usage |
-| Catálogo hot reload | DynamoDB `Scan` paginado | `document_catalog.py:427-471` | `CATALOG_TABLE` | entradas que sobreescriben al catálogo empaquetado |
-| Modelos fallback | DynamoDB `Scan` paginado | `pipeline/model_fallback.py:48-79` | `FALLBACK_MODELS_TABLE` | orden de modelos; una falla usa defaults y no detiene el documento |
+| Catálogo hot reload | DynamoDB `Scan` paginado | `document_catalog.py::_load_catalog` | `CATALOG_TABLE`, al vencer TTL | entradas que sobreescriben al catálogo empaquetado |
+| Modelos fallback | DynamoDB `Scan` paginado | `pipeline/model_fallback.py` | `FALLBACK_MODELS_TABLE`, al vencer TTL | orden de modelos; una falla usa defaults |
 | Lectura para enrichment | S3 `GetObject` | `handler.py:254-266`, llamado desde `:437-570` | bucket/key del evento | bytes, MIME, nombre y extensión |
 | OCR PDF/imagen | Textract `DetectDocumentText` | `pipeline/pdf_pages.py:128-162` | bytes de una página PDF renderizada o imagen original | bloques LINE/WORD, geometría y confidence |
 | IA field-centric | Bedrock Runtime `Converse` | `pipeline/bedrock.py:341-393`, con fallback en `:428-498` | prompt, tool schema del catálogo, modelo resuelto | JSON extraído y usage; puede cambiar de modelo |
@@ -1237,14 +1244,14 @@ idea debe entrar y qué contrato podría afectar.
 
 | Idea o riesgo observable | Punto de intervención | Contrato/prueba que debe conservarse |
 | --- | --- | --- |
-| Propagar el costo real de clasificación y processing upstream | `multi-model-document-processing.ts:227-279`, especialmente sus `resultSelector`; hoy `model-invoke-lambda` retorna `usage`, pero no llega al cost audit | shape de `classificationResult`/`processingResult`, límite de 256 KB y tests de costo |
-| Evitar un `Scan` de catálogo en cada invocación sin perder hot reload | `handler.py:743-755`, `document_catalog.py:427-502` | precedencia DynamoDB > bundle y actualización inmediata esperada por `forceReloadCatalog` |
+| Verificar periódicamente el costo upstream | `resultSelector` del construct ya propaga `usage`; `cost_audit.py` lo persiste | shape, límite de 256 KB y tests de costo |
+| Ajustar frescura vs. latencia del catálogo | `CATALOG_CACHE_TTL_SECONDS`/`FALLBACK_MODELS_CACHE_TTL_SECONDS` (30 s) | precedencia DynamoDB > bundle; `0` significa no expirar |
 | Extender el lookup O(1) a campos anidados y a filas de arrays | `unique_keys.py::_values` (hoy solo lee escalares de primer nivel), `query-lambda/index.mjs::uniqueKeyLookup` | la clave sigue siendo `TIPODOC#valor`, el fail-open al recorrido por tipo y el tope por documento |
 | Detectar `documentType` inexistente antes de subir bytes | `upload-lambda/index.mjs:72-110` y una lectura del catálogo | XML/XLSX/CSV siguen requiriendo tipo; decidir qué hacer si DynamoDB está caído |
 | Reducir riesgo de throttling por concurrencia anidada | `pdf_pages.py:165-194`, `expediente.py:174-371`, `text_extractor.py:514-672` | `OCR_WORKERS`, `EXTRACT_WORKERS`, `CHUNK_WORKERS`, reintentos y tiempo máximo de 15 min |
 | Volver coherentes las cuatro escrituras finales | `handler.py:715-740`, `handler.py:514-530`, `indexing.py:170-206`, `unique_keys.py:234-262`, estados posteriores de Step Functions | tolerancia best-effort actual, reintentos idempotentes y recuperación tras una escritura parcial |
 | Dar el mismo contrato de resultado al flujo legacy y al nuevo | `_process()` en `handler.py`, `pipeline/envelope.py::build`/`build_standard` y `query-lambda.fetchFullResult()` | clientes existentes, `api-docs/API_USO.md` y tamaño del estado de Step Functions |
-| Publicar más contexto en EventBridge | estado terminal del blueprint/construct y consumidores externos | no exceder tamaño del evento; evitar duplicar el resultado completo o filtrar datos sensibles |
+| Publicar más contexto en EventBridge | estados terminales de `multi-model-document-processing.ts` y consumidores externos | no exceder tamaño del evento; evitar duplicar el resultado completo o filtrar datos sensibles |
 | Mejorar observabilidad por fase | `tracking` en `pipeline/result_common.py`, registry de `pipeline/bedrock.py`, `indexing.py` y `cost_audit.py` | mantener paridad camelCase/PascalCase y serialización Decimal compatible con DynamoDB |
 | Procesar expedientes que excedan 15 minutos | frontera `_run_expediente()` → `process_pdf()` y definición de la Task | cambiar a fan-out/asíncrono altera idempotencia, shape del estado y momento de mover `raw/` |
 
@@ -1300,16 +1307,16 @@ Archivo: `src/document-processing/multi-model-document-processing.ts`.
 
 | Función/método | Recibe | Produce o configura | Dependencias y destino |
 | --- | --- | --- | --- |
-| `constructor()` (`:87`) | scope CDK, id y props del blueprint | registra props en `WeakMap` antes/durante `super()` | depende del construct del blueprint; no recibe bytes/documentos |
+| `constructor()` | scope CDK y props propios | crea bucket, colas, tabla, workflow y consumidor | recursos CDK; no recibe bytes/documentos |
 | `invokeFunction()` (`:118`) | id lógico, fase, prompt, modelo y nombre físico | una Lambda Python y una Task `LambdaInvoke` con retry/result path | lee código de `model-invoke-lambda`; concede S3/Bedrock/KMS cuando aplica |
-| `classificationStep()` (`:227`) | estado del blueprint en synth time | Task que en runtime escribe `classificationResult` | llama `invokeFunction("classification", ...)`; su `resultSelector` decide qué campos sobreviven |
-| `processingStep()` (`:257`) | estado del blueprint en synth time | Task que en runtime escribe `processingResult` | llama `invokeFunction("processing", ...)`; misma frontera y retry |
+| `classificationStep()` | synth time | Task que escribe `classificationResult` con modelo y usage | llama `invokeFunction("classification", ...)` |
+| `processingStep()` | synth time | Task que escribe `processingResult` con modelo y usage | llama `invokeFunction("processing", ...)` |
 
 Archivo: `src/document-validation-stack.ts`.
 
 | Bloque | Datos/configuración que conecta | Destino runtime |
 | --- | --- | --- |
-| `BedrockDocumentProcessingStack.constructor()` (`:107`) | env, modelos, tablas importadas, bucket/cola/State Machine del blueprint, Lambdas y permisos | crea las rutas y recursos que usarán todas las funciones siguientes |
+| `BedrockDocumentProcessingStack.constructor()` | env, modelos y tablas importadas | conecta construct propio, Lambdas, APIs y permisos |
 | rutas del stack | `POST /documents`, `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file`, `POST /documents/{id}/reprocess`, `PATCH /documents/{id}/metadata` | API Gateway → Upload/Query Lambda |
 
 ### 27.4 Upload Lambda
@@ -1343,13 +1350,13 @@ API body
 
 ### 27.5 Consumidor S3/SQS
 
-Archivo aplicado desde `patches/default-sqs-consumer-index.py`.
+Archivo: `src/document-processing/resources/sqs-consumer/index.py`.
 
 | Función | Entrada | Transformación | Salida/destino | Dependencias |
 | --- | --- | --- | --- | --- |
-| `_resolve_endpoint_url()` (`:9`) | nombres de variables env | devuelve el primer endpoint configurado | URL → `_create_boto3_client` | `os.getenv`; útil para LocalStack/tests |
-| `_create_boto3_client()` (`:17`) | servicio y variables env | crea cliente con endpoint custom o AWS normal | cliente global S3/SFN | `boto3`, `_resolve_endpoint_url` |
-| `handler()` (`:31`) | lote SQS con eventos S3 | por registro: parsea body, ignora test/non-raw, decodifica key, hace `HeadObject`, deriva UUID/tipo/formato y arma `WorkflowEvent` | `StartExecution(input=WorkflowEvent,name={id}-execution)`; lista de resultados al runtime SQS | S3 `HeadObject`, SFN `StartExecution`, Powertools metrics/tracing |
+| `_client()` | servicio | crea cliente con endpoint custom o AWS normal | cliente global S3/SFN/DynamoDB | `boto3` |
+| `_pipeline_route()` | tipo declarado | `GetItem` consistente y análisis de forma | `enrichment-only` o `standard` fail-safe | DynamoDB catálogo |
+| `handler()` | lote SQS con eventos S3 | parsea cada registro, metadata, UUID/tipo/formato y arma `WorkflowEvent` | `StartExecution`; `batchItemFailures` sólo para registros fallidos | S3, SFN, DynamoDB |
 
 Destino de cada dato derivado por el consumidor:
 
@@ -1369,7 +1376,7 @@ Archivo: `src/document-processing/resources/model-invoke-lambda/index.py`.
 | --- | --- | --- | --- | --- | --- |
 | `type_has_upstream_extraction()` (`:119`) | `handler` processing | clasificación y prompt legacy | busca si el prompt contiene campos para ese tipo | boolean → decisión bypass | regex/string local |
 | `extract_manual_classification()` (`:130`) | `handler` classification | key S3 | reconoce `raw/{UPPER_TYPE}/{uuid}/...` | TYPE_ID o `None` → respuesta manual/modelo | `_MANUAL_TYPE_RE` |
-| `parse_chunk_metadata()` (`:148`) | `handler` | event | normaliza metadata opcional de chunks del blueprint | dict/`None` → prompt | sin I/O |
+| `parse_chunk_metadata()` | `handler` | event | normaliza metadata opcional de chunks para compatibilidad | dict/`None` → prompt | sin I/O |
 | `build_chunk_context_prompt()` (`:165`) | `handler` | chunk metadata | describe posición/rango/solapamiento del chunk | texto añadido al prompt | formato local |
 | `_document_name()` (`:183`) | `handler` | key | extrae basename | nombre → bloque document Bedrock | `str.rsplit` |
 | `_media_block()` (`:193`) | `handler` | extensión, key y bytes | crea bloque Converse `image` o `document` con formato/nombre/source bytes | bloque → request Bedrock | allowlists de formatos |

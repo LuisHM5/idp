@@ -14,7 +14,7 @@ const FAILURE_WORKFLOW_STATUSES = new Set([
 ]);
 
 /**
- * Stable public lifecycle, deliberately separate from the blueprint's
+ * Stable public lifecycle, deliberately separate from the state machine's
  * implementation-specific WorkflowStatus values.
  */
 export function processingStatusFor(item, hasResult = false) {

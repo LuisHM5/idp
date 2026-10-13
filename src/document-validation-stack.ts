@@ -15,8 +15,8 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
-import { EventbridgeBroker } from "@cdklabs/cdk-appmod-catalog-blueprints";
 import { Construct } from "constructs";
+import { DocumentEventBroker } from "./document-processing/event-broker";
 import { MultiModelDocumentProcessing } from "./document-processing/multi-model-document-processing";
 import {
   assertPromptFitsLambdaEnv,
@@ -194,9 +194,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
 
     // Prod uses ONE customer-managed key for the complete pipeline, including
     // S3. Dev deliberately creates no customer-managed KMS resources: every
-    // service keeps its AWS-owned/default encryption instead. The blueprint is
-    // patched by scripts/patch-construct.mjs to support that mode and to reuse
-    // this key for the adapter bucket instead of minting a second CMK.
+    // service keeps its AWS-owned/default encryption instead. The owned
+    // pipeline construct reuses this same key in prod and creates no extra CMK.
     const encryptionKey = isProd
       ? new kms.Key(this, "PipelineEncryptionKey", {
           enableKeyRotation: true,
@@ -207,12 +206,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         })
       : undefined;
 
-    // EventBridge broker for pipeline notifications
-    const broker = new EventbridgeBroker(this, "IDPBroker", {
+    // Project-owned EventBridge boundary. Its child id intentionally matches
+    // the former blueprint broker so the deployed bus is updated in place.
+    const broker = new DocumentEventBroker(this, "IDPBroker", {
       name: `idp-broker${envSuffix}`,
-      eventSource: "document-validation-pipeline",
       kmsKey: encryptionKey,
-      useCustomerManagedEncryption: isProd,
     });
 
     // Generate prompts dynamically from the JSON config catalog
@@ -338,6 +336,10 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       environment: {
         ...(catalogTable && { CATALOG_TABLE: catalogTable.tableName }),
         CATALOG_FORCE_RELOAD: forceReload ? "true" : "false",
+        CATALOG_CACHE_TTL_SECONDS:
+          process.env.CATALOG_CACHE_TTL_SECONDS || "30",
+        FALLBACK_MODELS_CACHE_TTL_SECONDS:
+          process.env.FALLBACK_MODELS_CACHE_TTL_SECONDS || "30",
         // Base model for the enrichment pipeline's own steps. All three are
         // text-only (they run on Textract OCR / native PDF text, never on
         // images), so a text-only model works here even when the vision steps
@@ -461,13 +463,13 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         useCrossRegionInference: false,
         customModelId: processingModel,
       },
-      eventbridgeBroker: broker,
+      eventBus: broker.eventbus,
+      eventSource: "document-validation-pipeline",
       enableObservability: true,
       metricNamespace: "bedrock-document-processing",
       metricServiceName: "extraction-workflow",
       // Must exceed the enrichment Lambda's own 15-minute timeout (below):
-      // the blueprint defaults this to Duration.minutes(15) when unset,
-      // which ties it to the Lambda's cap. When both are equal, a genuine
+      // It must not equal the Lambda's 15-minute cap. When both are equal, a genuine
       // Lambda timeout and the state machine's own ExecutionTimedOut race —
       // ExecutionTimedOut usually wins, killing the whole execution before
       // the enrichment step's addCatch can run, so the file never moves out
@@ -478,13 +480,11 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       classificationPrompt,
       processingPrompt,
       enrichmentLambdaFunction: enrichmentFn,
+      catalogTable,
       // Prod shares one CMK across the whole construct. Dev uses service-owned
       // encryption and must synthesize zero AWS::KMS::Key resources.
       useCustomerManagedEncryption: isProd,
       encryptionKey,
-      ...(encryptionKey && {
-        logGroupDataProtection: { logGroupEncryptionKey: encryptionKey },
-      }),
     });
 
     // Tipo de documento como COLUMNA INDEXADA.
@@ -522,7 +522,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     enrichmentFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
     documentTable.grantWriteData(enrichmentFn);
 
-    // The blueprint owns WorkflowStatus and exposes implementation-specific
+    // The state machine owns WorkflowStatus and exposes implementation-specific
     // values. This projection creates the small, stable lifecycle clients use
     // and marks the terminal state only after the file move and final event.
     const statusEventFn = new lambda.Function(this, "ProcessingStatusEventLambda", {
@@ -684,9 +684,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       })
     );
 
-    // Grant broad Bedrock invoke permissions to all Lambda roles in the pipeline
-    // The construct creates its own roles but customModelId with cross-region prefix
-    // may not generate correct IAM ARNs for inference profiles
+    // Shared policy for the separate reference-registry Lambda. The owned
+    // pipeline grants Bedrock only to its two model-invoke functions, so the
+    // SQS ingress does not inherit model permissions it cannot use.
     const bedrockPolicy = new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
@@ -699,24 +699,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       ],
     });
 
-    // Apply to all Lambda functions created by the construct
-    pipeline.node.findAll().forEach((child) => {
-      if (child instanceof lambda.Function) {
-        child.addToRolePolicy(bedrockPolicy);
-      }
-    });
-
-    // The blueprint's QueuedS3Adapter creates the ingestion bucket internally
-    // (raw/ prefix triggers the workflow). Locate it in the construct tree so
-    // the Upload Lambda writes to the real bucket instead of a placeholder.
-    const documentBucket = pipeline.node
-      .findAll()
-      .find((c): c is s3.Bucket => c instanceof s3.Bucket);
-    if (!documentBucket) {
-      throw new Error(
-        "BedrockDocumentProcessing no longer exposes an S3 bucket in its construct tree; wire DOCUMENT_BUCKET explicitly."
-      );
-    }
+    // Explicit project-owned resources: no construct-tree discovery or
+    // dependency-internal ids are needed by the application anymore.
+    const documentBucket = pipeline.documentBucket;
 
     // The adapter bucket uses the shared CMK in prod and SSE-S3 in dev.
     // grantReadWrite automatically adds KMS permissions only in prod — the
@@ -777,26 +762,8 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // The SQS consumer (patched via patches/default-sqs-consumer-index.py)
-    // reads the uploaded object's `app-origin` S3 metadata so appOrigin
-    // reaches every document regardless of which pipeline branch handles it
-    // — its default IAM role only has states:StartExecution + logs, so it
-    // needs S3 read granted explicitly. Same construct-tree lookup pattern
-    // already used above for the ingestion bucket.
-    const sqsConsumerFn = pipeline.node
-      .findAll()
-      .find(
-        (c): c is lambda.Function =>
-          c instanceof lambda.Function && c.node.id === "SQSConsumer"
-      );
-    if (!sqsConsumerFn) {
-      throw new Error(
-        "BedrockDocumentProcessing no longer exposes a 'SQSConsumer' Lambda in its construct tree; appOrigin metadata could not be read, and the app-origin propagation patch would silently do nothing."
-      );
-    }
-    documentBucket.grantRead(sqsConsumerFn);
-    sqsConsumerFn.addEnvironment("DOCUMENT_TABLE", documentTable.tableName);
-    documentTable.grant(sqsConsumerFn, "dynamodb:UpdateItem");
+    // batchSize=10/window=0 is part of the owned construct contract, not an
+    // escape hatch over a dependency's generated CfnEventSourceMapping.
 
     // Cost guardrail: catch a runaway enrichment Lambda (unexpected request
     // volume, or a single invocation crawling toward its 15-minute cap) fast,

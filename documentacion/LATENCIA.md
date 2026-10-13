@@ -13,6 +13,12 @@ modelo desplegado sigue siendo `minimax.minimax-m2.5`.
 
 **Actualización 2026-10-08:** ranking final de modelos, texto y visión, en §12.
 
+**Actualización 2026-10-13:** las palancas de plomería #2 y #3 ya están en el
+código: batching SQS en 0, ruta `enrichment-only` para field-centric declarado,
+long polling opcional en el GET existente y cachés DynamoDB de 30 s. Son cambios
+sintetizados y probados; sus ahorros end-to-end deben medirse después del deploy,
+por lo que las cifras históricas de abajo no se reetiquetan como medición nueva.
+
 ---
 
 ## 1. Veredicto en cinco líneas
@@ -69,13 +75,13 @@ modelo desplegado sigue siendo `minimax.minimax-m2.5`.
 |---|---|---|
 | `POST /documents` → URL prefirmada | ~0.2s | Lambda Node 256 MB, `upload-lambda/index.mjs` |
 | `PUT` del cliente a S3 | red del cliente | va directo a S3, no pasa por Lambda |
-| S3 → SQS → consumidor | **0-5s** | `MaximumBatchingWindowInSeconds=5` en el event source mapping |
+| S3 → SQS → consumidor | **histórico 0-5s** | antes: ventana 5; código actual sintetiza `MaximumBatchingWindowInSeconds=0` |
 | `InitMetadataEntry` | 0.3s | historial SFN |
 | `MultiModelClassificationStep` + update | **1.9s** | historial SFN (prod, 2026-09-14) |
 | `MultiModelProcessingStep` + update | **1.6s** | historial SFN |
 | **`EnrichmentStep`** | **17-220s** | historial SFN — 95%+ del total |
 | `CopyToProcessed` + `DeleteFromRaw` + EventBridge | ~1.2s | historial SFN |
-| Primer poll del cliente | **5s fijos** | `documentacion/api-docs/API_USO.md:313-323` |
+| Primer poll del cliente | **histórico 5s fijos** | ahora: `GET ...?waitSeconds=20` espera y retorna al finalizar; si vence, `Retry-After: 1` |
 
 La respuesta distingue tres relojes para evitar llamar “total” a una fracción:
 
@@ -288,11 +294,10 @@ correr `pnpm test:e2e:suite` y el ground truth de
 
 ## 7. Hallazgos secundarios (no son de latencia, pero salieron del mismo análisis)
 
-1. **El catálogo se recarga en CADA invocación.** `bin/app.ts:48` pone
-   `forceReloadCatalog: true` en dev **y en prod** → `handler.py:724-726`
-   invalida el caché siempre: re-parseo de 531 KB de `config/catalogs.json`
-   (`document_catalog.py:642`) + un `Scan` a la tabla de catálogo (`:681`) +
-   otro `Scan` a `FallbackModelsTable` (`model_fallback.py:66`).
+1. **Resuelto: el catálogo ya no se recarga en cada invocación.** El default es
+   `forceReloadCatalog: false`; catálogo y modelos fallback usan TTL de 30 s.
+   Esto elimina el parseo y dos `Scan` del camino de cada documento sin perder
+   hot reload (propagación máxima por contenedor: 30 s).
 2. **`PEDIMENTO_ERP` está a 441 caracteres de duplicar sus llamadas.** Su bloque
    de esquema mide 9 559 chars contra el umbral de split de 10 000
    (`text_extractor.py:61`): un hint más y las llamadas por chunk se duplican en
@@ -301,11 +306,11 @@ correr `pnpm test:e2e:suite` y el ground truth de
    solo dispara con `len(pages) > 1` (`text_extractor.py:747`). Con MiniMax
    clampeado a 8 192 tokens de salida (`bedrock.py:347-350`), una página densa
    que agote el presupuesto devuelve JSON truncado que se parsea y se acepta.
-4. **No existe notificación push.** El evento terminal de EventBridge lleva
+4. **Long polling en el canal actual.** El evento terminal de EventBridge lleva
    `documentId`/`classification` pero **no** el estado de validación
-   (`base-document-processing.js:176-187`), así que aun escuchando EventBridge el
-   cliente tiene que hacer `GET`. `GET /documents/{id}` ya responde `202` +
-   `Retry-After: 5` (`query-lambda/index.mjs:620-650`), pero ese 5 es fijo.
+   (`multi-model-document-processing.ts:eventTask`), así que aun escuchando EventBridge el
+   cliente tiene que hacer `GET`, pero `waitSeconds=0..20` mantiene esa misma
+   petición abierta y responde al finalizar; no se añadió `/documents/fast`.
 5. **Escrituras finales en serie.** Tras el pipeline, `handler.py:689-701` hace
    S3 `put_object` + 3 escrituras a DynamoDB secuenciales, cada una construyendo
    su propio cliente boto3 (a diferencia de `bedrock.client()`, que sí cachea).
@@ -317,8 +322,8 @@ correr `pnpm test:e2e:suite` y el ground truth de
 | # | Palanca | Ahorro | Riesgo | Dónde |
 |---|---|---|---|---|
 | 1 | Modelo de extracción según §6 | **-71 a -76%** del tiempo de extracción (medido en 2 tipos) | medio: exige validar campos contra el ground truth | `BEDROCK_MODEL_ID`, o `model_ids` por tipo en el catálogo |
-| 2 | `maximumBatchingWindowInSeconds = 0` | hasta -5s (≈-2.5s prom.) | bajo | escape hatch en `document-validation-stack.ts` (hardcodeado en `queued-s3-adapter.js:194-198`) |
-| 3 | `Choice` que salta clasificación+procesamiento con tipo declarado | -3.5s | medio: hay que inyectar un `classificationResult` sintético | override de `createStandardProcessingWorkflow` en `multi-model-document-processing.ts` |
+| 2 | `maximumBatchingWindowInSeconds = 0` **implementado** | hasta -5s (≈-2.5s prom.; por re-medir desplegado) | bajo | contrato directo del construct propio |
+| 3 | `Choice` que salta clasificación+procesamiento con tipo declarado **implementado** | histórico upstream: -3.5s; por re-medir end-to-end | bajo: fail-safe a `standard` si catálogo no responde | `multi-model-document-processing.ts` |
 | 4 | Push (estado de validación en el evento / webhook por app) | -5s percibidos + el overshoot del backoff | bajo | `document-validation-stack.ts`, `AppsTable` |
 | 5 | `additionalModelRequestFields` para bajar reasoning | proporcional a los tokens de salida | bajo | `pipeline/bedrock.py` |
 | 6 | Caché de prompt también con 1 chunk | TTFT y tokens de entrada | bajo | `text_extractor.py:775` |
@@ -326,8 +331,10 @@ correr `pnpm test:e2e:suite` y el ground truth de
 | 8 | `page_selection` en más tipos | hasta -81% de páginas a extracción | bajo | catálogos, ver `ARQUITECTURA.md:130` |
 | 9 | OCR en dos pasadas | el grueso de `pageLoad` | alto: rompe el fail-open | `pdf_pages.py` + `page_selector.py` |
 
-El plan de implementación por fases está en
-`~/.claude/plans/algo-que-no-me-dazzling-pelican.md`.
+Las palancas ya implementadas se fijan en
+`multi-model-document-processing.ts`, `query-lambda/index.mjs` y los tests de
+contrato; las restantes filas de la tabla son oportunidades futuras, no
+comportamiento activo.
 
 ---
 

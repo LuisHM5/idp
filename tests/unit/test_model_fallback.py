@@ -130,6 +130,22 @@ def test_result_is_cached_until_reload(monkeypatch):
     assert model_fallback.get_fallback_models() == ["changed"]
 
 
+def test_cache_refreshes_after_configured_ttl(monkeypatch):
+    monkeypatch.setenv("FALLBACK_MODELS_TABLE", "fallback-models")
+    monkeypatch.setenv("FALLBACK_MODELS_CACHE_TTL_SECONDS", "10")
+    clock = {"now": 100.0}
+    monkeypatch.setattr(model_fallback.time, "monotonic", lambda: clock["now"])
+
+    _install_table(monkeypatch, [{"Rank": 1, "ModelId": "first"}])
+    assert model_fallback.get_fallback_models() == ["first"]
+
+    _install_table(monkeypatch, [{"Rank": 1, "ModelId": "changed"}])
+    clock["now"] = 109.9
+    assert model_fallback.get_fallback_models() == ["first"]
+    clock["now"] = 110.0
+    assert model_fallback.get_fallback_models() == ["changed"]
+
+
 # --- retry budget -----------------------------------------------------------
 
 

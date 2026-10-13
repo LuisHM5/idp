@@ -55,7 +55,7 @@ def _decimalize(value: Any) -> Any:
 
 
 def _upstream_bedrock_cost(event: Dict[str, Any], key: str) -> Dict[str, Any]:
-    """Cost of a blueprint-side step (classification/processing) that ran in
+    """Cost of a standard-flow step (classification/processing) that ran in
     the model-invoke Lambda, from the usage it now forwards through the Step
     Functions payload. Zero-cost (not absent) when the step was bypassed
     (manual classification, extraction deferred to the enrichment pipeline,
@@ -228,6 +228,7 @@ def build_cost_breakdown(
     total_output_tokens = sum(s.get("outputTokens", 0) for s in services.values())
 
     breakdown: Dict[str, Any] = {
+        "pipelineRoute": str(event.get("pipelineRoute") or "standard"),
         "services": services,
         "totalCostUsd": total,
         "totalInputTokens": total_input_tokens,
@@ -299,6 +300,11 @@ def write_cost_record(
         "TotalOutputTokens": breakdown["totalOutputTokens"],
         "PricingVersion": breakdown["pricingVersion"],
         "ExtractionAudit": _decimalize(breakdown["extractionAudit"]),
+        # Lets finance/operations compare the standard path with the
+        # catalog-routed enrichment-only path without inferring it from zero
+        # token line items.  This is attribution metadata, not a made-up AWS
+        # charge: TotalCostUsd remains the sum of measured/estimated services.
+        "PipelineRoute": breakdown["pipelineRoute"],
     }
     if event.get("appOrigin"):
         item["AppOrigin"] = str(event["appOrigin"])

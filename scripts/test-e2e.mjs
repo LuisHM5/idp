@@ -313,7 +313,7 @@ function retryAfterMilliseconds(response, body) {
     if (Number.isFinite(date)) return Math.max(0, date - Date.now());
   }
   const fromBody = Number(body?.retryAfterSeconds);
-  return Number.isFinite(fromBody) && fromBody >= 0 ? fromBody * 1000 : 5000;
+  return Number.isFinite(fromBody) && fromBody >= 0 ? fromBody * 1000 : 1000;
 }
 
 export async function pollDocument({
@@ -323,18 +323,23 @@ export async function pollDocument({
   timeoutMs,
   full = false,
   sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
-  jitter = () => Math.random() * 1000,
+  jitter = () => Math.random() * 250,
   onPoll = () => {},
   fetchImpl,
 }) {
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
-  let backoffMs = 5000;
+  let backoffMs = 1000;
   let attempt = 0;
 
   while (Date.now() <= deadline) {
     attempt++;
-    const suffix = full ? "?full=1" : "";
+    const query = new URLSearchParams();
+    if (full) query.set("full", "1");
+    // One bounded long-poll removes the old fixed five-second blind spot for
+    // short documents without changing GET's default behavior for clients.
+    if (attempt === 1) query.set("waitSeconds", "10");
+    const suffix = query.size ? `?${query}` : "";
     const { response, body } = await apiFetch(
       `${endpoint}/documents/${encodeURIComponent(documentId)}${suffix}`,
       { headers: apiHeaders(apiKey) },

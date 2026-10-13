@@ -62,7 +62,7 @@ Seis mecanismos distintos conviven en el repo para sacarle datos a un documento.
 
 | # | Mecanismo | Qué hace | Dónde vive | Cuesta |
 | - | --- | --- | --- | --- |
-| 1 | **Solo IA** (visión) | Bedrock lee el PDF/imagen directamente como imagen — sin pasar antes por ningún OCR. | `ClassificationStep`/`ProcessingStep` del blueprint (flujo estándar, Camino B) | Bedrock (tokens de imagen) |
+| 1 | **Solo IA** (visión) | Bedrock lee el PDF/imagen directamente como imagen — sin pasar antes por ningún OCR. | `ClassificationStep`/`ProcessingStep` del construct propio (flujo estándar, Camino B) | Bedrock (tokens de imagen) |
 | 2 | **Textract** (solo, sin IA) | Textract `AnalyzeID` devuelve campos ya estructurados (taxonomía fija: `LAST_NAME`, `DATE_OF_BIRTH`, ...); se mapean 1:1 a campos del catálogo vía `field_aliases`. Ningún LLM interviene. | `extractors/textract_analyze_id.py` | Solo Textract |
 | 3 | **Textract + IA** (híbrido) | Textract `DetectDocumentText` saca las líneas OCR; Bedrock las interpreta y arma el JSON contra el schema del catálogo. | `extractors/textract_bedrock.py` | Textract + Bedrock (texto) |
 | 4 | **"OCR de Python"** (pypdf, sin servicio externo) | `pypdf` lee la capa de texto nativa del PDF (modo `layout`) — gratis, exacto, sin llamar a nada. Es la primera opción siempre que el PDF sea digital (no un escaneo). | `pipeline/pdf_pages.py::_native_text` | $0 |
@@ -85,7 +85,14 @@ en `catalogs/` o si un tipo declara `extraction_strategy`.
 
 ## Arquitectura AWS
 
-Todo el stack es serverless (`DocumentValidationStack-Dev` en dev, `DocumentValidationStack` en prod — dos stacks aislados y completos, ver [`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md)). La Step Function la crea el blueprint `@cdklabs/cdk-appmod-catalog-blueprints`; este repo aporta Upload, Enrichment y Query, además de las dos Lambdas de clasificación/procesamiento creadas desde `model-invoke-lambda`, y toda la configuración del catálogo.
+Todo el stack es serverless (`DocumentValidationStack-Dev` en dev,
+`DocumentValidationStack` en prod — dos stacks aislados y completos, ver
+[`AMBIENTES_Y_SEGURIDAD.md`](AMBIENTES_Y_SEGURIDAD.md)). Bucket, SQS/DLQ,
+consumidor, tabla de tracking y Step Function viven en el construct propio
+`multi-model-document-processing.ts`; ya no se parchea ni se importa
+`@cdklabs/cdk-appmod-catalog-blueprints`. Los logical IDs históricos están
+fijados por `scripts/check-infra-migration.mjs`, que bloquea un deploy si un
+refactor intentara reemplazar los recursos stateful.
 
 Los colores de los nodos siguen la paleta oficial por categoría de servicio de AWS (la misma de los AWS Architecture Icons), para que cada pieza se identifique de un vistazo:
 
@@ -101,7 +108,7 @@ _Fuente editable: [`diagrams/arquitectura-aws.mmd`](diagrams/arquitectura-aws.mm
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Upload Lambda**              | Valida el request, reserva el id con `ProcessingStatus=AWAITING_UPLOAD` y devuelve una URL prefirmada; el cliente siempre escribe directo a `S3 raw/`, para cualquier tamaño. El prefijo `raw/{TIPO}/` es cómo se "fuerza" la clasificación. |
 | **S3 `raw/`**                  | Recibir un objeto aquí dispara todo el pipeline (trigger vía SQS → Step Functions).                                                                                                                                                                              |
-| **Step Functions**             | Orquestador del blueprint. La clasificación manual se resuelve sin Bedrock; la automática sí llama al modelo. `ProcessingStep` omite la llamada cuando el tipo no tiene campos en el prompt legacy y difiere la extracción al enrichment. El pipeline field-centric usa después su propia segmentación/extracción por texto. |
+| **Step Functions**             | Orquestador propio con una sola entrada. `pipelineRoute=enrichment-only` salta clasificación/procesamiento upstream para un tipo field-centric declarado; `standard` conserva clasificación y extracción legacy. Cualquier duda al consultar catálogo cae a `standard`. |
 | **Enrichment Lambda** ⭐       | El cerebro: aquí vive `handler.py` y todo `pipeline/`. Ver diagrama de flujo abajo.                                                                                                                                                                              |
 | **Textract**                   | OCR **solo** en páginas de PDF sin capa de texto (el resto usa pypdf, gratis).                                                                                                                                                                                   |
 | **DynamoDB catálogo**          | Tipos y reglas editables en caliente (`pnpm sync`), `RETAIN` — sobrevive a un `destroy` del stack. Gana siempre sobre el JSON empaquetado en runtime.                                                                                                            |
@@ -131,7 +138,10 @@ _Fuente editable: [`diagrams/flujo-ejecucion.mmd`](diagrams/flujo-ejecucion.mmd)
 **Notas de enrutamiento y detalle por paso** (recortado del diagrama para que quepa en una vista — la traza completa está en `TRAZA_CODIGO_COMPLETA.md`):
 
 - La condición de la izquierda decide el **camino de extracción**; `pipeline: "expediente"` en el catálogo controla además, por separado, la **candidatura a auto-segmentación** (solo tipos con ese flag se consideran cuando el PDF se sube sin declarar tipo) y la **elegibilidad para reglas cross-documento**. Detalle: [`../catalogs/README.md`](../catalogs/README.md#pipeline-expediente-qué-controla-realmente).
-- Antes de enrichment, clasificación manual y extracción field-centric pueden hacer bypass sin llamar Bedrock. En clasificación automática sí existe una llamada upstream; el segmentador del Camino A puede corregir después esa clasificación con texto y rangos de página.
+- Antes de enrichment, un tipo field-centric declarado toma el atajo de la
+  state machine y evita por completo las dos invocaciones upstream. AUTO,
+  múltiples tipos, tipos legacy o una falla de catálogo toman el flujo
+  estándar; en clasificación automática sí existe una llamada upstream.
 - **Camino A, paso 1**: `pdf_pages.load_pages` — texto nativo (pypdf, layout) + Textract OCR **en paralelo** solo en páginas escaneadas.
 - **Camino A, paso 2**: `segmenter.segment_pages` — si el uploader declaró el tipo (`declared_type`), 1 solo segmento sin llamar al modelo; si no, Bedrock clasifica los rangos de página.
 - **Camino A, paso 2.5 — selección de páginas de interés** (`page_selector.py`, opt-in por tipo): antes de extraer, cada segmento se recorta a las páginas cuyo texto cumple los marcadores que el tipo declara en `page_selection`. Es puro regex sobre texto que ya se tenía: $0 de AWS, y el ahorro cae entero del lado de Bedrock — medido, un expediente de 86 páginas subido con el tipo declarado pasa de mandar 86 páginas a mandar 16 (**81 % menos**). Solo la llamada de extracción ve las páginas filtradas; `_text` (reglas cross-documento) y la búsqueda del QR conservan el segmento completo, porque son gratis y recortarlas solo podría perder información. Si ninguna página alcanza el umbral, o la selección resulta demasiado amplia para ser creíble, se procesan **todas** (fail-open) — nunca se recorta una selección para que quepa en un número. Un tipo sin `page_selection` no pasa por aquí. Spec: `catalogs/README.md`.

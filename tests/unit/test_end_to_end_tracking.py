@@ -47,3 +47,27 @@ def test_missing_or_invalid_event_time_is_fail_open():
         result = {"tracking": {"createdAt": "2026-10-12T20:00:05+00:00"}}
         handler._add_upload_to_result_tracking(result, event)
         assert "uploadToResultSeconds" not in result["tracking"]
+
+
+def test_queue_and_orchestration_timings_expose_selected_route():
+    result = {
+        "tracking": {
+            "processingStartedAt": "2026-10-12T20:00:01.500+00:00",
+            "processingCompletedAt": "2026-10-12T20:00:02+00:00",
+            "timings": {"pageLoad": 100.0},
+        }
+    }
+    handler._add_upload_to_result_tracking(
+        result,
+        {
+            "eventTime": "2026-10-12T20:00:00Z",
+            "consumerStartedAt": "2026-10-12T20:00:00.200Z",
+            "workflowRequestedAt": "2026-10-12T20:00:00.400Z",
+            "pipelineRoute": "enrichment-only",
+        },
+    )
+
+    assert result["tracking"]["timings"]["queue"] == 200.0
+    assert result["tracking"]["timings"]["orchestrationBeforeExtraction"] == 1100.0
+    assert result["tracking"]["timings"]["pageLoad"] == 100.0
+    assert result["tracking"]["orchestration"] == {"route": "enrichment-only"}

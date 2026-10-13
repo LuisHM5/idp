@@ -2,7 +2,9 @@
 flowchart TD
     REGISTER["POST /documents<br/>AWAITING_UPLOAD"]:::compute --> START(["Documento en<br/>S3 raw/"]):::storage
     START --> QUEUE["SQS Consumer<br/>QUEUED"]:::integration
-    QUEUE --> SFNPRE["Step Functions:<br/>PROCESSING<br/>Classification + Processing"]:::ml
+    QUEUE --> ROUTE{"Ruta del catálogo"}:::decision
+    ROUTE -->|"field-centric declarado"| H
+    ROUTE -->|"legacy o AUTO"| SFNPRE["Classification + Processing<br/>Bedrock o bypass"]:::ml
     SFNPRE --> H["Enrichment Lambda<br/>handler.py"]:::compute
     H --> DEC{"¿Field-centric<br/>o pipeline:<br/>expediente?"}:::decision
 

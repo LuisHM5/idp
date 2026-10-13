@@ -104,14 +104,14 @@ Console.WriteLine("Archivo subido; el pipeline inició automáticamente.");
 // -------------------------------------------------------------------------
 // 3. Consultar hasta un estado terminal.
 // 202 significa que sigue procesándose; 404 sí significa que no existe/no se ve.
-// La espera crece hasta 30 s para no sobrecargar el GET.
+// El mismo GET espera hasta 20 s dentro del servidor; no existe una ruta fast.
 // -------------------------------------------------------------------------
 var result = await WaitForResult(
     apiClient,
     api,
     documentId,
     attempts: 90,
-    delay: TimeSpan.FromSeconds(5));
+    delay: TimeSpan.FromSeconds(1));
 
 var validationStatus = result
     .GetProperty("result")
@@ -256,7 +256,7 @@ static async Task<JsonElement> WaitForResult(
     TimeSpan delay)
 {
     var resultUrl =
-        $"{api}/documents/{Uri.EscapeDataString(documentId)}?full=1";
+        $"{api}/documents/{Uri.EscapeDataString(documentId)}?full=1&waitSeconds=20";
 
     for (var attempt = 1; attempt <= attempts; attempt++)
     {
@@ -343,7 +343,7 @@ var newDocumentId = reprocessJob.GetProperty("documentId").GetString()
 
 var newResult = await WaitForResult(
     apiClient, api, newDocumentId, attempts: 90,
-    delay: TimeSpan.FromSeconds(5));
+    delay: TimeSpan.FromSeconds(1));
 ~~~
 
 Envía `{}` para heredar los tipos explícitos del trabajo anterior. Enviar
@@ -469,8 +469,9 @@ await EnsureSuccess(deleteResponse);
   aparece significa que el documento no lo traía y no era obligatorio.
 - El PATCH necesita AllowMetadataWrite=true y sigue respetando el alcance y
   los tipos autorizados de la app.
-- Un 202 indica `AWAITING_UPLOAD`, `QUEUED` o `PROCESSING`; respeta
-  `Retry-After` y aumenta la espera gradualmente, hasta 30 segundos.
+- Un 202 indica `AWAITING_UPLOAD`, `QUEUED` o `PROCESSING`; usa
+  `waitSeconds=20` sobre el mismo GET, respeta `Retry-After` y aumenta la
+  espera gradualmente, hasta 30 segundos.
 - Un 404 significa que el documento no existe o queda fuera del alcance de la
   app. Ya no se usa para representar procesamiento pendiente.
 - Las rutas /references necesitan AllowReferenceWrite=true, también los GET.

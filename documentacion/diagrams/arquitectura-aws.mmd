@@ -8,9 +8,11 @@ flowchart TB
     RAW[("S3 raw/")]:::storage
     SQS["SQS"]:::integration
 
-    subgraph SFN["Step Functions (blueprint)"]
+    subgraph SFN["Step Functions (construct propio)"]
         direction LR
-        INIT["Init"] --> CLS["Classification<br/>Bedrock"] --> PROC["Processing<br/>Bedrock"]
+        INIT["Init"] --> ROUTE{"Ruta catálogo"}
+        ROUTE -->|"field-centric"| DIRECT["Enrichment directo"]
+        ROUTE -->|"legacy / AUTO"| CLS["Classification<br/>Bedrock"] --> PROC["Processing<br/>Bedrock"]
     end
 
     LAMBDA["★ Enrichment Lambda<br/>handler.py + pipeline/"]:::compute
@@ -30,7 +32,9 @@ flowchart TB
     UP -->|"AWAITING_UPLOAD"| DDBT
     UP -.->|"app + tope diario"| DDBA
     CLIENTE --> RAW
-    RAW --> SQS --> SFN --> LAMBDA
+    RAW --> SQS --> SFN
+    DIRECT --> LAMBDA
+    PROC --> LAMBDA
     LAMBDA --> RES
     LAMBDA --> DDBT
     SFN --> EB
@@ -62,4 +66,5 @@ flowchart TB
 
     class INIT integration
     class CLS,PROC ml
+    class DIRECT compute
     style SFN fill:transparent,stroke:#999,stroke-width:1px,stroke-dasharray: 3 3,color:#333

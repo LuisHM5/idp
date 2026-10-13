@@ -59,6 +59,8 @@ cp .env.example .env.production   # si no existe; revisa BEDROCK_MODEL_ID
 | `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION` | Cuenta/región destino                                                                  | región `us-east-1`                            |
 | `CATALOG_TABLE`                              | Nombre de la tabla DynamoDB del catálogo (**una por ambiente**)                        | `document-validation-catalog` en prod, `document-validation-catalog-dev` en dev |
 | `FALLBACK_MODELS_TABLE`                      | Nombre de la tabla DynamoDB de modelos de fallback ordenados (ver §5.6)                | `document-validation-fallback-models`         |
+| `CATALOG_CACHE_TTL_SECONDS`                  | Máximo que un contenedor reutiliza catálogo antes de consultar DynamoDB; `0` no expira | `30` |
+| `FALLBACK_MODELS_CACHE_TTL_SECONDS`          | TTL equivalente para el orden de modelos fallback                                      | `30` |
 
 ## 3. Primer despliegue
 
@@ -66,12 +68,18 @@ cp .env.example .env.production   # si no existe; revisa BEDROCK_MODEL_ID
 # Solo la primera vez por cuenta/región:
 npx cdk bootstrap
 
-pnpm build      # 1) sincroniza catálogos → Lambda  2) parchea el blueprint  3) compila TS
+pnpm build      # 1) valida/sincroniza catálogos → Lambda  2) compila TS
 pnpm run diff       # opcional: revisar qué se va a crear
 pnpm run deploy     # prepara y despliega DocumentValidationStack-Dev
 ```
 
-**Tablas DynamoDB pendientes:** `deploy`/`deploy:dev`/`deploy:prod` sintetizan una sola vez (`synth:dev`/`synth:prod`), corren `scripts/check-pending-tables.mjs` y despliegan ese mismo assembly (`cdk deploy --app cdk.out`), así el bundling de assets no se repite. El check compara las tablas DynamoDB del template recién sintetizado contra el template desplegado (una llamada `cloudformation get-template`, sin `cdk diff`) y lista las que el deploy va a crear/actualizar/reemplazar/quitar (así una tabla nueva del código, como `CostTable`, no queda commiteada sin desplegar sin que nadie lo note). **En dev solo informa y el deploy sigue; en prod pide confirmación `(S/n)`** si hay una terminal interactiva (en CI o con `--yes` no bloquea). Las tablas no requieren paso aparte: el mismo `cdk deploy` las crea o actualiza. Para solo inspeccionar en dev: `pnpm run deploy:table` (synth + check).
+**Guardas de infraestructura:** `deploy`/`deploy:dev`/`deploy:prod` sintetizan
+una sola vez. Antes de desplegar, `check-infra-migration.mjs` exige conservar
+los logical IDs históricos del bucket, tabla, colas, bus y state machine, y
+`check-pending-tables.mjs` compara las tablas del template contra lo desplegado.
+Así una refactorización no puede convertir silenciosamente la salida del antiguo
+blueprint en un reemplazo destructivo. El mismo assembly (`cdk deploy --app
+cdk.out`) se usa después, sin volver a sintetizar.
 
 Al terminar, la salida muestra:
 
@@ -381,7 +389,10 @@ normalización, gotchas, cómo se comportan los expedientes):
 2. **JSON empaquetado** (`config/catalogs.json`, generado de `catalogs/`).
 3. Tipo desconocido → `OTRO` (revisión manual).
 
-Con `forceReloadCatalog: true` (default en `bin/app.ts`) los cambios en DynamoDB aplican en la siguiente invocación.
+El default es `forceReloadCatalog: false`: un contenedor caliente reutiliza el
+catálogo hasta 30 s (`CATALOG_CACHE_TTL_SECONDS`) y luego refresca DynamoDB. Por
+eso un `pnpm sync` se propaga en **máximo 30 s por contenedor**, sin redeploy.
+`forceReloadCatalog: true` queda para diagnóstico y fuerza un Scan por documento.
 
 ### 5.6 Fallback de modelo cuando Bedrock falla por el proveedor
 
@@ -664,7 +675,7 @@ pnpm run destroy:full   # elimina stack + tabla DynamoDB (pide confirmación)
 
 Notas:
 
-- El bucket S3 de documentos lo gestiona el blueprint; si un destroy falla por bucket no vacío, vaciarlo primero (`aws s3 rm s3://<bucket> --recursive`).
+- El bucket S3 de documentos lo gestiona el construct propio; si un destroy falla por bucket no vacío, vaciarlo primero (`aws s3 rm s3://<bucket> --recursive`).
 - `pnpm run destroy:full` es **irreversible** para los tipos que solo existían en DynamoDB: exporta antes con `aws dynamodb scan --table-name document-validation-catalog --region us-east-1 > catalogo-backup.json` (no hay comando `pnpm` dedicado para esto). Ojo: `destroy:full` **borra la tabla de prod por default** — para el catálogo de dev pásale `--table document-validation-catalog-dev`.
 
 ## 7. Pruebas

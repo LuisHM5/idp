@@ -316,6 +316,13 @@ paths:
             `1`/`true` agrega `fullResult`: el detalle más profundo desde S3
             (fields[] con extractedValue/normalizedValue/confidence/status/checks).
           schema: { type: boolean, default: false }
+        - name: waitSeconds
+          in: query
+          description: >
+            Long polling opcional sobre esta misma ruta. Si el documento sigue
+            pendiente, la conexión espera hasta N segundos y responde en cuanto
+            llega a estado terminal. `0` conserva el GET inmediato. Máximo 20.
+          schema: { type: number, minimum: 0, maximum: 20, default: 0 }
       responses:
         "200":
           description: Estado terminal (`FINISHED` con resultado o `FAILED` técnico).
@@ -374,7 +381,7 @@ paths:
                     workflowStatus: pending
                     documentType: FACTURA_FLETE_EXTRANJERO
                     result: null
-                    retryAfterSeconds: 5
+                    retryAfterSeconds: 1
         "404":
           description: >
             `NOT_FOUND`: no hay documento con ese id/prefijo, o existe pero la
@@ -665,7 +672,7 @@ paths:
                     registeredAt: "2026-07-27T13:18:19.000Z"
                     processingStatus: AWAITING_UPLOAD
                     statusUrl: /documents/e18d014a-...
-                    retryAfterSeconds: 5
+                    retryAfterSeconds: 1
           links:
             # Encadenado formal de los pasos: los valores de ESTA respuesta
             # alimentan las operaciones siguientes, para no copiarlos a mano.
@@ -1797,7 +1804,7 @@ components:
             `result.validation.status`, que expresa el resultado de negocio.
         workflowStatus:
           type: string
-          description: Estado interno heredado del blueprint; no usar para controlar el polling.
+          description: Estado interno legado del workflow; no usar para controlar el polling.
         documentType:
           type: string
           description: Tipo solicitado/resuelto para el documento.

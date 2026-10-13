@@ -1,22 +1,17 @@
 """Classification / extraction step, driven by the Bedrock Converse API.
 
-Replaces the blueprint's own `default-bedrock-invoke` Lambda, which we used to
-overwrite inside `node_modules` with a patch. Two reasons this lives here now:
+Project-owned implementation of the two standard-flow model steps. Two reasons
+this lives here:
 
-1. **Any Bedrock model.** The blueprint's version calls `invoke_model` with an
-   Anthropic-native body (`anthropic_version`, `{"type": "image"}` content
-   blocks), so only Anthropic models work. Converse is Bedrock's
+1. **Any Bedrock model.** Converse is Bedrock's
    model-agnostic surface: the same request shape serves every model Bedrock
    hosts, so the model becomes a config value instead of a code change.
-2. **No patching.** The stack now subclasses the blueprint construct and
-   points its classification/processing steps here (see
-   `multi-model-document-processing.ts`), which is a supported extension
-   point instead of a file overwrite that a dependency bump would silently
-   revert.
+2. **No patching.** The project-owned construct points its
+   classification/processing states here directly (see
+   `multi-model-document-processing.ts`).
 
-The business logic (manual-classification bypass, extraction bypass for types
-extracted downstream, the large-document guard, chunk context) is carried over
-unchanged from that patch — only the model layer differs.
+The business logic includes manual-classification bypass, extraction bypass for
+types extracted downstream, the large-document guard, and chunk context.
 """
 
 import json
@@ -63,9 +58,9 @@ _LARGE_DOC_FALLBACK_TYPE = os.environ.get(
     "LARGE_DOC_FALLBACK_TYPE", "EXPEDIENTE_ADUANAL_MULTIDOCUMENTO"
 )
 
-# Bedrock exception codes worth a retry. The blueprint's version had none and
-# leaned on Step Functions to retry the whole task, which re-downloads the
-# document and re-bills the tokens already spent.
+# Bedrock exception codes worth a retry inside one invocation. Retrying only at
+# Step Functions level re-downloads the document and may re-bill tokens already
+# spent before a transient failure.
 _RETRYABLE = {"ThrottlingException", "ModelNotReadyException", "ServiceUnavailableException"}
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)

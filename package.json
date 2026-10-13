@@ -7,8 +7,7 @@
   ],
   "main": "dist/document-validation-stack.js",
   "scripts": {
-    "postinstall": "node scripts/patch-construct.mjs",
-    "build": "python3 scripts/validar-mapeos-deterministas.py && node scripts/sync-catalogs.mjs && node scripts/patch-construct.mjs && tsc",
+    "build": "python3 scripts/validar-mapeos-deterministas.py && node scripts/sync-catalogs.mjs && tsc",
     "catalogs:lint": "python3 scripts/validar-mapeos-deterministas.py",
     "sync": "node scripts/sync-schema.mjs",
     "sync:one": "node scripts/sync-schema.mjs --one",
@@ -26,6 +25,7 @@
     "test:e2e:init": ".venv/bin/python scripts/test-e2e-suite.py --init",
     "costos:validar": ".venv/bin/python scripts/costos-validar.py",
     "test:encryption": "pnpm build && node scripts/check-encryption-templates.mjs",
+    "test:infra-contract": "node scripts/check-infra-migration.mjs --env dev",
     "schema:sensitivity": ".venv/bin/python scripts/schema-sensitivity.py",
     "procesar": ".venv/bin/python scripts/procesar-docs.py",
     "bench:latencia": ".venv/bin/python scripts/bench-latencia.py",
@@ -59,9 +59,9 @@
     "synth:dev": "npx cdk synth DocumentValidationStack-Dev -c env=dev --quiet",
     "synth:prod": "npx cdk synth DocumentValidationStack -c env=prod --quiet",
     "deploy:table": "npm run synth:dev && node scripts/check-pending-tables.mjs --env dev",
-    "deploy:fast": "npm run prepare:infra:dev && npx cdk deploy DocumentValidationStack-Dev -c env=dev --require-approval never",
-    "deploy:dev": "npm run build && npm run prepare:infra:dev && npm run synth:dev && node scripts/check-pending-tables.mjs --env dev && npx cdk deploy --app cdk.out DocumentValidationStack-Dev --require-approval never",
-    "deploy:prod": "npm run build && npm run prepare:infra:prod && npm run synth:prod && node scripts/check-pending-tables.mjs --env prod && npx cdk deploy --app cdk.out DocumentValidationStack",
+    "deploy:fast": "npm run prepare:infra:dev && npm run synth:dev && node scripts/check-infra-migration.mjs --env dev && npx cdk deploy --app cdk.out DocumentValidationStack-Dev --require-approval never",
+    "deploy:dev": "npm run build && npm run prepare:infra:dev && npm run synth:dev && node scripts/check-infra-migration.mjs --env dev && node scripts/check-pending-tables.mjs --env dev && npx cdk deploy --app cdk.out DocumentValidationStack-Dev --require-approval never",
+    "deploy:prod": "npm run build && npm run prepare:infra:prod && npm run synth:prod && node scripts/check-infra-migration.mjs --env prod && node scripts/check-pending-tables.mjs --env prod && npx cdk deploy --app cdk.out DocumentValidationStack",
     "diff": "npx cdk diff",
     "diff:dev": "npx cdk diff DocumentValidationStack-Dev -c env=dev",
     "diff:prod": "npx cdk diff DocumentValidationStack -c env=prod",
@@ -94,7 +94,6 @@
   "license": "ISC",
   "packageManager": "pnpm@10.20.0",
   "dependencies": {
-    "@cdklabs/cdk-appmod-catalog-blueprints": "1.17.0",
     "aws-cdk-lib": "^2.252.0",
     "constructs": "10.6.0"
   },

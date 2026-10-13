@@ -582,7 +582,8 @@ Del lado de **procesar un documento** (no del script, corre en cada request):
    mismo mecanismo que `model-id` para el override de modelo en dev) — nunca
    como parámetro explícito del body, así que un cliente no puede falsear
    qué app dice ser.
-4. El SQS consumer (`patches/default-sqs-consumer-index.py`) lee esa
+4. El SQS consumer propio
+   (`src/document-processing/resources/sqs-consumer/index.py`) lee esa
    metadata con un `head_object` (barato, solo headers) y la reenvía como
    `appOrigin` en el input de Step Functions.
 5. El enrichment Lambda la copia tal cual al JSON final, dentro del objeto

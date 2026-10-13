@@ -89,7 +89,7 @@ pnpm install
 pnpm setup:python                     # crea .venv para tests locales
 cp .env.example .env.dev              # revisa/ajusta BEDROCK_MODEL_ID, etc.
 
-pnpm build                            # combina catalogs/ + parchea el blueprint + compila TS
+pnpm build                            # valida/combina catalogs/ + compila TS
 pnpm run diff                         # opcional: ver qué se va a crear
 pnpm run deploy                       # despliega a DEV (seguro, nunca toca prod)
 ```

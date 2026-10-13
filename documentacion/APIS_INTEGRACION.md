@@ -45,7 +45,7 @@ Son APIs **propias**: este equipo las diseña, versiona y opera. Un sistema exte
 | 12 | `GET` | `/references/{scope}/{key}/{kind}/{refId}` | Una referencia, con URL prefirmada de su imagen (5 min) | `enrichment-lambda/references_api.py` |
 | 13 | `DELETE` | `/references/{scope}/{key}/{kind}/{refId}` | **Dar de baja** (solo desactiva; el borrado definitivo es `pnpm refs:remove --delete`) | `enrichment-lambda/references_api.py` |
 
-**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y el blueprint (`QueuedS3Adapter.createSuccessChain`/`createFailedChain`, en `@cdklabs/cdk-appmod-catalog-blueprints`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando la ejecución de Step Functions termina sin excepción — el caso normal, incluida una validación RECHAZADA: eso es un resultado de negocio, no una falla de infraestructura — o a `failed/{documentId}/{filename}` únicamente cuando la propia ejecución revienta (excepción no capturada, timeout). `filename` es el nombre de archivo tal cual (sin el uuid ni el tipo delante — ver `patches/default-sqs-consumer-index.py`). El endpoint solo responde para documentos que `GET /documents/{id}` ya resuelve (o sea, ya salieron de `raw/`), así que resuelve el key real con un `ListObjectsV2` de una sola key contra `processed/{documentId}/` y, si no hay nada, `failed/{documentId}/` — nunca reconstruye el nombre de archivo a ciegas ni lee de `raw/`. Devuelve una URL prefirmada de `GetObjectCommand` (mismo patrón que la subida, `getSignedUrl`), no los bytes — ver el porqué y las implicaciones de seguridad en la sección 1.8 y en `api-docs/API_USO.md` §5.
+**Descarga del archivo original (endpoint 4):** el `documentId` no es un key S3 estático — mientras el documento está `PROCESSING` vive en `raw/{TIPO?}/{uuid}/archivo`, y la state machine propia (`multi-model-document-processing.ts`) mueve el objeto (copyObject + deleteObject) a `processed/{documentId}/{filename}` cuando termina sin excepción — incluida una validación RECHAZADA, que es resultado de negocio — o a `failed/{documentId}/{filename}` únicamente ante falla técnica. `filename` es el original (ver `resources/sqs-consumer/index.py`). El endpoint localiza el key bajo `processed/` o `failed/` y devuelve una URL prefirmada, no los bytes.
 
 ### 1.2 `POST /documents` — Iniciar el proceso de subida
 
@@ -107,7 +107,7 @@ los campos extraídos:
 ```jsonc
 // 202: seguir esperando según Retry-After
 { "documentId": "e18d014a-...", "processingStatus": "PROCESSING",
-  "result": null, "retryAfterSeconds": 5 }
+  "result": null, "retryAfterSeconds": 1 }
 ```
 
 ```jsonc
@@ -272,7 +272,9 @@ Contrato completo, límites del recorte y códigos de error:
 
 ## 2. APIs externas consumidas (de terceros — AWS)
 
-Son APIs que este proyecto **no controla**: dependencias de AWS. Cambios de disponibilidad, pricing, límites o deprecación de estos servicios son riesgo externo, no interno. Se listan por servicio, con la operación exacta y qué la invoca — para distinguir qué corre en **código propio de este repo** vs. qué corre en el **blueprint** (`@cdklabs/cdk-appmod-catalog-blueprints`, infraestructura de terceros ya integrada).
+Son APIs de AWS que este proyecto consume. La orquestación y el ingress son
+código CDK propio; no existe ya una biblioteca de blueprint entre el repo y
+estos servicios.
 
 ### 2.1 Amazon Bedrock — clasificación y extracción de campos (IA generativa)
 
@@ -328,8 +330,7 @@ Detalle de costos reales por llamada: [`COSTOS.md`](COSTOS.md). Diagrama de dón
 | `PutObject` | References Lambda — `reference_registry.py::Registry._store` | `confirm`: escribe el recorte aceptado en `references/<scope>/<clave>/<ELEMENTO>/<refId>.png\|jpg`, donde lo lee el pipeline |
 | `GetObject` (vía URL presignada) | References Lambda — `reference_registry.py::Registry.image_url` | `GET /references/…/{refId}`: URL de 5 min para ver la imagen de una referencia activa |
 | `DownloadFile` (transfer manager) | Código propio — `model-invoke-lambda/index.py` | Descarga el archivo para la llamada de visión del flujo estándar |
-| `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createSuccessChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Al terminar la ejecución SIN excepción (incluida una validación RECHAZADA — es un resultado de negocio, no una falla): mueve `raw/{TIPO?}/{uuid}/archivo` → `processed/{documentId}/{filename}`. Código propio no lo invoca directamente. |
-| `CopyObject` + `DeleteObject` | Blueprint — `QueuedS3Adapter.createFailedChain` (`@cdklabs/cdk-appmod-catalog-blueprints`) | Mismo movimiento pero a `failed/{documentId}/{filename}`, solo cuando la propia ejecución de Step Functions revienta (excepción no capturada, timeout) — no cuando el documento simplemente sale RECHAZADO. |
+| `CopyObject` + `DeleteObject` | Construct propio — `MultiModelDocumentProcessing.moveChain` | Mueve `raw/` a `processed/` tras resultado de negocio o a `failed/` solo ante falla técnica. |
 
 ### 2.4 Amazon DynamoDB — catálogo, tracking y auditoría de costos
 
@@ -345,9 +346,9 @@ Varias tablas distintas, mismo servicio (tracking, catálogo, costos, y — abaj
 | `UpdateItem` condicional | `query-lambda/index.mjs` | tracking | `PATCH /documents/{id}/metadata`: actualiza `Metadata` y su versión/auditoría; no toca `EnrichmentResult` |
 | `PutItem` + `UpdateItem` | `query-lambda/index.mjs` | tracking | reproceso: reserva el id nuevo antes de copiar; si `CopyObject` falla lo marca `FAILED` |
 | `UpdateItem` | `enrichment-lambda/indexing.py` | tracking | Promueve columnas indexadas al terminar de validar |
-| `UpdateItem` | SQS consumer (`patches/default-sqs-consumer-index.py`) | tracking | Marca `QUEUED` al recibir `ObjectCreated`, sin hacer retroceder entregas duplicadas |
+| `UpdateItem` | SQS consumer (`resources/sqs-consumer/index.py`) | tracking | Marca `QUEUED` al recibir `ObjectCreated`, sin hacer retroceder entregas duplicadas |
 | `UpdateItem` | `status-event-lambda/index.py` | tracking | Proyecta eventos terminales a `FINISHED` o `FAILED` |
-| `Scan` | `enrichment-lambda/document_catalog.py` | catálogo | Carga tipos/reglas hot-reload al inicio de cada invocación |
+| `Scan` | `enrichment-lambda/document_catalog.py` | catálogo | Refresca tipos/reglas al vencer el TTL (30 s por default), no por documento |
 | `Scan` | `query-lambda/index.mjs` | catálogo | Resuelve nombre humano → `TYPE_ID` |
 | `PutItem` | `enrichment-lambda/cost_audit.py` | costos (`document-validation-costs[-dev]`) | Un item por documento procesado: $ desglosado por servicio (Bedrock segmentación/extracción/upstream, Textract, Lambda). Best-effort, tabla `RETAIN` separada de tracking — ver `COSTOS.md` §7 |
 | `PutItem` + `Query` | `enrichment-lambda/pipeline/fingerprint_store.py` | huellas (`document-validation-fingerprints[-dev]`) | Etapa de autenticidad: escribe la huella de tinta de firma/sello, el hash de cualquier imagen incrustada bajo ellos y la identidad de la carta, y consulta la partición del proveedor para detectar la MISMA firma en la carta de otro empleado o un reenvío. También lee (`Query`) las referencias registradas (`Pk = R#…`). Best-effort: sin tabla o con error, los campos quedan vacíos. Tabla `RETAIN`, una por ambiente |
@@ -361,16 +362,19 @@ Varias tablas distintas, mismo servicio (tracking, catálogo, costos, y — abaj
 
 | Operación | Quién la llama | Nota |
 |---|---|---|
-| `StartExecution` | Blueprint — `patches/default-sqs-consumer-index.py` | Arranca una ejecución por cada objeto nuevo en `S3 raw/` (vía SQS) |
+| `StartExecution` | Código propio — `resources/sqs-consumer/index.py` | Arranca una ejecución idempotente por objeto nuevo en `S3 raw/` (vía SQS) |
 | `DescribeExecution` / `GetExecutionHistory` | Scripts CLI (`scripts/track-execution.mjs`, `scripts/ver-resultado.py`) | Solo herramientas de desarrollo/operación, no runtime del sistema |
 
 ### 2.6 Amazon EventBridge — notificación del resultado final
 
-**No hay ninguna llamada directa a `PutEvents` en el código de este repo.** La publicación de `document-processed-successful` / `document-processing-failed` la resuelve el blueprint dentro de Step Functions. Este repo configura una regla interna que entrega ambos a `status-event-lambda/index.py` para cerrar `ProcessingStatus` y el bus sigue disponible para consumidores externos AWS.
+`EventBridgePutEvents` se declara directamente en el construct propio. Publica
+`document-processed-successful` / `document-processing-failed`; una regla
+interna entrega ambos a `status-event-lambda/index.py`.
 
 ### 2.7 Amazon SQS — desacople S3 → Step Functions
 
-Solo se **consume** (trigger por event-source-mapping en la Lambda del blueprint); no hay ninguna llamada directa `SendMessage`/`ReceiveMessage`/`DeleteMessage` en código propio.
+Solo se **consume** mediante el event-source-mapping de la Lambda propia; no hay
+llamadas manuales `ReceiveMessage`/`DeleteMessage`.
 
 ### 2.8 AWS Certificate Manager (ACM) — solo operación (prod)
 
@@ -408,9 +412,9 @@ vector en DynamoDB y `pnpm refs:reindex` reconstruye el índice desde la tabla.
 | Amazon S3 | Externa | Saliente | Alta — almacenamiento de todo el pipeline | `ARQUITECTURA.md` |
 | Amazon S3 Vectors | Externa | Saliente | Baja — índice derivado, reconstruible con `pnpm refs:reindex`; solo lo usa la búsqueda de referencias por similitud | `AUTENTICIDAD_Y_REFERENCIAS.md` |
 | Amazon DynamoDB | Externa | Saliente | Alta — catálogo y tracking | `ARQUITECTURA.md`, `catalogs/README.md` |
-| AWS Step Functions | Externa | Saliente (vía blueprint) | Media — orquestación, reemplazable | `FLUJO_EJECUCION.md` |
-| Amazon EventBridge | Externa | Saliente (vía blueprint) | Media — notificación, un consumidor externo depende de esto | `api-docs/API_USO.md` §1 |
-| Amazon SQS | Externa | Entrante (consumo, vía blueprint) | Baja — desacople interno | `FLUJO_EJECUCION.md` |
+| AWS Step Functions | Externa | Saliente (construct propio) | Media — orquestación | `FLUJO_EJECUCION.md` |
+| Amazon EventBridge | Externa | Saliente (construct propio) | Media — notificación, un consumidor externo depende de esto | `api-docs/API_USO.md` §1 |
+| Amazon SQS | Externa | Entrante (consumo propio) | Baja — desacople interno | `FLUJO_EJECUCION.md` |
 | AWS ACM | Externa | Operación manual | Baja — solo prod, renovación de cert | `AMBIENTES_Y_SEGURIDAD.md` |
 
 ---

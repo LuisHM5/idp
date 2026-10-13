@@ -6,7 +6,7 @@ de sus extracciones, qué campos fallan más y cómo va el volumen día a día �
 para responder "¿mi proyecto va fluyendo bien?" con datos reales, no con una
 sensación.
 
-Lee la tabla de tracking de documentos del blueprint (`BedrockDocumentProcessing/
+Lee la tabla de tracking de documentos del pipeline (`BedrockDocumentProcessing/
 DocumentProcessingTable` — la misma que usa `GET /documents`), resuelta
 automáticamente desde el stack desplegado. Por cada documento, el campo
 `EnrichmentResult` (el envelope canónico que ya calculó la Lambda) trae el

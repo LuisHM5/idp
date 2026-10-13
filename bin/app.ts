@@ -45,7 +45,10 @@ new BedrockDocumentProcessingStack(app, stackId, {
   // also tags the stack itself without changing names, references or behavior.
   tags: { CostStack: stackId },
   enableDynamoCatalog: true,
-  forceReloadCatalog: true,
+  // Warm containers refresh DynamoDB-backed configuration on a short TTL.
+  // Reloading on every document scanned both tables and re-parsed the bundled
+  // catalog on the latency-critical path.
+  forceReloadCatalog: false,
   enableFallbackModels: true,
   // Custom domain applies in prod only; unset in dev → random execute-api URL.
   domainName: environment === "prod" ? process.env.DOMAIN_NAME : undefined,

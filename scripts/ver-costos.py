@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Audita cuánto ha costado REALMENTE procesar los documentos subidos: por
 documento, por tipo, y total acumulado — Bedrock (segmentación, extracción,
-y los pasos de clasificación/procesamiento del blueprint cuando sí corren),
+y los pasos upstream de clasificación/procesamiento cuando sí corren),
 Textract OCR y cómputo Lambda desglosados y con su costo en USD.
 
 Lee la tabla `document-validation-costs[-dev]`, que `cost_audit.py` llena

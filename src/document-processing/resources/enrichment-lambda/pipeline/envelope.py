@@ -622,7 +622,7 @@ def build(
     if result.get("sourceFile"):
         # El NOMBRE del archivo, no la llave de S3. La llave apuntaba a
         # `raw/{TIPO}/{id}/archivo.pdf`, que es donde el objeto vive DURANTE el
-        # procesamiento: al terminar la ejecución el blueprint lo mueve a
+        # procesamiento: al terminar la ejecución la state machine lo mueve a
         # `processed/{documentId}/` (o a `failed/`), así que para cuando quien
         # llama lee esta respuesta ese path ya no resuelve. Los bytes se piden
         # por `GET /documents/{id}/file`, que sí sabe dónde quedaron. La llave

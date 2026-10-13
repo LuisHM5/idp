@@ -16,11 +16,14 @@ flowchart TD
     U -->|"PUT a URL prefirmada"| S3RAW[("S3 raw/{TIPO?}/{uuid}/file")]
     S3RAW -->|"trigger prefijo raw/"| SFN
 
-    subgraph SFN["Step Functions (blueprint BedrockDocumentProcessing)"]
+    subgraph SFN["Step Functions (construct propio)"]
       direction TB
-      I[InitMetadataEntry] --> C["ClassificationStep — manual o Bedrock"]
+      I[InitMetadataEntry] --> R{pipelineRoute}
+      R -->|standard| C["ClassificationStep — manual o Bedrock"]
       C --> P["ProcessingStep — bypass o Bedrock"]
-      P --> E["EnrichmentStep — handler.py ★ nuestro código"]
+      P --> E["EnrichmentStep — handler.py"]
+      R -->|enrichment-only| E2["EnrichmentStep — handler.py"]
+      E2 --> CP
       E --> CP[CopyToProcessed] --> DR[DeleteFromRaw] --> EB
     end
 
@@ -36,7 +39,7 @@ flowchart TD
 ```
 
 Puntos clave:
-- La **Step Function la crea el blueprint** (`@cdklabs/cdk-appmod-catalog-blueprints`); este repo aporta el paso de **enrichment**, upload/query y las Lambdas que sustituyen clasificación/procesamiento del modelo.
+- La **Step Function y su ingress son código propio** (`multi-model-document-processing.ts` y `resources/sqs-consumer/`); no se modifica `node_modules` ni se depende de `@cdklabs/cdk-appmod-catalog-blueprints`.
 - En las rutas field-centric/XML/tabular el resultado se guarda en **dos lugares**: DynamoDB (envelope compacto, límite 256 KB de Step Functions) y S3 (`results/{id}.json`, completo). El flujo legacy solo persiste el envelope. Ver `api-docs/API_USO.md`.
 
 ## Recorrido paso a paso (con referencias a código)
@@ -64,13 +67,17 @@ Puntos clave:
   `ProcessingStatus=AWAITING_UPLOAD`; por eso consultar ese id ya no se confunde
   con consultar un id inexistente.
 
-### 2. Orquestación (blueprint, sin código nuestro)
+### 2. Orquestación (construct propio)
 - Trigger S3 sobre `raw/` → SQS Consumer marca `QUEUED` → Step Functions.
 - `InitMetadataEntry` reemplaza la fila ligera, conserva propietario/tipo y
   marca el contrato público `ProcessingStatus=PROCESSING`; en paralelo mantiene
   su `WorkflowStatus=pending` interno.
-- `ClassificationStep` → acepta el tipo declarado sin IA o usa Bedrock si debe clasificar.
-- `ProcessingStep` → extrae entidades legacy con Bedrock o hace bypass para tipos field-centric y documentos grandes.
+- El consumidor consulta la forma del tipo en el catálogo. Un único tipo
+  declarado con DSL field-centric o `pipeline: expediente` toma
+  `enrichment-only`: salta ambas Lambdas upstream. Un miss/error/AUTO/múltiples
+  tipos toma `standard` (fail-safe).
+- En `standard`, `ClassificationStep` acepta el tipo declarado sin IA o usa
+  Bedrock; `ProcessingStep` extrae entidades legacy con Bedrock o hace bypass.
 - Cada paso actualiza DynamoDB (`ClassificationResult`, `ProcessingResult`).
 
 ### 3. Enrichment — `handler.py:handler` (★ el corazón)
@@ -126,7 +133,8 @@ Un solo documento; **reutiliza** la extracción de `ProcessingStep`:
   `ProcessingStatus=FINISHED` o `FAILED`, separado de `validation.status`.
 
 ### 5. Consulta — `query-lambda/index.mjs`
-- `GET /documents/{id}` → `202` + `Retry-After` durante
+- `GET /documents/{id}?waitSeconds=0..20` permite long polling en la misma ruta;
+  sin parámetro conserva respuesta inmediata. Devuelve `202` + `Retry-After: 1` durante
   `AWAITING_UPLOAD/QUEUED/PROCESSING`; `200` en `FINISHED/FAILED`; `404` solo
   para ids inexistentes o no visibles. En `FINISHED`, entrega el envelope de
   DynamoDB (`+ fullResult` de S3 con `full=1`).
@@ -159,8 +167,9 @@ Ordenadas por impacto (⭐ = mayor).
    Bien para pocos docs; a escala, promover campos "calientes"
    (`NUMERO_PEDIMENTO_NORMALIZADO`, RFC) a atributos + **GSI** para O(1).
 
-3. **⭐⭐ Scan del catálogo en cada invocación.** `forceReloadCatalog` garantiza
-   hot reload inmediato, pero agrega una lectura paginada a cada documento.
+3. **Catálogo cacheado con TTL.** Cada contenedor conserva catálogo/modelos por
+   30 s; después vuelve a leer DynamoDB. `CATALOG_FORCE_RELOAD=true` queda como
+   modo operativo excepcional, no como default.
 
 4. **⭐ Doble representación del resultado.** El resultado crudo de `process_pdf`
    (sin wrapper) va a S3 y el envelope (con `expediente`) a DynamoDB — dos shapes

@@ -177,6 +177,7 @@ import {
 } from "./document-type-catalog.mjs";
 import { consumeDailyDocument, dailyLimitResponse } from "./daily-doc-cap.mjs";
 import { applyLifecycleTracking } from "./lifecycle-tracking.mjs";
+import { parseWaitSeconds } from "./wait-seconds.mjs";
 
 // Low-level client kept on its own for daily-doc-cap.mjs, which builds
 // AttributeValue params (shared verbatim with upload-lambda).
@@ -196,11 +197,11 @@ const APP_USAGE_TABLE = process.env.APP_USAGE_TABLE;
 const ALLOW_AI_RESPONSE_FORMAT_OVERRIDE =
   String(process.env.ALLOW_AI_RESPONSE_FORMAT_OVERRIDE || "").toLowerCase() === "true";
 const MAX_LIMIT = 100;
-// The blueprint moves the raw upload to processed/{id}/{filename} on any
+// The project-owned state machine moves the raw upload to processed/{id}/{filename} on any
 // execution that completes without an exception (including a RECHAZADO
 // validation outcome — that's a business result, not an infra failure), or to
 // failed/{id}/{filename} only when the execution itself threw/timed out (see
-// AGENTS.md's architecture note and patches/default-sqs-consumer-index.py).
+// AGENTS.md's architecture note and resources/sqs-consumer/index.py).
 // A result download only applies after the document has been indexed and moved
 // out of raw/. Pending GET /documents/{id} calls return status only and never
 // enter this source-object lookup.
@@ -623,14 +624,49 @@ async function resolveItemById(id) {
   return null;
 }
 
+const wait = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 async function getById(id, params, caller) {
   const full = params.full === "1" || params.full === "true";
+  const parsedWait = parseWaitSeconds(params.waitSeconds);
+  if (parsedWait.error) {
+    return json(400, { error: "INVALID_WAIT_SECONDS", message: parsedWait.error });
+  }
 
-  const item = await resolveItemById(id);
+  let item = await resolveItemById(id);
   if (!item) return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
 
-  const envelope = parseEnrichment(item);
-  const processingStatus = processingStatusFor(item, !!envelope);
+  let envelope = parseEnrichment(item);
+  let processingStatus = processingStatusFor(item, !!envelope);
+
+  // Optional bounded long-poll on the existing GET route. Authorization is
+  // checked before waiting, then every refresh is an exact, strongly
+  // consistent GetItem using the resolved full id (never a repeated Scan).
+  if (
+    parsedWait.seconds > 0 &&
+    !envelope &&
+    isPendingProcessingStatus(processingStatus)
+  ) {
+    if (!canSeePendingDocument(caller, item)) {
+      return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+    }
+    const deadline = Date.now() + parsedWait.seconds * 1000;
+    const exactId = item.DocumentId;
+    let iteration = 0;
+    while (Date.now() < deadline) {
+      const interval = iteration++ < 8 ? 250 : 500;
+      await wait(Math.min(interval, Math.max(0, deadline - Date.now())));
+      item = await resolveItemById(exactId);
+      if (!item) break;
+      envelope = parseEnrichment(item);
+      processingStatus = processingStatusFor(item, !!envelope);
+      if (envelope || !isPendingProcessingStatus(processingStatus)) break;
+    }
+    if (!item) {
+      return json(404, { error: "NOT_FOUND", message: `No document for id '${id}'` });
+    }
+  }
 
   if (!envelope) {
     if (!canSeePendingDocument(caller, item)) {
@@ -652,9 +688,9 @@ async function getById(id, params, caller) {
     if (isPendingProcessingStatus(processingStatus)) {
       return json(
         202,
-        { ...statusOnly, retryAfterSeconds: 5 },
+        { ...statusOnly, retryAfterSeconds: 1 },
         {
-          "Retry-After": "5",
+          "Retry-After": "1",
           "Cache-Control": "no-store",
           "Access-Control-Expose-Headers": "Retry-After",
         }
@@ -1137,11 +1173,11 @@ async function reprocessById(id, event, caller) {
       classificationMode: classificationModeFor(parsedTypes.types),
       processingStatus: "QUEUED",
       statusUrl: `/documents/${documentId}`,
-      retryAfterSeconds: 5,
+      retryAfterSeconds: 1,
     },
     {
       Location: `/documents/${documentId}`,
-      "Retry-After": "5",
+      "Retry-After": "1",
       "Cache-Control": "no-store",
       "Access-Control-Expose-Headers": "Location, Retry-After",
     }

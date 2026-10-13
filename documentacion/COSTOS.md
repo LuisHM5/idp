@@ -375,8 +375,8 @@ principalmente consumo variable al volumen de este sistema.
 ### Proyección acordada: 2,430 documentos / 7,290 páginas al mes
 
 Supuesto: pedimentos de tres páginas procesados con el tipo declarado, por
-lo que se omiten la clasificación visual, la extracción redundante del
-blueprint y la segmentación por modelo. El costo de Bedrock + Textract usa
+lo que se omiten la clasificación visual, la extracción upstream redundante
+y la segmentación por modelo. El costo de Bedrock + Textract usa
 las ejecuciones más recientes del mismo pedimento de tres páginas
 (~$0.01365/documento, incluyendo una página OCR). El resto del runtime se
 prorratea conservadoramente desde la ventana real de 58 ejecuciones.
@@ -643,19 +643,25 @@ dato de auditoría/finanzas, no algo por lo que se busquen documentos.
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `BedrockSegmentation`                                         | Tokens de `segmenter.segment_pages` (clasifica rangos de página en un expediente)                                                                            | Tipo declarado explícitamente al subir (`raw/{TIPO}/...`) — no hay llamada al modelo                        |
 | `BedrockExtraction`                                           | Tokens sumados de TODOS los chunks/segmentos de `text_extractor.extract_document`                                                                            | Segmento sin campos de catálogo (ej. `OTRO`)                                                                |
-| `BedrockClassificationUpstream` / `BedrockProcessingUpstream` | Tokens de los pasos de clasificación/extracción del blueprint (Lambda `model-invoke-lambda`, corren ANTES del enrichment Lambda)                             | Bypass de clasificación manual o de extracción diferida — el caso normal para `PEDIMENTO_ADUANAL` declarado |
+| `BedrockClassificationUpstream` / `BedrockProcessingUpstream` | Tokens de los pasos estándar de clasificación/extracción (`model-invoke-lambda`, corren ANTES del enrichment Lambda) | Ruta `enrichment-only` o bypass sin modelo |
 | `TextractOcr`                                                 | Páginas OCR × $0.0015                                                                                                                                        | Documento 100% texto nativo (sin páginas escaneadas)                                                        |
 | `LambdaCompute`                                               | Aproximado: duración de la fase de procesamiento (no la invocación completa — excluye descarga S3 y las escrituras finales a S3/DynamoDB) × memoria asignada | Nunca — siempre hay algo de cómputo                                                                         |
 
 Este registro **cierra una brecha que las secciones 0/2 de este documento ya
 documentaban**: antes, los tokens de `segmenter.py` solo se logueaban
 (`logger.info`, que nunca se veía porque el root logger no tiene level
-configurado) y los del paso de clasificación/procesamiento del blueprint se
+configurado) y los del paso estándar de clasificación/procesamiento se
 descartaban por completo en `model-invoke-lambda/index.py` — ninguno de los
 dos llegaba a ningún lado calculable. Ambos se capturan y propagan ahora, así
 que el número que se ve por-documento debería acercarse más al de Cost
 Explorer que antes (aunque la brecha de ~31% de la sección 0 se midió antes
 de este cambio — no está re-validada contra Cost Explorer todavía).
+
+Cada fila guarda además `PipelineRoute=standard|enrichment-only`. Es una
+dimensión de atribución, no un costo: `TotalCostUsd` sigue siendo únicamente la
+suma de servicios. En `enrichment-only`, ambas líneas upstream deben ser $0;
+Textract, Bedrock de extracción y Lambda reflejan lo que realmente ejecutó el
+pipeline determinístico/híbrido.
 
 ### Atributo `PageSelection` (2026-08-28)
 

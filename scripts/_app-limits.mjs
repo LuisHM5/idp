@@ -45,7 +45,8 @@ export const READ_MULTIPLIER = 4;
 
 /**
  * Requests por documento para dimensionar la cuota (techo) del usage plan:
- * 1 POST + polling de GET /documents/{id} con `Retry-After: 5` durante el p95
+ * 1 POST + long polling de GET /documents/{id}?waitSeconds=20; si vence,
+ * `Retry-After: 1` durante el p95
  * de procesamiento medido en dev (~238 s el 2026-09-21 → ~48 GETs) + /file y
  * PATCH metadata.
  */

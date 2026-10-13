@@ -38,7 +38,7 @@ test("recorre POST -> PUT -> GET 202 -> GET 200 y entrega el JSON final", async 
         uploadUrl: "https://s3.example.test/signed-upload",
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
-    if (!options.method && url === `${endpoint}/documents/doc-e2e-123?full=1`) {
+    if (!options.method && url.startsWith(`${endpoint}/documents/doc-e2e-123?`)) {
       getCount++;
       if (getCount === 1) {
         return new Response(JSON.stringify({

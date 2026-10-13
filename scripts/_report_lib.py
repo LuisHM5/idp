@@ -88,7 +88,7 @@ def cost_table_name(env: str) -> str:
 
 
 def resolve_processing_table(stack: str, region: str) -> str:
-    """Nombre físico de la tabla de tracking de documentos del blueprint —
+    """Nombre físico de la tabla de tracking de documentos del pipeline —
     su nombre lo genera CloudFormation, no es fijo como el de CostTable."""
     import boto3  # deferred: only needed once we know we're actually querying
 

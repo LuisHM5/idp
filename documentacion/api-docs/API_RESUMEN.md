@@ -122,7 +122,7 @@ mismo nivel que `fileName`, no dentro de `metadata`.
 | `uploadUrl` | destino del paso 2 |
 | `uploadMethod` | `PUT` |
 | `uploadExpiresInSeconds` · `uploadExpiresAt` | 900 s |
-| `processingStatus` · `statusUrl` · `retryAfterSeconds` | `AWAITING_UPLOAD` · ruta de consulta · 5 s |
+| `processingStatus` · `statusUrl` · `retryAfterSeconds` | `AWAITING_UPLOAD` · ruta de consulta · 1 s |
 | `bucket` · `key` · `documentType` · `uploadedAt` · `registeredAt` | `documentType` devuelve los TYPE_ID normalizados y sin sufijos, unidos por comas si fueron varios |
 | `occurrenceMode` | modo explícito del POST; `null` si se usará catálogo/default global |
 | `documentTypeCounts` | decisiones explícitas del POST (`:N`/`:all`, o el modo materializado); los defaults de catálogo no aparecen aquí |
@@ -160,6 +160,7 @@ curl -sS "$API/documents/$DOC_ID?full=1" -H "x-api-key: $KEY"
 |---|---|---|
 | `id` | **requerido** | path. Acepta id completo o prefijo |
 | `full` | opcional | `1` agrega el detalle por campo desde S3 |
+| `waitSeconds` | opcional | `0..20`; espera en el mismo GET hasta resultado terminal (default `0`) |
 
 | `200` | |
 |---|---|
@@ -189,7 +190,7 @@ Formas mínimas de la respuesta:
   "documentId": "e18d014a-...",
   "processingStatus": "PROCESSING",
   "result": null,
-  "retryAfterSeconds": 5
+  "retryAfterSeconds": 1
 }
 ```
 
@@ -262,7 +263,7 @@ curl -sS -X POST "$API/documents/$DOC_ID/reprocess" \
 | `documentId` | **id nuevo** para consultar con GET |
 | `reprocessedFrom` | id completo anterior |
 | `documentType` · `documentTypeCounts` · `occurrenceMode` · `classificationMode` | decisión efectiva del reproceso |
-| `processingStatus` · `statusUrl` · `retryAfterSeconds` | `QUEUED` · ruta del id nuevo · 5 s |
+| `processingStatus` · `statusUrl` · `retryAfterSeconds` | `QUEUED` · ruta del id nuevo · 1 s |
 
 `400` `INVALID_JSON` `INVALID_BODY` `INVALID_DOCUMENT_TYPE`
 `INVALID_OCCURRENCE_MODE` `INVALID_FORMAT` `DOCUMENT_TYPE_REQUIRED` ·

@@ -424,7 +424,7 @@ async function handlePresigned(
       registeredAt,
       processingStatus: "AWAITING_UPLOAD",
       statusUrl: `/documents/${documentId}`,
-      retryAfterSeconds: 5,
+      retryAfterSeconds: 1,
     }),
   };
 }
