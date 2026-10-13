@@ -12,9 +12,18 @@ Resumen de las mejoras planeadas que **todavía no están implementadas**. Cada 
 
 | Mejora | Fase | Estado | Dificultad | Plan |
 |---|---|---|---|---|
+| OCR bajo demanda después del mapeo determinístico | 1 (dev) | Pendiente | Media | [`LATENCIA_RESPUESTA.md`](../LATENCIA_RESPUESTA.md) |
 | Ubicación de cada campo en el documento y zonas de extracción | 2 (dev) | Pendiente | Media | [`ubicacion-campos-y-zonas.md`](ubicacion-campos-y-zonas.md) |
 
 ## Resúmenes
+
+### OCR bajo demanda después del mapeo determinístico
+
+- **Qué resuelve**: el pipeline manda hoy a Textract todas las páginas sin texto antes de comprobar si el perfil determinístico ya obtuvo todo lo necesario.
+- **Evidencia**: en `emp_cert.pdf`, la segunda página solo contiene un logotipo y agregó entre 1.97 y 3.25 segundos de `pageLoad` más USD 0.0015, sin producir campos.
+- **Enfoque**: texto nativo → preflight determinístico → Textract solo si faltan campos → IA compacta solo para lo todavía faltante.
+- **Seguridad**: opt-in por catálogo y fail-open al comportamiento actual cuando el perfil no coincide o existe cualquier incertidumbre.
+- **Meta del fixture**: cero Textract, cero IA y mediana de `processingSeconds <= 0.5 s`; no promete 0.5 segundos desde el upload.
 
 ### Ubicación de cada campo en el documento y zonas de extracción
 

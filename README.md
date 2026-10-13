@@ -33,6 +33,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | [`documentacion/AMBIENTES_Y_SEGURIDAD.md`](documentacion/AMBIENTES_Y_SEGURIDAD.md) | dev vs. prod, dominio propio, API keys, WAF. |
 | [`documentacion/TESTS.md`](documentacion/TESTS.md) | Guía rápida para correr los tests (preparación, orden de gratis a caro, cómo leer el veredicto del E2E), qué comando usar para cada caso, costos, cómo diagnosticar un bug. |
 | [`documentacion/COSTOS.md`](documentacion/COSTOS.md) | Costos reales medidos (no estimados) por página/documento/mes. |
+| [`documentacion/LATENCIA_RESPUESTA.md`](documentacion/LATENCIA_RESPUESTA.md) | Comparativo medido antes/después de la ruta rápida interna, desglose de la latencia percibida y propuesta de OCR bajo demanda. |
 | [`documentacion/MODOS_EXTRACCION.md`](documentacion/MODOS_EXTRACCION.md) | Cómo funcionan `catalog`/`model`/`hybrid`/`deterministic`, estrategia de los 30 tipos activos y por qué `catalog` es el default global. |
 | [`documentacion/EXTRACCION_DETERMINISTICA_E_HIBRIDA.md`](documentacion/EXTRACCION_DETERMINISTICA_E_HIBRIDA.md) | Cómo se mapeó `PEDIMENTO_ERP` por código y receta para formatos fijos o migraciones híbridas. |
 | [`documentacion/CARTA_NOM35.md`](documentacion/CARTA_NOM35.md) | **Guía práctica de la carta NOM-035**: cómo probarla en 3 pasos (gratis → local → stack), qué debe salir con las cartas de ejemplo, qué extrae y valida, alta de sellos/firmas por proveedor, paso de observación a rechazo y qué hacer si algo sale raro. |
