@@ -38,16 +38,16 @@ la semántica completa, el inventario de los 30 tipos activos y la decisión de
 default están en [MODOS_EXTRACCION.md](MODOS_EXTRACCION.md).
 
 ```bash
-# Configuración normal del catálogo. PEDIMENTO_ERP usa código sin IA por default.
+# AUTOMÁTICO SEGÚN TIPO. PEDIMENTO_ERP usa código sin IA por default.
 pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode catalog
 
-# Comportamiento anterior: schema completo a Bedrock.
+# IA PARA TODOS LOS CAMPOS. Comportamiento anterior: schema completo a Bedrock.
 pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode model
 
-# Código primero; sólo los campos faltantes van a Bedrock.
+# CÓDIGO PRIMERO; IA PARA FALTANTES.
 pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode hybrid
 
-# Código solamente; un faltante se valida y manda a revisión, nunca abre Bedrock.
+# SÓLO CÓDIGO; FALTANTES A REVISIÓN. Nunca abre Bedrock para extraer campos.
 pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode deterministic
 ```
 

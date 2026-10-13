@@ -11,18 +11,39 @@ que cada tipo elija la ruta correcta. Hoy permite que `PEDIMENTO_ERP` use códig
 determinístico, que los XML usen XPath y que los demás PDF/imágenes sigan usando
 el modelo hasta que tengan un mapper confiable.
 
-## 1. Resumen de los cuatro valores
+## 1. Nombre y efecto de cada modo
 
 `extractionMode` es un override de la carga, no una afirmación de lo que
 ocurrió. Sólo modifica la extracción de campos de PDF/JPG/PNG en el pipeline de
 expedientes.
 
-| Valor | Qué hace | IA de extracción | Uso recomendado |
-|---|---|---:|---|
-| `catalog` | Respeta la política versionada del tipo. Sin mapper usa modelo; con mapper aplica su `fallback`. | Depende del tipo | **Default global y producción** |
-| `model` | Omite el mapper y manda el schema completo al modelo. Reproduce el comportamiento anterior. | Sí | Contrafactual de calidad, latencia y costo en dev |
-| `hybrid` | Ejecuta el mapper y manda al modelo únicamente las ramas no resueltas. Los valores determinísticos nunca se sobrescriben. | Sólo si quedan faltantes | Migración/calibración de un mapper |
-| `deterministic` | Ejecuta sólo el mapper. Los faltantes quedan vacíos y la validación decide si requieren revisión. | No, en la extracción de campos | Prueba estricta del mapper y tipos maduros |
+| Valor técnico | Nombre operativo | Efecto directo | IA de extracción | Uso recomendado |
+|---|---|---|---:|---|
+| `catalog` | **AUTOMÁTICO SEGÚN EL TIPO** | Lee la política del catálogo. Sin mapper usa `model`; con mapper aplica su `fallback`. | Depende del tipo | **Default global y producción** |
+| `model` | **IA PARA TODOS LOS CAMPOS** | Omite el mapper y manda el schema completo al modelo. Reproduce el comportamiento anterior. | Sí | Contrafactual de calidad, latencia y costo en dev |
+| `hybrid` | **CÓDIGO PRIMERO; IA PARA FALTANTES** | Conserva lo resuelto por el mapper y manda únicamente las ramas faltantes al modelo. | Sólo si quedan faltantes | Migración/calibración de un mapper |
+| `deterministic` | **SÓLO CÓDIGO; FALTANTES A REVISIÓN** | No abre el modelo para extraer campos. Lo no resuelto queda vacío y la validación decide si requiere revisión. | No, en la extracción de campos | Prueba estricta del mapper y tipos maduros |
+
+La lectura rápida es:
+
+```text
+catalog       = el tipo decide
+model         = IA completa
+hybrid        = código + IA sólo si falta algo
+deterministic = código únicamente
+```
+
+Si el request omite `extractionMode` y el schema del tipo tampoco declara
+`deterministic_extraction`, el resultado es inequívoco:
+
+```text
+requested = catalog
+effective = model
+strategy  = model
+```
+
+Es decir, **la ausencia de configuración conserva la extracción tradicional
+con IA**; nunca activa código determinístico por accidente.
 
 Reglas de seguridad:
 
@@ -201,12 +222,31 @@ En cada documento:
 
 Las diferencias importantes son:
 
-- `requested` es la intención del request después de aplicar la compuerta del
-  ambiente;
-- `effective` es la política aplicable al tipo;
-- `strategy` es lo que ocurrió en ese documento: puede ser `deterministic`,
-  `hybrid` o `model` según los campos realmente resueltos;
+- `requested` = **qué pidió el cliente** después de aplicar la compuerta del
+  ambiente. Puede ser `catalog`, `model`, `hybrid` o `deterministic`;
+- `effective` = **qué política pudo aplicar el tipo**. Sólo puede ser `model`,
+  `hybrid` o `deterministic`: `catalog` ya quedó resuelto en este punto;
+- `strategy` = **qué ocurrió realmente en ese documento**. Puede ser
+  `deterministic`, `hybrid` o `model` según los campos efectivamente resueltos;
 - `fallbackFields` muestra exactamente qué ramas fueron al modelo.
+
+### Tabla de interpretación de estados
+
+| Salida | Significado operativo | Efecto |
+|---|---|---|
+| `requested: catalog` | El cliente no fuerza estrategia | El catálogo decide |
+| `requested: model` | El cliente pide el comportamiento anterior | Schema completo a IA |
+| `requested: hybrid` | El cliente pide ahorrar sin aceptar faltantes | Código primero; IA para faltantes |
+| `requested: deterministic` | El cliente prohíbe IA de extracción | Sólo código; faltantes a revisión |
+| `effective: model` | El tipo terminará usando extracción completa por IA | Puede tener latencia/costo de generación |
+| `effective: hybrid` | El tipo tiene mapper y permite fallback | IA sólo es posible para ramas faltantes |
+| `effective: deterministic` | El tipo tiene mapper y no permite fallback a IA | Cero IA de extracción |
+| `strategy: model` | No se resolvió nada por mapper o se forzó modelo | La extracción fue completa por IA |
+| `strategy: hybrid` | Mapper y modelo aportaron campos | Hubo IA de extracción |
+| `strategy: deterministic` | El mapper resolvió todo lo enviado | No hubo IA de extracción para ese documento |
+| `aiExecuted: true` | Alguna etapa generativa registrada sí corrió | Consultar `aiUsage.stages` para saber cuál |
+| `aiExecuted: false` | Ninguna etapa generativa registrada corrió | OCR Textract todavía pudo ejecutarse |
+| `reason: type_has_no_deterministic_mapping` | Se pidió `hybrid`/`deterministic` a un tipo sin mapper | Se protegió la salida usando `model` |
 
 ## 6. Comandos de comparación
 

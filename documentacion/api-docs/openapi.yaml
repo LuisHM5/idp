@@ -1520,14 +1520,14 @@ components:
           default: catalog
           description: >
             Solo dev — sobrescribe la extracción de campos para este documento.
-            `catalog` es el default recomendado y conserva la política del tipo;
-            `model` reproduce el schema completo a Bedrock; `hybrid` usa el
-            mapper y manda sólo faltantes; `deterministic` no ejecuta IA de
-            extracción y deja los faltantes a validación/revisión. Un tipo sin
-            mapper permanece en `model`. XML/tabular ignoran este override y se
-            extraen por código. `deterministic` no impide que clasificación,
-            segmentación, localización o autenticidad usen IA; `aiExecuted`
-            confirma la ejecución completa. Prod ignora el override a propósito.
+            Nombres operativos y efectos: `catalog` = AUTOMÁTICO SEGÚN EL TIPO
+            (default); `model` = IA PARA TODOS LOS CAMPOS; `hybrid` = CÓDIGO
+            PRIMERO, IA PARA FALTANTES; `deterministic` = SÓLO CÓDIGO, FALTANTES
+            A REVISIÓN. Sin mapper, `catalog`, `hybrid` y `deterministic`
+            resuelven de forma segura a `model`. XML/tabular ignoran este
+            override y se extraen por código. `deterministic` no impide que
+            clasificación, segmentación, localización o autenticidad usen IA;
+            `aiExecuted` confirma la ejecución completa. Prod ignora el override.
         metadata:
           type: object
           description: |
@@ -1972,18 +1972,36 @@ components:
             efectiva, si ESTE documento llamó IA, ramas enviadas al fallback y
             estimación auditable de tokens evitados.
           properties:
-            strategy: { type: string, enum: [deterministic, hybrid, model] }
-            aiExecuted: { type: boolean }
+            strategy:
+              type: string
+              enum: [deterministic, hybrid, model]
+              description: Lo que realmente ocurrió en este documento.
+            aiExecuted:
+              type: boolean
+              description: Si la extracción de campos de este documento ejecutó IA.
             resolvedFieldCount: { type: integer, minimum: 0 }
             fallbackFields: { type: array, items: { type: string } }
             tokenSavings: { type: object, additionalProperties: true }
         extractionMode:
           type: object
-          description: Modo solicitado por el request y estrategia efectiva para este tipo.
+          description: >
+            Decisión de extracción: `requested` es lo que pidió el cliente y
+            `effective` la política que el tipo pudo aplicar. `catalog` nunca
+            aparece como efectivo porque en ese punto ya resolvió a model,
+            hybrid o deterministic.
           properties:
-            requested: { type: string, enum: [catalog, model, hybrid, deterministic] }
-            effective: { type: string, enum: [model, hybrid, deterministic] }
-            reason: { type: string, enum: [type_has_no_deterministic_mapping] }
+            requested:
+              type: string
+              enum: [catalog, model, hybrid, deterministic]
+              description: Lo pedido por el cliente después de aplicar la política del ambiente.
+            effective:
+              type: string
+              enum: [model, hybrid, deterministic]
+              description: La política que el tipo pudo aplicar después de resolver `catalog` y comprobar si existe mapper.
+            reason:
+              type: string
+              enum: [type_has_no_deterministic_mapping]
+              description: Presente cuando se protegió la salida usando `model` porque el tipo no tiene mapper.
         authenticity:
           $ref: "#/components/schemas/AuthenticitySummary"
         fields:

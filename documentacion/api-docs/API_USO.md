@@ -853,12 +853,12 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
   política versionada de cada tipo: hoy `PEDIMENTO_ERP` elige código
   determinístico y los tipos PDF/imagen sin mapper conservan el modelo.
 
-  | Valor | Comportamiento |
-  |---|---|
-  | `catalog` | Usa la política del tipo; es el default y el comportamiento de producción. |
-  | `model` | Omite el mapper y manda el schema completo a Bedrock; reproduce el comportamiento anterior. |
-  | `hybrid` | Mapper primero; sólo las ramas faltantes van a Bedrock. |
-  | `deterministic` | Mapper solamente; los faltantes se validan y pueden mandar el documento a revisión. |
+  | Valor | Nombre operativo | Efecto |
+  |---|---|---|
+  | `catalog` | **Automático según el tipo** | Usa la política del catálogo; sin mapper cae a `model`. Es el default y el comportamiento de producción. |
+  | `model` | **IA para todos los campos** | Omite el mapper y manda el schema completo a Bedrock; reproduce el comportamiento anterior. |
+  | `hybrid` | **Código primero; IA para faltantes** | Conserva lo resuelto por el mapper y sólo manda las ramas faltantes a Bedrock. |
+  | `deterministic` | **Sólo código; faltantes a revisión** | No usa IA para extraer campos; los faltantes pueden mandar el documento a revisión. |
 
   Si se pide `hybrid`/`deterministic` para un tipo que no declara un mapper, el
   modo efectivo permanece `model` y reporta
@@ -873,6 +873,11 @@ codificado en string; si no es JSON válido, la respuesta es `400 INVALID_METADA
   `pnpm enviar doc.pdf PEDIMENTO_ERP --extraction-mode model|hybrid|deterministic`.
   Producción ignora overrides distintos de `catalog` con la misma compuerta de
   seguridad que `modelId`.
+
+  En la respuesta, `requested` dice **qué pidió el cliente**, `effective` dice
+  **qué política pudo aplicar el tipo**, y `strategy` dice **qué ocurrió en ese
+  documento**. Si no se configura nada en request ni schema: `requested` es
+  `catalog`, `effective` es `model` y `strategy` es `model`.
 - **Fallback automático de modelo (siempre activo, no es un flag de request):** si el modelo que le tocaba a una fase (`extractor`/`recovery`) falla porque no está disponible (no habilitado, no existe, error/timeout/cuota del proveedor — nunca por un request mal formado, eso propaga tal cual), el pipeline cambia solo al siguiente modelo de una lista ordenada y reintenta, hasta 4 veces por default. `tracking.modelIds` ya refleja el modelo que **realmente** corrió (no el configurado) cuando esto pasa; además, solo para las fases donde hubo cambio, `tracking.modelFallbacks` reporta el detalle: modelo esperado vs. el que finalmente corrió, cuántos reintentos tomó, y el error de cada intento fallido. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.
 - **Segmentación degradada (clasificación de un expediente con 2+ tipos declarados):** distinto del punto anterior, aquí Bedrock responde 200 OK pero con texto vacío o truncado (`stopReason: "max_tokens"`) — el pipeline lo detecta, sube el presupuesto de salida y reintenta una vez con el modelo más confiable antes de rendirse; para expedientes grandes, la clasificación se reparte en ventanas de páginas que luego se fusionan. Si pese a eso un rango de páginas queda sin clasificar (marcado `OTRO`), `tracking.segmentationDegraded` reporta cuáles, por qué y con qué intentos, `reviewRequired` se fuerza a `true` y se agrega un `warnings[]` legible — en vez del `documentCount: 0` mudo de antes. Ver `documentacion/GUIA_DESPLIEGUE_Y_USO.md` §5.6.1.
 - **`tracking.appOrigin` (trazabilidad):** cuando el request trae un `x-api-key` de una app registrada con `pnpm apps:register` (ver `documentacion/AMBIENTES_Y_SEGURIDAD.md`), el resultado del documento incluye `tracking.appOrigin` con el nombre de esa app — buscable después vía `GET /documents?system=<app>` (§6). Sale de la **key**, no del body: un `metadata: {"app-origin": "..."}` se descarta, así que ninguna app puede declararse otra. Una key válida pero nunca registrada (p. ej. `idp-default` sin `pnpm apps:adopt`) reporta `appOrigin: "unregistered"`; sin key en absoluto (dev con `DEV_API_KEY_REQUIRED` apagado), el campo simplemente no aparece dentro de `tracking`.
