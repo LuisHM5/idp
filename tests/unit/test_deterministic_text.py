@@ -641,3 +641,115 @@ def test_override_model_reproduce_el_camino_completo_anterior(monkeypatch):
         "requested": "model",
         "effective": "model",
     }
+
+
+# --- Constancia de Situación Fiscal del SAT: perfiles moral/física ----------
+# Corpus local (test-docs no se versiona): las 6 constancias del SAT con texto
+# nativo deben reconocer su perfil y leer por código identificadores, fechas y
+# las tablas de actividades/regímenes con el número exacto de filas impresas;
+# escaneadas, extranjeras y el W-9 deben quedar en `unknown` (modelo completo).
+CONSTANCIAS = REPO_ROOT / "test-docs/portal/constancias"
+CONSTANCIAS_SAT = {
+    # archivo: (perfil, RFC, actividades, regímenes)
+    "SituacionFiscal_211901a0e7a8e0ccd54314ea8fde1372.pdf": ("SAT_PERSONA_MORAL", "RIM110114EV1", 1, 1),
+    "SituacionFiscal_2749fa406c47609c63267c9a11b5a592.pdf": ("SAT_PERSONA_MORAL", "CDE190422HU0", None, 1),
+    "SituacionFiscal_cadbea9f576161bbba0037112b92b53a.pdf": ("SAT_PERSONA_MORAL", "SOR190522SJ1", 1, 1),
+    "SituacionFiscal_660ad5b2b142643245f5934d94c66a22.pdf": ("SAT_PERSONA_FISICA", "CAPP691028CJ7", 3, 3),
+    "SituacionFiscal_82911a026439c59b6605c3457892e2f8.pdf": ("SAT_PERSONA_FISICA", "BARS881222T92", 8, 1),
+    "SituacionFiscal_8c126dd3cc201cfed9d38042b55f1507.pdf": ("SAT_PERSONA_FISICA", "MEGJ8302132E0", 9, 2),
+}
+CONSTANCIAS_NO_SAT = [
+    "Australia.pdf", "Canada.pdf", "España.pdf", "Paises Bajos.pdf", "usa-w9.pdf",
+    "SituacionFiscal_54c1e33e45d453a89881cf2f9e1d5241.pdf",  # escaneada
+    "SituacionFiscal_a777f4f43e32822d6524e3e654328af2.pdf",  # escaneada
+]
+
+
+def _constancia_entry(type_id):
+    sys.path.insert(0, str(REPO_ROOT / "tests"))
+    from catalog_paths import active_catalog_path
+
+    shared = json.loads((REPO_ROOT / "catalogs/_shared.json").read_text(encoding="utf-8"))
+    raw = json.loads(active_catalog_path(REPO_ROOT, type_id).read_text(encoding="utf-8"))[type_id]
+    return _parse_entry(type_id, raw, common_item_fields=shared["_common_item_fields"])
+
+
+@pytest.mark.parametrize("type_id", ["CONSTANCIA_SITUACION_FISCAL", "CONSTANCIA_SITUACION_FISCAL_PORTAL"])
+def test_constancia_sat_perfiles_y_tablas_por_codigo(type_id):
+    missing = [name for name in [*CONSTANCIAS_SAT, *CONSTANCIAS_NO_SAT] if not (CONSTANCIAS / name).exists()]
+    if missing:
+        pytest.skip(f"corpus local de constancias no disponible: {', '.join(missing)}")
+    from pipeline.pdf_pages import load_pages
+
+    entry = _constancia_entry(type_id)
+    assert deterministic_text.validate_entry(entry) == []
+    for name, (profile, rfc, activities, regimes) in CONSTANCIAS_SAT.items():
+        result = deterministic_text.extract(load_pages((CONSTANCIAS / name).read_bytes(), use_ocr=False), entry)
+        pending = set(deterministic_text.path_list(deterministic_text.unresolved_tree(
+            entry.field_tree, result.resolved_paths, "missing_fields", expected_paths=result.expected_paths,
+        )))
+        assert result.profile_id == profile, name
+        assert result.entity_map["RFC"] == rfc, name
+        assert result.entity_map["FECHA_EMISION"], name
+        assert len(result.entity_map.get("ACTIVIDADES_ECONOMICAS") or []) == (activities or 0), name
+        assert len(result.entity_map["REGIMENES_FISCALES"]) == regimes, name
+        # Al modelo sólo le queda texto libre, obligaciones y lo que no calibró.
+        assert "OBLIGACIONES_FISCALES" in pending and "RFC" not in pending, name
+        assert ("ACTIVIDADES_ECONOMICAS" in pending) == (activities is None), name
+    for name in CONSTANCIAS_NO_SAT:
+        result = deterministic_text.extract(load_pages((CONSTANCIAS / name).read_bytes(), use_ocr=False), entry)
+        assert result.profile_status == "unknown", name
+
+
+def test_tabla_leida_a_medias_no_se_publica():
+    entry = _parse_entry("CONTEO", {
+        "description": "Tabla con guarda de conteo.",
+        "deterministic_extraction": {"enabled": True, "fallback": "missing_fields"},
+        "fields": {
+            "FILAS": {"type": "array", "item_fields": {"TEXTO": {"type": "string"}}, "text_source": {
+                "row_regex": r"(?m)^\d+\s+(?P<t>[A-Z]+)\s+\d{2}/\d{2}/\d{4}$",
+                "groups": {"TEXTO": "t"},
+                "row_count": {"regex": r"^\d+\s", "flags": ["multiline"]},
+            }},
+        },
+    })
+    completa = [PageText(1, "1 UNO 01/01/2020\n2 DOS 02/02/2020", "native", 1.0)]
+    partida = [PageText(1, "1 UNO 01/01/2020\n2 DOS PARTIDA\n   EN DOS 02/02/2020", "native", 1.0)]
+
+    assert len(deterministic_text.extract(completa, entry).entity_map["FILAS"]) == 2
+    result = deterministic_text.extract(partida, entry)
+    assert "FILAS" not in result.resolved_paths
+    assert any("row_count: 1 filas leídas de 2 impresas" in w for w in result.warnings)
+
+
+def test_constancia_persona_fisica_solo_pide_texto_libre_al_modelo(monkeypatch):
+    path = CONSTANCIAS / "SituacionFiscal_8c126dd3cc201cfed9d38042b55f1507.pdf"
+    if not path.exists():
+        pytest.skip("corpus local de constancias no disponible")
+    from pipeline.pdf_pages import load_pages
+
+    entry = _constancia_entry("CONSTANCIA_SITUACION_FISCAL_PORTAL")
+    seen = []
+
+    def fake_extract(_pages, _entry, **kwargs):
+        seen.append(set(deterministic_text.path_list(kwargs["field_tree"])))
+        return text_extractor.ExtractedDoc(
+            entity_map={"NOMBRES": "JUAN DANIEL"}, confidences={"NOMBRES": 0.9},
+            row_confidences={}, meta={"usage": {"inputTokens": 8, "outputTokens": 2}},
+        )
+
+    monkeypatch.setattr(expediente, "get_type_entry", lambda _type: entry)
+    monkeypatch.setattr(expediente, "extract_document", fake_extract)
+    pages = load_pages(path.read_bytes(), use_ocr=False)
+    doc = expediente._extract_segment(Segment("CONSTANCIA_SITUACION_FISCAL_PORTAL", 1, len(pages), 1.0), pages, None)
+
+    assert len(seen) == 1
+    assert "ACTIVIDADES_ECONOMICAS" not in seen[0] and "RFC" not in seen[0]
+    entities = doc["_entities"]
+    assert entities["PAIS"] == "MEX" and entities["NOMBRES"] == "JUAN DANIEL"
+    actividades = entities["ACTIVIDADES_ECONOMICAS"]
+    assert len(actividades) == 9
+    # Las columnas `$common` las llena el pipeline también en filas del mapper.
+    assert actividades[0]["ORDEN"] == 1 and actividades[0]["PAGINA"] == 2
+    assert actividades[0]["VALOR_CRUDO"].startswith("1    Instalaciones")
+    assert doc["extractionMeta"]["strategy"] == "hybrid"

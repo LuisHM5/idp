@@ -370,8 +370,27 @@ def _extract_array(
         rows = unique
     if not rows:
         return None
+    _check_row_count(pages, source, len(rows))
     aggregate = min(accepted_confidences, default=0.0)
     return rows, round(aggregate, 4), row_confidences
+
+
+def _check_row_count(pages: Sequence[PageText], source: Dict[str, Any], found: int) -> None:
+    """Reject a partially read table.
+
+    A table where SOME rows matched looks resolved, and the rows the regex
+    missed would be lost without any trace. `row_count.regex` counts the rows
+    the page prints (e.g. lines that start with the row number) inside the
+    array's own `region`; any difference sends the whole array to the
+    fallback instead of publishing an incomplete list.
+    """
+    config = source.get("row_count")
+    if not isinstance(config, dict):
+        return
+    window = _region(_window(pages, source.get("pages")), source)
+    printed = len(_compile(config.get("regex"), config.get("flags")).findall(window.text))
+    if printed != found:
+        raise ValueError(f"row_count: {found} filas leídas de {printed} impresas")
 
 
 def _profile_marker_matches(text: str, marker: Any) -> bool:
@@ -811,6 +830,14 @@ def validate_entry(entry: TypeRegistryEntry) -> List[str]:
                                     errors.append(f"{selector_path}.groups.{field_name}: {exc}")
                                 if isinstance(group_spec, dict):
                                     validate_transforms(group_spec, f"{selector_path}.groups.{field_name}")
+                row_count = source.get("row_count")
+                if row_count is not None:
+                    try:
+                        if not isinstance(row_count, dict):
+                            raise ValueError("debe ser objeto {regex, flags}")
+                        _compile(row_count.get("regex"), row_count.get("flags"))
+                    except (TypeError, ValueError, re.error) as exc:
+                        errors.append(f"fields.{path}.text_source.row_count: {exc}")
                 dedupe = source.get("deduplicate_by") or []
                 dedupe = [dedupe] if isinstance(dedupe, str) else dedupe
                 for field_name in dedupe if isinstance(dedupe, list) else []:

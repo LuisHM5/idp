@@ -9,8 +9,8 @@ La decisión global es: **`catalog` debe permanecer como el valor por default de
 `extractionMode`**. No es una quinta forma de extraer: en PDF/imagen busca si el
 tipo declaró un mapper; si existe lo ejecuta y, si no existe, usa IA para todos
 los campos. Hoy `PEDIMENTO_ERP` usa código determinístico estricto,
-`CERTIFICADO_POLIZA` usa perfiles por código con fallback parcial/completo, los
-XML usan XPath y los demás PDF/imágenes siguen usando el modelo hasta que
+`CERTIFICADO_POLIZA`, las dos constancias de situación fiscal y `CURP` usan
+perfiles por código con fallback parcial/completo, los XML usan XPath y los demás PDF/imágenes siguen usando el modelo hasta que
 tengan un mapper confiable.
 
 ## Control independiente: formato de respuesta de IA
@@ -25,9 +25,18 @@ necesita IA, decide cuánto JSON debe generar el modelo:
 
 Precedencia: request autorizado → `ai_response_format` del catálogo →
 `AI_RESPONSE_FORMAT` global → `compact`. En producción el request necesita el
-permiso por app `AllowAiResponseFormatOverride`. Un payload compacto roto
-reintenta una sola vez en legacy; campos ausentes o inválidos semánticamente no
-se regeneran. `documents[].aiResponseFormat` explica qué pasó y
+permiso por app `AllowAiResponseFormatOverride`. Un dato vacío mal expresado
+(`null`, `[null]`, una fila sin sus celdas opcionales finales) se repara sin
+volver a llamar; una rama que sigue ilegible se pide otra vez en legacy SOLA
+(`retriedPaths`), y únicamente un payload que no sigue el protocolo repite la
+partición completa. Campos ausentes o inválidos semánticamente no se
+regeneran.
+
+Medido el 2026-10-14: `minimax.minimax-m2.5` siempre razona antes de llamar a la
+herramienta (bloque `reasoningContent`), y Bedrock ignora `reasoning_effort`,
+`thinking` y `reasoning` en `additionalModelRequestFields`. En una constancia
+~50% de sus tokens de salida fue razonamiento. La única palanca es pedirle
+menos: mapper por código y columnas `$common` calculadas por el pipeline. `documents[].aiResponseFormat` explica qué pasó y
 `aiResponseSavings` separa el contrafactual de los tokens reales de `aiUsage`.
 
 ## 1. Nombre y efecto de cada modo
@@ -116,8 +125,8 @@ La resolución completa por familia queda así:
 
 | Familia del tipo | `catalog` | `model` | `hybrid` | `deterministic` |
 |---|---|---|---|---|
-| PDF/imagen sin mapper (21 activos) | Modelo | Modelo | Modelo, con razón de incompatibilidad | Modelo, con razón de incompatibilidad |
-| PDF/imagen con mapper (`PEDIMENTO_ERP`, `CERTIFICADO_POLIZA`) | Política/perfil del catálogo | Modelo completo | Mapper + modelo sólo si faltan ramas | Sólo mapper |
+| PDF/imagen sin mapper (18 activos) | Modelo | Modelo | Modelo, con razón de incompatibilidad | Modelo, con razón de incompatibilidad |
+| PDF/imagen con mapper (`PEDIMENTO_ERP`, `CERTIFICADO_POLIZA`, `CONSTANCIA_SITUACION_FISCAL[_PORTAL]`, `CURP`) | Política/perfil del catálogo | Modelo completo | Mapper + modelo sólo si faltan ramas | Sólo mapper |
 | XML con XPath (7 activos) | Código XML | Código XML | Código XML | Código XML |
 | XLSX/XLSM/CSV con `cell`/`column` (0 activos) | Código tabular | Código tabular | Código tabular | Código tabular |
 
@@ -127,7 +136,7 @@ por tanto no hubo ningún fallback.
 
 ## 2. Por qué `catalog` es el default correcto
 
-La alternativa global `deterministic` no es viable: 21 tipos PDF/imagen todavía
+La alternativa global `deterministic` no es viable: 18 tipos PDF/imagen todavía
 no tienen mapper. `model` renunciaría al ahorro ya conseguido y `hybrid` tendría
 una latencia p95 impredecible: basta un solo campo no resuelto para volver a
 abrir una generación que puede producir miles de tokens.
@@ -168,10 +177,10 @@ describe la extracción de campos; otras etapas posibles se explican en §4.
 | `COMPROBANTE_DOMICILIO` | beta | PDF/imagen | Modelo |
 | `COMPROBANTE_ESTUDIOS` | beta | PDF/imagen | Modelo |
 | `CONSTANCIA_NSS` | beta | PDF/imagen | Modelo |
-| `CONSTANCIA_SITUACION_FISCAL` | estable | PDF/imagen | Modelo |
-| `CONSTANCIA_SITUACION_FISCAL_PORTAL` | beta | PDF/imagen | Modelo |
+| `CONSTANCIA_SITUACION_FISCAL` | estable | PDF/imagen | **Perfiles `SAT_PERSONA_MORAL`/`SAT_PERSONA_FISICA`: identificadores, fechas, domicilio numérico, actividades y regímenes por código; IA sólo para nombres, texto libre y obligaciones; formato desconocido → IA completa** |
+| `CONSTANCIA_SITUACION_FISCAL_PORTAL` | beta | PDF/imagen | **Mismos perfiles SAT (+`PAIS=MEX`); constancia extranjera, W-9 o escaneo → IA completa** |
 | `CONTRATO_SERVICIO_PORTAL` | beta | PDF/imagen | Modelo |
-| `CURP` | beta | PDF/imagen | Modelo |
+| `CURP` | beta | PDF/imagen | **Perfil `RENAPO_CONSTANCIA`: clave, folio, entidad, fecha y certificación por código; IA sólo para separar nombre y apellidos** |
 | `ESTADO_CUENTA_PORTAL` | beta | PDF/imagen | Modelo + integridad según catálogo |
 | `FACTURA_FLETE_EXTRANJERO` | estable | PDF/imagen | Modelo |
 | `FACTURA_HONORARIOS` | estable | PDF/imagen | Modelo |
@@ -191,10 +200,11 @@ describe la extracción de campos; otras etapas posibles se explican en §4.
 
 Totales actuales:
 
-- 21 tipos PDF/imagen con extracción de campos por modelo;
+- 18 tipos PDF/imagen con extracción de campos por modelo;
 - 7 tipos XML con XPath determinístico;
-- 2 tipos PDF con mapper de texto: `PEDIMENTO_ERP` estricto y
-  `CERTIFICADO_POLIZA` por perfiles con fallback;
+- 5 tipos PDF con mapper de texto: `PEDIMENTO_ERP` estricto, y
+  `CERTIFICADO_POLIZA`, `CONSTANCIA_SITUACION_FISCAL[_PORTAL]` y `CURP` por
+  perfiles con fallback;
 - 0 tipos tabulares activos. La ruta XLSX/XLSM/CSV ya existe y será código puro
   mediante `cell`/`column` cuando se publique un catálogo que la use.
 
@@ -360,7 +370,7 @@ abrió MiniMax sobre campos faltantes: la extracción tardó 160.75 s y consumi�
 JSON final, sino de la generación no streaming del modelo.
 
 Estas cifras prueban la decisión para este layout; no justifican activar un
-mapper incompleto en los otros 22 tipos. Cada nuevo mapper debe contrastarse
+mapper incompleto en los demás tipos. Cada nuevo mapper debe contrastarse
 contra ground truth y observarse primero en `hybrid` antes de cambiar su
 fallback de catálogo a `review`.
 

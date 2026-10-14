@@ -413,7 +413,15 @@ def _parse_field_tree(
             for common_name in raw:
                 common_raw = common_item_fields.get(common_name)
                 if common_raw:
-                    result[common_name] = _parse_field_spec(common_name, common_raw, common_item_fields)
+                    spec = _parse_field_spec(common_name, common_raw, common_item_fields)
+                    # Row bookkeeping (page, position, printed line, row
+                    # confidence) is filled by the pipeline after extraction
+                    # (`pipeline.row_common`), never asked to the model: on a
+                    # real constancia VALOR_CRUDO alone was ~30% of the table
+                    # JSON the model generated, and ORDEN/PAGINA are derivable.
+                    spec.computed = True
+                    spec.params["row_common"] = common_name
+                    result[common_name] = spec
             continue
         result[name] = _parse_field_spec(name, raw, common_item_fields)
     return result

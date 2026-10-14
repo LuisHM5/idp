@@ -54,6 +54,7 @@ from .pdf_pages import PageText, load_image_page, load_pages, pages_summary
 from .bedrock import explain_model_resolution, fallback_events, stage_degradations, used_models
 from .pricing import merge_bedrock_usage
 from .result_common import build_tracking, checks_to_json, error_result
+from .row_common import fill_row_common_fields
 from .segmenter import CONTAINER_TYPE, Segment, segment_pages
 from .text_extractor import (
     ExtractedDoc,
@@ -307,6 +308,12 @@ def _extract_segment(
                 **model_result.row_confidences,
                 **trusted_row_confidences,
             }
+            # Rows the mapper produced also get their `$common` cells; the
+            # model's rows were already filled by the extractor (idempotent).
+            fill_row_common_fields(
+                model_result.entity_map, entry.field_tree, extract_pages,
+                model_result.row_confidences,
+            )
             fallback_fields = deterministic_text.path_list(pending_tree)
             try:
                 token_savings = estimate_deterministic_token_savings(

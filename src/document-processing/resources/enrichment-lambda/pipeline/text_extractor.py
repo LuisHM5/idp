@@ -31,6 +31,7 @@ from . import type_check
 from .bedrock import converse_structured, resolve_model
 from .confidence import row_key
 from .pdf_pages import PageText
+from .row_common import fill_row_common_fields
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,12 @@ _CHUNK_WORKERS = int(os.environ.get("CHUNK_WORKERS", "2"))
 # the same bounded pool as page chunks, so one-page documents run both calls
 # concurrently without multiplying the existing concurrency ceiling.
 _FIELD_TREE_SPLIT_SCHEMA_CHARS = int(os.environ.get("FIELD_TREE_SPLIT_SCHEMA_CHARS", "10000"))
+
+# Scope of the legacy call that re-asks only the branches a compact response
+# got wrong. Like `arrays`, it does not repeat the type check: the same
+# response already answered it.
+_RETRY_SCOPE = "retry"
+_NO_TYPE_CHECK_SCOPES = frozenset({"arrays", _RETRY_SCOPE})
 
 AI_RESPONSE_COMPACT = "compact"
 AI_RESPONSE_LEGACY = "legacy"
@@ -477,7 +484,7 @@ def _field_tree_tool_schema(field_tree: Dict[str, FieldSpec], scope: str = "all"
     # ~30 tokens de salida en vez de una llamada aparte. Solo la pide la
     # llamada de escalares — la partición `arrays` ve el mismo texto y
     # contestaría lo mismo, y un chunk debe responder una sola vez.
-    if scope != "arrays":
+    if scope not in _NO_TYPE_CHECK_SCOPES:
         props = {type_check.SIGNAL_KEY: type_check.tool_property(), **props}
     return {"type": "object", "properties": props}
 
@@ -517,10 +524,13 @@ def _compact_scalar_pair_schema(spec: FieldSpec) -> Dict[str, Any]:
 def _compact_table_schema(spec: FieldSpec) -> Dict[str, Any]:
     # Rows are positional and are validated against the catalog by Python.
     # Keeping this generic avoids repeating every column name in every row;
-    # the static prompt below states their exact order.
+    # the static prompt below states their exact order. The fixed length is
+    # what tells the model an empty cell is still a cell: without it a blank
+    # last column was simply dropped and the row could not be decoded.
+    width = len([name for name, child in spec.item_fields.items() if not child.computed]) + 1 if spec.item_fields else 2
     return {
         "type": "array",
-        "items": {"type": "array", "items": {}},
+        "items": {"type": "array", "items": {}, "minItems": width, "maxItems": width},
     }
 
 
@@ -538,7 +548,7 @@ def _compact_tool_schema(field_tree: Dict[str, FieldSpec], scope: str = "all") -
             "additionalProperties": False,
         },
     }
-    if scope != "arrays":
+    if scope not in _NO_TYPE_CHECK_SCOPES:
         props["d"] = {
             "type": "array",
             "items": {},
@@ -578,7 +588,7 @@ def _build_compact_field_tree_prompts(
     scope: str,
 ) -> Tuple[str, str]:
     base, user_text = _build_field_tree_prompts(type_entry, pages, field_tree, scope)
-    if scope != "arrays":
+    if scope not in _NO_TYPE_CHECK_SCOPES:
         base = base.replace(
             type_check.PROMPT_RULE,
             "- Antes de extraer decide si el texto ES el documento declarado. "
@@ -601,6 +611,7 @@ def _build_compact_field_tree_prompts(
         "- Responde solamente con las llaves s, t y, cuando el schema la admita, d.\n"
         "- s es un objeto disperso: omite campos no encontrados; cada valor es [valor, confidence].\n"
         "- t es un objeto de tablas: cada fila usa EXACTAMENTE el orden indicado y termina en confidence.\n"
+        "- Cada fila lleva TODAS sus celdas: una celda vacía se escribe null, nunca se omite.\n"
         "- Para una lista anidada, su celda contiene sus filas posicionales con la misma regla.\n"
         "- No repitas nombres de columnas dentro de cada fila y no emitas nulls para escalares ausentes.\n"
         "- d, si se solicita, es [corresponde, confianza, descripcion_opcional].\n"
@@ -620,6 +631,7 @@ def _build_field_tree_prompts(
     task = {
         "non_arrays": "Extrae UNICAMENTE los campos escalares y objetos no repetibles del schema.",
         "arrays": "Extrae UNICAMENTE los campos tipo lista del schema.",
+        "retry": "Extrae UNICAMENTE estos campos del schema; los demás ya se obtuvieron.",
     }.get(scope, "Extrae los campos del schema.")
     # "DECLARADO", no "clasificado": en la ruta con tipo declarado nadie
     # clasificó nada — quien subió el archivo dijo qué era, y la regla de
@@ -629,7 +641,7 @@ def _build_field_tree_prompts(
         f"{task}\n\n"
         f"{_field_tree_schema_block(selected_tree)}\n\n"
         "REGLAS ESTRICTAS:\n"
-        + (type_check.PROMPT_RULE if scope != "arrays" else "") +
+        + (type_check.PROMPT_RULE if scope not in _NO_TYPE_CHECK_SCOPES else "") +
         "- NUNCA inventes un valor. Si un dato no aparece en el texto, OMITE esa llave por completo; "
         "no emitas null ni objetos vacios como relleno.\n"
         "- Copia los valores tal cual aparecen impresos (montos con comas, fechas en su formato original).\n"
@@ -939,6 +951,43 @@ def _decode_compact_cell(value: Any, spec: FieldSpec, seg_conf: float, where: st
     return _compact_scalar_value(value, spec, where)
 
 
+def _is_confidence(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and math.isfinite(float(value)) and 0.0 <= float(value) <= 1.0
+    )
+
+
+def _repair_compact_row(
+    raw_row: Any, columns: List[Tuple[str, FieldSpec]], where: str
+) -> List[Any]:
+    """A positional row with every cell, or `CompactResponseError`.
+
+    Models drop EMPTY trailing cells despite the protocol: a constancia row
+    whose last column (FECHA_FIN) was blank came back with 7 cells instead of
+    8, and the whole response was thrown away and paid again in legacy. When
+    the row ends in a confidence and only optional, non-numeric trailing
+    columns are missing, those columns were empty: pad them with null. A
+    missing numeric column would make "is the last number the confidence or
+    the cell?" a guess, so that, and any longer/shorter row, stays an error.
+    """
+    expected = len(columns) + 1
+    if not isinstance(raw_row, list):
+        raise CompactResponseError(f"fila desalineada en {where}: esperaba {expected} celdas")
+    if len(raw_row) == expected:
+        return raw_row
+    missing = expected - len(raw_row)
+    tail = columns[len(columns) - missing:] if 0 < missing < expected else []
+    if (
+        tail
+        and raw_row
+        and _is_confidence(raw_row[-1])
+        and all(not spec.required and spec.type not in ("number", "array", "object") for _name, spec in tail)
+    ):
+        return list(raw_row[:-1]) + [None] * missing + [raw_row[-1]]
+    raise CompactResponseError(f"fila desalineada en {where}: esperaba {expected} celdas")
+
+
 def _decode_compact_array(
     raw: Any, spec: FieldSpec, seg_conf: float, path: str
 ) -> Tuple[List[Any], Optional[float], Dict[str, Dict[str, float]]]:
@@ -952,8 +1001,7 @@ def _decode_compact_array(
         expected = len(columns) + 1
         for row_index, raw_row in enumerate(raw):
             where = f"{path}[{row_index}]"
-            if not isinstance(raw_row, list) or len(raw_row) != expected:
-                raise CompactResponseError(f"fila desalineada en {where}: esperaba {expected} celdas")
+            raw_row = _repair_compact_row(raw_row, columns, where)
             confidence = _compact_confidence(raw_row[-1], seg_conf, where)
             row: Dict[str, Any] = {}
             for index, (name, child) in enumerate(columns):
@@ -987,9 +1035,23 @@ def _decode_compact_array(
     return rows, aggregate, row_confidences
 
 
-def _compact_type_signal(raw: Any) -> Optional[Dict[str, Any]]:
+_TRUE_WORDS = frozenset({"true", "si", "sí", "yes", "corresponde"})
+_FALSE_WORDS = frozenset({"false", "no", "no corresponde"})
+
+
+def _compact_type_signal(raw: Any, type_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if raw is None:
         return None
+    if isinstance(raw, list) and len(raw) in {2, 3} and isinstance(raw[0], str):
+        # Measured (MiniMax, constancia 2026-10-14): `d` came back as
+        # ["CONSTANCIA_SITUACION_FISCAL_PORTAL", 1.0, "..."] — the declared
+        # type's name where `true` was expected. That, and a yes/no word, are
+        # unambiguous; any other string is not read as a verdict.
+        word = raw[0].strip().lower()
+        if word in _TRUE_WORDS or (type_id and word == type_id.strip().lower()):
+            raw = [True, *raw[1:]]
+        elif word in _FALSE_WORDS:
+            raw = [False, *raw[1:]]
     if not isinstance(raw, list) or len(raw) not in {2, 3} or not isinstance(raw[0], bool):
         raise CompactResponseError("señal d inválida")
     try:
@@ -1005,9 +1067,59 @@ def _compact_type_signal(raw: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+# Same default `_parse_field_tree_response` gives a scalar that reported no
+# confidence of its own.
+_DEFAULT_SCALAR_CONFIDENCE = 0.85
+
+
+def _compact_pair(pair: Any, spec: FieldSpec, where: str) -> Tuple[Any, Any]:
+    """(value, declared confidence) of one `s` entry, tolerating the shapes a
+    model emits for an EMPTY or unscored field instead of omitting it.
+
+    `null`, `[]`, `[null]`, `[null, c]` and `""` mean "not found" — exactly
+    what the protocol asks the model to express by omission. `[v]` and a bare
+    scalar are a value without its confidence. Measured: one blank
+    `NOMBRE_LOCALIDAD` used to discard a whole constancia response, and MiniMax
+    writes a blank field as `[0]` — a confidence with no value. In a text or
+    date field a lone number in [0, 1] is that, never the value; in a numeric
+    field it could be either, so that branch is re-asked instead of guessed.
+    """
+    if pair is None or pair == "":
+        return None, None
+    if isinstance(pair, list):
+        if len(pair) == 2:
+            return pair[0], pair[1]
+        if len(pair) == 1:
+            if _is_confidence(pair[0]):
+                if spec.type in ("string", "date"):
+                    return None, None
+                if spec.type == "number":
+                    raise CompactResponseError(f"par escalar ambiguo en {where}")
+            return pair[0], None
+        if not pair:
+            return None, None
+        raise CompactResponseError(f"par escalar inválido en {where}")
+    if isinstance(pair, dict):
+        if set(pair) <= {"value", "confidence"} and "value" in pair:
+            return pair.get("value"), pair.get("confidence")
+        raise CompactResponseError(f"par escalar inválido en {where}")
+    return pair, None
+
+
 def _parse_compact_response(
-    raw: Any, tree: Dict[str, FieldSpec], seg_conf: float
-) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Optional[Dict[str, Any]]]:
+    raw: Any, tree: Dict[str, FieldSpec], seg_conf: float, type_id: Optional[str] = None,
+) -> Tuple[
+    Dict[str, Any], Dict[str, float], Dict[str, Dict[str, float]], Optional[Dict[str, Any]], Dict[str, str]
+]:
+    """Decode a compact payload branch by branch.
+
+    The fifth element maps each path that could not be decoded without
+    guessing to its reason. Those branches are left out of the entity so the
+    caller can ask for ONLY them again, instead of discarding and repaying the
+    whole response. Problems with the payload as a whole (missing containers,
+    paths the schema never declared) still raise `CompactResponseError`: they
+    mean the model did not follow the protocol at all.
+    """
     if not isinstance(raw, dict) or not ({"s", "t"} <= set(raw)):
         raise CompactResponseError("faltan contenedores compactos s/t")
     if set(raw) - {"s", "t", "d"}:
@@ -1017,27 +1129,83 @@ def _parse_compact_response(
         raise CompactResponseError("s/t deben ser objetos")
     scalar_specs, table_specs = _compact_manifest(tree)
     unknown = (set(scalar_raw) - set(scalar_specs)) | (set(table_raw) - set(table_specs))
-    if unknown:
+    known = (set(scalar_raw) & set(scalar_specs)) | (set(table_raw) & set(table_specs))
+    if unknown and not known:
         raise CompactResponseError(f"rutas desconocidas: {', '.join(sorted(unknown))}")
+    if unknown:
+        # Measured: in a hybrid call the model also returned a field the
+        # mapper had already read (it is printed on the page) and that alone
+        # discarded the whole response. Extra paths are dropped; they never
+        # overwrite anything.
+        logger.warning("compact response: ignoring paths not requested: %s", sorted(unknown))
+        scalar_raw = {path: pair for path, pair in scalar_raw.items() if path in scalar_specs}
+        table_raw = {path: rows for path, rows in table_raw.items() if path in table_specs}
 
     entity: Dict[str, Any] = {}
     confidences: Dict[str, float] = {}
     row_confidences: Dict[str, Dict[str, float]] = {}
+    broken: Dict[str, str] = {}
     for path, pair in scalar_raw.items():
-        if not isinstance(pair, list) or len(pair) != 2:
-            raise CompactResponseError(f"par escalar inválido en {path}")
-        value = _compact_scalar_value(pair[0], scalar_specs[path], path)
-        if value is None:
+        try:
+            raw_value, declared = _compact_pair(pair, scalar_specs[path], path)
+            value = _compact_scalar_value(raw_value, scalar_specs[path], path)
+            if value is None or value == "":
+                continue
+            confidence = _compact_confidence(
+                _DEFAULT_SCALAR_CONFIDENCE if declared is None else declared, seg_conf, path
+            )
+            _set_compact_path(entity, path, value)
+        except CompactResponseError as exc:
+            broken[path] = str(exc)
             continue
-        _set_compact_path(entity, path, value)
-        confidences[path] = _compact_confidence(pair[1], seg_conf, path)
+        confidences[path] = confidence
     for path, raw_rows in table_raw.items():
-        rows, aggregate, nested_conf = _decode_compact_array(raw_rows, table_specs[path], seg_conf, path)
-        _set_compact_path(entity, path, rows)
+        try:
+            rows, aggregate, nested_conf = _decode_compact_array(raw_rows, table_specs[path], seg_conf, path)
+            _set_compact_path(entity, path, rows)
+        except CompactResponseError as exc:
+            broken[path] = str(exc)
+            continue
         if rows and aggregate is not None:
             confidences[path] = round(aggregate, 4)
         row_confidences.update(nested_conf)
-    return entity, confidences, row_confidences, _compact_type_signal(raw.get("d"))
+    try:
+        signal = _compact_type_signal(raw.get("d"), type_id)
+    except CompactResponseError as exc:
+        # An unreadable verdict is an unanswered one: the type check already
+        # fails open on None (`type_check.merge_signals`). Repaying the whole
+        # extraction to re-ask a yes/no would cost far more than it protects.
+        logger.warning("compact type signal unreadable (%s): %r", exc, raw.get("d"))
+        signal = None
+    return entity, confidences, row_confidences, signal, broken
+
+
+def _subtree_for_paths(tree: Dict[str, FieldSpec], paths: Set[str], prefix: str = "") -> Dict[str, FieldSpec]:
+    """The part of `tree` that holds exactly `paths` (dotted, as in `s`/`t`)."""
+    selected: Dict[str, FieldSpec] = {}
+    for name, spec in tree.items():
+        if spec.computed:
+            continue
+        path = f"{prefix}{name}"
+        if path in paths:
+            selected[name] = spec
+        elif spec.type == "object":
+            children = _subtree_for_paths(spec.fields, paths, path + ".")
+            if children:
+                selected[name] = replace(spec, fields=children)
+    return selected
+
+
+def _merge_nested(target: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(target)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_nested(merged[key], value)
+        elif value is not None and value != [] and value != {}:
+            merged[key] = value
+        else:
+            merged.setdefault(key, value)
+    return merged
 
 
 def _value_at_path(entity: Dict[str, Any], path: str) -> Any:
@@ -1350,12 +1518,51 @@ def _call_model_field_tree_compact(
             "compatibilityResponse": True,
         }
     try:
-        entity, confidences, row_confidences, signal = _parse_compact_response(
-            parsed, selected_tree, seg_conf
+        entity, confidences, row_confidences, signal, broken = _parse_compact_response(
+            parsed, selected_tree, seg_conf, type_entry.type_id
         )
     except CompactResponseError as exc:
         exc.usage = usage
         raise
+    repair_audit: Dict[str, Any] = {}
+    if broken:
+        # Only the branches that could not be decoded go back to the model, in
+        # the legacy shape; everything else from this response is kept. Before,
+        # one blank scalar or one short row re-ran the WHOLE partition.
+        retry_tree = _subtree_for_paths(selected_tree, set(broken))
+        logger.warning(
+            "compact response partially invalid for %s/%s; retrying legacy for %s: %s",
+            type_entry.type_id, scope, sorted(broken), "; ".join(broken.values()),
+        )
+        if retry_tree:
+            r_entity, r_conf, r_rows, r_usage, _r_signal, _r_audit = _call_model_field_tree_legacy(
+                type_entry, pages, model_id, cache, retry_tree, _RETRY_SCOPE
+            )
+            entity = _merge_nested(entity, r_entity)
+            confidences.update(r_conf)
+            row_confidences.update(r_rows)
+            compact_usage = usage
+            usage = _merge_usage(usage, r_usage)
+            repair_audit = {
+                "compactCalls": 1,
+                "legacyCalls": 1,
+                "effective": "mixed",
+                "fallbackExecuted": True,
+                "fallbackReason": "; ".join(broken.values())[:240],
+                "retriedPaths": sorted(broken),
+                "tokenSavings": {
+                    "estimated": True,
+                    "method": "partial_fallback_v1",
+                    "billedInputTokens": int(usage.get("inputTokens") or 0),
+                    "billedOutputTokens": int(usage.get("outputTokens") or 0),
+                    "estimatedLegacyInputTokens": int(compact_usage.get("inputTokens") or 0),
+                    "estimatedLegacyOutputTokens": int(compact_usage.get("outputTokens") or 0),
+                    "estimatedInputTokensSaved": -int(r_usage.get("inputTokens") or 0),
+                    "estimatedOutputTokensSaved": -int(r_usage.get("outputTokens") or 0),
+                },
+            }
+    if repair_audit:
+        return entity, confidences, row_confidences, usage, signal, repair_audit
     legacy_prefix, _legacy_user = _build_field_tree_prompts(
         type_entry, pages, selected_tree, scope
     )
@@ -1471,6 +1678,8 @@ def _extract_document_field_tree(
         signals.append(signal)
         format_audits.append(response_audit)
 
+    fill_row_common_fields(entity_map, selected_tree, pages, row_confidences)
+
     seg_conf = _segment_confidence(pages)
     effective_values = {str(item.get("effective") or "") for item in format_audits}
     effective_values.discard("")
@@ -1487,6 +1696,9 @@ def _extract_document_field_tree(
     fallback_reasons = [str(item["fallbackReason"]) for item in format_audits if item.get("fallbackReason")]
     if fallback_reasons:
         response_audit["fallbackReasons"] = fallback_reasons
+    retried = sorted({path for item in format_audits for path in item.get("retriedPaths") or []})
+    if retried:
+        response_audit["retriedPaths"] = retried
     saving_blocks = [
         item.get("tokenSavings") for item in format_audits
         if isinstance(item.get("tokenSavings"), dict)

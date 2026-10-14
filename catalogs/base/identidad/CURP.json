@@ -1,19 +1,55 @@
 {
   "CURP": {
     "catalog_status": "beta",
-    "schema_version": "5.0.0",
+    "schema_version": "5.1.0",
     "display_name": "Constancia de CURP",
-    "aliases": ["CURP", "constancia CURP", "constancia de la CURP", "RENAPO"],
+    "aliases": [
+      "CURP",
+      "constancia CURP",
+      "constancia de la CURP",
+      "RENAPO"
+    ],
     "description": "Constancia oficial de la Clave Única de Registro de Población emitida por RENAPO/SEGOB. Se reconoce por el encabezado 'Clave Única de Registro de Población', la clave CURP de 18 caracteres, el nombre de la persona y, en formatos recientes, las leyendas de certificación o verificación con el Registro Civil. No confundir con una Constancia de Situación Fiscal, acta de nacimiento, INE ni una simple captura de consulta sin identidad visible.",
     "prompt_profile": "CLAUDE_HAIKU_JSON",
     "pipeline": "single_document",
     "business_destination": "RECURSOS_HUMANOS",
     "min_confidence": 0.85,
+    "deterministic_extraction": {
+      "enabled": true,
+      "fallback": "missing_fields",
+      "profile_fallback": "full_model",
+      "profiles": [
+        {
+          "id": "RENAPO_CONSTANCIA",
+          "pages": "first",
+          "markers": [
+            "Clave\\s*:\\s*[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d",
+            "Entidad\\s*de\\s*registro\\s*:",
+            "CURP\\s*Certificada\\s*:",
+            "RENAPO|Registro\\s+Nacional\\s+de\\s+Poblaci[óo]n"
+          ],
+          "min_score": 4,
+          "expected_fields": [
+            "CURP",
+            "NOMBRES",
+            "PRIMER_APELLIDO",
+            "SEGUNDO_APELLIDO",
+            "ENTIDAD_REGISTRO",
+            "FOLIO",
+            "FECHA_EMISION",
+            "ESTATUS_CURP",
+            "TIPO_CERTIFICACION"
+          ]
+        }
+      ]
+    },
     "fields": {
       "CURP": {
         "type": "string",
         "required": true,
-        "unique_key": { "normalize": "alnum" },
+        "unique_key": {
+          "normalize": "alnum"
+        },
         "hint": "Clave CURP de exactamente 18 caracteres, impresa de forma prominente. Extraer en mayúsculas y sin espacios; no reconstruirla desde los datos personales.",
         "validation": [
           {
@@ -21,7 +57,21 @@
             "pattern": "^[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d$",
             "message": "La CURP no cumple el formato de 18 caracteres"
           }
-        ]
+        ],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "Clave\\s*:\\s*(?P<v>[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d)\\b",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "transforms": [
+                "upper"
+              ]
+            }
+          ]
+        }
       },
       "NOMBRES": {
         "type": "string",
@@ -75,31 +125,111 @@
         "type": "string",
         "required": false,
         "hint": "Estatus o leyenda de la CURP, por ejemplo ACTIVA, CERTIFICADA o CERTIFICADA: VERIFICADA CON EL REGISTRO CIVIL. Conservar el texto literal.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "CURP\\s*(?P<v>Certificada)\\s*:",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "transforms": [
+                "upper"
+              ]
+            }
+          ]
+        }
       },
       "TIPO_CERTIFICACION": {
         "type": "string",
         "required": false,
         "hint": "Leyenda completa de certificación o verificación mostrada por RENAPO, sin resumirla ni inventarla.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?P<v>CURP\\s*Certificada\\s*:[ \\t]*verificada\\s+con\\s+el\\s+Registro\\s+Civil)",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "transforms": [
+                "collapse_whitespace"
+              ]
+            }
+          ]
+        }
       },
       "ENTIDAD_REGISTRO": {
         "type": "string",
         "required": false,
         "hint": "Valor del campo 'Entidad de registro' cuando aparezca.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "Entidad\\s*de\\s*registro\\s*:[ \\t]*(?P<v>[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ .]*[A-ZÁÉÍÓÚÑ])[ \\t]*$",
+              "group": "v",
+              "flags": [
+                "ignore_case",
+                "multiline"
+              ],
+              "transforms": [
+                "collapse_whitespace"
+              ]
+            },
+            {
+              "regex": "(?P<v>[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ ]*[A-ZÁÉÍÓÚÑ])Entidad\\s*de\\s*registro\\s*:",
+              "group": "v",
+              "flags": [
+                "multiline"
+              ],
+              "transforms": [
+                "collapse_whitespace"
+              ]
+            }
+          ]
+        }
       },
       "FOLIO": {
         "type": "string",
         "required": false,
         "hint": "Folio, identificador o código de barras impreso para la constancia. Conservarlo como string.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "CURP\\s*Certificada\\s*:[^\\n]*\\n\\s*(?P<v>\\d{10,20})\\s*$",
+              "group": "v",
+              "flags": [
+                "ignore_case",
+                "multiline"
+              ]
+            }
+          ]
+        }
       },
       "FECHA_EMISION": {
         "type": "date",
         "required": false,
         "hint": "Fecha de emisión o impresión de la constancia cuando sea visible. Normalizar a YYYY-MM-DD.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": ",\\s*a\\s+(?P<v>\\d{1,2}\\s+de\\s+[a-záéíóú]+\\s+de\\s+\\d{4})",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "transforms": [
+                "collapse_whitespace",
+                "date_iso"
+              ]
+            }
+          ]
+        }
       }
     }
   }

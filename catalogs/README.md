@@ -276,7 +276,12 @@ como en el DSL viejo.
 - **`$common`** en `item_fields` inyecta subcampos definidos una sola vez en
   `_shared.json` → `_common_item_fields` (hoy: `PAGINA`, `ORDEN`, `CONFIANZA`,
   `VALOR_CRUDO`) — evita repetir el mismo hint/validation en cada grupo
-  repetible del catálogo entero.
+  repetible del catálogo entero. **Nunca se le piden al modelo**: el pipeline
+  los llena después de extraer (`pipeline/row_common.py`): `ORDEN` = posición
+  de la fila, `PAGINA`/`VALOR_CRUDO` = página y renglón impreso donde aparece el
+  texto de la fila (comparado sin espacios), `CONFIANZA` = la de la fila. Si no
+  encuentra la fila quedan vacíos. Medido en una constancia, `VALOR_CRUDO` era
+  ~30% del JSON de tablas que generaba el modelo.
 - **`$presets`** en `fields` (nivel de tipo) inyecta CONJUNTOS completos de
   campos `computed` definidos una sola vez en `_shared.json` →
   `_field_presets`: las señales de la etapa de autenticidad e integridad.
@@ -386,6 +391,12 @@ las filas de todos los selectores se combinan antes de aplicar
   validación normal lo mande a revisión.
 - Cada `row_selector` puede declarar sus propios `pages` y `region`; así una
   misma lista soporta tablas ubicadas en secciones distintas según el layout.
+- `row_count: {regex, flags}` es la guarda contra una tabla leída a medias:
+  cuenta las filas IMPRESAS dentro de la `region` del array (p. ej. renglones
+  que abren con el número de orden, o todo renglón no vacío) y, si no coincide
+  con las filas leídas, el array completo queda sin resolver y va al fallback.
+  Sin ella, una fila que la regex no reconoció se pierde sin rastro. Úsala en
+  toda tabla por código.
 - `groups` acepta el nombre del grupo o un objeto
   `{group, transform|transforms}`. Esto permite convertir fecha, entero o monto
   por celda sin escribir código Python específico del tipo.
@@ -455,7 +466,24 @@ antes de `pnpm build`, `pnpm sync` y `pnpm sync:one`.
 `PEDIMENTO_ERP` usa un mapper único y estricto. `CERTIFICADO_POLIZA` usa cuatro
 perfiles (`EMP`, `FL`, `GMM`, `SV`): los formatos conocidos se extraen por
 código y un campo esperado faltante abre sólo el fallback parcial; un formato
-desconocido o ambiguo vuelve al modelo completo. Para eliminar además la
+desconocido o ambiguo vuelve al modelo completo. Las dos constancias de
+situación fiscal (`CONSTANCIA_SITUACION_FISCAL[_PORTAL]`) usan
+`SAT_PERSONA_MORAL` y `SAT_PERSONA_FISICA`; `CURP` usa `RENAPO_CONSTANCIA`.
+
+Regla para diseñar el mapper de cualquier tipo:
+
+1. Un perfil por layout REAL, con marcadores que lo distingan de sus vecinos
+   (persona moral vs. física comparten 3 de 5 marcadores). Lo que no reúna un
+   perfil completo va al modelo completo, así que un escaneo o un documento
+   extranjero nunca recibe regex a medias.
+2. Por código: identificadores, fechas, montos, claves y tablas cuyas filas
+   terminan en un ancla fija (fecha, importe), siempre con `row_count`.
+3. Al modelo: texto libre donde la capa de texto pega palabras (nombres,
+   razones sociales, calles) y tablas cuyas celdas brincan de columna entre
+   renglones. Ponlos en `expected_fields` sin `text_source`.
+4. Calibra contra el corpus completo del tipo, incluidos documentos que NO son
+   del tipo, y fija los conteos en un test (ver
+   `tests/unit/test_deterministic_text.py`). Para eliminar además la
 clasificación por modelo debe subirse declarando el `documentType`; una carga
 sin tipo todavía puede usar Bedrock para segmentar/clasificar.
 
@@ -504,9 +532,13 @@ hacer que una página relevante se considere prescindible.
 - `legacy`: respuesta anidada anterior, con `{value, confidence}` por escalar.
 
 Los campos ausentes se omiten. Una regla inválida se resuelve después en el
-motor de validación y **no** provoca otra extracción. Solo un payload compacto
-estructuralmente ilegible hace un reintento legacy de esa partición; su consumo
-también cuenta como facturado. El resultado lo muestra en
+motor de validación y **no** provoca otra extracción. El parser tolera lo que
+un modelo emite para un dato VACÍO (`null`, `[null]`, `""` en un escalar; una
+fila sin sus celdas opcionales finales, siempre que no sean numéricas) en vez
+de descartar la respuesta. Si una rama sigue ilegible, sólo ESA rama se pide
+otra vez en legacy (`aiResponseFormat.retriedPaths`); lo demás se conserva.
+Solo un payload que no sigue el protocolo (sin `s`/`t`, rutas inventadas)
+repite la partición completa. Todo reintento cuenta como facturado. El resultado lo muestra en
 `documents[].aiResponseFormat`, y `aiResponseSavings` compara los tokens
 facturados con el contrafactual legacy estimado.
 

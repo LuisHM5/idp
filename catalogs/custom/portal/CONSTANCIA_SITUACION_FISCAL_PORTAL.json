@@ -1,7 +1,7 @@
 {
   "CONSTANCIA_SITUACION_FISCAL_PORTAL": {
     "catalog_status": "beta",
-    "schema_version": "1.1.0",
+    "schema_version": "1.3.0",
     "display_name": "Constancia de situación fiscal (portal, nacional o extranjera)",
     "aliases": [
       "constancia fiscal portal",
@@ -30,6 +30,101 @@
         "DATOS DE IDENTIFICACI[ÓO]N DEL CONTRIBUYENTE"
       ],
       "url_contains": "siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf"
+    },
+    "__COMENTARIO_deterministic_extraction__": "Perfiles SAT_PERSONA_MORAL y SAT_PERSONA_FISICA: la Constancia del SAT tiene un formato fijo, así que identificadores, fechas, estatus, la parte numérica del domicilio y las tablas de actividades y regímenes se leen por código (exactos, sin IA). Las tablas llevan `row_count`: si las filas leídas no coinciden con las impresas, esa tabla completa va al modelo. El modelo recibe SOLO nombres, texto libre del domicilio y obligaciones: la capa de texto pega palabras ('PATRICIANORA', 'SOCIEDADANONIMA') y el vencimiento de las obligaciones brinca de columna entre renglones. PAIS=MEX es constante del perfil; ID_FISCAL/TIPO_ID_FISCAL los llena su `derived` desde el RFC; OTROS_IDENTIFICADORES queda vacío, que es lo normal en una constancia mexicana. Escaneo, constancia extranjera o cualquier formato que no reúna los 5 marcadores de un perfil -> perfil desconocido -> modelo completo (profile_fallback: full_model). Mismo mapper que CONSTANCIA_SITUACION_FISCAL: si cambia allá, replicarlo aquí. Calibrado contra test-docs/portal/constancias (3 morales, 3 físicas) y test-docs/bad-constancia.pdf.",
+    "deterministic_extraction": {
+      "enabled": true,
+      "fallback": "missing_fields",
+      "profile_fallback": "full_model",
+      "profiles": [
+        {
+          "id": "SAT_PERSONA_MORAL",
+          "pages": "first",
+          "markers": [
+            "C[ÉE]DULA\\s*DE\\s*IDENTIFICACI[ÓO]N\\s*FISCAL",
+            "CONSTANCIA\\s*DE\\s*SITUACI[ÓO]N\\s*FISCAL",
+            "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+            "Denominaci[óo]n\\s*/\\s*Raz[óo]n\\s*Social\\s*:",
+            "R[ée]gimen\\s*Capital\\s*:"
+          ],
+          "min_score": 5,
+          "constants": {
+            "PAIS": "MEX"
+          },
+          "expected_fields": [
+            "RFC",
+            "ID_CIF",
+            "LUGAR_EMISION",
+            "FECHA_EMISION",
+            "FECHA_INICIO_OPERACIONES",
+            "ESTATUS_EN_PADRON",
+            "FECHA_ULTIMO_CAMBIO_ESTADO",
+            "DOMICILIO_FISCAL.CODIGO_POSTAL",
+            "DOMICILIO_FISCAL.TIPO_VIALIDAD",
+            "DOMICILIO_FISCAL.NUMERO_EXTERIOR",
+            "DOMICILIO_FISCAL.NUMERO_INTERIOR",
+            "ACTIVIDADES_ECONOMICAS",
+            "REGIMENES_FISCALES",
+            "NOMBRE_O_RAZON_SOCIAL",
+            "REGIMEN_CAPITAL",
+            "NOMBRE_COMERCIAL",
+            "DOMICILIO_FISCAL.NOMBRE_VIALIDAD",
+            "DOMICILIO_FISCAL.NOMBRE_COLONIA",
+            "DOMICILIO_FISCAL.NOMBRE_LOCALIDAD",
+            "DOMICILIO_FISCAL.MUNICIPIO_O_DEMARCACION_TERRITORIAL",
+            "DOMICILIO_FISCAL.ENTIDAD_FEDERATIVA",
+            "DOMICILIO_FISCAL.ENTRE_CALLE",
+            "DOMICILIO_FISCAL.Y_CALLE",
+            "OBLIGACIONES_FISCALES",
+            "PAIS"
+          ]
+        },
+        {
+          "id": "SAT_PERSONA_FISICA",
+          "pages": "first",
+          "markers": [
+            "C[ÉE]DULA\\s*DE\\s*IDENTIFICACI[ÓO]N\\s*FISCAL",
+            "CONSTANCIA\\s*DE\\s*SITUACI[ÓO]N\\s*FISCAL",
+            "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+            "\\bCURP\\s*:",
+            "Primer\\s*Apellido\\s*:"
+          ],
+          "min_score": 5,
+          "constants": {
+            "PAIS": "MEX"
+          },
+          "expected_fields": [
+            "RFC",
+            "ID_CIF",
+            "LUGAR_EMISION",
+            "FECHA_EMISION",
+            "FECHA_INICIO_OPERACIONES",
+            "ESTATUS_EN_PADRON",
+            "FECHA_ULTIMO_CAMBIO_ESTADO",
+            "DOMICILIO_FISCAL.CODIGO_POSTAL",
+            "DOMICILIO_FISCAL.TIPO_VIALIDAD",
+            "DOMICILIO_FISCAL.NUMERO_EXTERIOR",
+            "DOMICILIO_FISCAL.NUMERO_INTERIOR",
+            "ACTIVIDADES_ECONOMICAS",
+            "REGIMENES_FISCALES",
+            "CURP",
+            "NOMBRE_O_RAZON_SOCIAL",
+            "NOMBRES",
+            "PRIMER_APELLIDO",
+            "SEGUNDO_APELLIDO",
+            "NOMBRE_COMERCIAL",
+            "DOMICILIO_FISCAL.NOMBRE_VIALIDAD",
+            "DOMICILIO_FISCAL.NOMBRE_COLONIA",
+            "DOMICILIO_FISCAL.NOMBRE_LOCALIDAD",
+            "DOMICILIO_FISCAL.MUNICIPIO_O_DEMARCACION_TERRITORIAL",
+            "DOMICILIO_FISCAL.ENTIDAD_FEDERATIVA",
+            "DOMICILIO_FISCAL.ENTRE_CALLE",
+            "DOMICILIO_FISCAL.Y_CALLE",
+            "OBLIGACIONES_FISCALES",
+            "PAIS"
+          ]
+        }
+      ]
     },
     "fields": {
       "PAIS": {
@@ -80,7 +175,28 @@
             "pattern": "^[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3}$",
             "message": "El RFC no cumple el formato de 12 o 13 caracteres"
           }
-        ]
+        ],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "\\bRFC\\s*:\\s*(?P<v>[A-ZÑ&]{3,4}\\d{6}[A-Z0-9]{3})\\b",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "region": {
+                "start_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "end_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                "upper"
+              ]
+            }
+          ]
+        }
       },
       "ID_FISCAL": {
         "type": "string",
@@ -175,7 +291,28 @@
             "pattern": "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[A-Z0-9]\\d$",
             "message": "La CURP no cumple el formato de 18 caracteres"
           }
-        ]
+        ],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "\\bCURP\\s*:\\s*(?P<v>[A-Z]{4}\\d{6}[HMX][A-Z]{5}[A-Z0-9]\\d)\\b",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "region": {
+                "start_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "end_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                "upper"
+              ]
+            }
+          ]
+        }
       },
       "NOMBRE_O_RAZON_SOCIAL": {
         "type": "string",
@@ -229,7 +366,18 @@
             "pattern": "^\\d+$",
             "message": "El idCIF debe contener únicamente dígitos"
           }
-        ]
+        ],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "\\bidCIF\\s*:\\s*(?P<v>\\d{6,})\\b",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ]
+            }
+          ]
+        }
       },
       "QR_CONSTANCIA": {
         "type": "string",
@@ -276,7 +424,33 @@
         "type": "string",
         "required": false,
         "hint": "Lugar de emisión cuando el documento lo declara. MÉXICO: el de la línea 'Lugar y Fecha de Emisión' del encabezado; extraer solamente la localidad y entidad anteriores a la fecha, sin incluir la fecha ni el texto de la etiqueta. EXTRANJERA: solo si el documento dice expresamente DÓNDE se expidió o firmó (la mayoría no lo dice: null); no usar el domicilio del contribuyente ni poner solo el nombre del país. Si no aparece, dejar null.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "(?:^|[ \\t]{2,})(?P<v>[A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ ,.]*?)\\s*A\\s*\\d{1,2}\\s*DE",
+              "group": "v",
+              "flags": [
+                "multiline"
+              ],
+              "region": {
+                "start_regex": "Lugar\\s*y\\s*Fecha\\s*de\\s*Emisi[óo]n",
+                "end_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                {
+                  "op": "regex_sub",
+                  "pattern": "\\s*,\\s*",
+                  "replacement": ", "
+                },
+                "collapse_whitespace"
+              ]
+            }
+          ]
+        }
       },
       "FECHA_EMISION": {
         "type": "date",
@@ -288,13 +462,102 @@
             "pattern": "5",
             "message": "La constancia supera la antigüedad máxima configurada de 5 años"
           }
-        ]
+        ],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "A\\s*(?P<v>\\d{1,2}\\s*DE(?:\\s+social)?\\s*(?:ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)(?:\\s+social)?\\s*DE(?:\\s+social)?\\s*\\d{4})",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "region": {
+                "start_regex": "Lugar\\s*y\\s*Fecha\\s*de\\s*Emisi[óo]n",
+                "end_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                {
+                  "op": "regex_sub",
+                  "pattern": "\\s*social\\s*",
+                  "replacement": " ",
+                  "flags": [
+                    "ignore_case"
+                  ]
+                },
+                {
+                  "op": "regex_sub",
+                  "pattern": "^\\s*(\\d{1,2})\\s*DE\\s*(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\s*DE\\s*(\\d{4})\\s*$",
+                  "replacement": "\\1 DE \\2 DE \\3",
+                  "flags": [
+                    "ignore_case"
+                  ]
+                },
+                "date_iso"
+              ]
+            },
+            {
+              "regex": "Cadena\\s*Original\\s*Sello\\s*:\\s*\\|\\|(?P<v>\\d{4}/\\d{2}/\\d{2})",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "transforms": [
+                {
+                  "op": "regex_sub",
+                  "pattern": "^(\\d{4})/(\\d{2})/(\\d{2})$",
+                  "replacement": "\\1-\\2-\\3"
+                },
+                "date_iso"
+              ]
+            }
+          ]
+        }
       },
       "FECHA_INICIO_OPERACIONES": {
         "type": "date",
         "required": false,
         "hint": "Fecha de inicio de operaciones del contribuyente. MÉXICO: campo 'Fecha inicio de operaciones' dentro de 'Datos de Identificación del Contribuyente'. EXTRANJERA: la fecha de alta, registro o inicio de actividad si el documento la imprime ('Company start date', 'Effective date' de la cuenta); si no, null. Normalizar a YYYY-MM-DD y no confundir con FECHA_EMISION.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "Fecha\\s*inicio\\s*de\\s*operaciones\\s*:\\s*(?P<v>\\d{1,2}\\s*DE\\s*(?:ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\s*DE\\s*\\d{4})",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "region": {
+                "start_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "end_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                {
+                  "op": "regex_sub",
+                  "pattern": "\\s*social\\s*",
+                  "replacement": " ",
+                  "flags": [
+                    "ignore_case"
+                  ]
+                },
+                {
+                  "op": "regex_sub",
+                  "pattern": "^\\s*(\\d{1,2})\\s*DE\\s*(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\s*DE\\s*(\\d{4})\\s*$",
+                  "replacement": "\\1 DE \\2 DE \\3",
+                  "flags": [
+                    "ignore_case"
+                  ]
+                },
+                "date_iso"
+              ]
+            }
+          ]
+        }
       },
       "ESTATUS_EN_PADRON": {
         "type": "string",
@@ -309,13 +572,73 @@
               "matches": "^\\s*(MEX|MX|M[EÉ]XICO)\\s*$"
             }
           }
-        ]
+        ],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "Estatus\\s*en\\s*el\\s*padr[óo]n\\s*:[ \\t]*(?P<v>[A-ZÁÉÍÓÚÑ]+(?:[ \\t][A-ZÁÉÍÓÚÑ]+)*)[ \\t]*$",
+              "group": "v",
+              "flags": [
+                "ignore_case",
+                "multiline"
+              ],
+              "region": {
+                "start_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "end_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                "collapse_whitespace",
+                "upper"
+              ]
+            }
+          ]
+        }
       },
       "FECHA_ULTIMO_CAMBIO_ESTADO": {
         "type": "date",
         "required": false,
         "hint": "Solo cuando el documento la imprime (en México, campo 'Fecha de último cambio de estado' dentro de los datos de identificación). Normalizar a YYYY-MM-DD.",
-        "validation": []
+        "validation": [],
+        "text_source": {
+          "selectors": [
+            {
+              "regex": "Fecha\\s*de\\s*[úu]ltimo\\s*cambio\\s*de\\s*estado\\s*:\\s*(?P<v>\\d{1,2}\\s*DE\\s*(?:ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\s*DE\\s*\\d{4})",
+              "group": "v",
+              "flags": [
+                "ignore_case"
+              ],
+              "region": {
+                "start_regex": "Datos\\s*de\\s*Identificaci[óo]n\\s*del\\s*Contribuyente",
+                "end_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                "flags": [
+                  "ignore_case"
+                ]
+              },
+              "transforms": [
+                {
+                  "op": "regex_sub",
+                  "pattern": "\\s*social\\s*",
+                  "replacement": " ",
+                  "flags": [
+                    "ignore_case"
+                  ]
+                },
+                {
+                  "op": "regex_sub",
+                  "pattern": "^\\s*(\\d{1,2})\\s*DE\\s*(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\s*DE\\s*(\\d{4})\\s*$",
+                  "replacement": "\\1 DE \\2 DE \\3",
+                  "flags": [
+                    "ignore_case"
+                  ]
+                },
+                "date_iso"
+              ]
+            }
+          ]
+        }
       },
       "DOMICILIO_FISCAL": {
         "type": "object",
@@ -347,13 +670,53 @@
             "type": "string",
             "required": false,
             "hint": "Código postal del domicilio, como string. MÉXICO: campo 'Código Postal', exactamente 5 dígitos, incluidos ceros iniciales. EXTRANJERA: el código postal tal como está escrito (ZIP code de Estados Unidos, código postal canadiense como 'K1A 0B1', etc.).",
-            "validation": []
+            "validation": [],
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "C[óo]digo\\s*Postal\\s*:\\s*(?P<v>\\d{5})\\b",
+                  "group": "v",
+                  "flags": [
+                    "ignore_case"
+                  ],
+                  "region": {
+                    "start_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                    "end_regex": "Actividades\\s*Econ[óo]micas",
+                    "flags": [
+                      "ignore_case"
+                    ]
+                  }
+                }
+              ]
+            }
           },
           "TIPO_VIALIDAD": {
             "type": "string",
             "required": false,
             "hint": "Campo 'Tipo de Vialidad' de la constancia mexicana, por ejemplo CALLE, AVENIDA o CARRETERA. En una constancia extranjera dejar null: el tipo de vía se conserva dentro de NOMBRE_VIALIDAD.",
-            "validation": []
+            "validation": [],
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "Tipo\\s*de\\s*Vialidad\\s*:[ \\t]*(?P<v>[^\\s:](?:[^\\n:]*?[^\\s:])?)(?=[ \\t]{3,}|[ \\t]*$)",
+                  "group": "v",
+                  "flags": [
+                    "ignore_case",
+                    "multiline"
+                  ],
+                  "region": {
+                    "start_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                    "end_regex": "Actividades\\s*Econ[óo]micas",
+                    "flags": [
+                      "ignore_case"
+                    ]
+                  },
+                  "transforms": [
+                    "collapse_whitespace"
+                  ]
+                }
+              ]
+            }
           },
           "NOMBRE_VIALIDAD": {
             "type": "string",
@@ -365,13 +728,57 @@
             "type": "string",
             "required": false,
             "hint": "Número exterior del domicilio, como string para conservar letras, guiones y ceros. MÉXICO: campo 'Número Exterior'. EXTRANJERA: el número de la calle: en Estados Unidos y Canadá va antes del nombre de la calle; en buena parte de Europa va después ('Kerkstraat 12' → 12). En el formato canadiense 'UNIDAD - NÚMERO CALLE' ('7 - 1200 MAIN ST') el número exterior es el segundo (1200) y el primero es la unidad.",
-            "validation": []
+            "validation": [],
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "N[úu]mero\\s*Exterior\\s*:[ \\t]*(?P<v>[^\\s:](?:[^\\n:]*?[^\\s:])?)(?=[ \\t]{3,}|[ \\t]*$)",
+                  "group": "v",
+                  "flags": [
+                    "ignore_case",
+                    "multiline"
+                  ],
+                  "region": {
+                    "start_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                    "end_regex": "Actividades\\s*Econ[óo]micas",
+                    "flags": [
+                      "ignore_case"
+                    ]
+                  },
+                  "transforms": [
+                    "collapse_whitespace"
+                  ]
+                }
+              ]
+            }
           },
           "NUMERO_INTERIOR": {
             "type": "string",
             "required": false,
             "hint": "Número interior. MÉXICO: campo 'Número Interior'. EXTRANJERA: suite, apartamento, piso, unidad o puerta, con su etiqueta si la trae (por ejemplo 'Suite 200', 'Level 3'); en el formato canadiense 'UNIDAD - NÚMERO CALLE' ('7 - 1200 MAIN ST'), la unidad (7). Dejar null cuando no esté informado; no copiar el número exterior.",
-            "validation": []
+            "validation": [],
+            "text_source": {
+              "selectors": [
+                {
+                  "regex": "N[úu]mero\\s*Interior\\s*:[ \\t]*(?P<v>[^\\s:](?:[^\\n:]*?[^\\s:])?)(?=[ \\t]{3,}|[ \\t]*$)",
+                  "group": "v",
+                  "flags": [
+                    "ignore_case",
+                    "multiline"
+                  ],
+                  "region": {
+                    "start_regex": "Datos\\s*del\\s*domicilio\\s*registrado",
+                    "end_regex": "Actividades\\s*Econ[óo]micas",
+                    "flags": [
+                      "ignore_case"
+                    ]
+                  },
+                  "transforms": [
+                    "collapse_whitespace"
+                  ]
+                }
+              ]
+            }
           },
           "NOMBRE_COLONIA": {
             "type": "string",
@@ -456,6 +863,56 @@
             "hint": "Fecha de fin de esta actividad cuando esté informada. Normalizar a YYYY-MM-DD; dejar null si la celda está vacía.",
             "validation": []
           }
+        },
+        "text_source": {
+          "region": {
+            "start_regex": "Orden\\s*Actividad\\s*Econ[óo]mica\\s*Porcentaje\\s*Fecha\\s*Inicio\\s*Fecha\\s*Fin",
+            "end_regex": "R[ée]g[íi]menes\\s*:",
+            "flags": [
+              "ignore_case"
+            ]
+          },
+          "row_regex": "^[ \\t]*\\d{1,3}[ \\t]+(?P<full>\\S[^\\n]*?[ \\t]{2,}(?P<pct>\\d{1,3}(?:\\.\\d+)?)[ \\t]{2,}(?P<ini>\\d{2}/\\d{2}/\\d{4})(?:[ \\t]{2,}(?P<fin>\\d{2}/\\d{2}/\\d{4}))?[ \\t]*(?:\\n(?![ \\t]*P[áa]gina)(?![ \\t]*\\d{1,3}[ \\t])[ \\t]+\\S[^\\n]*)*)",
+          "flags": [
+            "multiline"
+          ],
+          "groups": {
+            "ACTIVIDAD_ECONOMICA": {
+              "group": "full",
+              "transforms": [
+                {
+                  "op": "regex_sub",
+                  "pattern": "[ \\t]+\\d{1,3}(?:\\.\\d+)?[ \\t]+\\d{2}/\\d{2}/\\d{4}(?:[ \\t]+\\d{2}/\\d{2}/\\d{4})?",
+                  "replacement": " "
+                },
+                "collapse_whitespace"
+              ]
+            },
+            "PORCENTAJE": {
+              "group": "pct",
+              "transforms": [
+                "number"
+              ]
+            },
+            "FECHA_INICIO": {
+              "group": "ini",
+              "transforms": [
+                "date_iso"
+              ]
+            },
+            "FECHA_FIN": {
+              "group": "fin",
+              "transforms": [
+                "date_iso"
+              ]
+            }
+          },
+          "row_count": {
+            "regex": "^[ \\t]*\\d{1,3}[ \\t]+\\S",
+            "flags": [
+              "multiline"
+            ]
+          }
         }
       },
       "REGIMENES_FISCALES": {
@@ -496,6 +953,45 @@
             "required": false,
             "hint": "Fecha de fin del régimen de esta fila. Normalizar a YYYY-MM-DD; dejar null si sigue vigente y la celda está vacía.",
             "validation": []
+          }
+        },
+        "text_source": {
+          "region": {
+            "start_regex": "R[ée]gimen\\s*Fecha\\s*Inicio\\s*Fecha\\s*Fin",
+            "end_regex": "Obligaciones\\s*:",
+            "flags": [
+              "ignore_case"
+            ]
+          },
+          "row_regex": "^[ \\t]*(?P<reg>\\S[^\\n]*?)[ \\t]+(?P<ini>\\d{2}/\\d{2}/\\d{4})(?:[ \\t]{2,}(?P<fin>\\d{2}/\\d{2}/\\d{4}))?[ \\t]*$",
+          "flags": [
+            "multiline"
+          ],
+          "groups": {
+            "REGIMEN_FISCAL": {
+              "group": "reg",
+              "transforms": [
+                "collapse_whitespace"
+              ]
+            },
+            "FECHA_INICIO": {
+              "group": "ini",
+              "transforms": [
+                "date_iso"
+              ]
+            },
+            "FECHA_FIN": {
+              "group": "fin",
+              "transforms": [
+                "date_iso"
+              ]
+            }
+          },
+          "row_count": {
+            "regex": "^[ \\t]*\\S",
+            "flags": [
+              "multiline"
+            ]
           }
         }
       },
