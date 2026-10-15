@@ -108,7 +108,7 @@ def load_deployment(env: str, stack: Optional[str] = None, region: str = "us-eas
 def model_alias(model: Optional[str]) -> str:
     """Nombre corto para tablas: `minimax.minimax-m2.5` → `minimax`."""
     model = model or ""
-    for needle, alias in (("haiku", "haiku-4.5"), ("sonnet", "sonnet"), ("minimax", "minimax"),
+    for needle, alias in (("haiku-5-5", "haiku-5.5"), ("haiku-4-5", "haiku-4.5"), ("sonnet", "sonnet"), ("minimax", "minimax"),
                           ("kimi", "kimi-k2.5"), ("glm", "glm-5")):
         if needle in model:
             return alias
@@ -380,7 +380,7 @@ def estimate_file(path: Path, doc_type: str, deployment: Deployment, calibration
         approximatePricing=bool(bedrock_mid.get("approximatePricing")),
     )
     if bedrock_mid.get("approximatePricing"):
-        notes.append(f"{model} no está en pipeline/pricing.py: precio aproximado con tarifas de Haiku")
+        notes.append(f"{model} no está en pipeline/pricing.py: precio aproximado con tarifas de Haiku 5.5")
     return result
 
 

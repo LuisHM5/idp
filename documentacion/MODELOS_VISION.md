@@ -1,5 +1,10 @@
 # Modelos con visión, costo-eficientes, a nivel de Haiku 4.5
 
+> **2026-10-15:** el modelo de visión por defecto es ahora **Claude Haiku 5.5**
+> (`us.anthropic.claude-haiku-5-5`, $0.11 / $0.55). Este análisis es de antes y
+> usa Haiku 4.5 como referencia; sus mediciones se conservan como registro.
+> Tarifas e inteligencia de Haiku 5.5: `models_pricing.md` §0.
+
 Qué modelos pueden **ver imágenes/PDFs** con una inteligencia comparable a
 Claude Haiku 4.5 y cuestan menos, cuáles se pueden usar **hoy** en este stack
 (Bedrock `us-east-1`) y cuáles no — con la visión **probada contra Bedrock**, no
@@ -59,7 +64,7 @@ modelo:
 
 | Punto | Qué manda | Modelo que usa | Variable |
 |---|---|---|---|
-| Etapa `vision` del expediente (`pipeline/authenticity.py`, solo tipos con bloque `authenticity`; hoy `CARTA_NOM35`) | página + recortes de firma/sello/logo | `model_ids.vision` del catálogo → `BEDROCK_VISION_MODEL_ID` → **Haiku 4.5** | nunca cae a `BEDROCK_MODEL_ID` ni a la lista de fallback (`bedrock.py:39-47`, `:255-264`) ✅ |
+| Etapa `vision` del expediente (`pipeline/authenticity.py`, solo tipos con bloque `authenticity`; hoy `CARTA_NOM35`) | página + recortes de firma/sello/logo | `model_ids.vision` del catálogo → `BEDROCK_VISION_MODEL_ID` → **Claude Haiku 5.5** (desde 2026-10-15) | nunca cae a `BEDROCK_MODEL_ID` ni a la lista de fallback (`bedrock.py:39-47`, `:255-264`) ✅ |
 | Clasificación upstream (`model-invoke-lambda/index.py:364-372`) de un upload **sin tipo** (`raw/{uuid}/file`) | el archivo completo como bloque `image` (png/jpg) o `document` (pdf) | `MODEL_ID` = `BEDROCK_CLASSIFICATION_MODEL_ID` o, si no existe, **`BEDROCK_MODEL_ID`** (`document-validation-stack.ts:163-166`) | hoy desplegado = `minimax.minimax-m2.5` ❌ (§6) |
 
 Es decir: para mover la visión a un modelo más barato, las perillas son
@@ -178,7 +183,7 @@ blended) o Haiku 4.5 si se prefiere no arriesgar.
 
 | Uso | Hoy | Siguiente paso |
 |---|---|---|
-| Etapa `vision` (autenticidad) | Mantener **Haiku 4.5**: juzga firma/sello/impresión, y es rápido y estable | Pedir acceso a **GPT-6 Luna** en Bedrock → correr la suite de autenticidad de `CARTA_NOM35` con `BEDROCK_VISION_MODEL_ID=us.openai.gpt-6-luna`. Si empata, cuesta ~1/10 |
+| Etapa `vision` (autenticidad) | **Claude Haiku 5.5** desde 2026-10-15 (default de la cadena y `BEDROCK_VISION_MODEL_ID`): misma familia que Haiku 4.5, que juzgaba bien firma/sello/impresión, a 1/10 del precio. Repetir la suite de `CARTA_NOM35` y `pnpm vision:comparar` en cuanto la cuenta tenga acceso | Pedir acceso a **GPT-6 Luna** en Bedrock → correr la suite de autenticidad de `CARTA_NOM35` con `BEDROCK_VISION_MODEL_ID=us.openai.gpt-6-luna`. Si empata, cuesta ~1/10 |
 | Clasificación upstream | **Arreglar ya** (§6): `BEDROCK_CLASSIFICATION_MODEL_ID=us.amazon.nova-2-lite-v1:0` | — |
 | Alternativa más barata sin trámite | Kimi K2.5 (0.55x, más inteligente) | Solo donde la latencia no importe: tardó 8x más que Haiku en la prueba y en `LATENCIA.md` §6.1 cambió 3 campos del CURP |
 

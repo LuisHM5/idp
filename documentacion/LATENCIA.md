@@ -598,7 +598,7 @@ mediana (21.9s de extracción + ~10s de plomería) con picos arriba de 60s; con
 Dos rankings porque son dos trabajos distintos y ningún modelo barato hace los
 dos: la **extracción de texto** la corre el modelo general (`model_id` /
 `BEDROCK_EXTRACTOR_MODEL_ID`) y la **visión** su propia cadena
-(`model_ids.vision` → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5). Orden: primero que
+(`model_ids.vision` → `BEDROCK_VISION_MODEL_ID` → Claude Haiku 5.5 desde 2026-10-15; las mediciones de esta sección son con Haiku 4.5). Orden: primero que
 el resultado sea usable, después velocidad y estabilidad, después precio.
 
 ### 12.1 Ficha general de cada modelo
@@ -693,5 +693,5 @@ visión; hoy son `CARTA_NOM35` y `ESTADO_CUENTA_PORTAL`.
 
 | Trabajo | Mejor resultado | Más barato que sirve | Desplegado hoy |
 |---|---|---|---|
-| Texto (extracción) | Haiku 4.5 | MiniMax M2.5 | MiniMax M2.5 |
-| Visión (revisión de página) | Haiku 4.5 | Nova 2 Lite | Haiku 4.5 por default; Nova 2 Lite en `ESTADO_CUENTA_PORTAL` (catálogo sin sincronizar) |
+| Texto (extracción) | Haiku 4.5 (medido) | MiniMax M2.5 | **Claude Haiku 5.5** desde 2026-10-15 (cae a MiniMax mientras la cuenta no tenga acceso) |
+| Visión (revisión de página) | Haiku 4.5 (medido) | Nova 2 Lite | **Claude Haiku 5.5** en todos los tipos; Nova 2 Lite queda de respaldo en `ESTADO_CUENTA_PORTAL` |

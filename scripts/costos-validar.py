@@ -145,7 +145,7 @@ def collect_records(envs: List[str], docs_root: Path, region: str, since: Option
                      "cacheWriteInputTokens": int(raw_extraction.get("cacheWriteTokens") or 0)}
             # Los tokens son el dato real; el $ guardado depende de las tarifas
             # vigentes el día que corrió. Antes de 2026-09-04 MiniMax/Kimi se
-            # guardaban a tarifa de Haiku (ver pipeline/pricing.py), así que se
+            # guardaban a tarifa de Haiku 4.5 (ver pipeline/pricing.py), así que se
             # re-tarifan con las de hoy para comparar peras con peras.
             bedrock_usd = pricing.bedrock_cost(usage, extraction["model_id"])["costUsd"]
             textract_usd = (services.get("TextractOcr") or {}).get("cost") or 0.0
@@ -438,7 +438,7 @@ def render(rows: List[dict], summary: dict, color: bool) -> str:
         "",
         f"  {c(DIM)}«Llam» = llamadas estimadas/reales. «Antes» = páginas × $/página promedio del tipo (método anterior).",
         f"  «Real $» re-tarifado con pipeline/pricing.py vigente: {summary['repriced']} registro(s) se habían guardado con",
-        "  tarifas viejas (antes de 2026-09-04 MiniMax/Kimi se cobraban a tarifa de Haiku).",
+        "  tarifas viejas (antes de 2026-09-04 MiniMax/Kimi se cobraban a tarifa de Haiku 4.5; desde 2026-10-15 el modelo base es Haiku 5.5).",
         "  Un registro con otra estructura corrió con un catálogo anterior (el prompt cambió) o su selección de",
         f"  páginas no se puede simular sin OCR: ahí el error mezcla calibración con cambios del catálogo.{c(RESET)}",
     ]

@@ -57,7 +57,7 @@ def _breakdown(documents):
         "documentId": "doc-1",
         "usage": {
             "extraction": {
-                "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "modelId": "us.anthropic.claude-haiku-5-5",
                 "usage": {"inputTokens": 18719, "outputTokens": 1800},
             },
             "pageSelection": _page_selection_summary(documents),
@@ -100,7 +100,7 @@ def test_cost_avoided_prices_output_too():
     understate what selection avoided by most of its value."""
     breakdown = _breakdown([DOC])
     avoided = breakdown["pageSelection"]["estimatedCostAvoidedUsd"]
-    input_only = 39260 / 1_000_000 * 1.10
+    input_only = 39260 / 1_000_000 * 0.11  # Claude Haiku 5.5, la tarifa por defecto
     assert avoided > input_only * 1.4
 
 

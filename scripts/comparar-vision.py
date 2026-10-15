@@ -17,7 +17,7 @@ falla debe verse como error, no esconderse detrás de otro.
 Uso:
     pnpm vision:comparar -- --type ESTADO_CUENTA_PORTAL --dir <carpeta>
     pnpm vision:comparar -- --type CARTA_NOM35 --dir test-docs/nom35/samples/10040 \\
-        --models us.anthropic.claude-haiku-4-5-20251001-v1:0,us.amazon.nova-2-lite-v1:0
+        --models us.anthropic.claude-haiku-5-5,us.amazon.nova-2-lite-v1:0
 
 Costo: una llamada de visión por archivo y modelo con `page_review` solo
 (~$0.001-0.003); 2-3 llamadas cuando el tipo declara elementos.

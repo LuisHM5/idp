@@ -288,7 +288,7 @@ estos servicios.
 
 Toda llamada **generativa** al modelo usa **Converse**, la API de Bedrock que es agnóstica del proveedor: el mismo request sirve para cualquier modelo que Bedrock aloje, así que cambiar de modelo es configuración, no código.
 
-Modelo base: `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil de inferencia cross-region), vía `BEDROCK_MODEL_ID`. Cada paso puede apuntar a un modelo distinto — para bajar costo o subir precisión — con estos overrides, que caen al modelo base si no se definen:
+Modelo base: Claude Haiku 5.5, `us.anthropic.claude-haiku-5-5` (perfil de inferencia cross-region del Model ID `anthropic.claude-haiku-5-5`), vía `BEDROCK_MODEL_ID`, con esfuerzo de razonamiento `BEDROCK_EFFORT` (default `low`; por tipo, `model_effort` en el catálogo). Cada paso puede apuntar a un modelo distinto — para bajar costo o subir precisión — con estos overrides, que caen al modelo base si no se definen:
 
 | Variable | Paso | ¿Necesita visión? |
 |---|---|---|
@@ -297,7 +297,7 @@ Modelo base: `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil de inferencia
 | `BEDROCK_SEGMENTER_MODEL_ID` | Segmentación del expediente | No |
 | `BEDROCK_EXTRACTOR_MODEL_ID` | Extracción de campos (la mayor parte de los tokens) | No |
 | `BEDROCK_RECOVERY_MODEL_ID` | Re-extracción Textract + modelo | No |
-| `BEDROCK_VISION_MODEL_ID` | Etapa de autenticidad (ve la página y los recortes) | **Sí** — y **no** cae al modelo base: si no se define usa un default con visión (Haiku 4.5), porque `BEDROCK_MODEL_ID` y la lista de fallback pueden ser de solo texto |
+| `BEDROCK_VISION_MODEL_ID` | Etapa de autenticidad (ve la página y los recortes) | **Sí** — y **no** cae al modelo base: si no se define usa un default con visión (Claude Haiku 5.5), porque `BEDROCK_MODEL_ID` y la lista de fallback pueden ser de solo texto |
 
 Antes de mover un paso a otro modelo, confirmar que el modelo soporte lo que ese paso usa: Converse; tool use forzado (el extractor lo requiere para catálogos de 100+ campos); visión (solo los dos primeros pasos); y su ventana de contexto (retunear `MAX_MODEL_DOC_BYTES`). Requiere además habilitar "Model access" en la consola de Bedrock — paso manual por cuenta/región.
 

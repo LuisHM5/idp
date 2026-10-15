@@ -285,7 +285,7 @@ def _service_rows(seg_cost: dict, ext_cost: dict, ocr_cost: dict, extra: tuple =
                 "cost": c["costUsd"],
                 # True cuando `modelId` no tiene tarifa verificada en
                 # `pipeline/pricing.py::_BEDROCK_PRICING` y bedrock_cost()
-                # tuvo que usar la de Haiku 4.5 como aproximación — el $ de
+                # tuvo que usar la de Haiku 5.5 como aproximación — el $ de
                 # esta fila NO es la tarifa real del modelo que corrió.
                 "approx": bool(c.get("approximatePricing")),
             })
@@ -652,7 +652,7 @@ def main() -> int:
                     parts = []
                     for r in service_rows:
                         tok_note = f", {r['in_tok']}→{r['out_tok']} tok" if r["in_tok"] is not None else ""
-                        approx_note = f"  {YELLOW}⚠ sin tarifa verificada para este modelo, usando Haiku 4.5{RESET}" if r["approx"] else ""
+                        approx_note = f"  {YELLOW}⚠ sin tarifa verificada para este modelo, usando Haiku 5.5{RESET}" if r["approx"] else ""
                         parts.append(f"{r['label']} ${r['cost']:.4f} ({r['detail']}{tok_note}){approx_note}")
                     print(f"  {DIM}Servicios:{RESET} " + f"  {DIM}|{RESET}  ".join(parts))
 
@@ -759,9 +759,8 @@ def main() -> int:
                         resumen_lines.append("")
                         resumen_lines.append(
                             "⚠ **Tarifa aproximada**: `pipeline/pricing.py` todavía no tiene una "
-                            "tarifa verificada para el modelo que realmente corrió esa fila (solo "
-                            "`us.anthropic.claude-haiku-4-5-20251001-v1:0` está verificada contra "
-                            "Cost Explorer) — el costo mostrado se calculó con la tarifa de Haiku 4.5 "
+                            "tarifa para el modelo que realmente corrió esa fila — el costo mostrado "
+                            "se calculó con la tarifa de Haiku 5.5 (`us.anthropic.claude-haiku-5-5`) "
                             "como aproximación, así que el gasto real de ese modelo puede ser distinto. "
                             "Para que sea exacto, agrega una entrada para ese modelo en "
                             "`_BEDROCK_PRICING` (`pipeline/pricing.py`)."

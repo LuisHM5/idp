@@ -157,6 +157,10 @@ class TypeRegistryEntry:
     # through to whatever's configured for the deployment.
     model_id: Optional[str] = None
     model_ids: Dict[str, str] = field(default_factory=dict)
+    # Optional effort level (low|medium|high|xhigh|max) for models that take
+    # one (Claude Haiku 5.5) — see `pipeline.bedrock.effort_for`. Unset =
+    # the deployment's `BEDROCK_<STAGE>_EFFORT` / `BEDROCK_EFFORT` / `low`.
+    model_effort: Optional[str] = None
     # Internal shape requested from the extraction model. ``compact`` emits
     # sparse scalar pairs and positional table rows; ``legacy`` preserves the
     # original nested {value, confidence} response.  None inherits the
@@ -542,6 +546,7 @@ def _parse_entry(
             pipeline=data.get("pipeline"),
             model_id=data.get("model_id") or None,
             model_ids=data.get("model_ids", {}) or {},
+            model_effort=data.get("model_effort") or None,
             ai_response_format=(
                 str(data.get("ai_response_format")).strip().lower()
                 if data.get("ai_response_format") is not None else None
@@ -602,6 +607,7 @@ def _parse_entry(
         pipeline=data.get("pipeline"),
         model_id=data.get("model_id") or None,
         model_ids=data.get("model_ids", {}) or {},
+        model_effort=data.get("model_effort") or None,
         ai_response_format=(
             str(data.get("ai_response_format")).strip().lower()
             if data.get("ai_response_format") is not None else None

@@ -23,7 +23,7 @@ import cost_audit  # noqa: E402
 from pipeline import pricing  # noqa: E402
 
 MINIMAX = "minimax.minimax-m2.5"
-HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+HAIKU = "us.anthropic.claude-haiku-5-5"
 
 
 def _breakdown(segmentation):

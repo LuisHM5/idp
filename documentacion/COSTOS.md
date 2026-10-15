@@ -408,7 +408,13 @@ de pruebas.
 
 ## 1. Modelo desplegado y precio real
 
-Pipeline usa `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil
+> **2026-10-15:** el modelo base pasó a **Claude Haiku 5.5**
+> (`us.anthropic.claude-haiku-5-5`, $0.11 / $0.55 por 1M; `pipeline/pricing.py`,
+> `models_pricing.md` §0). Lo de abajo es la verificación contra Cost Explorer
+> que se hizo con Haiku 4.5 y sigue valiendo para los registros de entonces;
+> falta repetirla con Haiku 5.5 en cuanto haya facturación real.
+
+Hasta 2026-10-15 el pipeline usaba `us.anthropic.claude-haiku-4-5-20251001-v1:0` (perfil
 cross-region "us."), que factura a tarifa **Regional** de us-east-1 — se
 verificó que el monto de Cost Explorer coincide **al centavo** con
 `tokens × precio Regional`, no con la tarifa "Global" (que es ~9% más
@@ -472,7 +478,8 @@ Precios on-demand reales, us-east-1, Regional, por 1M tokens:
 
 | Modelo                      | Input | Output | Cache read | Cache write 5m |
 | --------------------------- | ----- | ------ | ---------- | -------------- |
-| **Haiku 4.5 (el que usas)** | $1.10 | $5.50  | $0.11      | $1.375         |
+| **Haiku 5.5 (el que usas desde 2026-10-15)** | $0.11 | $0.55 | $0.011 | $0.1375 |
+| Haiku 4.5 (anterior)        | $1.10 | $5.50  | $0.11      | $1.375         |
 | Sonnet 4.5                  | $3.30 | $16.50 | $0.33      | $4.125         |
 | Sonnet 5                    | $2.20 | $11.00 | $0.22      | $2.75          |
 | Opus 4.5 / 5                | $5.50 | $27.50 | $0.55      | $6.875         |

@@ -9,9 +9,11 @@
 > `AGENTS.md`). Tier **on-demand estándar** (no batch, no flex, no priority)
 > salvo donde se indica lo contrario.
 >
-> El modelo actualmente en producción es **Claude Haiku 4.5**
-> (`us.anthropic.claude-haiku-4-5-20251001-v1:0`, ver `pipeline/pricing.py`
-> y `COSTOS.md` §1) — se usa aquí como **techo de precio** ($1.10 input /
+> **Desde 2026-10-15 el modelo frontera (base de texto y de visión) es
+> Claude Haiku 5.5** — ver §0 abajo. Las secciones §0.1 en adelante son el
+> análisis original de agosto, que usaba como baseline al modelo de entonces,
+> **Claude Haiku 4.5** (`us.anthropic.claude-haiku-4-5-20251001-v1:0`, ver
+> `COSTOS.md` §1); se conservan como registro histórico — se usaba como **techo de precio** ($1.10 input /
 > $5.50 output por 1M tokens, verificado en AWS Pricing API), **no como
 > techo de inteligencia**. Es decir: se buscan modelos que cuesten _lo mismo
 > o menos_ que Haiku 4.5, sin importar si son más o menos inteligentes —
@@ -19,7 +21,92 @@
 > Artificial Analysis (Intelligence Index = **29.9** para Claude Haiku 4.5,
 > variante "Reasoning"/adaptive thinking, que es como corre este pipeline).
 
-## 0. Hallazgo principal
+## 0. Modelo frontera: Claude Haiku 5.5 (2026-10-15)
+
+`us.anthropic.claude-haiku-5-5` es el modelo base (`BEDROCK_MODEL_ID`) y el de
+visión (`BEDROCK_VISION_MODEL_ID`), con effort `low` (`BEDROCK_EFFORT`). Es la
+referencia contra la que se compara cualquier candidato nuevo: un modelo
+tiene que ser más inteligente que Haiku 5.5 **al effort al que corre aquí** o
+más barato, y aun así pasar la prueba contra ground truth de
+`MODELOS_TEXTO.md` §3.
+
+### 0.a Tarifas completas (Bedrock, us-east-1, por 1M tokens)
+
+| Modelo | Input | Output | Input batch | Output batch | Cache write 5m | Cache write 1h | Cache read |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **Claude Haiku 5.5** | **$0.11** | **$0.55** | N/A | N/A | $0.1375 | $0.22 | $0.011 |
+| MiniMax M2.5 (costo completo) | $0.36 | $1.44 | — | — | sin caché | sin caché | sin caché |
+
+- Fuente: consola de Bedrock, 2026-10-15. Para MiniMax el SKU `standard` del
+  Price List API sigue diciendo $0.30 / $1.20; `pipeline/pricing.py` usa el
+  costo completo ($0.36 / $1.44) para no sub-reportar.
+- Las tarifas de Haiku 5.5 son para prompts de **hasta 100K tokens**; arriba
+  de eso cobra 5x ($0.55 / $2.75). Los chunks de extracción (~28K
+  caracteres) nunca llegan ahí.
+- Haiku 5.5 usa un tokenizer nuevo: el mismo texto cuenta **~30% más
+  tokens** que en Haiku 4.5. Ya está descontado al comparar costos por
+  documento, no por token.
+- Caché: desde 512 tokens de prefijo (Haiku 4.5 pedía 4,096), así que el
+  prefijo de schema+reglas de casi cualquier tipo ya se cachea; el pipeline
+  usa el TTL de 5 min (`cachePoint` `default`).
+
+**Contra MiniMax M2.5** (el modelo desplegado hasta hoy): MiniMax cuesta
+**3.3x** más en input y **2.6x** más en output; con la mezcla típica de
+extracción (3 de input por 1 de output) son $0.22 contra $0.63 por millón,
+**2.9x**. Ejemplo real — `test-docs/portal/constancias/España.pdf`
+(`CONSTANCIA_SITUACION_FISCAL_PORTAL`, 2026-10-15): MiniMax facturó 16,916 /
+2,883 tokens = **$0.0102** y tardó 73.5 s en extracción. Los mismos tokens a
+tarifa de Haiku 5.5 son $0.0035 ($0.0045 si el tokenizer cuenta 30% más).
+
+### 0.b Inteligencia (Artificial Analysis Intelligence Index v4.3.2, 15-oct-2026)
+
+| Modelo / effort | Índice |
+|---|---:|
+| Claude Haiku 5.5 (max) | 43 |
+| Claude Haiku 5.5 (xhigh) | 41 |
+| Claude Haiku 5.5 (high) | 38 |
+| Claude Haiku 5.5 (medium, default del modelo) | 34 |
+| **Claude Haiku 5.5 (low, el de este pipeline)** | **29** |
+| Claude Haiku 4.5 | 17 |
+| Claude Haiku 4.5 (sin razonamiento) | 15 (estimado por AA) |
+
+Incluso en `low`, Haiku 5.5 está muy por encima de Haiku 4.5 (17) y de MiniMax
+M2.5 (22.8 en la misma escala v4, `MODELOS_TEXTO.md` §4). Ojo: los índices de
+§0.1 en adelante (29.9 para Haiku 4.5, 34.5 para MiniMax) son de una versión
+anterior del índice y **no se comparan** con esta tabla.
+
+### 0.c Por qué `low` y cuándo subirlo
+
+- Haiku 5.5 razona por defecto (effort `medium`). La extracción es una
+  llamada con herramienta forzada: en ese caso el modelo responde con la
+  herramienta directo, sin razonar, así que el effort casi no cambia ni
+  latencia ni costo ahí. Sí pesa en las llamadas de texto libre
+  (segmentación, recovery de Textract, localizador de páginas).
+- `low` es el más barato y rápido. Subirlo por tipo con `model_effort` en el
+  catálogo, o por etapa con `BEDROCK_<ETAPA>_EFFORT`, solo si una medición
+  contra ground truth muestra que el tipo pierde campos en `low`.
+- Cada nivel arriba gasta más tokens de salida (el razonamiento se cobra como
+  output y cuenta contra `maxTokens`).
+
+### 0.d Requisitos para invocarlo
+
+1. Model ID del catálogo: `anthropic.claude-haiku-5-5`. `get-foundation-model`
+   reporta `inferenceTypesSupported: INFERENCE_PROFILE`, por eso el pipeline lo
+   invoca por el perfil `us.anthropic.claude-haiku-5-5` (también existe
+   `global.`). Las tres formas tienen tarifa en `pricing.py` y las tres reciben
+   el request adaptado.
+2. **Acceso habilitado en la cuenta** (consola de Bedrock → Model access).
+   Al 2026-10-15 `get-foundation-model-availability` devuelve
+   `agreementAvailability: NOT_AVAILABLE` y cada llamada responde
+   `AccessDeniedException ... is not available for this account` con las
+   tres formas del ID (probado el mismo día); el
+   pipeline cae a MiniMax por la cadena de fallback y lo reporta en
+   `tracking.modelFallbacks`.
+3. Request sin `temperature`/`topP` ni prefill, y con
+   `output_config.effort` — lo arma `pipeline/bedrock.py::_adapt_request`
+   solo para este modelo; MiniMax, Kimi y GLM reciben el request de siempre.
+
+## 0.1 Hallazgo principal (agosto 2026, baseline Haiku 4.5)
 
 Ninguno de los candidatos originales de este documento (Nova Pro/Lite/Micro,
 Llama 3.3 70B, Qwen3 VL 235B, NVIDIA Nemotron Nano) **supera la inteligencia

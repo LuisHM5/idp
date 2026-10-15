@@ -45,7 +45,7 @@ flowchart TD
 |---|---|---|
 | pypdf (texto nativo) | 68 páginas digitales | **$0.00** — es gratis |
 | Textract OCR | solo las 18 páginas escaneadas | ~$0.03 |
-| Bedrock Haiku (segmentar + extraer) | todo el texto | ~$0.32 |
+| Bedrock Haiku 4.5 (segmentar + extraer; con Haiku 5.5 es ~10x menos por token) | todo el texto | ~$0.32 |
 | **Total** | | **~$0.35 USD** |
 
 - El texto de PDFs digitales es **gratis** (pypdf); Textract solo toca páginas escaneadas — subir PDFs digitales en vez de escaneos reduce ~10x el costo.

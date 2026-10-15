@@ -21,10 +21,10 @@ from typing import Any, Dict, Optional
 # un registro viejo. Súbela cuando cambie cualquier número de las tablas de
 # abajo — incluido agregar un modelo, porque eso cambia el costo reportado de
 # los documentos que ya corrieron con él.
-PRICING_VERSION = "2026-10-06"
+PRICING_VERSION = "2026-10-15"
 
 # $ per MILLION tokens, Bedrock Converse, on-demand STANDARD tier, us-east-1.
-# An unrecognized model falls back to the Haiku 4.5 rates with
+# An unrecognized model falls back to the Claude Haiku 5.5 rates with
 # `approximatePricing: true` on the returned breakdown, so a model that isn't
 # listed here never mis-prices silently.
 #
@@ -47,21 +47,31 @@ PRICING_VERSION = "2026-10-06"
 #                            3 Sonnet) y, para ésos, únicamente SKUs de INPUT:
 #                            preguntar por output de Anthropic aquí no devuelve
 #                            nada, y parece que el precio no existiera.
-#   AmazonBedrockService  -> los modelos ACTUALES de Anthropic (Claude Haiku 4.5,
+#   AmazonBedrockService  -> los modelos ACTUALES de Anthropic (Claude Haiku 5.5,
 #                            Sonnet 4.5, Sonnet 4), con input, output y los dos
 #                            de caché. No tiene ninguno de los de terceros.
 #
 # O sea que un script que refresque tarifas tiene que consultar LOS DOS. Además,
 # en `AmazonBedrockService` el `inferenceType` viene vacío: lo que distingue
 # input de output es el `usagetype`
-# (`USE1-anthropic.claude-haiku-4-5-mantle-{input,output}-tokens-standard`).
+# (`USE1-anthropic.claude-haiku-5-5-mantle-{input,output}-tokens-standard`).
 #
-# Nota sobre `cacheWrite`: Haiku publica DOS tarifas de escritura de caché,
-# $1.375/M (`mantle-cache-write-tokens-standard`, TTL default de 5 min) y
-# $2.20/M (`...-1h-standard`, TTL de una hora). Aquí va la de 5 min porque es la
+# Nota sobre `cacheWrite`: Haiku 5.5 publica DOS tarifas de escritura de caché,
+# $0.1375/M (TTL default de 5 min) y $0.22/M (TTL de una hora). Aquí va la de 5 min porque es la
 # que el pipeline usa — `bedrock.py` manda `{"cachePoint": {"type": "default"}}`
 # y nunca `"1h"`. Si alguna vez se cambia ese TTL, esta tarifa se queda corta un
 # 60%.
+#
+# Claude Haiku 5.5 (2026-10-15, tarifas de la consola de Bedrock): $0.11 in /
+# $0.55 out / cache read $0.011 / cache write 5m $0.1375 (1h $0.22), batch N/A.
+# Son para prompts de hasta 100K tokens; arriba de eso el modelo cobra 5x
+# ($0.55 / $2.75). Los chunks de extracción son de ~28K caracteres, así que
+# nunca cruzan el umbral y no se modela aquí. Su tokenizer cuenta ~30% más
+# tokens que el de Haiku 4.5 para el mismo texto.
+#
+# Haiku 4.5 se queda SOLO como fila histórica: los registros de auditoría
+# anteriores a 2026-10-15 la nombran, y `scripts/costos-validar.py` los
+# re-tarifa con esta tabla — sin la fila caerían a la tarifa por defecto.
 #
 # `cacheRead`/`cacheWrite` for the three non-Anthropic models: Bedrock lists NO
 # cache SKU for them and none supports prompt caching (verified, see
@@ -69,18 +79,42 @@ PRICING_VERSION = "2026-10-06"
 # stay at 0. They are priced at the input rate rather than 0.0 on purpose — if
 # cache tokens ever do show up, the number over-reports instead of vanishing.
 _BEDROCK_PRICING: Dict[str, Dict[str, float]] = {
+    "us.anthropic.claude-haiku-5-5": {
+        "input": 0.11,
+        "output": 0.55,
+        "cacheRead": 0.011,
+        "cacheWrite": 0.1375,
+    },
+    # Mismo modelo por el perfil global y por el Model ID del catálogo de
+    # Bedrock (mismas tarifas).
+    "anthropic.claude-haiku-5-5": {
+        "input": 0.11,
+        "output": 0.55,
+        "cacheRead": 0.011,
+        "cacheWrite": 0.1375,
+    },
+    "global.anthropic.claude-haiku-5-5": {
+        "input": 0.11,
+        "output": 0.55,
+        "cacheRead": 0.011,
+        "cacheWrite": 0.1375,
+    },
+    # Legacy — solo para re-tarifar registros anteriores a 2026-10-15.
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
         "input": 1.10,
         "output": 5.50,
         "cacheRead": 0.11,
         "cacheWrite": 1.375,
     },
-    # USE1-minimax.minimax-m2.5-mantle-{input,output}-tokens-standard
+    # Costo completo según la consola de Bedrock (2026-10-15): $0.36 / $1.44.
+    # El SKU `USE1-minimax.minimax-m2.5-mantle-{input,output}-tokens-standard`
+    # del Price List API sigue en $0.30 / $1.20; se usa el costo completo para
+    # no sub-reportar.
     "minimax.minimax-m2.5": {
-        "input": 0.30,
-        "output": 1.20,
-        "cacheRead": 0.30,
-        "cacheWrite": 0.30,
+        "input": 0.36,
+        "output": 1.44,
+        "cacheRead": 0.36,
+        "cacheWrite": 0.36,
     },
     # USE1-moonshotai.kimi-k2.5-mantle-{input,output}-tokens-standard
     "moonshotai.kimi-k2.5": {
@@ -126,7 +160,7 @@ _BEDROCK_PRICING: Dict[str, Dict[str, float]] = {
         "cacheWrite": 0.50,
     },
 }
-_DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-5-5"
 
 # Textract DetectDocumentText (Sync), per page — verified exact against Cost
 # Explorer (COSTOS.md section 1).

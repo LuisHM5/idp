@@ -1186,12 +1186,12 @@ opcionales importantes del envelope:
       // Ausente salvo que ALGUNA fase haya cambiado de modelo.
       "modelFallbacks": {
         "extractor": {
-          "expectedModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+          "expectedModel": "us.anthropic.claude-haiku-5-5",
           "actualModel": "minimax.minimax-m2.5",
           "retries": 1,
           "attempts": [
             {
-              "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "model": "us.anthropic.claude-haiku-5-5",
               "error": "AccessDeniedException",
             },
           ],
@@ -1215,7 +1215,7 @@ opcionales importantes del envelope:
               "reason": "empty_response",
             },
             {
-              "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "modelId": "us.anthropic.claude-haiku-5-5",
               "maxTokens": 8192,
               "stopReason": "max_tokens",
               "outputTokens": 8192,

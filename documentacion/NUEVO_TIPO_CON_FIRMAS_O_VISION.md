@@ -256,8 +256,8 @@ No hay referencias que registrar, permiso que conceder ni índice que mantener.
   `memory.elements_unique`), con `pnpm sync:one`.
 - **`AUTENTICIDAD_EVALUADA` va siempre** (los presets ya lo traen): si la etapa
   no pudo correr, el documento va a una persona; nunca se aprueba callado.
-- **Costo.** Visión ~$0.009–0.0115 por documento (medido en la NOM-035, Haiku
-  4.5), en la línea `BedrockAuthenticity`; embeddings $0.00006 por imagen en
+- **Costo.** Visión ~$0.009–0.0115 por documento (medido en la NOM-035 con Haiku 4.5, antes
+  del cambio a Haiku 5.5, que cobra 10x menos por token), en la línea `BedrockAuthenticity`; embeddings $0.00006 por imagen en
   `BedrockEmbeddings`, y $0 cuando la entidad tiene 3 referencias o menos por
   elemento. `pnpm costos -- --id <id>` muestra lo real.
 - **Límites conocidos.** La visión examina **solo la primera página** con

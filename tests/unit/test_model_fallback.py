@@ -61,7 +61,7 @@ def test_default_list_is_the_four_models_given_in_order():
         "minimax.minimax-m2.5",
         "moonshotai.kimi-k2.5",
         "zai.glm-5",
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "us.anthropic.claude-haiku-5-5",
     ]
 
 

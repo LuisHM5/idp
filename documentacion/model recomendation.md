@@ -1,3 +1,6 @@
+> **Histórico (agosto 2026).** Desde 2026-10-15 el modelo base es Claude Haiku 5.5;
+> ver `models_pricing.md` §0 y `MODELOS_TEXTO.md`.
+
 > **Superado (2026-10-08).** El ranking vigente para etapas de texto está en
 > `MODELOS_TEXTO.md` y el de visión en `MODELOS_VISION.md`. Medido contra ground
 > truth, el orden es Kimi K2.5 y luego Haiku 4.5; MiniMax M2.5 ya no va primero.

@@ -345,7 +345,7 @@ def test_regresion_bug_real_31_paginas_respuesta_vacia_se_recupera_con_reintento
     monkeypatch.setattr(segmenter, "resolve_model", lambda _stage: "minimax.minimax-m2.5")
     monkeypatch.setattr(
         segmenter, "get_fallback_models",
-        lambda: ["minimax.minimax-m2.5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+        lambda: ["minimax.minimax-m2.5", "us.anthropic.claude-haiku-5-5"],
     )
     calls = _stub_model_sequence(monkeypatch, [
         (None, {"modelId": "minimax.minimax-m2.5", "stopReason": "max_tokens", "usage": {"outputTokens": 4096}}),
@@ -354,7 +354,7 @@ def test_regresion_bug_real_31_paginas_respuesta_vacia_se_recupera_con_reintento
                 {"type": "PEDIMENTO_ADUANAL", "page_start": 1, "page_end": 20, "confidence": 0.9},
                 {"type": "FACTURA_HONORARIOS", "page_start": 21, "page_end": 31, "confidence": 0.85},
             ],
-            {"modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "stopReason": "end_turn", "usage": {"outputTokens": 900}},
+            {"modelId": "us.anthropic.claude-haiku-5-5", "stopReason": "end_turn", "usage": {"outputTokens": 900}},
         ),
     ])
 
@@ -366,7 +366,7 @@ def test_regresion_bug_real_31_paginas_respuesta_vacia_se_recupera_con_reintento
     assert len(calls) == 2
     # El presupuesto pedido ya no es el 4096 fijo que causó el truncado.
     assert calls[0]["max_tokens"] >= 8192
-    assert calls[1]["model_id"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert calls[1]["model_id"] == "us.anthropic.claude-haiku-5-5"
     assert [(s.doc_type, s.page_start, s.page_end) for s in segments] == [
         ("PEDIMENTO_ADUANAL", 1, 20),
         ("FACTURA_HONORARIOS", 21, 31),
@@ -383,11 +383,11 @@ def test_truncado_persistente_en_ambos_intentos_cae_a_otro_tras_exactamente_2_ll
     monkeypatch.setattr(segmenter, "resolve_model", lambda _stage: "minimax.minimax-m2.5")
     monkeypatch.setattr(
         segmenter, "get_fallback_models",
-        lambda: ["minimax.minimax-m2.5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+        lambda: ["minimax.minimax-m2.5", "us.anthropic.claude-haiku-5-5"],
     )
     calls = _stub_model_sequence(monkeypatch, [
         (None, {"modelId": "minimax.minimax-m2.5", "stopReason": "max_tokens", "usage": {"outputTokens": 4096}}),
-        (None, {"modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "stopReason": "max_tokens", "usage": {"outputTokens": 8192}}),
+        (None, {"modelId": "us.anthropic.claude-haiku-5-5", "stopReason": "max_tokens", "usage": {"outputTokens": 8192}}),
     ])
 
     segments, _usage = segmenter.segment_pages(
@@ -412,7 +412,7 @@ def test_stop_reason_max_tokens_con_json_parseable_tambien_reintenta(
     monkeypatch.setattr(segmenter, "resolve_model", lambda _stage: "minimax.minimax-m2.5")
     monkeypatch.setattr(
         segmenter, "get_fallback_models",
-        lambda: ["minimax.minimax-m2.5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+        lambda: ["minimax.minimax-m2.5", "us.anthropic.claude-haiku-5-5"],
     )
     calls = _stub_model_sequence(monkeypatch, [
         (
@@ -424,7 +424,7 @@ def test_stop_reason_max_tokens_con_json_parseable_tambien_reintenta(
                 {"type": "PEDIMENTO_ADUANAL", "page_start": 1, "page_end": 1, "confidence": 0.9},
                 {"type": "FACTURA_HONORARIOS", "page_start": 2, "page_end": 2, "confidence": 0.9},
             ],
-            {"modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "stopReason": "end_turn", "usage": {}},
+            {"modelId": "us.anthropic.claude-haiku-5-5", "stopReason": "end_turn", "usage": {}},
         ),
     ])
 

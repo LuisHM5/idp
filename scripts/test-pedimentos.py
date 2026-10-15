@@ -7,7 +7,7 @@ in `tests/integration/expected_pedimentos.json`.
 
 Requires AWS credentials with textract:DetectDocumentText and
 bedrock:InvokeModel (Converse). Costs a few cents per full run (Textract on
-~54 scanned pages + Haiku on everything else).
+~54 scanned pages + Claude Haiku 5.5 on everything else).
 
 Usage:
     .venv/bin/python scripts/test-pedimentos.py                # all docs
@@ -327,8 +327,8 @@ def main() -> int:
     if grand_usage:
         inp = grand_usage.get("inputTokens", 0)
         out = grand_usage.get("outputTokens", 0)
-        # Haiku 4.5 pricing reference: $1/M input, $5/M output (verify in AWS calculator)
-        approx = inp / 1e6 * 1.0 + out / 1e6 * 5.0
+        # Claude Haiku 5.5 on Bedrock: $0.11/M input, $0.55/M output (pipeline/pricing.py)
+        approx = inp / 1e6 * 0.11 + out / 1e6 * 0.55
         print(f"Bedrock usage: {inp:,} in / {out:,} out tokens (~${approx:.3f} extraction)")
     return 0 if total_fail == 0 else 1
 

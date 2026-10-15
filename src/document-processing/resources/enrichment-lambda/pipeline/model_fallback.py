@@ -28,8 +28,11 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 # Seed order AND the ultimate fallback-of-the-fallback when the DynamoDB
-# table is unset, empty, or unreachable. Haiku last as the
-# best-verified-compatible safety net — before reordering this, check the
+# table is unset, empty, or unreachable. Claude Haiku 5.5 is the deployment's
+# base model AND stays last here as the best-verified-compatible safety net
+# (the segmenter's own default and retry model read the LAST entry — see
+# `bedrock._segmenter_default_model`); when Haiku itself is the one failing it
+# is already in `tried`, so the switch goes to MiniMax first — before reordering this, check the
 # candidate offers what the calling stage needs (Converse, forced tool use
 # for the extractor, prompt caching) per AGENTS.md's model notes; an
 # incompatible model fails differently (a bad/empty extraction) rather than
@@ -38,7 +41,7 @@ DEFAULT_FALLBACK_MODELS: List[str] = [
     "minimax.minimax-m2.5",
     "moonshotai.kimi-k2.5",
     "zai.glm-5",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "us.anthropic.claude-haiku-5-5",
 ]
 
 DEFAULT_MAX_FALLBACK_RETRIES = 4

@@ -29,7 +29,7 @@ Guía operativa completa: subir, actualizar, eliminar (total o parcial), gestion
 
 - **Node.js 20+** y **pnpm 10+** (`corepack enable` lo instala; versión pineada `pnpm@10.20.0`).
 - **Python 3.12+** (para tests locales y bundling local de la Lambda).
-- **AWS CLI** configurado (`aws configure`) con una cuenta que tenga acceso a **Amazon Bedrock** (modelo `us.anthropic.claude-haiku-4-5-20251001-v1:0` habilitado en us-east-1) y **Textract**.
+- **AWS CLI** configurado (`aws configure`) con una cuenta que tenga acceso a **Amazon Bedrock** (Claude Haiku 5.5, `anthropic.claude-haiku-5-5`, con acceso habilitado en us-east-1 — el pipeline lo invoca por el perfil `us.anthropic.claude-haiku-5-5`) y **Textract**.
 - **AWS CDK v2**: `npm install -g aws-cdk` (o usar `npx cdk`, ya incluido vía `pnpm`).
 - **Docker** (opcional): solo se usa como _fallback_ si no hay `pip3` local al empaquetar la Lambda.
 
@@ -52,7 +52,7 @@ cp .env.example .env.production   # si no existe; revisa BEDROCK_MODEL_ID
 
 | Variable                                     | Efecto                                                                                 | Default                                       |
 | -------------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `BEDROCK_MODEL_ID`                           | Modelo de clasificación/extracción del pipeline                                        | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `BEDROCK_MODEL_ID`                           | Modelo de clasificación/extracción del pipeline                                        | `us.anthropic.claude-haiku-5-5` |
 | `BEDROCK_EXTRACTOR_MODEL_ID`                 | Modelo del pipeline de pedimentos/re-extracción (permite usar uno más fuerte solo ahí) | igual a `BEDROCK_MODEL_ID`                    |
 | `AI_RESPONSE_FORMAT`                         | Protocolo interno de salida del extractor: `compact` o rollback `legacy` | `compact` |
 | `DEFERRED_OCR_ENABLED`                       | `true` permite que tipos con `text_acquisition` omitan Textract si su perfil determinístico ya está completo; `false` restaura globalmente el OCR inmediato | `false` |
@@ -447,7 +447,7 @@ Si la tabla no existe, está vacía, o falla la lectura, el pipeline usa este or
 1. minimax.minimax-m2.5
 2. moonshotai.kimi-k2.5
 3. zai.glm-5
-4. us.anthropic.claude-haiku-4-5-20251001-v1:0
+4. us.anthropic.claude-haiku-5-5
 ```
 
 `MODEL_FALLBACK_MAX_RETRIES` (default `4`) limita cuántas veces puede cambiar de modelo una sola llamada antes de rendirse y propagar el error — independiente de los reintentos sobre el mismo modelo (throttling), que se agotan primero.
@@ -455,9 +455,9 @@ Si la tabla no existe, está vacía, o falla la lectura, el pipeline usa este or
 **Log de cada cambio** (CloudWatch, logger `pipeline.bedrock`), un `WARNING` por switch:
 
 ```
-bedrock: stage=extractor us.anthropic.claude-haiku-4-5-20251001-v1:0 unavailable
+bedrock: stage=extractor us.anthropic.claude-haiku-5-5 unavailable
 (AccessDeniedException); switching to minimax.minimax-m2.5 (switch 1/4,
-originally requested us.anthropic.claude-haiku-4-5-20251001-v1:0)
+originally requested us.anthropic.claude-haiku-5-5)
 ```
 
 Si se agotan los reintentos (o toda la lista) sin éxito, un `ERROR` final antes de propagar la excepción original: `bedrock: stage=<fase> giving up after N fallback switch(es) starting from <modelo original> (last error on <último modelo>: <código>)`. Una fase que nunca tuvo que cambiar de modelo no genera ningún log de esta sección — solo lo inusual queda registrado.
@@ -467,11 +467,11 @@ Si se agotan los reintentos (o toda la lista) sin éxito, un `ERROR` final antes
 ```jsonc
 "modelFallbacks": {
   "extractor": {
-    "expectedModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",  // el que tocaba
+    "expectedModel": "us.anthropic.claude-haiku-5-5",  // el que tocaba
     "actualModel": "minimax.minimax-m2.5",                           // el que realmente corrió
     "retries": 1,                                                    // cuántas veces cambió
     "attempts": [                                                    // un elemento por intento fallido, en orden
-      { "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "error": "AccessDeniedException" }
+      { "model": "us.anthropic.claude-haiku-5-5", "error": "AccessDeniedException" }
     ]
   }
 }
@@ -519,7 +519,7 @@ Todas configurables por variable de entorno (redeploy, no hot-reload):
     "resolution": "marked_otro",      // o "recovered_on_retry" si el reintento sí funcionó
     "attempts": [
       { "modelId": "minimax.minimax-m2.5", "maxTokens": 8192, "stopReason": "max_tokens", "outputTokens": 8192, "reason": "empty_response" },
-      { "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "maxTokens": 8192, "stopReason": "end_turn", "outputTokens": 1523, "reason": null }
+      { "modelId": "us.anthropic.claude-haiku-5-5", "maxTokens": 8192, "stopReason": "end_turn", "outputTokens": 1523, "reason": null }
     ]
   }
 ]
@@ -537,7 +537,7 @@ Lo operativo, en orden:
 (`document-validation-fingerprints[-dev]`, `RETAIN`) — `check-pending-tables` la
 lista y pide confirmación antes del deploy —, sube la Lambda de 1024 a 1536 MB y
 agrega `Pillow` al bundle (~72 → ~86 MB de los 250 MB). Requiere **«Model access»
-habilitado para el modelo de visión** en la cuenta/región (por default Haiku 4.5,
+habilitado para el modelo de visión** en la cuenta/región (por default Claude Haiku 5.5,
 aunque `BEDROCK_MODEL_ID` sea otro: la etapa de visión no hereda el modelo base).
 
 ```bash
@@ -703,7 +703,7 @@ pnpm test:pedimentos                  # los 9 documentos, ~$1
 | Pedimento escaneado de 27 páginas (OCR completo) | ~$0.33 USD   |
 | Expediente digital de 86 páginas (18 escaneadas) | ~$0.31 USD   |
 
-Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock Haiku 4.5 (~$1/M tokens entrada, ~$5/M salida — confirmar en la calculadora AWS). El texto nativo de PDFs digitales es gratis: **subir PDFs digitales en vez de escaneos reduce ~10x el costo**.
+Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock Claude Haiku 5.5 ($0.11/M tokens entrada, $0.55/M salida; ver `models_pricing.md` §0). El texto nativo de PDFs digitales es gratis: **subir PDFs digitales en vez de escaneos reduce ~10x el costo**.
 
 ## 9. Solución de problemas
 
@@ -713,7 +713,7 @@ Drivers: Textract $1.50/1000 páginas (solo páginas SIN capa de texto), Bedrock
 | Synth falla en bundling y no hay Docker                                | Sin `pip3` local ni Docker                                                                           | Instalar python3-pip, o Docker para el fallback                                                                                                                                                                                                                                                                                             |
 | `AccessDeniedException` de Bedrock                                     | Modelo no habilitado en la cuenta/región                                                             | Desde que existe el fallback de modelo (§5.6) esto ya no falla la extracción de inmediato — el pipeline cambia solo al siguiente modelo configurado y solo ves este error si TODA la lista de fallback también falla. Consola Bedrock → Model access → habilitar el/los modelo(s) en la región, o revisa `MODEL_FALLBACK_MAX_RETRIES`/la tabla `document-validation-fallback-models` |
 | Log con `bedrock: <modelo> unavailable (...); falling back to <otro>`  | El modelo pedido (configurado o del catálogo) no respondió — comportamiento normal del fallback (§5.6) | Informativo, no es un error a menos que se repita mucho: revisa por qué ese modelo falla (cuota, no habilitado) o reordena la tabla de fallback                                                                                                                                                                                            |
-| Toda carta con `authenticity` sale `REQUIERE_REVISION` y `AUTENTICIDAD_EVALUADA` en falso | La capa de visión no corre: modelo de visión sin «Model access», o `AUTHENTICITY_ENABLED=false` | Ver `authenticity.visionError` en `results/<id>.json`; habilitar el modelo (default Haiku 4.5, o el de `BEDROCK_VISION_MODEL_ID`) en Bedrock → Model access. Más casos: [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md) §7 |
+| Toda carta con `authenticity` sale `REQUIERE_REVISION` y `AUTENTICIDAD_EVALUADA` en falso | La capa de visión no corre: modelo de visión sin «Model access», o `AUTHENTICITY_ENABLED=false` | Ver `authenticity.visionError` en `results/<id>.json`; habilitar el modelo (default Claude Haiku 5.5, o el de `BEDROCK_VISION_MODEL_ID`) en Bedrock → Model access. Más casos: [`AUTENTICIDAD_Y_REFERENCIAS.md`](AUTENTICIDAD_Y_REFERENCIAS.md) §7 |
 | El proveedor tiene referencias pero `authenticity.referencesFound` es `false` | La carga no mandó `metadata.proveedor`, o se registraron en el otro ambiente | Mandar `"metadata": {"proveedor": "<n>"}` en `POST /documents`; `pnpm refs:list -- --key <n> --env <ambiente>` |
 | Task timed out (Lambda)                                                | Expediente muy grande                                                                                | La Lambda ya corre a 15 min / 1536 MB; para archivos mayores dividir el PDF o subir memoria en el stack                                                                                                                                                                                                                                     |
 | Resultado automático `REQUIERE_REVISION` con segmentos `OTRO`          | Páginas sin tipo en el catálogo (COVE, DODA, manifestación…); en una solicitud cerrada esos segmentos se omiten | Normal y conservador; si quieres extraerlos, agrega esos tipos al catálogo JSON y solicítalos                                                                                                                                                                                                                                                |

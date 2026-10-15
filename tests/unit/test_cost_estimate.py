@@ -29,7 +29,7 @@ validar = importlib.util.module_from_spec(spec)
 sys.modules["costos_validar_under_test"] = validar
 spec.loader.exec_module(validar)
 
-MINIMAX, HAIKU = "minimax.minimax-m2.5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+MINIMAX, HAIKU = "minimax.minimax-m2.5", "us.anthropic.claude-haiku-5-5"
 CALIBRATION = {
     "default": {"charsPerToken": 3.0, "ocrCharsPerPage": 2000, "outputTokensPerCall": {"median": 1000, "p90": 2000}},
     "models": {MINIMAX: {"charsPerToken": 3.3, "supportsPromptCache": False,
@@ -121,7 +121,9 @@ def test_catalog_model_override_wins_over_deployment_and_is_priced_at_its_rate(t
     pinned = estimate(pdf, entry=replace(erp_entry(), model_id=HAIKU))
     assert pinned["model"] == HAIKU
     assert pinned["textractUsd"] == cheap["textractUsd"]
-    assert pinned["bedrockUsd"] > cheap["bedrockUsd"] * 2  # Haiku cuesta varias veces lo que MiniMax
+    # Haiku 5.5 ($0.11/$0.55) cuesta ~1/3 de MiniMax ($0.36/$1.44) aun con su
+    # tokenizer más denso: el tipo fijado se tarifa a SU tarifa, no a la del despliegue.
+    assert pinned["bedrockUsd"] < cheap["bedrockUsd"] / 2
 
 
 def test_xml_is_free_of_ai_and_images_are_one_ocr_page(tmp_path: Path) -> None:
@@ -191,7 +193,7 @@ def test_fit_prefers_exact_ocr_counts_and_discards_implausible_token_derived_one
 
 def test_model_alias() -> None:
     assert ce.model_alias(MINIMAX) == "minimax"
-    assert ce.model_alias(HAIKU) == "haiku-4.5"
+    assert ce.model_alias(HAIKU) == "haiku-5.5"
     assert ce.model_alias(None) == "—"
 
 

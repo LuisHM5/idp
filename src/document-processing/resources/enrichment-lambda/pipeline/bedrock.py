@@ -23,7 +23,7 @@ from .model_fallback import get_fallback_models, get_max_fallback_retries
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_FALLBACK_MODEL_ID = "us.anthropic.claude-haiku-5-5"
 
 # Env var holding the per-stage model override. A stage with no override falls
 # back to the base model, so `BEDROCK_MODEL_ID` alone configures the whole
@@ -44,7 +44,7 @@ _STAGE_ENV = {
 # about a page it never saw at worst. See `_model_candidates`.
 _MULTIMODAL_STAGES = frozenset({"vision"})
 # Vision-capable default for those stages when nothing pins one.
-_MULTIMODAL_DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_MULTIMODAL_DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-5-5"
 
 
 def base_model_id() -> str:
@@ -453,6 +453,67 @@ def _system_blocks(system: Optional[str], cache_system: Optional[str]) -> list:
     return blocks
 
 
+# Model families with Anthropic's newer request surface (Claude Haiku 5.5):
+#   - `temperature` other than 1 / `topP` other than its default → 400, so the
+#     `temperature: 0` every call here sends must be dropped;
+#   - an assistant prefill turn → 400;
+#   - adaptive thinking is ON by default at effort `medium`, and the only
+#     lever is `output_config.effort` (low|medium|high|xhigh|max).
+# All three are `ValidationException`s, which never trigger a model switch
+# (see `_MODEL_UNAVAILABLE`), so the request has to be right before it's sent.
+# Matched by substring so the `us.`/`global.` inference profiles and the bare
+# id all count. Applied per attempted model in `_invoke_with_retry`, so a
+# fallback between this family and MiniMax/Kimi/GLM reshapes the request for
+# whichever model actually receives it.
+_EFFORT_MODEL_MARKERS = ("claude-haiku-5-5",)
+# Extraction is schema-constrained, so `low` keeps latency and output tokens
+# down; forced `toolChoice` calls skip thinking anyway. Override per
+# deployment (`BEDROCK_EFFORT`), per stage (`BEDROCK_<STAGE>_EFFORT`) or per
+# type (catalog `model_effort`) — see `effort_for`.
+_DEFAULT_EFFORT = "low"
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def takes_effort(model_id: Optional[str]) -> bool:
+    """Whether `model_id` uses the effort/no-sampling/no-prefill request shape."""
+    return any(marker in (model_id or "") for marker in _EFFORT_MODEL_MARKERS)
+
+
+def effort_for(stage: Optional[str] = None, type_entry: Optional[TypeRegistryEntry] = None) -> str:
+    """Effort level for a call: catalog `model_effort` > `BEDROCK_<STAGE>_EFFORT`
+    > `BEDROCK_EFFORT` > `_DEFAULT_EFFORT`. Only models in
+    `_EFFORT_MODEL_MARKERS` ever receive it. An unknown value falls back to
+    the default instead of sending Bedrock a request it would reject."""
+    candidates = [
+        getattr(type_entry, "model_effort", None) if type_entry else None,
+        os.environ.get(f"BEDROCK_{stage.upper()}_EFFORT") if stage else None,
+        os.environ.get("BEDROCK_EFFORT"),
+    ]
+    for value in candidates:
+        level = str(value or "").strip().lower()
+        if level in _EFFORT_LEVELS:
+            return level
+        if level:
+            logger.warning("bedrock: effort %r no reconocido; usando %s", value, _DEFAULT_EFFORT)
+            break
+    return _DEFAULT_EFFORT
+
+
+def _adapt_request(kwargs: Dict[str, Any], effort: Optional[str] = None) -> Dict[str, Any]:
+    """The request reshaped for its `modelId` — see `_EFFORT_MODEL_MARKERS`.
+    Any other model gets `kwargs` back untouched. Pure: callers keep the
+    canonical request so a later fallback to another family starts from it."""
+    if not takes_effort(kwargs.get("modelId")):
+        return kwargs
+    cfg = {k: v for k, v in (kwargs.get("inferenceConfig") or {}).items() if k not in ("temperature", "topP")}
+    messages = list(kwargs.get("messages") or [])
+    if messages and messages[-1].get("role") == "assistant":
+        messages = messages[:-1]
+    extra = dict(kwargs.get("additionalModelRequestFields") or {})
+    extra["output_config"] = {**(extra.get("output_config") or {}), "effort": effort or effort_for()}
+    return {**kwargs, "inferenceConfig": cfg, "messages": messages, "additionalModelRequestFields": extra}
+
+
 def _strip_cache_points(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Same request without the `cachePoint` marker."""
     system = kwargs.get("system")
@@ -494,7 +555,9 @@ def _is_cache_unsupported(e: ClientError) -> bool:
     return "prompt caching" in e.response.get("Error", {}).get("Message", "").lower()
 
 
-def _invoke_with_retry(kwargs: Dict[str, Any], max_retries: int) -> Dict[str, Any]:
+def _invoke_with_retry(
+    kwargs: Dict[str, Any], max_retries: int, effort: Optional[str] = None
+) -> Dict[str, Any]:
     # Bedrock does NOT ignore a `cachePoint` a model can't honour — it rejects
     # the whole request with a ValidationException. Verified against
     # qwen.qwen3-vl-235b-a22b and mistral-large-3, which support Converse and
@@ -505,6 +568,7 @@ def _invoke_with_retry(kwargs: Dict[str, Any], max_retries: int) -> Dict[str, An
     # Instead: drop the cachePoint and retry, remembering the model so later
     # calls skip it. Costs one rejected call per model per container; the only
     # loss is the cache discount, which that model never offered anyway.
+    kwargs = _adapt_request(kwargs, effort)
     if kwargs.get("modelId") in _NO_CACHE_SUPPORT:
         kwargs = _strip_cache_points(kwargs)
     kwargs = _clamp_max_tokens(kwargs)
@@ -587,6 +651,7 @@ def _invoke_with_fallback(
     stage: Optional[str] = None,
     max_fallback_retries: Optional[int] = None,
     fallback_models: Optional[List[str]] = None,
+    effort: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """`_invoke_with_retry`, plus: when the model itself is the problem
     (`_MODEL_UNAVAILABLE` — never a request-shape issue like
@@ -621,7 +686,7 @@ def _invoke_with_fallback(
     current = kwargs
     while True:
         try:
-            response = _invoke_with_retry(current, max_retries)
+            response = _invoke_with_retry(current, max_retries, effort)
             if stage and attempts:
                 _FALLBACK_EVENTS[stage] = {
                     "expectedModel": requested_model,
@@ -669,6 +734,7 @@ def converse(
     prefill: Optional[str] = None,
     stage: Optional[str] = None,
     max_fallback_retries: Optional[int] = None,
+    effort: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Single-turn Converse call. Returns (text, meta) where meta carries
     usage tokens and stopReason for cost tracking.
@@ -681,7 +747,12 @@ def converse(
     caching (no error).
 
     `prefill` seeds an assistant turn (e.g. "{") so the model continues from
-    there instead of choosing its own response shape.
+    there instead of choosing its own response shape. Models that reject
+    prefill (`takes_effort`) get the request without it; their answer is
+    only prefixed with `prefill` when it doesn't already start with it.
+
+    `effort` — see `effort_for`; ignored by models outside
+    `_EFFORT_MODEL_MARKERS`. Defaults to `effort_for(stage)`.
 
     `stage` ("segmenter"/"extractor"/"recovery") lets a model-unavailable
     fallback (see `_invoke_with_fallback`) correct `_USED_MODELS` for that
@@ -708,12 +779,14 @@ def converse(
         kwargs["system"] = blocks
 
     response, used_model_id = _invoke_with_fallback(
-        kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries
+        kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries,
+        effort=effort or effort_for(stage),
     )
 
     output = response.get("output", {}).get("message", {})
+    # Only `text` blocks: a thinking model's `reasoningContent` blocks are skipped.
     text = "\n".join(b.get("text", "") for b in output.get("content", []) if "text" in b).strip()
-    if prefill:
+    if prefill and not (takes_effort(used_model_id) and text.startswith(prefill)):
         text = prefill + text
     meta = {
         "modelId": used_model_id,
@@ -750,6 +823,7 @@ def converse_structured(
     max_fallback_retries: Optional[int] = None,
     images: Optional[List[Dict[str, Any]]] = None,
     fallback_models: Optional[List[str]] = None,
+    effort: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Single-turn Converse call constrained to a tool's JSON schema.
 
@@ -764,7 +838,9 @@ def converse_structured(
     restructure the fields. Returns (parsed_input, meta) — no JSON parsing
     needed, botocore already gives back a Python dict.
 
-    `stage` — see `converse()`'s docstring; same purpose here.
+    `stage`, `effort` — see `converse()`'s docstring; same purpose here.
+    Forced `toolChoice` is kept for every model: Claude Haiku 5.5 accepts it
+    and answers with the tool call directly, skipping thinking.
 
     `images` — optional `[{"label", "format" ("jpeg"|"png"), "bytes"}]` sent
     BEFORE the prompt, each preceded by its label as a text block so the
@@ -802,7 +878,7 @@ def converse_structured(
 
     response, used_model_id = _invoke_with_fallback(
         kwargs, max_retries, stage=stage, max_fallback_retries=max_fallback_retries,
-        fallback_models=fallback_models,
+        fallback_models=fallback_models, effort=effort or effort_for(stage),
     )
 
     output = response.get("output", {}).get("message", {})

@@ -50,10 +50,14 @@ def test_a_known_model_is_priced_exactly_and_an_unknown_one_is_flagged():
 
     known = pricing.bedrock_cost(usage, "minimax.minimax-m2.5")
     assert "approximatePricing" not in known
-    # Verificado 2026-09-04 contra la AWS Price List API (AmazonBedrock,
-    # us-east-1, service_tier=standard, effectiveDate 2026-08-01).
-    assert (known["inputRatePerMTokUsd"], known["outputRatePerMTokUsd"]) == (0.30, 1.20)
-    assert known["costUsd"] == pytest.approx(1.50)
+    # Costo completo de la consola de Bedrock (2026-10-15). El SKU standard del
+    # Price List API dice $0.30/$1.20; ver el comentario en pipeline/pricing.py.
+    assert (known["inputRatePerMTokUsd"], known["outputRatePerMTokUsd"]) == (0.36, 1.44)
+    assert known["costUsd"] == pytest.approx(1.80)
+
+    haiku = pricing.bedrock_cost(usage, "us.anthropic.claude-haiku-5-5")
+    assert (haiku["inputRatePerMTokUsd"], haiku["outputRatePerMTokUsd"]) == (0.11, 0.55)
+    assert pricing.bedrock_cost(usage, "global.anthropic.claude-haiku-5-5")["costUsd"] == haiku["costUsd"]
 
     unknown = pricing.bedrock_cost(usage, "proveedor.modelo-que-nadie-registro")
     assert unknown["approximatePricing"] is True

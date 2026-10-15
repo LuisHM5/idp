@@ -25,7 +25,7 @@ import boto3
 
 from document_catalog import TypeRegistryEntry
 
-from pipeline.bedrock import converse, parse_json_response, resolve_model
+from pipeline.bedrock import converse, effort_for, parse_json_response, resolve_model
 
 from .base import ExtractionResult, entities_from_dict
 
@@ -170,7 +170,8 @@ class TextractBedrockExtractor:
 
         prompt = _build_extraction_prompt(type_entry, ocr_lines)
         response_text, meta = converse(
-            prompt, model_id=model_id, max_tokens=max_tokens, stage="recovery"
+            prompt, model_id=model_id, max_tokens=max_tokens, stage="recovery",
+            effort=effort_for("recovery", type_entry),
         )
         parsed = parse_json_response(response_text)
         values = _flatten_values(parsed)

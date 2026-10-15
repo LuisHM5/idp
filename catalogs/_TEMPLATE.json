@@ -19,8 +19,10 @@
     "form_mapping": {},
     "__COMENTARIO_model_id__": "Opcional. Fija el modelo Bedrock (ARN o inference-profile id) que extrae ESTE tipo para cualquier fase que corra (extractor, y recovery si aplica), sin importar qué esté configurado por variable de entorno (BEDROCK_EXTRACTOR_MODEL_ID/BEDROCK_MODEL_ID). Omite la llave (o deja null) para heredar lo configurado. Jerarquía completa y `model_ids` (override por fase individual) en catalogs/README.md -> 'Entry de nivel de tipo'.",
     "model_id": null,
-    "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase. La fase `vision` (etapa de autenticidad) también va aquí y es independiente: su cadena es model_ids.vision -> BEDROCK_VISION_MODEL_ID -> Haiku 4.5, nunca hereda model_id ni el modelo general, y su respaldo es `authenticity.vision.fallback_models`.",
+    "__COMENTARIO_model_ids__": "Opcional. Igual que model_id pero por fase: {\"extractor\": \"...\", \"recovery\": \"...\"}. Pisa a model_id cuando ambos nombran la misma fase. La fase `vision` (etapa de autenticidad) también va aquí y es independiente: su cadena es model_ids.vision -> BEDROCK_VISION_MODEL_ID -> Haiku 5.5, nunca hereda model_id ni el modelo general, y su respaldo es `authenticity.vision.fallback_models`.",
     "model_ids": {},
+    "__COMENTARIO_model_effort__": "Opcional. Esfuerzo de razonamiento para modelos que lo aceptan (hoy Claude Haiku 5.5): low|medium|high|xhigh|max. Sin definir usa BEDROCK_<FASE>_EFFORT -> BEDROCK_EFFORT -> low. Se ignora en modelos que no lo aceptan (MiniMax, Kimi, GLM, Nova).",
+    "model_effort": null,
     "__COMENTARIO_ai_response_format__": "Opcional: compact (default global) hace que la IA devuelva pares [valor, confianza] y filas posicionales; Python arma el envelope final. legacy restaura el JSON anidado anterior para este tipo. No cambia extractionMode ni el JSON público.",
     "ai_response_format": null,
 

@@ -46,7 +46,7 @@ COST_ITEM = {
     "Pages": {"Total": Decimal(86), "Native": Decimal(67), "Ocr": Decimal(19), "Empty": Decimal(0)},
     "Services": {"BedrockExtraction": {
         "costUsd": Decimal("0.030491"), "inputTokens": Decimal(18719),
-        "outputTokens": Decimal(1800), "modelId": "us.anthropic.claude-haiku-4-5",
+        "outputTokens": Decimal(1800), "modelId": "us.anthropic.claude-haiku-5-5",
     }},
     "TotalCostUsd": Decimal("0.030491"), "TotalInputTokens": Decimal(18719),
     "TotalOutputTokens": Decimal(1800), "PageSelection": PAGE_SELECTION,

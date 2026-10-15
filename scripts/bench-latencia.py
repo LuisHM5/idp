@@ -71,8 +71,8 @@ RESULTADOS_DIR = REPO / "resultados"
 
 # El modelo desplegado hoy va primero: es la BASE de la comparación.
 DEFAULT_MODELS = [
+    "us.anthropic.claude-haiku-5-5",
     "minimax.minimax-m2.5",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "moonshotai.kimi-k2.5",
 ]
 
@@ -426,7 +426,7 @@ def escribir_reporte(rows: list[dict], modelos: list[str], out_dir: Path, titulo
         "porque la llamada es `Converse` no-streaming y su wall clock es "
         "`TTFT + tokens_salida / throughput`.",
         "- **$/doc** usa las tarifas de `pipeline/pricing.py`. Un modelo sin tarifa verificada "
-        "ahí se tarifa con la de Haiku 4.5 como aproximación (ver `_BEDROCK_PRICING`).",
+        "ahí se tarifa con la de Haiku 5.5 como aproximación (ver `_BEDROCK_PRICING`).",
         "- **campos distintos** NO es accuracy: es cuántos valores cambian respecto al modelo base. "
         "Antes de adoptar un modelo hay que correr `pnpm test:e2e:suite` y el ground truth de "
         "`tests/integration/expected_pedimentos.json`.",

@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from document_catalog import FieldSpec, TypeRegistryEntry
 
 from . import type_check
-from .bedrock import converse_structured, resolve_model
+from .bedrock import converse_structured, effort_for, resolve_model
 from .confidence import row_key
 from .pdf_pages import PageText
 from .row_common import fill_row_common_fields
@@ -36,16 +36,18 @@ from .row_common import fill_row_common_fields
 logger = logging.getLogger(__name__)
 
 _MAX_CHUNK_CHARS = 28_000
-# us.anthropic.claude-haiku-4-5's real Bedrock output ceiling is 64,000
-# tokens (verified against the live Converse API — a request above that
-# value is rejected outright). The old 8,192 cap was self-imposed and far
+# Claude Haiku 5.5's Bedrock output ceiling is 128K tokens (Haiku 4.5 had
+# 64,000, verified against the live Converse API — a request above the
+# ceiling is rejected outright; `bedrock._clamp_max_tokens` lowers it for
+# models with a smaller one, e.g. MiniMax's 8K). With adaptive thinking the
+# thinking tokens also count against this cap. The old 8,192 cap was self-imposed and far
 # below that: for schemas with many repeatable-field rows (e.g.
 # PEDIMENTO_ADUANAL's PARTIDAS/CUADRO_LIQUIDACION), a row-dense chunk's
 # output regularly exceeded 8,192, truncating mid-JSON and forcing the
 # recursive split-in-half retry below to fire repeatedly. Raising the cap
 # costs nothing by itself (billed by tokens actually generated, not the
 # ceiling) and avoids paying for truncated, unusable output followed by a
-# retry. Leaves headroom under the hard 64,000 limit.
+# retry. Well under the model ceiling.
 _MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "32000"))
 # Chunks of the same document are extracted concurrently: each is an
 # independent Bedrock call, so a multi-chunk document runs in parallel
@@ -282,7 +284,8 @@ def _call_model(
         tool_schema=schema,
         tool_name="extract_document_fields",
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
-        model_id=model_id or resolve_model("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
+        model_id=model_id or resolve_model("extractor", type_entry),
+        effort=effort_for("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
         # The prefix (schema + hints + strict rules) goes on EVERY call;
         # `cache` only decides whether it's also marked as cacheable. It used
         # to travel exclusively as `cache_system`, so a document that fit in
@@ -1370,7 +1373,8 @@ def _call_model_field_tree_legacy(
         tool_schema=schema,
         tool_name="extract_document_fields",
         tool_description=f"Extrae los campos de un documento {type_entry.type_id} segun el schema exacto.",
-        model_id=model_id or resolve_model("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
+        model_id=model_id or resolve_model("extractor", type_entry),
+        effort=effort_for("extractor", type_entry), max_tokens=_MAX_OUTPUT_TOKENS,
         # The prefix (schema + hints + strict rules) goes on EVERY call;
         # `cache` only decides whether it's also marked as cacheable. It used
         # to travel exclusively as `cache_system`, so a document that fit in
@@ -1467,6 +1471,7 @@ def _call_model_field_tree_compact(
             f"Extrae {type_entry.type_id} en pares escalares y filas posicionales compactas."
         ),
         model_id=model_id or resolve_model("extractor", type_entry),
+        effort=effort_for("extractor", type_entry),
         max_tokens=_MAX_OUTPUT_TOKENS,
         system=None if cache else cache_prefix,
         cache_system=cache_prefix if cache else None,

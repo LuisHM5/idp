@@ -7,6 +7,19 @@ etapas con imagen, ver `MODELOS_VISION.md`.
 
 **Fecha del análisis:** 2026-10-08 · cuenta `886031931562`, `us-east-1`.
 
+> **Actualización 2026-10-15 — Claude Haiku 5.5 es el modelo base y el de
+> visión.** `BEDROCK_MODEL_ID` y `BEDROCK_VISION_MODEL_ID` =
+> `us.anthropic.claude-haiku-5-5`, effort `low` (`BEDROCK_EFFORT`). Es el
+> modelo frontera de referencia: ver `models_pricing.md` §0 (tarifas completas,
+> Intelligence Index por effort y comparación con MiniMax). El código ya manda
+> el request que acepta (sin `temperature`, sin prefill, con
+> `output_config.effort` — `pipeline/bedrock.py::_adapt_request`). **Requisito
+> manual:** la cuenta todavía responde `AccessDeniedException`
+> (`agreementAvailability: NOT_AVAILABLE`); hay que habilitar el acceso al
+> modelo en la consola de Bedrock. Mientras tanto cada llamada cae a MiniMax por
+> la cadena de fallback. Las mediciones de abajo son del 2026-10-08, con
+> Haiku 4.5; repetir §3 con Haiku 5.5 en cuanto haya acceso.
+
 ---
 
 ## 1. Veredicto
@@ -123,7 +136,7 @@ de la variante sin razonamiento a la de máximo esfuerzo.
 
 | Modelo | ID | $ in / out por 1M | Intel. | Estado |
 |---|---|---:|---:|---|
-| **Claude Haiku 5.5** | `us.anthropic.claude-haiku-5-5` | $0.11 / $0.55 ¹ | 29.4-43.4 | `AccessDeniedException` hoy. Publicado el 2026-10-07 |
+| **Claude Haiku 5.5** | `us.anthropic.claude-haiku-5-5` | $0.11 / $0.55 ¹ | 29-43 | Modelo base desde 2026-10-15; `AccessDeniedException` hasta habilitar el acceso en la cuenta. Publicado el 2026-10-07 |
 | GPT-6 Luna | `us.openai.gpt-6-luna` | $0.10 / $0.50 ² | 29.9-38.1 | `AccessDeniedException` |
 | GLM 5.3 | `us.zai.glm-5.3` | $1.40 / $4.40 ² | 34.3-44.8 | `AccessDeniedException` hoy; el 2026-10-07 sí respondió en el preflight de CURP |
 | GPT-5.6 Luna | `us.openai.gpt-5.6-luna` | $0.20 / $1.20 ² | 32.1-37.3 | sin acceso (probado 2026-09-24) |
@@ -221,10 +234,10 @@ prueba real. Por eso el ranking se apoya en lo medido.
 
 | Uso | Hoy | Siguiente paso |
 |---|---|---|
-| Modelo base de texto (`BEDROCK_MODEL_ID`) | Cambiar de MiniMax M2.5 a **Kimi K2.5**. No requiere código: ya tiene tarifa en `pricing.py` y está en la cadena de fallback | Antes de producción, correr `pnpm test:pedimentos -- --model moonshotai.kimi-k2.5` sobre los 4 archivos del expected y `pnpm test:e2e:suite` |
-| Cadena de fallback (`model_fallback.py:36-41`) | Reordenar a Kimi K2.5 → Haiku 4.5 → GLM 5 → MiniMax M2.5 | Hoy MiniMax va primero y Haiku al final |
+| Modelo base de texto (`BEDROCK_MODEL_ID`) | **Hecho 2026-10-15: Claude Haiku 5.5** (`us.anthropic.claude-haiku-5-5`), por encima de Kimi K2.5: más inteligente (29-43 contra 23.5) y 5x más barato por token | Con acceso habilitado, correr `pnpm test:pedimentos -- --model us.anthropic.claude-haiku-5-5` sobre los 4 archivos del expected y `pnpm test:e2e:suite` |
+| Cadena de fallback (`model_fallback.py`) | MiniMax → Kimi → GLM 5 → Haiku 5.5. Haiku 5.5 va al final porque el segmentador usa el ÚLTIMO de la lista como su default y reintento; cuando Haiku es el que falla, el cambio va a MiniMax | Reordenar a Kimi primero si MiniMax sigue lento como respaldo |
 | Costo esperado | Kimi cuesta unos $0.0025 más por pedimento que una corrida normal de MiniMax ($2.50 por cada 1,000) y tarda menos en todo lo medido | Recalibrar `pnpm costos:validar` después del cambio |
-| Claude Haiku 5.5 | Pedir acceso en la cuenta | El pipeline manda `temperature: 0` (`bedrock.py:704` y `:785`) y Haiku 5.5 rechaza valores de sampling no default: hay que omitirlo para ese modelo. Con acceso, repetir la prueba de §3; a $0.11 / $0.55 saldría más barato que MiniMax |
+| Claude Haiku 5.5 | Pedir acceso en la cuenta (consola de Bedrock → Model access) | Resuelto en código: `bedrock.py::_adapt_request` quita `temperature` y el prefill y agrega `output_config.effort` solo para ese modelo. Con acceso, repetir la prueba de §3 |
 | Qwen3 Next 80B y DeepSeek V3.2 | No adoptar todavía | Faltan sus tarifas en `pricing.py` y repeticiones sobre CURP, FLETE y un expediente largo |
 
 Antes de cambiar el modelo de cualquier etapa: `pricing.py` tiene que tener su

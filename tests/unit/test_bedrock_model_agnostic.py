@@ -46,6 +46,8 @@ MODEL_ENV = (
     "BEDROCK_RECOVERY_MODEL_ID",
     "FALLBACK_MODELS_TABLE",
     "MODEL_FALLBACK_MAX_RETRIES",
+    "BEDROCK_EFFORT",
+    "BEDROCK_EXTRACTOR_EFFORT",
 )
 
 
@@ -427,7 +429,7 @@ def test_caching_is_preserved_for_models_that_support_it(fake):
 #
 # `model_fallback.DEFAULT_FALLBACK_MODELS` (no FALLBACK_MODELS_TABLE set in
 # these tests) is ["minimax.minimax-m2.5", "moonshotai.kimi-k2.5",
-# "zai.glm-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"], and the
+# "zai.glm-5", "us.anthropic.claude-haiku-5-5"], and the
 # default budget is 4 switches — one per entry.
 
 
@@ -690,3 +692,105 @@ def test_record_stage_degraded_is_thread_safe():
         t.join()
 
     assert len(bedrock.stage_degradations()["segmenter"]) == 50
+
+
+# --- Claude Haiku 5.5 request shape -------------------------------------------
+# Haiku 5.5 rejects `temperature`≠1 and an assistant prefill with a
+# ValidationException — which never triggers a model switch — and takes an
+# `output_config.effort`. Every other model must keep receiving the exact
+# request it got before.
+
+HAIKU55 = "us.anthropic.claude-haiku-5-5"
+VALIDATION = ClientError({"Error": {"Code": "ValidationException", "Message": "bad"}}, "Converse")
+UNAVAILABLE = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no access"}}, "Converse")
+
+
+def test_haiku_55_gets_no_sampling_no_prefill_and_an_effort(fake):
+    client = fake()
+    text, meta = bedrock.converse("hola", model_id=HAIKU55, prefill="{")
+
+    sent = client.calls[0]
+    assert "temperature" not in sent["inferenceConfig"]
+    assert [m["role"] for m in sent["messages"]] == ["user"]
+    assert sent["additionalModelRequestFields"] == {"output_config": {"effort": "low"}}
+    # The prefill the model never saw is still prepended to its answer.
+    assert text == "{OK"
+    assert meta["modelId"] == HAIKU55
+
+
+def test_haiku_55_answer_that_already_starts_with_the_prefill_is_not_doubled(fake, monkeypatch):
+    client = fake()
+    monkeypatch.setattr(client, "converse", lambda **kw: client.calls.append(kw) or {
+        "output": {"message": {"content": [{"reasoningContent": {"reasoningText": {"text": "…"}}},
+                                           {"text": '{"a": 1}'}]}},
+        "stopReason": "end_turn", "usage": {},
+    })
+    text, _ = bedrock.converse("hola", model_id=HAIKU55, prefill="{")
+    # Reasoning blocks are skipped and the JSON is not turned into "{{".
+    assert text == '{"a": 1}'
+    assert bedrock.parse_json_response(text) == {"a": 1}
+
+
+def test_other_models_keep_the_exact_request(fake):
+    client = fake()
+    text, _ = bedrock.converse("hola", model_id="minimax.minimax-m2.5", prefill="{")
+    sent = client.calls[0]
+    assert sent["inferenceConfig"]["temperature"] == 0
+    assert [m["role"] for m in sent["messages"]] == ["user", "assistant"]
+    assert "additionalModelRequestFields" not in sent
+    assert text == "{OK"
+
+
+def test_effort_priority_catalog_then_stage_env_then_global(monkeypatch):
+    assert bedrock.effort_for("extractor") == "low"
+    monkeypatch.setenv("BEDROCK_EFFORT", "medium")
+    assert bedrock.effort_for("extractor") == "medium"
+    monkeypatch.setenv("BEDROCK_EXTRACTOR_EFFORT", "HIGH")
+    assert bedrock.effort_for("extractor") == "high"
+    entry = _type_entry()
+    entry.model_effort = "max"
+    assert bedrock.effort_for("extractor", entry) == "max"
+
+
+def test_unknown_effort_falls_back_to_the_default(monkeypatch):
+    monkeypatch.setenv("BEDROCK_EFFORT", "turbo")
+    assert bedrock.effort_for("extractor") == "low"
+
+
+def test_structured_call_passes_its_effort_and_keeps_forced_tool_choice(fake):
+    client = fake()
+    bedrock.converse_structured("p", {"type": "object"}, "t", "d", model_id=HAIKU55, effort="medium")
+    sent = client.calls[0]
+    assert sent["additionalModelRequestFields"]["output_config"]["effort"] == "medium"
+    assert sent["toolConfig"]["toolChoice"] == {"tool": {"name": "t"}}
+    assert "temperature" not in sent["inferenceConfig"]
+
+
+def test_fallback_reshapes_the_request_for_each_model_tried(fake, monkeypatch):
+    """Haiku 5.5 unavailable → MiniMax must get the CANONICAL request back
+    (temperature 0, prefill, no effort field), not the Haiku-shaped one."""
+    client = fake(fail_times=1, error=UNAVAILABLE)
+    monkeypatch.setattr(bedrock, "get_fallback_models", lambda: ["minimax.minimax-m2.5", HAIKU55])
+
+    bedrock.converse("hola", model_id=HAIKU55, prefill="{", stage="extractor")
+
+    haiku_call, minimax_call = client.calls
+    assert "temperature" not in haiku_call["inferenceConfig"]
+    assert minimax_call["modelId"] == "minimax.minimax-m2.5"
+    assert minimax_call["inferenceConfig"]["temperature"] == 0
+    assert [m["role"] for m in minimax_call["messages"]] == ["user", "assistant"]
+    assert "additionalModelRequestFields" not in minimax_call
+
+
+def test_a_request_shape_error_on_haiku_55_does_not_switch_models(fake):
+    client = fake(fail_times=1, error=VALIDATION)
+    with pytest.raises(ClientError):
+        bedrock.converse("hola", model_id=HAIKU55, stage="extractor")
+    assert len(client.calls) == 1
+
+
+def test_inference_profiles_and_bare_id_all_take_effort():
+    for model in (HAIKU55, "global.anthropic.claude-haiku-5-5", "anthropic.claude-haiku-5-5"):
+        assert bedrock.takes_effort(model)
+    assert not bedrock.takes_effort("us.anthropic.claude-haiku-4-5-20251001-v1:0")
+    assert not bedrock.takes_effort(None)

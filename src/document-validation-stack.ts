@@ -170,7 +170,7 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
     // silently when unsupported — no error, but the cache discount is lost);
     // and vision when the authenticity stage needs it.
     const bedrockModel =
-      process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+      process.env.BEDROCK_MODEL_ID || "us.anthropic.claude-haiku-5-5";
 
     // Environment gate: prod hardens the API (keys + WAF + custom domain);
     // dev stays open on the random execute-api URL.
@@ -408,10 +408,17 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
         // the file, so it would let a caller choose the model, and with it the
         // cost and the extraction quality, on someone else's document.
         ...(isProd ? {} : { ALLOW_MODEL_OVERRIDE: "true" }),
+        // Reasoning effort for models that take one (Claude Haiku 5.5):
+        // low|medium|high|xhigh|max. Per step: BEDROCK_<STEP>_EFFORT; per
+        // type: catalog `model_effort`. See pipeline/bedrock.py::effort_for.
+        BEDROCK_EFFORT: process.env.BEDROCK_EFFORT || "low",
+        ...(process.env.BEDROCK_EXTRACTOR_EFFORT && {
+          BEDROCK_EXTRACTOR_EFFORT: process.env.BEDROCK_EXTRACTOR_EFFORT,
+        }),
         // Physical-authenticity stage (pipeline/authenticity.py). The vision
         // model is resolved on its OWN chain — catalog `model_ids.vision`,
         // this variable, then a vision-capable default — and never falls back
-        // to BEDROCK_MODEL_ID, which in this deployment is a text-only model.
+        // to BEDROCK_MODEL_ID (picked for text; it may be a text-only model).
         ...(process.env.BEDROCK_VISION_MODEL_ID && {
           BEDROCK_VISION_MODEL_ID: process.env.BEDROCK_VISION_MODEL_ID,
         }),

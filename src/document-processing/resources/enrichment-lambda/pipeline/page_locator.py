@@ -24,7 +24,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .bedrock import converse, parse_json_response, resolve_model
+from .bedrock import converse, effort_for, parse_json_response, resolve_model
 from .page_selector import Selection
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,7 @@ def locate(
             model_id=used_model_id,
             max_tokens=2048,
             stage="locator",
+            effort=effort_for("locator", type_entry),
         )
     except Exception as e:
         logger.warning("page_locator: la llamada falló (%s); se procesan todas las páginas", e)

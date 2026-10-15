@@ -643,9 +643,10 @@ recortes se omite: ya está probado que es digital). Las llamadas de visión sal
 en su propia línea, `BedrockAuthenticity`, en `pnpm costos`.
 
 **Modelo de visión.** La etapa `vision` resuelve su modelo por su propia cadena —
-`model_ids.vision` del catálogo → `BEDROCK_VISION_MODEL_ID` → Haiku 4.5 — y
-**nunca** hereda `BEDROCK_MODEL_ID` ni la lista de fallback: en este despliegue
-son modelos de solo texto.
+`model_ids.vision` del catálogo → `BEDROCK_VISION_MODEL_ID` → Claude Haiku 5.5 — y
+**nunca** hereda `BEDROCK_MODEL_ID` ni la lista de fallback: se eligen para
+texto y pueden ser modelos sin visión. Los costos medidos abajo son con
+Haiku 4.5, el default de entonces; Haiku 5.5 cobra 10x menos por token.
 
 **Lo que no cuesta, y las dos palancas.** La capa 0 (integridad) y el ELA de la
 capa 2 no facturan nada en Bedrock ni Textract: corren en la Lambda, en

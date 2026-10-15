@@ -47,7 +47,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 
 ## Modelo y arquitectura
 
-El pipeline usa **Amazon Bedrock** (Claude Haiku 4.5, `us.anthropic.claude-haiku-4-5-20251001-v1:0`) para clasificar y extraer, sobre una arquitectura 100% serverless en AWS. Arquitectura y recorrido de un documento: **[`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md)**.
+El pipeline usa **Amazon Bedrock** (Claude Haiku 5.5, `us.anthropic.claude-haiku-5-5`, effort `low`) para clasificar y extraer, sobre una arquitectura 100% serverless en AWS. Arquitectura y recorrido de un documento: **[`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md)**.
 
 Características clave del pipeline de expedientes:
 
@@ -77,7 +77,7 @@ Cada campo del catálogo trae un `hint` en español libre, junto a su tipo y sus
 
 - Node.js 20+, pnpm 10+ (`corepack enable`, versión pineada `pnpm@10.20.0`)
 - Python 3.12+ (tests locales y bundling de la Lambda)
-- AWS CLI configurado, con acceso a Amazon Bedrock (modelo `us.anthropic.claude-haiku-4-5-20251001-v1:0` en us-east-1) y Textract
+- AWS CLI configurado, con acceso a Amazon Bedrock (modelo Claude Haiku 5.5 — Model ID `anthropic.claude-haiku-5-5`, invocado por el perfil `us.anthropic.claude-haiku-5-5` — con acceso habilitado en us-east-1) y Textract
 - AWS CDK v2 (`npm install -g aws-cdk`, o `npx cdk` ya incluido)
 
 ## Instalación y primer despliegue
