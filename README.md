@@ -23,6 +23,7 @@ El motor es genérico y mantiene dos familias de catálogo: **`base/`**, documen
 | [`documentacion/ARQUITECTURA.md`](documentacion/ARQUITECTURA.md) | 🏗️ Arquitectura: el único diagrama del repo, el recorrido de un documento, componentes y modelos. |
 | [`documentacion/RESUMEN_EJECUTIVO.md`](documentacion/RESUMEN_EJECUTIVO.md) | 👔 Versión para directivos: el proceso explicado en una imagen, sin nombres de servicios ni tecnicismos. |
 | [`documentacion/GUIA_DESPLIEGUE_Y_USO.md`](documentacion/GUIA_DESPLIEGUE_Y_USO.md) | 📘 Guía operativa completa: instalar, desplegar, subir documentos, actualizar/eliminar catálogos, troubleshooting. |
+| [`documentacion/GUIA_MIGRACION_CUENTA_AWS.md`](documentacion/GUIA_MIGRACION_CUENTA_AWS.md) | Guía paso a paso para respaldar, restaurar y validar una migración entre cuentas AWS. |
 | [`documentacion/api-docs/`](documentacion/api-docs/README.md) | 📦 **Paquete de documentación del API para compartir** con quien conoce 0 el proyecto: guía de uso, contrato OpenAPI y ejemplos de código listos para copiar. |
 | [`documentacion/api-docs/API_USO.md`](documentacion/api-docs/API_USO.md) | Referencia del API REST (todos los endpoints, request/response). |
 | [`documentacion/api-docs/ejemplos/curl.md`](documentacion/api-docs/ejemplos/curl.md) | Runbook curl copiar-y-pegar (funciona sin importar el lenguaje del consumidor). |
