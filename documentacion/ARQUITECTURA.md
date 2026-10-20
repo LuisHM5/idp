@@ -80,6 +80,13 @@ flowchart TB
 No hay cola SQS, Step Functions ni Lambdas de clasificación/extracción previas:
 S3 invoca a la Enrichment Lambda directamente.
 
+Durante la migración a otra cuenta, el primer despliegue CDK usa
+`MIGRATION_PAUSE_INGRESS=1`: crea el bucket y las tablas de destino sin
+notificaciones S3 para cargar los objetos históricos. Después de restaurarlos,
+el despliegue de activación agrega las notificaciones `source/` y `raw/` a ese
+mismo bucket. Fuera de esa fase, el ingreso directo del diagrama está activo.
+La secuencia operativa está en [la guía de migración](GUIA_MIGRACION_CUENTA_AWS.md).
+
 ## Recorrido de un documento
 
 1. **Registrar.** `POST /documents` valida el request, reserva el `documentId`

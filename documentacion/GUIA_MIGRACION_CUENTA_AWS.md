@@ -1,16 +1,15 @@
 # Guía simple: migrar IDP/GDI entre cuentas AWS
 
-Esta es la secuencia operativa para mover **datos de producción y desarrollo**
-desde una cuenta AWS a otra. Los tres comandos `migration:*` abren un asistente
+Esta es la secuencia operativa para mover **infraestructura y datos de producción
+y desarrollo** desde una cuenta AWS a otra. Los comandos `migration:*` abren un asistente
 interactivo: usa ↑/↓, Enter y Tab para completar rutas. El [plan técnico](PLAN_MIGRACION_CUENTA_AWS.md)
 explica los detalles de infraestructura y las limitaciones del respaldo.
 
-> **Estado de este procedimiento:** `migration:backup` crea un archivo local
-> cifrado; `migration:restore` crea tablas DynamoDB y carga objetos en buckets
-> **ya existentes**. Restaurar datos no despliega la aplicación, no cambia DNS y
-> no recrea claves de API. **El modo CDK que reutiliza los datos restaurados
-> aún no está implementado**: después del paso 4, no ejecutes
-> `pnpm run deploy:dev` ni `pnpm run deploy:prod` hasta completar el paso 5.
+> **Orden obligatorio:** primero despliega CDK en la cuenta nueva con el ingreso
+> S3 pausado; después carga el respaldo en las tablas y buckets de esos stacks;
+> finalmente activa las notificaciones. Desplegar sin la pausa antes de copiar
+> `source/` o restaurar en tablas ajenas al stack puede reprocesar documentos o
+> dejar a la aplicación leyendo tablas vacías.
 
 ## Antes de comenzar
 
@@ -40,23 +39,31 @@ Escribe la confirmación que muestra el asistente.
 buckets documentales de prod y dev. Si el ID no coincide con el esperado,
 detente antes de crear el respaldo.
 
-## 2. Preparar la cuenta destino
+## 2. Preparar y desplegar la infraestructura vacía en destino
 
-En la consola AWS de la **cuenta nueva**, en la misma región del respaldo:
+Configura un perfil AWS con nombre para la **cuenta nueva**. Revisa
+`.env.dev` y `.env.production`: deben contener los modelos y ajustes de la
+cuenta nueva; `CERT_ARN` nunca debe ser el certificado de la cuenta origen.
+Deja `DOMAIN_NAME`/`CERT_ARN` sin configurar hasta tener un certificado ACM
+válido en destino. Habilita el acceso a los modelos Bedrock requeridos en
+`us-east-1`. La cuenta nueva debe estar lista para CDK bootstrap. No crees
+tablas ni buckets documentales a mano.
 
-1. Crea **dos buckets documentales** con nombres nuevos, uno para `prod` y otro
-   para `dev`. Deben estar vacíos y sin notificaciones S3. Activa bloqueo de
-   acceso público y el cifrado que corresponda. Anota ambos nombres.
-2. Prepara una clave KMS **de la cuenta destino** para las tablas productivas
-   cifradas con KMS. Anota su ARN y verifica que el perfil destino pueda usarla.
-3. Deja sin crear las tablas DynamoDB que se van a importar. Si desplegaste el
-   CDK y esas tablas ya existen, la restauración se detendrá en la revisión
-   previa. Reconcílialas con el [plan técnico](PLAN_MIGRACION_CUENTA_AWS.md#7-fase-c-restauración-en-la-cuenta-independiente)
-   antes de continuar.
+```bash
+pnpm migration:deploy
+```
 
-**Éxito:** hay dos buckets destino vacíos, sin notificaciones; las tablas
-destino todavía no existen y conoces el perfil de la cuenta nueva y, si
-aplica, el ARN KMS de producción.
+Elige el perfil destino, región `us-east-1`, ambiente `both` y fase **Inicial:
+crear infraestructura sin notificaciones S3**. El asistente comprueba y muestra
+el ID real de la cuenta; escribe `DESPLEGAR <ID> PAUSADO` solo si es la cuenta
+nueva. Este comando ejecuta `deploy:dev` y `deploy:prod` con ese perfil y crea
+los buckets, tablas, KMS, API y Lambdas, pero todavía no conecta `source/` ni
+`raw/` al procesamiento.
+
+**Éxito:** ambos stacks están en `CREATE_COMPLETE`/`UPDATE_COMPLETE`; el
+asistente termina con `Despliegue terminado`; los buckets documentales y las
+tablas de ambos ambientes están vacíos y sin notificaciones S3. No compartas
+todavía el endpoint nuevo con consumidores.
 
 ## 3. Detener escrituras y crear el respaldo final
 
@@ -86,7 +93,7 @@ respaldo cifrado.
 
 ## 4. Importar los datos en la cuenta nueva
 
-Con los buckets destino preparados, ejecuta el asistente con la ruta de tu
+Con los stacks destino desplegados en fase pausada, ejecuta el asistente con la ruta de tu
 archivo cifrado. Para el respaldo actual:
 
 ```bash
@@ -94,56 +101,41 @@ pnpm migration:restore --archive /home/luis-pc/aws-migration-backup-20261019-211
 ```
 
 Responde la contraseña original, elige el **perfil destino** y comprueba el ID
-de cuenta que muestra STS. Escribe los nombres de los buckets vacíos de `prod`
-y `dev`, y el ARN de la clave KMS nueva si lo solicita. **No hace falta crear
-un JSON de buckets.** El asistente verifica el contenido del archivo, las
-tablas y los buckets antes de pedir `RESTAURAR <ID de la cuenta destino>`.
+de cuenta que muestra STS. Elige **Stacks CDK ya desplegados, con ingreso S3
+pausado**. El asistente usa los IDs lógicos guardados en el respaldo para
+encontrar automáticamente las tablas y buckets físicos de los nuevos stacks.
+Verifica que estén vacíos, que las claves e índices de las tablas coincidan y
+que los buckets no tengan notificaciones. Muestra el mapa origen → destino y
+pide `RESTAURAR <ID de la cuenta destino>` antes de escribir. La CMK productiva
+la creó el despliegue CDK inicial; no necesitas proporcionar su ARN aquí.
 
 **Éxito:** aparecen `Checksum verificado`, una línea `Restaurada: ...` por
-tabla, `Restaurado S3: ...` por bucket y al final `Datos cargados. Falta
-adoptar tablas en IaC y validar la aplicación.` Si falla después de empezar a
-escribir, conserva los recursos creados para inspección: el asistente no los
-borra ni reanuda sobre tablas existentes.
+tabla, `Restaurado S3: ...` por bucket y al final `Datos cargados en los stacks
+CDK`. Si falla después de empezar a escribir, conserva los recursos creados
+para inspección: el asistente no borra ni reanuda sobre tablas no vacías.
 
-## 5. Conectar la infraestructura y validar
-
-**Aquí hay una tarea de código pendiente.** El CDK actual crea sus propias
-tablas y su propio bucket. Si se corre `pnpm run deploy:prod` tal cual después
-de restaurar, las tablas con nombre fijo pueden chocar y el stack puede crear
-un bucket o una tabla de seguimiento vacíos. La aplicación podría quedar
-conectada a esos recursos en lugar de los restaurados. `deploy:dev` presenta
-el mismo problema.
-
-Antes del deploy, adaptar el CDK para **referenciar los nombres físicos
-restaurados** de todas las tablas y buckets de cada ambiente, con permisos
-IAM/KMS de la nueva cuenta; como alternativa, importarlos en un data stack y
-referenciarlos desde la aplicación. Este modo de adopción todavía no existe en
-el repositorio. Configurar `.env.dev` y `.env.production` para el destino; el
-certificado ACM de la cuenta origen no sirve en la nueva. El
-[plan técnico, fase C](PLAN_MIGRACION_CUENTA_AWS.md#7-fase-c-restauración-en-la-cuenta-independiente)
-enumera los recursos y comprobaciones concretas.
-
-**Solo cuando esa adaptación esté implementada y verificada**, con un perfil
-`destino` que realmente apunta a la cuenta nueva, revisar y desplegar en este
-orden:
+## 5. Activar el procesamiento y validar
 
 ```bash
-AWS_PROFILE=destino pnpm run diff:dev
-AWS_PROFILE=destino pnpm run diff:prod
-AWS_PROFILE=destino pnpm run deploy:dev
-AWS_PROFILE=destino pnpm run deploy:prod
+pnpm migration:deploy
 ```
 
-Sustituye `destino` por el nombre real de tu perfil. Antes de cada despliegue,
-verifica el ID de cuenta y que el `diff` no cree otro bucket/tabla documental
-ni reemplace datos. Después recrea las API keys y usage plans, secretos,
-certificados/DNS y suscripciones que el respaldo no contiene. Si usas S3
-Vectors, reconstruye el índice desde las referencias restauradas.
+Elige el **mismo perfil destino**, ambiente `both` y fase **Activar: conectar
+notificaciones S3 tras restaurar**. Confirma el ID de cuenta y escribe
+`DESPLEGAR <ID> ACTIVO`. El asistente vuelve a ejecutar los despliegues CDK,
+ahora con las notificaciones `source/` y `raw/`. Los objetos históricos ya
+están cargados, por lo que no se vuelven a procesar por la carga inicial.
+
+Después recrea las API keys y usage plans, secretos, certificados/DNS y
+suscripciones que el respaldo no contiene. Los `ApiKeyId` de la cuenta origen
+no funcionan en la nueva: reconcilia `AppsTable` con las claves nuevas. Si
+usas S3 Vectors, reconstruye el índice desde las referencias restauradas.
 
 **Éxito de infraestructura:** ambos stacks llegan a `CREATE_COMPLETE` o
-`UPDATE_COMPLETE`; las Lambdas apuntan a los **mismos** buckets y tablas que
-restauraste, y solo `source/` y `raw/` invocan procesamiento. El endpoint nuevo
-permanece sin tráfico de producción hasta terminar la validación.
+`UPDATE_COMPLETE`; las Lambdas siguen apuntando a los **mismos** buckets y
+tablas donde restauraste los datos, y solo `source/` y `raw/` invocan
+procesamiento. El endpoint nuevo permanece sin tráfico de producción hasta
+terminar la validación.
 
 Comprueba en **ambos** ambientes:
 

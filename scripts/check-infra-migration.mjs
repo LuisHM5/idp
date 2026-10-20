@@ -46,8 +46,12 @@ const prefixes = lambdaConfigurations.flatMap((entry) =>
     .filter((rule) => rule.Name === "prefix")
     .map((rule) => rule.Value)
 );
-for (const required of ["source/", "raw/"]) {
-  if (!prefixes.includes(required)) throw new Error(`Falta trigger S3 directo para ${required}`);
+if (process.env.MIGRATION_PAUSE_INGRESS === "1") {
+  if (bucketNotifications) throw new Error("La migración exige ninguna notificación S3 durante la restauración");
+} else {
+  for (const required of ["source/", "raw/"]) {
+    if (!prefixes.includes(required)) throw new Error(`Falta trigger S3 directo para ${required}`);
+  }
 }
 for (const forbiddenPrefix of ["results/", "processed/", "failed/", "references/"]) {
   if (prefixes.includes(forbiddenPrefix)) {
@@ -73,5 +77,6 @@ for (const removed of ["InitMetadataEntry", "StartExecution", "CopyToProcessed",
 
 console.log(
   `Infra migration contract OK (${stackName}): bucket/tabla conservados, ` +
-    "S3 directo limitado a source/raw, sin SQS ni Step Functions y con recuperación asíncrona"
+    (process.env.MIGRATION_PAUSE_INGRESS === "1" ? "ingreso S3 pausado para restauración" : "S3 directo limitado a source/raw") +
+    ", sin SQS ni Step Functions y con recuperación asíncrona"
 );

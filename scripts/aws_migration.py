@@ -426,6 +426,72 @@ def bucket_map_for_restore(manifest, configured_path=None):
     return bucket_map
 
 
+def stack_restore_targets(aws, root, manifest):
+    """Map source physical resources to the same logical IDs in target stacks."""
+    cfn = aws.client("cloudformation")
+    table_map = {}
+    bucket_map = {}
+    managed_tables = set()
+    for env in manifest["stacks"]:
+        source_resources = json.loads((root / "cloudformation" / env / "resources.json").read_text())
+        source_ids = {item["PhysicalResourceId"]: item
+                      for item in source_resources if "PhysicalResourceId" in item}
+        target_resources = stack_resources(cfn, STACKS[env])
+        target_ids = {item["LogicalResourceId"]: item
+                      for item in target_resources if "PhysicalResourceId" in item}
+        for item in (entry for entry in manifest["tables"] if entry["environment"] == env):
+            name = item["name"]
+            source_resource = source_ids.get(name)
+            if source_resource:
+                logical_id = source_resource["LogicalResourceId"]
+                target_resource = target_ids.get(logical_id)
+                if (source_resource["ResourceType"] != "AWS::DynamoDB::Table" or
+                        not target_resource or target_resource["ResourceType"] != "AWS::DynamoDB::Table"):
+                    raise RuntimeError(f"Falta {logical_id} en el stack destino {STACKS[env]}")
+                table_map[(env, name)] = target_resource["PhysicalResourceId"]
+                managed_tables.add((env, name))
+            else:
+                # Catalog/fallback tables are intentionally imported by name.
+                table_map[(env, name)] = name
+        for item in (entry for entry in manifest["buckets"] if entry["environment"] == env):
+            source_resource = source_ids.get(item["name"])
+            logical_id = source_resource["LogicalResourceId"] if source_resource else None
+            target_resource = target_ids.get(logical_id)
+            if (not source_resource or source_resource["ResourceType"] != "AWS::S3::Bucket" or
+                    not target_resource or target_resource["ResourceType"] != "AWS::S3::Bucket"):
+                raise RuntimeError(f"No se encontró el bucket documental de {env} en el stack destino")
+            bucket_map[env] = target_resource["PhysicalResourceId"]
+    for item in manifest["tables"]:
+        if item["environment"] == "shared":
+            table_map[("shared", item["name"])] = item["name"]
+    return table_map, bucket_map, managed_tables
+
+
+def check_existing_table_empty(ddb, name, source_schema, target_schema):
+    if target_schema["KeySchema"] != source_schema["KeySchema"]:
+        raise RuntimeError(f"Clave primaria distinta en tabla destino {name}")
+    source_attributes = {entry["AttributeName"]: entry["AttributeType"]
+                         for entry in source_schema["AttributeDefinitions"]}
+    target_attributes = {entry["AttributeName"]: entry["AttributeType"]
+                         for entry in target_schema["AttributeDefinitions"]}
+    if any(target_attributes.get(key) != value for key, value in source_attributes.items()):
+        raise RuntimeError(f"Tipos de atributos clave distintos en tabla destino {name}")
+    source_indexes = {index["IndexName"]: index for index in source_schema.get("GlobalSecondaryIndexes", [])}
+    target_indexes = {index["IndexName"]: index for index in target_schema.get("GlobalSecondaryIndexes", [])}
+    for index_name, source in source_indexes.items():
+        target = target_indexes.get(index_name)
+        if not target or target["KeySchema"] != source["KeySchema"] or target["Projection"] != source["Projection"]:
+            raise RuntimeError(f"GSI distinto o ausente en tabla destino {name}: {index_name}")
+    source_local = {index["IndexName"]: index for index in source_schema.get("LocalSecondaryIndexes", [])}
+    target_local = {index["IndexName"]: index for index in target_schema.get("LocalSecondaryIndexes", [])}
+    for index_name, source in source_local.items():
+        target = target_local.get(index_name)
+        if not target or target["KeySchema"] != source["KeySchema"] or target["Projection"] != source["Projection"]:
+            raise RuntimeError(f"LSI distinto o ausente en tabla destino {name}: {index_name}")
+    if ddb.scan(TableName=name, Limit=1, ConsistentRead=True, Select="COUNT").get("Count", 0):
+        raise RuntimeError(f"La tabla destino no está vacía: {name}")
+
+
 def restore(args):
     encrypted = Path(args.archive).expanduser().resolve()
     if not encrypted.is_file():
@@ -441,7 +507,14 @@ def restore(args):
         if account(aws) == manifest["sourceAccount"]:
             raise RuntimeError("El perfil destino apunta a la cuenta origen")
         s3, ddb = aws.client("s3"), aws.client("dynamodb")
-        bucket_map = bucket_map_for_restore(manifest, args.bucket_map)
+        if args.into_stacks:
+            table_map, bucket_map, managed_tables = stack_restore_targets(aws, root, manifest)
+            ui.note("Se usarán las tablas y buckets de los stacks CDK ya desplegados.")
+        else:
+            table_map = {(item["environment"], item["name"]): item["name"]
+                         for item in manifest["tables"]}
+            bucket_map = bucket_map_for_restore(manifest, args.bucket_map)
+            managed_tables = set()
         for env, bucket in bucket_map.items():
             s3.head_bucket(Bucket=bucket)
             notifications = s3.get_bucket_notification_configuration(Bucket=bucket)
@@ -451,24 +524,38 @@ def restore(args):
                 raise RuntimeError(f"Bucket destino no vacío: {bucket}")
         for item in manifest["tables"]:
             env, name = item["environment"], item["name"]
+            target_name = table_map[(env, name)]
+            schema = json.loads((root / "dynamodb" / env / name / "schema.json").read_text())
             try:
-                ddb.describe_table(TableName=name)
-                raise RuntimeError(f"La tabla destino ya existe: {name}")
+                target_schema = ddb.describe_table(TableName=target_name)["Table"]
             except ddb.exceptions.ResourceNotFoundException:
-                pass
+                if (env, name) in managed_tables:
+                    raise RuntimeError(f"Falta la tabla CDK destino: {target_name}")
+                target_schema = None
+            if target_schema:
+                if not args.into_stacks:
+                    raise RuntimeError(f"La tabla destino ya existe: {target_name}")
+                check_existing_table_empty(ddb, target_name, schema, target_schema)
+                if (env == "prod" and schema.get("SSEDescription", {}).get("SSEType") == "KMS"
+                        and target_schema.get("SSEDescription", {}).get("SSEType") != "KMS"):
+                    raise RuntimeError(f"La tabla prod destino no usa KMS: {target_name}")
             data = root / "dynamodb" / env / name / "items.jsonl.gz"
             if not data.is_file():
                 raise RuntimeError(f"Datos locales ausentes: {name}")
-            schema = json.loads((root / "dynamodb" / env / name / "schema.json").read_text())
-            if env == "prod" and schema.get("SSEDescription", {}).get("SSEType") == "KMS" and not args.table_kms_key:
+            if (not args.into_stacks and env == "prod"
+                    and schema.get("SSEDescription", {}).get("SSEType") == "KMS"
+                    and not args.table_kms_key):
                 raise RuntimeError("--table-kms-key es obligatorio para tablas prod cifradas con KMS")
         print(f"Destino: cuenta {account(aws)}; región {manifest['region']}.")
-        print(f"Se crearán {len(manifest['tables'])} tablas y se copiarán {len(manifest['buckets'])} buckets.")
+        print(f"Se cargarán {len(manifest['tables'])} tablas y {len(manifest['buckets'])} buckets.")
         for env, bucket in bucket_map.items():
             print(f"  {env} → {bucket}")
+        for item in manifest["tables"]:
+            print(f"  {item['environment']} {item['name']} → {table_map[(item['environment'], item['name'])]}")
         confirm(f"RESTAURAR {account(aws)}")
         for item in manifest["tables"]:
             env, name = item["environment"], item["name"]
+            target_name = table_map[(env, name)]
             folder = root / "dynamodb" / env / name
             schema = json.loads((folder / "schema.json").read_text())
             data = folder / "items.jsonl.gz"
@@ -477,7 +564,7 @@ def restore(args):
                 attributes.update(part["AttributeName"] for part in index["KeySchema"])
             billing_mode = schema.get("BillingModeSummary", {}).get("BillingMode") or (
                 "PROVISIONED" if schema.get("ProvisionedThroughput", {}).get("ReadCapacityUnits", 0) else "PAY_PER_REQUEST")
-            params = {"TableName": name, "AttributeDefinitions": [a for a in schema["AttributeDefinitions"] if a["AttributeName"] in attributes],
+            params = {"TableName": target_name, "AttributeDefinitions": [a for a in schema["AttributeDefinitions"] if a["AttributeName"] in attributes],
                       "KeySchema": schema["KeySchema"], "BillingMode": billing_mode}
             if params["BillingMode"] == "PROVISIONED":
                 throughput = schema["ProvisionedThroughput"]
@@ -495,25 +582,34 @@ def restore(args):
                 params["LocalSecondaryIndexes"] = [
                     {"IndexName": i["IndexName"], "KeySchema": i["KeySchema"],
                      "Projection": i["Projection"]} for i in schema["LocalSecondaryIndexes"]]
-            if args.table_kms_key and env == "prod":
+            if args.table_kms_key and env == "prod" and not args.into_stacks:
                 params["SSESpecification"] = {"Enabled": True, "SSEType": "KMS",
                                                "KMSMasterKeyId": args.table_kms_key}
-            ddb.create_table(**params)
-            ddb.get_waiter("table_exists").wait(TableName=name)
-            with ui.spinner(f"Restaurando filas de {name}"):
-                count = restore_items(ddb, name, data)
+            if not args.into_stacks or (env, name) not in managed_tables:
+                try:
+                    ddb.describe_table(TableName=target_name)
+                except ddb.exceptions.ResourceNotFoundException:
+                    ddb.create_table(**params)
+                    ddb.get_waiter("table_exists").wait(TableName=target_name)
+            with ui.spinner(f"Restaurando filas de {target_name}"):
+                count = restore_items(ddb, target_name, data)
             if count != item["itemCount"]:
                 raise RuntimeError(f"Conteo de filas no coincide al restaurar {name}: {count}")
             print("Restaurada:", name, count, "filas")
             original_pitr = json.loads((folder / "pitr.json").read_text())
             if original_pitr["PointInTimeRecoveryStatus"] == "ENABLED":
-                ddb.update_continuous_backups(TableName=name,
-                    PointInTimeRecoverySpecification={"PointInTimeRecoveryEnabled": True})
+                current_pitr = ddb.describe_continuous_backups(TableName=target_name)["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
+                if current_pitr["PointInTimeRecoveryStatus"] != "ENABLED":
+                    ddb.update_continuous_backups(TableName=target_name,
+                        PointInTimeRecoverySpecification={"PointInTimeRecoveryEnabled": True})
             original_ttl = json.loads((folder / "ttl.json").read_text())
             if original_ttl.get("TimeToLiveStatus") in ("ENABLED", "ENABLING"):
-                ddb.update_time_to_live(TableName=name, TimeToLiveSpecification={
-                    "Enabled": True, "AttributeName": original_ttl["AttributeName"]})
-            ddb.update_table(TableName=name, DeletionProtectionEnabled=True)
+                current_ttl = ddb.describe_time_to_live(TableName=target_name)["TimeToLiveDescription"]
+                if current_ttl.get("TimeToLiveStatus") not in ("ENABLED", "ENABLING"):
+                    ddb.update_time_to_live(TableName=target_name, TimeToLiveSpecification={
+                        "Enabled": True, "AttributeName": original_ttl["AttributeName"]})
+            ddb.get_waiter("table_exists").wait(TableName=target_name)
+            ddb.update_table(TableName=target_name, DeletionProtectionEnabled=True)
         for item in manifest["buckets"]:
             env, source = item["environment"], item["name"]
             target = bucket_map[env]
@@ -527,7 +623,48 @@ def restore(args):
                     if s3.head_object(Bucket=target, Key=key)["ContentLength"] != path.stat().st_size:
                         raise RuntimeError(f"Tamaño S3 distinto tras restaurar: {target}/{key}")
             print("Restaurado S3:", source, "→", target)
-        print("Datos cargados. Falta adoptar tablas en IaC y validar la aplicación.")
+        if args.into_stacks:
+            print("Datos cargados en los stacks CDK. Activa el ingreso S3 con el deploy final y valida la aplicación.")
+        else:
+            print("Datos cargados. Falta adoptar tablas en IaC y validar la aplicación.")
+
+
+def deploy_stacks(args):
+    target_aws = session(args.destination_profile, args.region)
+    with ui.spinner("Comprobando identidad de la cuenta destino"):
+        destination_account = account(target_aws)
+    ui.success(f"Cuenta destino: {destination_account} · región {args.region}")
+    selected = ["dev", "prod"] if args.env == "both" else [args.env]
+    phase_text = "PAUSADO" if args.phase == "initial" else "ACTIVO"
+    ui.warning(f"Se desplegarán {', '.join(selected)} en {destination_account} con ingreso S3 {phase_text}.")
+    if args.phase == "initial":
+        ui.note("Antes de desplegar, usa configuración y certificado ACM de la cuenta destino.")
+    confirm(f"DESPLEGAR {destination_account} {phase_text}")
+    environment = os.environ.copy()
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                "AWS_SECURITY_TOKEN", "AWS_DEFAULT_PROFILE", "AWS_ROLE_ARN",
+                "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI", "CDK_DEFAULT_ACCOUNT",
+                "CDK_DEFAULT_REGION"):
+        environment.pop(key, None)
+    environment["AWS_PROFILE"] = args.destination_profile
+    environment["AWS_REGION"] = args.region
+    environment["AWS_DEFAULT_REGION"] = args.region
+    if args.phase == "initial":
+        environment["MIGRATION_PAUSE_INGRESS"] = "1"
+    else:
+        environment["MIGRATION_PAUSE_INGRESS"] = "0"
+    subprocess_account = subprocess.run(
+        ["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text",
+         "--region", args.region], check=True, env=environment, capture_output=True, text=True
+    ).stdout.strip()
+    if subprocess_account != destination_account:
+        raise RuntimeError(f"CDK usaría la cuenta {subprocess_account}, pero el perfil eligió {destination_account}")
+    for env in selected:
+        ui.heading(f"CDK {env} · ingreso {phase_text}")
+        subprocess.run(["pnpm", "run", f"deploy:{env}"], check=True, env=environment)
+    ui.success("Despliegue terminado. " + ("Ahora restaura los datos en los stacks." if args.phase == "initial"
+                                     else "Valida datos y API antes de cambiar el tráfico."))
 
 
 def main():
@@ -552,6 +689,13 @@ def main():
     restore_parser.add_argument("--bucket-map", help="JSON opcional: ambiente a bucket documental vacío de destino")
     restore_parser.add_argument("--table-kms-key", help="ARN de la CMK destino para cifrar tablas importadas")
     restore_parser.add_argument("--work-dir", help="Directorio para archivos temporales; por defecto /tmp")
+    restore_parser.add_argument("--into-stacks", action="store_true",
+                                help="Cargar datos en los stacks CDK ya desplegados con ingreso S3 pausado")
+    deploy_parser = sub.add_parser("deploy", help="Desplegar CDK interactivamente en la cuenta destino")
+    deploy_parser.add_argument("--destination-profile")
+    deploy_parser.add_argument("--region", default="us-east-1")
+    deploy_parser.add_argument("--env", choices=("prod", "dev", "both"), default="both")
+    deploy_parser.add_argument("--phase", choices=("initial", "activate"))
     args = parser.parse_args()
     try:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -594,6 +738,21 @@ def main():
             if args.transfer_bucket:
                 args.destination_profile = choose_profile("Perfil AWS de destino", args.destination_profile)
             backup(args)
+        elif args.command == "deploy":
+            args.destination_profile = choose_profile("Perfil AWS de la cuenta destino", args.destination_profile)
+            while args.destination_profile == "actual":
+                ui.error("Para desplegar elige un perfil AWS con nombre, no credenciales implícitas.")
+                args.destination_profile = choose_profile("Perfil AWS de la cuenta destino")
+            args.region = ui.text("Región del stack", default=args.region,
+                                  validate=lambda value: None if re.fullmatch(r'[a-z]{2}(?:-gov)?-[a-z]+-\d+', value) else "Usa una región AWS válida, por ejemplo us-east-1.")
+            args.env = ui.select("Ambiente", [("both", "Ambos: desarrollo y producción"),
+                                                 ("dev", "Sólo desarrollo"), ("prod", "Sólo producción")],
+                                 default=args.env)
+            args.phase = ui.select("Fase del despliegue", [
+                ("initial", "Inicial: crear infraestructura sin notificaciones S3"),
+                ("activate", "Activar: conectar notificaciones S3 tras restaurar"),
+            ], default=args.phase or "initial")
+            deploy_stacks(args)
         else:
             args.work_dir = args.work_dir or tempfile.gettempdir()
             if shutil.which("openssl") is None:
@@ -605,14 +764,19 @@ def main():
                                     kind="directory", must_exist=True)
             args.password = ask_password()
             args.destination_profile = choose_profile("Perfil AWS de destino", args.destination_profile)
+            args.into_stacks = ui.select("Tipo de destino", [
+                ("stack", "Stacks CDK ya desplegados, con ingreso S3 pausado"),
+                ("new", "Tablas nuevas fuera de CDK y buckets preparados manualmente"),
+            ], default="stack") == "stack"
             with ui.spinner("Comprobando identidad de la cuenta destino"):
                 destination_account = account(session(args.destination_profile, "us-east-1"))
             ui.success(f"Cuenta AWS de destino verificada: {destination_account}")
-            if args.bucket_map:
+            if args.bucket_map and not args.into_stacks:
                 args.bucket_map = ui.path("JSON de buckets destino", default=args.bucket_map,
                                           kind="file", must_exist=True,
                                           validate=lambda value: None if _valid_bucket_map(value) else "El archivo debe contener un objeto JSON con buckets por ambiente.")
-            args.table_kms_key = ask("ARN CMK para tablas prod (Enter si no aplica)", args.table_kms_key, required=False)
+            if not args.into_stacks:
+                args.table_kms_key = ask("ARN CMK para tablas prod (Enter si no aplica)", args.table_kms_key, required=False)
             restore(args)
     except (RuntimeError, BotoCoreError, ClientError, subprocess.CalledProcessError, EOFError,
             KeyboardInterrupt, OSError, ValueError) as error:

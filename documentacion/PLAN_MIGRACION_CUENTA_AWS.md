@@ -11,11 +11,11 @@ Para ejecutar la migración con una secuencia corta de acciones y señales de
 ## 1. Objetivo y decisiones confirmadas
 
 Se debe migrar el GDI/IDP desde la cuenta AWS actual hacia una cuenta AWS
-independiente, conservando los datos y las estadísticas de uso. La migración
-debe producir dos copias independientes:
+independiente, conservando los datos y las estadísticas de uso. Antes de retirar
+la cuenta origen, conservar dos copias independientes:
 
 1. Un respaldo local cifrado y portable.
-2. Un respaldo de transferencia destinado a la cuenta AWS nueva.
+2. Una copia del mismo archivo cifrado en otro disco o en la cuenta AWS nueva.
 
 Decisiones tomadas durante el análisis:
 
@@ -172,7 +172,8 @@ todos los costos de infraestructura.
 Al terminar, deben existir:
 
 1. Un paquete local cifrado y autocontenido para prod y dev.
-2. Un paquete equivalente en un bucket controlado por la cuenta destino.
+2. Una copia equivalente en un medio independiente; el bucket de transferencia
+   de destino es una opción.
 3. Los datos restaurados y validados en la cuenta nueva.
 4. Infraestructura CDK protegida contra eliminación accidental.
 5. CUR 2.0 consultable con Athena.
@@ -199,7 +200,7 @@ Antes de generar el respaldo final:
 5. No eliminar recursos históricos hasta demostrar que no contienen datos ni
    participan en el flujo vigente.
 
-Cambios CDK requeridos para datos no reconstruibles:
+Protecciones adicionales pendientes para datos no reconstruibles:
 
 - Activar PITR en `CostTable`, `AppsTable`, `AppUsageTable`, `FingerprintTable`
   y tablas de catálogo/fallback administradas fuera del stack.
@@ -213,8 +214,10 @@ Cambios CDK requeridos para datos no reconstruibles:
 - Mantener TTL en `AppUsageTable`: es control operativo. Los reportes históricos
   deben leer `CostTable`, no depender de esos contadores temporales.
 
-Estos cambios deben desplegarse y verificarse antes del primer respaldo. Un cambio
-de políticas no debe reemplazar tablas/buckets; `cdk diff` debe probarlo.
+`migration:deploy` no aplica por sí solo estas protecciones: usa las políticas
+de los stacks actuales. Implementarlas y comprobar con `cdk diff` que no
+reemplazan tablas ni buckets antes de retirar la cuenta origen. La ruta local
+de respaldo y restauración no depende de que PITR o versionado estén activos.
 
 ## 6. Fase B: respaldo local y respaldo de transferencia
 
@@ -233,23 +236,28 @@ bucket de transferencia del destino.
 
 ```bash
 pnpm migration:plan       # Inventario de tablas y buckets; solo lectura.
+pnpm migration:deploy     # Fase Inicial: CDK destino con ingreso S3 pausado.
 pnpm migration:backup     # Asistente para crear el respaldo cifrado.
-pnpm migration:restore    # Asistente para verificar y restaurar.
+pnpm migration:restore    # Carga datos en los stacks CDK de destino.
+pnpm migration:deploy     # Fase Activar: habilita ingreso S3 después de restaurar.
 ```
 
 También funcionan con npm: `npm run migration:plan`,
-`npm run migration:backup` y `npm run migration:restore`. En los selectores,
+`npm run migration:deploy`, `npm run migration:backup` y
+`npm run migration:restore`. En los selectores,
 usar ↑/↓ y Enter; las rutas aceptan Tab para autocompletar. Los campos
 inválidos muestran el motivo y permiten volver a escribirlos. La interfaz de
 colores y progreso vive en `scripts/terminal_ui.py` para reutilizarla desde
 otros comandos del repositorio; `NO_COLOR=1` desactiva los colores.
 
-Los tres comandos requieren una terminal interactiva (TTY), preguntan los
+Los cuatro comandos requieren una terminal interactiva (TTY), preguntan los
 datos necesarios y rechazan la ejecución desatendida. `backup` y `restore`
 muestran un resumen y exigen escribir `RESPALDAR <cuenta>` o
 `RESTAURAR <cuenta>` antes de la primera escritura AWS. `plan` solicita
 `CONSULTAR <perfil>` antes de consultar AWS. Los argumentos opcionales pueden
 precargar respuestas, pero nunca omiten las preguntas ni la confirmación.
+`migration:deploy` pide el perfil, fase y ambiente; exige escribir
+`DESPLEGAR <cuenta> PAUSADO` o `DESPLEGAR <cuenta> ACTIVO` antes de invocar CDK.
 Usar `plan` primero; detener las escrituras al ejecutar `backup` para el corte
 final. El asistente muestra los perfiles AWS configurados y confirma el ID de
 cuenta mediante STS antes de continuar: **un ID numérico de cuenta no es el
@@ -298,22 +306,23 @@ detenidas hasta que termine**. S3 conserva solo la versión actual de cada
 objeto, no el historial de versiones. El `Scan` consume capacidad de lectura;
 PITR no es requisito de esta ruta, aunque sigue recomendado como protección.
 
-Para restaurar, crear en destino buckets documentales **vacíos, sin notificaciones
-S3**, con bloqueo público y cifrado configurado. El asistente pide el nombre
-de cada bucket destino. Opcionalmente se puede precargar un mapa local JSON
-con `--bucket-map`, por ejemplo
-`{"prod":"bucket-documentos-prod-nuevo","dev":"bucket-documentos-dev-nuevo"}`.
-La CLI exige que las tablas destino todavía no existan. Los nombres físicos de
-las tablas restauradas se conservan; reconciliar la tabla de tracking generada
-por CloudFormation antes de adoptar/desplegar el stack.
+Para restaurar en la ruta recomendada, primero ejecutar `migration:deploy` en
+fase **Inicial**. CDK crea buckets y tablas con cifrado de la cuenta nueva,
+pero sin notificaciones S3. `restore` pregunta la ruta del respaldo, el
+directorio temporal y el perfil destino. En la opción predeterminada **Stacks
+CDK ya desplegados**, asocia los recursos por ID lógico de CloudFormation,
+descifra y verifica todos los SHA-256, comprueba que tablas y buckets estén
+vacíos, que las claves/GSI coincidan y que no haya notificaciones. Muestra el
+mapa físico y solicita la confirmación final antes de `BatchWriteItem`/carga
+S3. Si falta algún dato o falla esa revisión, no escribe en destino.
 
-`restore` pregunta la ruta del respaldo cifrado y del directorio temporal, el
-perfil destino, los buckets documentales destino y la CMK destino para prod.
-Descifra y verifica **todos** los SHA-256, comprueba
-que las tablas no existan y que los buckets documentales estén vacíos y sin
-notificaciones, muestra el destino y solicita la confirmación final. Crea las
-tablas y escribe los items mediante `BatchWriteItem`, sin S3 intermedio. Si
-falta algún dato o la verificación falla, no escribe nada en destino.
+El modo alternativo **Tablas nuevas fuera de CDK** conserva la restauración
+aislada anterior: requiere crear buckets destino vacíos manualmente y permite
+indicar un mapa local JSON con `--bucket-map`, por ejemplo
+`{"prod":"bucket-documentos-prod-nuevo","dev":"bucket-documentos-dev-nuevo"}`.
+Exige que las tablas destino no existan y puede requerir el ARN de una CMK
+destino. **Ese modo no debe preceder a un deploy normal**: el stack crearía
+recursos paralelos o chocaría con tablas del mismo nombre.
 
 Con un respaldo ya creado, iniciar el asistente así (también sirve la copia
 idéntica del archivo cifrado):
@@ -326,13 +335,13 @@ El nombre del archivo se propone en pantalla; completar los demás campos de
 forma interactiva. El perfil destino debe resolver a otra cuenta AWS.
 
 La restauración activa PITR y TTL según el origen y habilita deletion protection
-en cada tabla. La CMK indicada se aplica a las tablas prod; dev usa cifrado
-administrado por DynamoDB. Conserva el cifrado del bucket destino al subir los
-objetos; la CMK de origen nunca se reutiliza. La CLI no crea infraestructura, no adopta
-recursos en CloudFormation, no migra los valores secretos de API Gateway, no
-reconstruye S3 Vectors ni cambia el tráfico. Esas acciones siguen en las fases
-C y D. Si una carga falla, el comando deja los recursos creados para
-inspección; no borra datos ni reintenta sobre tablas existentes. Mantener espacio
+en cada tabla. En modo stacks usa la CMK creada por CDK en destino; en modo
+tablas nuevas usa la CMK indicada para prod. Conserva el cifrado del bucket
+destino al subir los objetos; la CMK origen nunca se reutiliza. No migra los
+valores secretos de API Gateway, no reconstruye S3 Vectors ni cambia el
+tráfico. Esas acciones siguen en las fases C y D. Si una carga falla, deja los
+recursos para inspección; no borra datos ni reintenta sobre tablas no vacías.
+Mantener espacio
 local suficiente para el paquete descifrado durante la operación; el directorio
 temporal se elimina al terminar y debe estar sobre almacenamiento cifrado.
 
@@ -397,82 +406,78 @@ archivo ni en Git.
 
 ## 7. Fase C: restauración en la cuenta independiente
 
-### 7.1 Qué hace cada comando y qué falta
+### 7.1 Dos fases CDK y restauración sobre recursos administrados
 
-`pnpm migration:restore` **solo restaura datos**: crea las tablas DynamoDB con
-`CreateTable`/`BatchWriteItem` y carga objetos en los buckets destino ya
-existentes. No crea Lambda, API Gateway, EventBridge, IAM, WAF, KMS ni el stack
-CloudFormation. Aplica PITR, TTL y deletion protection a las tablas según el
-respaldo; la CMK de producción debe ser una clave nueva de la cuenta destino.
+La ruta recomendada **despliega primero** el CDK en la cuenta nueva con el
+ingreso S3 pausado. `pnpm migration:deploy` verifica la identidad AWS elegida
+de forma interactiva, ejecuta `deploy:dev` y `deploy:prod` con ese perfil y
+`MIGRATION_PAUSE_INGRESS=1`, y los stacks crean KMS, tablas, buckets, Lambda,
+API Gateway, EventBridge, IAM y demás recursos. El construct conserva las
+notificaciones `source/`/`raw/` desactivadas en esta fase: así la carga de
+objetos históricos no vuelve a procesarlos.
 
-**No ejecutar `pnpm run deploy:prod` inmediatamente después de `restore`.** El
-CDK actual crea con `new dynamodb.Table` las tablas del pipeline, costos,
-aplicaciones, uso, huellas y claves únicas; crea también un bucket documental
-con `new s3.Bucket`. Algunas tablas tienen nombres fijos, por lo que el deploy
-chocaría con las ya restauradas. La tabla de seguimiento y el bucket, cuyos
-nombres físicos son generados, podrían crearse *vacíos* y recibir el tráfico
-en vez de los recursos restaurados. `deploy:dev` tiene el mismo problema.
-Además, `deploy:prod` ejecuta bootstrap/tagging antes de sintetizar y desplegar,
-y puede leer `DOMAIN_NAME`/`CERT_ARN` de `.env.production`, que no deben apuntar
-al certificado de la cuenta origen. El paso de adopción del punto siguiente
-**aún no está implementado** en este repositorio: el respaldo y la restauración
-no son por sí solos una migración completa de infraestructura.
+Después, `pnpm migration:restore` en el modo predeterminado **Stacks CDK ya
+desplegados** descifra y verifica el respaldo, asocia cada tabla y bucket del
+origen con el mismo ID lógico en los stacks nuevos, comprueba que las tablas y
+buckets estén vacíos, y carga los datos allí. Las tablas importadas por nombre
+fuera del stack (catálogo/fallback) conservan su nombre y se cargan o crean si
+faltan. La CMK productiva es la que creó el CDK de la cuenta nueva; no se copia
+la CMK origen ni hace falta escribir un ARN para este modo. El asistente sigue
+ofreciendo el modo **Tablas nuevas fuera de CDK** para recuperación de datos
+aislada, pero ese modo no prepara la aplicación para desplegarse.
+
+Por último, `pnpm migration:deploy` en fase **Activar** vuelve a desplegar los
+mismos stacks sin `MIGRATION_PAUSE_INGRESS`, habilitando solo las notificaciones
+S3 de `source/` y `raw/`. Ese paso no crea otro bucket ni otra tabla: actualiza
+la configuración de los buckets ya administrados por CloudFormation.
+
+No invertir este orden. Un `pnpm run deploy:prod` normal **antes** de cargar
+datos crea notificaciones que procesarían de nuevo los objetos `source/` al
+subirlos. Un `migration:restore` en el modo **tablas nuevas** seguido de
+`deploy:prod` puede chocar con tablas de nombre fijo y dejar la aplicación
+apuntando a una tabla de seguimiento o bucket vacíos creados por CDK.
 
 ### 7.2 Secuencia para habilitar el despliegue en la cuenta destino
 
-1. **Identidad y configuración.** Configurar un perfil de la cuenta nueva,
-   verificar mediante STS que su ID sea distinto al origen y preparar
-   `.env.dev`/`.env.production` para la cuenta nueva. Usar un certificado ACM de
-   destino para el dominio productivo o dejar `DOMAIN_NAME`/`CERT_ARN` sin
-   configurar hasta el corte. Habilitar los modelos Bedrock necesarios en la
-   región destino. Ningún comando de despliegue debe tomar credenciales de la
-   cuenta origen.
-2. **Adaptación CDK requerida, pendiente.** Añadir un modo de migración que
-   reciba por ambiente los nombres físicos restaurados de la tabla de
-   seguimiento y el bucket, además de la CMK destino. Ese modo debe
-   **referenciar** las tablas y buckets restaurados en lugar de volver a
-   crearlos; cubrir también `CostTable`, `AppsTable`, `AppUsageTable`,
-   `FingerprintTable` y `UniqueKeyTable`; conservar el GSI, TTL, PITR y permisos
-   IAM/KMS. `CatalogTable` y `FallbackModelsTable` ya se referencian por nombre.
-   Sintetizar prod y dev y comprobar que no aparezca un segundo bucket/tabla
-   documental ni reemplazos de datos. Como alternativa, importar los recursos
-   en un data stack con políticas `RETAIN` y hacer que el stack de aplicación
-   los referencie. La importación de CloudFormation es una operación separada:
-   no permite crear los otros recursos del stack en el mismo change set.
-3. **Datos, durante el corte final.** Crear los dos buckets destino vacíos, sin
-   notificaciones, y ejecutar `pnpm migration:restore` con el respaldo final y
-   el perfil destino. El comando deja las tablas fuera de CloudFormation y los
-   buckets aún sin conexión a Lambda. No hacer un ensayo de restauración en el
-   mismo destino final: el asistente no sustituye tablas ya creadas.
-4. **Despliegue, solo después del punto 2.** Con el perfil destino activo y el
-   modo CDK ya adaptado, revisar `pnpm run diff:dev` y `pnpm run diff:prod`
-   contra la cuenta nueva. Confirmar que las tablas/buckets físicos usados son
-   exactamente los restaurados y que no hay operaciones `Replace`/`Delete`
-   sobre datos. Entonces ejecutar `pnpm run deploy:dev` y
-   `pnpm run deploy:prod` en ese perfil. El deploy crea Lambda, API Gateway,
-   EventBridge, IAM y recursos derivados de cada stack, y conecta los buckets
-   restaurados al ingreso S3 → Lambda. Los comandos deben ejecutarse desde una
-   terminal y después de comprobar el ID de cuenta; `deploy:prod` no selecciona
-   automáticamente la cuenta nueva.
-5. **Recursos externos y validación.** Recrear API keys/usage plans con valores
-   válidos en destino y reconciliar `AppsTable` con sus nuevos `ApiKeyId`;
-   configurar ACM/DNS, secretos y suscripciones. Reconstruir S3 Vectors con
-   `pnpm refs:reindex` después de restaurar `FingerprintTable` y `references/`.
-   Ejecutar `pnpm backfill:index`/`pnpm backfill:keys` solo si la validación
-   demuestra que los índices derivados necesitan reconstrucción. Completar las
+1. **Identidad y configuración.** Configurar un perfil de la cuenta nueva y
+   preparar `.env.dev`/`.env.production` para ella. Usar un certificado ACM de
+   destino o dejar `DOMAIN_NAME`/`CERT_ARN` sin configurar hasta el corte.
+   Habilitar acceso a los modelos Bedrock en la región destino. El asistente
+   muestra el ID de cuenta mediante STS y exige confirmarlo por escrito.
+2. **CDK inicial sin ingreso.** Ejecutar `pnpm migration:deploy`, seleccionar
+   el perfil destino, `both` y la fase **Inicial**. El asistente limpia posibles
+   credenciales AWS de entorno que podrían prevalecer sobre ese perfil y llama
+   a los scripts `deploy:dev`/`deploy:prod` con el ingreso pausado. Comprobar
+   que ambos stacks quedaron `CREATE_COMPLETE`/`UPDATE_COMPLETE` y que sus
+   buckets no tienen notificaciones.
+3. **Datos, durante el corte final.** Con escrituras detenidas en origen,
+   ejecutar el respaldo definitivo y `pnpm migration:restore` en modo
+   **Stacks CDK ya desplegados**. Confirmar el mapa físico origen → destino,
+   la ausencia de datos previos en tablas/buckets y el ID de la cuenta nueva.
+   El comando no sobrescribe recursos no vacíos; no hacer ensayos sobre el
+   mismo destino que se usará para el corte final.
+4. **Activación.** Ejecutar otra vez `pnpm migration:deploy` con el mismo
+   perfil, `both` y la fase **Activar**. Revisar los cambios CDK: solo deben
+   agregarse las notificaciones `source/`/`raw/` a los buckets de los mismos
+   stacks, sin reemplazar tablas ni buckets. Confirmar que los documentos
+   históricos no son reprocesados.
+5. **Recursos externos y validación.** Recrear API keys/usage plans en destino
+   y reconciliar `AppsTable` con los nuevos `ApiKeyId`; configurar ACM/DNS,
+   secretos y suscripciones. Reconstruir S3 Vectors con `pnpm refs:reindex`
+   después de restaurar `FingerprintTable` y `references/`. Ejecutar
+   `pnpm backfill:index`/`pnpm backfill:keys` solo si hace falta. Completar las
    comprobaciones de la sección 10 antes de cambiar el tráfico.
 
-La ruta recomendada preserva las tablas y buckets restaurados. No hacer un
-deploy normal para “probar” si todavía falta el modo CDK de adopción: crearía
-infraestructura paralela y podría dejar la aplicación apuntando a datos vacíos.
-Para las reglas de importación de CloudFormation, consultar la
-[documentación oficial de AWS](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/import-resources-manually.html)
-y la [guía de `cdk import`](https://docs.aws.amazon.com/cdk/v2/guide/cli.html#import-existing-resources-into-a-stack).
+`pnpm run deploy:prod` continúa siendo el comando de despliegue normal para
+una cuenta ya operativa. En una migración, usar `pnpm migration:deploy` para
+elegir explícitamente perfil y fase. Ninguno de los dos mueve automáticamente
+valores secretos de API keys, ACM, DNS ni configuración fuera de IaC.
 
 ## 8. Fase D: corte con ventana breve
 
-Esta es la ejecución final de los pasos 3 a 5 de la sección 7.2; no es una
-segunda restauración sobre las mismas tablas.
+El despliegue CDK inicial del punto 7.2 se hace **antes** de esta ventana, con
+el ingreso S3 pausado y sin tráfico de consumidores. Lo siguiente ejecuta una
+sola restauración final, nunca una segunda carga sobre las mismas tablas.
 
 1. Desactivar temporalmente las rutas que crean, reprocesan o modifican
    documentos/referencias; las lecturas pueden continuar desde origen.
@@ -480,14 +485,17 @@ segunda restauración sobre las mismas tablas.
    asíncronas pendientes.
 3. Registrar el inicio de la ventana y ejecutar el respaldo local definitivo
    mientras las escrituras permanecen detenidas.
-4. Sincronizar el delta final de S3 y verificar checksums.
-5. Ejecutar `pnpm migration:restore` en destino una sola vez, con los buckets
-   vacíos y la adaptación CDK del punto 7.2 ya preparada; desplegar el stack
-   adaptado en la cuenta nueva y ejecutar las validaciones de la sección 10.
-6. Recrear API keys/usage plans y comprobar autenticación.
-7. Cambiar el dominio/endpoint solo cuando todas las pruebas sean satisfactorias.
-8. Mantener origen sin escrituras, pero disponible para rollback.
-9. Si falla una validación crítica, revertir DNS/configuración del consumidor a
+4. Verificar que el respaldo final contiene las tablas/objetos esperados y
+   conservar su SHA-256 y contraseña.
+5. Ejecutar `pnpm migration:restore` en modo **Stacks CDK ya desplegados**:
+   cargar tablas y objetos en los recursos vacíos de los stacks nuevos.
+6. Ejecutar `pnpm migration:deploy` en fase **Activar** y comprobar que solo
+   se habilitan las notificaciones esperadas, sin reemplazo de datos.
+7. Recrear API keys/usage plans, comprobar autenticación y completar la
+   validación de la sección 10.
+8. Cambiar el dominio/endpoint solo cuando todas las pruebas sean satisfactorias.
+9. Mantener origen sin escrituras, pero disponible para rollback.
+10. Si falla una validación crítica, revertir DNS/configuración del consumidor a
    origen; no intentar reparar datos en producción durante el corte.
 
 ## 9. Atribución de costos sin depender de tags
@@ -670,7 +678,8 @@ Después del corte:
 - Activar CUR 2.0 no reconstruye retroactivamente el detalle que nunca fue
   generado.
 - El TTL ya pudo eliminar estadísticas operativas antiguas.
-- La restauración local exige que las tablas destino aún no existan.
+- El modo recomendado exige que las tablas/buckets del stack destino estén
+  vacíos y sin notificaciones; el modo aislado exige que las tablas no existan.
 - API key IDs cambian entre cuentas aunque se preserve su valor.
 - KMS keys no se transfieren entre cuentas.
 - CloudFormation no incluye automáticamente recursos importados por nombre en

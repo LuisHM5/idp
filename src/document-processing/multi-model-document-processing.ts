@@ -21,6 +21,7 @@ export interface MultiModelDocumentProcessingProps {
   readonly useCustomerManagedEncryption?: boolean;
   readonly encryptionKey?: kms.IKey;
   readonly removalPolicy?: cdk.RemovalPolicy;
+  readonly enableIngressNotifications?: boolean;
 }
 
 /**
@@ -122,22 +123,24 @@ export class MultiModelDocumentProcessing extends Construct {
       ),
     });
 
-    const destination = new s3Notifications.LambdaDestination(
-      props.enrichmentLambdaFunction
-    );
-    this.documentBucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      destination,
-      { prefix: "source/" }
-    );
-    // Compatibility for already-issued presigned URLs and documented direct
-    // uploads. New API uploads use source/; raw/ remains an accepted ingress
-    // but is no longer moved after processing.
-    this.documentBucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      destination,
-      { prefix: "raw/" }
-    );
+    if (props.enableIngressNotifications !== false) {
+      const destination = new s3Notifications.LambdaDestination(
+        props.enrichmentLambdaFunction
+      );
+      this.documentBucket.addEventNotification(
+        s3.EventType.OBJECT_CREATED,
+        destination,
+        { prefix: "source/" }
+      );
+      // Compatibility for already-issued presigned URLs and documented direct
+      // uploads. New API uploads use source/; raw/ remains an accepted ingress
+      // but is no longer moved after processing.
+      this.documentBucket.addEventNotification(
+        s3.EventType.OBJECT_CREATED,
+        destination,
+        { prefix: "raw/" }
+      );
+    }
   }
 
   private uniqueFunctionName(baseName: string): string {

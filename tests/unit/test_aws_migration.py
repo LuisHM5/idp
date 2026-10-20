@@ -6,7 +6,10 @@ import json
 import shutil
 import sys
 import tarfile
+from argparse import Namespace
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -144,3 +147,76 @@ def test_restore_collects_bucket_names_interactively_without_json(monkeypatch):
     assert migration.bucket_map_for_restore(manifest) == {
         "prod": "bucket-prod-nuevo", "dev": "bucket-dev-nuevo"
     }
+
+
+def test_restore_maps_to_stack_owned_physical_resources(tmp_path, monkeypatch):
+    folder = tmp_path / "cloudformation" / "prod"
+    folder.mkdir(parents=True)
+    folder.joinpath("resources.json").write_text(json.dumps([
+        {"LogicalResourceId": "DocumentTable", "PhysicalResourceId": "old-table", "ResourceType": "AWS::DynamoDB::Table"},
+        {"LogicalResourceId": "DocumentBucket", "PhysicalResourceId": "old-bucket", "ResourceType": "AWS::S3::Bucket"},
+    ]))
+    monkeypatch.setattr(migration, "stack_resources", lambda cfn, name: [
+        {"LogicalResourceId": "DocumentTable", "PhysicalResourceId": "new-table", "ResourceType": "AWS::DynamoDB::Table"},
+        {"LogicalResourceId": "DocumentBucket", "PhysicalResourceId": "new-bucket", "ResourceType": "AWS::S3::Bucket"},
+    ])
+    class AWS:
+        def client(self, name):
+            assert name == "cloudformation"
+            return object()
+    manifest = {"stacks": {"prod": "DocumentValidationStack"},
+                "tables": [{"environment": "prod", "name": "old-table"}],
+                "buckets": [{"environment": "prod", "name": "old-bucket"}]}
+    tables, buckets, managed = migration.stack_restore_targets(AWS(), tmp_path, manifest)
+    assert tables == {("prod", "old-table"): "new-table"}
+    assert buckets == {"prod": "new-bucket"}
+    assert managed == {("prod", "old-table")}
+
+
+def test_migration_deploy_uses_selected_profile_and_pauses_ingress(monkeypatch):
+    calls = []
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "source-key")
+    monkeypatch.setenv("CDK_DEFAULT_ACCOUNT", "source-account")
+    monkeypatch.setattr(migration, "session", lambda profile, region: object())
+    monkeypatch.setattr(migration, "account", lambda aws: "222222222222")
+    monkeypatch.setattr(migration.ui, "spinner", lambda message: nullcontext())
+    monkeypatch.setattr(migration, "confirm", lambda phrase: None)
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout="222222222222\n")
+    monkeypatch.setattr(migration.subprocess, "run", run)
+    migration.deploy_stacks(Namespace(destination_profile="destino", region="us-east-1",
+                                      env="dev", phase="initial"))
+    command, kwargs = calls[1]
+    assert command == ["pnpm", "run", "deploy:dev"]
+    assert kwargs["env"]["AWS_PROFILE"] == "destino"
+    assert kwargs["env"]["MIGRATION_PAUSE_INGRESS"] == "1"
+    assert "AWS_ACCESS_KEY_ID" not in kwargs["env"]
+    assert "CDK_DEFAULT_ACCOUNT" not in kwargs["env"]
+    migration.deploy_stacks(Namespace(destination_profile="destino", region="us-east-1",
+                                      env="prod", phase="activate"))
+    assert calls[3][0] == ["pnpm", "run", "deploy:prod"]
+    assert calls[3][1]["env"]["MIGRATION_PAUSE_INGRESS"] == "0"
+
+
+def test_stack_restore_rejects_nonempty_destination_table():
+    class DynamoDB:
+        def scan(self, **kwargs):
+            assert kwargs["ConsistentRead"] is True
+            return {"Count": 1}
+    schema = {"KeySchema": [{"AttributeName": "DocumentId", "KeyType": "HASH"}],
+              "AttributeDefinitions": [{"AttributeName": "DocumentId", "AttributeType": "S"}]}
+    with pytest.raises(RuntimeError, match="no está vacía"):
+        migration.check_existing_table_empty(DynamoDB(), "target", schema, schema)
+
+
+def test_stack_restore_rejects_different_key_type_before_scanning():
+    class DynamoDB:
+        def scan(self, **kwargs):
+            pytest.fail("No debe consultar filas si el esquema es incompatible")
+
+    schema = {"KeySchema": [{"AttributeName": "DocumentId", "KeyType": "HASH"}],
+              "AttributeDefinitions": [{"AttributeName": "DocumentId", "AttributeType": "S"}]}
+    target = {**schema, "AttributeDefinitions": [{"AttributeName": "DocumentId", "AttributeType": "N"}]}
+    with pytest.raises(RuntimeError, match="Tipos de atributos clave"):
+        migration.check_existing_table_empty(DynamoDB(), "target", schema, target)

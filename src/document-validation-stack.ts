@@ -485,6 +485,9 @@ export class BedrockDocumentProcessingStack extends cdk.Stack {
       // encryption and must synthesize zero AWS::KMS::Key resources.
       useCustomerManagedEncryption: isProd,
       encryptionKey,
+      // Initial account-migration deploy: restore historical source/raw objects
+      // before enabling S3 notifications, so they cannot be reprocessed.
+      enableIngressNotifications: process.env.MIGRATION_PAUSE_INGRESS !== "1",
     });
 
     // Tipo de documento como COLUMNA INDEXADA.
