@@ -1,0 +1,38 @@
+{
+  "b886843": {
+    "tarea": "Policy-manager: integración inicial del IDP — módulo document-extraction, configuración del SDK y CI",
+    "impacto": "Alto"
+  },
+  "d9d8f27": {
+    "tarea": "Policy-manager: refactor de componentes y servicios de extracción con IA y migración de extracción en una sola fila",
+    "impacto": "Alto"
+  },
+  "ce49278": {
+    "tarea": "Policy-manager: panel de restauración del repositorio de documentos y ajustes de extracción",
+    "impacto": "Alto"
+  },
+  "f276993": {
+    "tarea": "Policy-manager: opciones de lectura con IA en la interfaz y lógica de extracción (tipos de documento)",
+    "impacto": "Bajo"
+  },
+  "fbacc41": {
+    "tarea": "Policy-manager: historia de usuario de lectura de certificados asistida por IA",
+    "impacto": "Medio"
+  },
+  "c2b4121": {
+    "tarea": "Policy-manager: CI/CD con IDP_SDK_SSH_KEY para construir con el SDK de forma segura",
+    "impacto": "Bajo"
+  },
+  "9bae07d": {
+    "tarea": "Policy-manager: detección opcional del rubro y mejoras de la lectura con IA",
+    "impacto": "Medio"
+  },
+  "5911c3c": {
+    "tarea": "Policy-manager: cobertura en la extracción de documentos de póliza (componente CoverageHint)",
+    "impacto": "Medio"
+  },
+  "5f0447d": {
+    "tarea": "Policy-manager: servicio de revisión de extracciones integrado al proceso de revisión de documentos",
+    "impacto": "Alto"
+  }
+}

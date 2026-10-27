@@ -50,6 +50,7 @@
     "migration:backup": ".venv/bin/python scripts/aws_migration.py backup",
     "migration:restore": ".venv/bin/python scripts/aws_migration.py restore",
     "migration:deploy": ".venv/bin/python scripts/aws_migration.py deploy",
+    "actividades": "python3 scripts/actividades.py",
     "enviar": "bash scripts/enviar-documento.sh",
     "synth": "npx cdk synth",
     "bootstrap:cost-tags": "npm run bootstrap:cost-tags:dev",

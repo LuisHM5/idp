@@ -1,0 +1,4 @@
+#!/bin/sh
+# Registra el commit recien hecho en documentacion/ (Excel + .md), en segundo plano.
+# Activar: git config core.hooksPath .githooks
+(python3 -I scripts/actividades.py hook >/dev/null 2>&1 &) || true
